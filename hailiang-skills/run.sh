@@ -14,14 +14,17 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FRONTEND_DIR="$PROJECT_DIR/frontend"
+LOCAL_COMPOSE_FILE="$PROJECT_DIR/docker-compose.local.yml"
 BOOTSTRAP=0
 MIGRATE_FILE_LOGS=0
 START_INFRA=1
 BACKEND_PID=""
-POSTGRES_HOST_PORT=""
-REDIS_HOST_PORT=""
-OTEL_HOST_PORT=""
-OTEL_METRICS_HOST_PORT=""
+# Preserve explicitly exported port overrides. env.sh can also set them via
+# env.local.sh after these defaults are initialized.
+POSTGRES_HOST_PORT="${POSTGRES_HOST_PORT:-}"
+REDIS_HOST_PORT="${REDIS_HOST_PORT:-}"
+OTEL_HOST_PORT="${OTEL_HOST_PORT:-}"
+OTEL_METRICS_HOST_PORT="${OTEL_METRICS_HOST_PORT:-}"
 
 usage() {
   cat <<'EOF'
@@ -56,18 +59,26 @@ port_is_available() {
 }
 choose_host_port() {
   local preferred="$1"
-  local fallback="$2"
+  shift
   if port_is_available "$preferred"; then
     echo "$preferred"
-  else
-    # Bash 会把中文句号视为变量名的一部分，故变量后必须使用花括号。
-    echo "⚠️  本机端口 ${preferred} 已被其他服务占用，改用 ${fallback}。" >&2
-    if ! port_is_available "$fallback"; then
-      echo "❌ 备用端口 $fallback 也被占用；请停止占用进程或在 env.local.sh 指定其他端口。" >&2
-      exit 1
-    fi
-    echo "$fallback"
+    return
   fi
+
+  local fallback
+  for fallback in "$@"; do
+    if port_is_available "$fallback"; then
+      echo "⚠️  本机端口 ${preferred} 已被其他服务占用，改用 ${fallback}。" >&2
+      echo "$fallback"
+      return
+    fi
+  done
+  echo "❌ 端口 ${preferred} 和全部备用端口均被占用；请在 env.local.sh 指定其他端口。" >&2
+  exit 1
+}
+
+local_compose() {
+  docker compose -f "$LOCAL_COMPOSE_FILE" "$@"
 }
 existing_compose_port() {
   local service="$1"
@@ -75,7 +86,7 @@ existing_compose_port() {
   local mapping=""
   # docker compose port returns e.g. 0.0.0.0:16379 for an already-running
   # project container. Reusing it is essential: it is not an external conflict.
-  mapping="$(docker compose port "$service" "$container_port" 2>/dev/null | tail -n 1 || true)"
+  mapping="$(local_compose port "$service" "$container_port" 2>/dev/null | tail -n 1 || true)"
   [ -n "$mapping" ] || return 1
   echo "${mapping##*:}"
 }
@@ -83,14 +94,14 @@ resolve_infra_port() {
   local service="$1"
   local container_port="$2"
   local preferred="$3"
-  local fallback="$4"
+  shift 3
   local existing=""
   if existing="$(existing_compose_port "$service" "$container_port")"; then
     echo "ℹ️  复用本项目已运行的 ${service} 容器端口：${existing}" >&2
     echo "$existing"
     return
   fi
-  choose_host_port "$preferred" "$fallback"
+  choose_host_port "$preferred" "$@"
 }
 choose_application_port() {
   local preferred="$1"
@@ -165,10 +176,10 @@ if [ "$START_INFRA" = "1" ] && [ "$HAILIANG_STORAGE_BACKEND" = "postgres" ]; the
     exit 1
   fi
   # 不占用/中断已有 Redis、PostgreSQL；本项目容器使用可预测备用端口。
-  POSTGRES_HOST_PORT="$(resolve_infra_port postgres 5432 "${POSTGRES_HOST_PORT:-5432}" 15432)"
-  REDIS_HOST_PORT="$(resolve_infra_port redis 6379 "${REDIS_HOST_PORT:-6379}" 16379)"
-  OTEL_HOST_PORT="$(resolve_infra_port otel-collector 4318 "${OTEL_HOST_PORT:-4318}" 14318)"
-  OTEL_METRICS_HOST_PORT="$(resolve_infra_port otel-collector 9464 "${OTEL_METRICS_HOST_PORT:-9464}" 19464)"
+  POSTGRES_HOST_PORT="$(resolve_infra_port postgres 5432 "${POSTGRES_HOST_PORT:-5432}" 15432 25432 25433)"
+  REDIS_HOST_PORT="$(resolve_infra_port redis 6379 "${REDIS_HOST_PORT:-6379}" 16379 26379 26380)"
+  OTEL_HOST_PORT="$(resolve_infra_port otel-collector 4318 "${OTEL_HOST_PORT:-4318}" 14318 24318 24319)"
+  OTEL_METRICS_HOST_PORT="$(resolve_infra_port otel-collector 9464 "${OTEL_METRICS_HOST_PORT:-9464}" 19464 29464 29465)"
   export POSTGRES_HOST_PORT REDIS_HOST_PORT OTEL_HOST_PORT OTEL_METRICS_HOST_PORT
   HAILIANG_DATABASE_URL="$(replace_local_port "$HAILIANG_DATABASE_URL" 5432 "$POSTGRES_HOST_PORT")"
   HAILIANG_REDIS_URL="$(replace_local_port "$HAILIANG_REDIS_URL" 6379 "$REDIS_HOST_PORT")"
@@ -177,7 +188,7 @@ if [ "$START_INFRA" = "1" ] && [ "$HAILIANG_STORAGE_BACKEND" = "postgres" ]; the
   echo "🐳 启动本地 PostgreSQL、Redis 与观测 Collector..."
   echo "   PostgreSQL: $HAILIANG_DATABASE_URL"
   echo "   Redis:      $HAILIANG_REDIS_URL"
-  docker compose up -d postgres redis otel-collector
+  local_compose up -d postgres redis otel-collector
 fi
 
 if [ "$HAILIANG_STORAGE_BACKEND" = "postgres" ]; then

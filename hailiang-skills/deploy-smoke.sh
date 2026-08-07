@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploy one isolated, non-systemd API instance for BFF smoke testing.
-# This intentionally does not create Docker infrastructure or build the frontend.
+# This intentionally does not create or modify Docker infrastructure.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -8,6 +8,7 @@ ENV_FILE="$PROJECT_DIR/env.8015.sh"
 REPLACE_PORT=0
 SKIP_INSTALL=0
 SKIP_MIGRATIONS=0
+WITH_FRONTEND=0
 
 usage() {
   cat <<'EOF'
@@ -21,12 +22,14 @@ Options:
   --env PATH          Private environment file (default: ./env.8015.sh)
   --replace-port      Gracefully stop an existing Hailiang Uvicorn instance on
                       BACKEND_PORT before starting this one.
+  --with-frontend     Build and serve the internal frontend using FRONTEND_PORT.
   --skip-install      Reuse the existing smoke virtual environment.
   --skip-migrations   Do not run Alembic (only for an already migrated DB).
   -h, --help          Show this help.
 
 This script never starts, recreates, or removes PostgreSQL/Redis containers.
-It refuses to replace a listener unless it is a Hailiang Uvicorn process.
+It refuses to replace an API listener unless it is a Hailiang Uvicorn process.
+An occupied frontend port is never stopped automatically.
 EOF
 }
 
@@ -34,6 +37,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --env) ENV_FILE="${2:?--env requires a path}"; shift ;;
     --replace-port) REPLACE_PORT=1 ;;
+    --with-frontend) WITH_FRONTEND=1 ;;
     --skip-install) SKIP_INSTALL=1 ;;
     --skip-migrations) SKIP_MIGRATIONS=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -125,6 +129,7 @@ PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-120}"
 PIP_RETRIES="${PIP_RETRIES:-5}"
 CONSTRAINTS_FILE="$PROJECT_DIR/constraints/linux-legacy-ms-agent.txt"
+FRONTEND_DIR="$PROJECT_DIR/frontend"
 
 mkdir -p "$HAILIANG_RUNTIME_DIR" "$HAILIANG_LOG_DIR"
 if [ -z "${SSL_CERT_FILE:-}" ] && [ -f /etc/pki/tls/cert.pem ]; then
@@ -136,6 +141,25 @@ echo "Environment: $ENV_FILE"
 echo "API: http://$HAILIANG_BIND_HOST:$BACKEND_PORT"
 echo "Smoke database: ${HAILIANG_DATABASE_URL%@*}@…"
 echo "Venv: $VENV_DIR"
+
+if [ "$WITH_FRONTEND" = "1" ]; then
+  require_value FRONTEND_PORT
+  export HAILIANG_FRONTEND_BIND_HOST="${HAILIANG_FRONTEND_BIND_HOST:-$HAILIANG_BIND_HOST}"
+  FRONTEND_LOG_FILE="${HAILIANG_SMOKE_FRONTEND_LOG_FILE:-$PROJECT_DIR/smoke-frontend-$FRONTEND_PORT.log}"
+  FRONTEND_ORIGIN="http://$HAILIANG_FRONTEND_BIND_HOST:$FRONTEND_PORT"
+  export HAILIANG_PUBLIC_API_BASE_URL="${HAILIANG_PUBLIC_API_BASE_URL:-http://$HAILIANG_BIND_HOST:$BACKEND_PORT}"
+  if [ -n "${HAILIANG_CORS_ORIGINS:-}" ]; then
+    export HAILIANG_CORS_ORIGINS="${HAILIANG_CORS_ORIGINS},$FRONTEND_ORIGIN"
+  else
+    export HAILIANG_CORS_ORIGINS="$FRONTEND_ORIGIN"
+  fi
+  command -v npm >/dev/null 2>&1 || { echo "npm is required for --with-frontend" >&2; exit 2; }
+  [ -f "$FRONTEND_DIR/package.json" ] || { echo "Frontend source is missing: $FRONTEND_DIR" >&2; exit 2; }
+  [ -z "$(listener_pids "$FRONTEND_PORT")" ] || {
+    echo "Frontend port $FRONTEND_PORT is already in use; choose another FRONTEND_PORT or stop it manually." >&2
+    exit 3
+  }
+fi
 
 if [ "$SKIP_INSTALL" = "0" ]; then
   command -v python3.11 >/dev/null 2>&1 || { echo "python3.11 is required" >&2; exit 2; }
@@ -230,3 +254,42 @@ fi
 echo "Smoke deployment succeeded. PID: $new_pid"
 curl --fail --silent "$health_url"
 echo
+
+if [ "$WITH_FRONTEND" = "1" ]; then
+  NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+  echo "Building smoke frontend with registry: $NPM_REGISTRY"
+  (
+    cd "$FRONTEND_DIR"
+    npm config set registry "$NPM_REGISTRY"
+    npm ci
+    npm run build
+  )
+
+  "$VENV_DIR/bin/python" - <<'PY' > "$FRONTEND_DIR/dist/runtime-config.js"
+import json
+import os
+
+print("window.__HAILIANG_RUNTIME_CONFIG__ = " + json.dumps({
+    "apiBaseUrl": os.environ["HAILIANG_PUBLIC_API_BASE_URL"],
+    "backendPort": int(os.environ["BACKEND_PORT"]),
+    "userId": os.getenv("DEFAULT_USER_ID", "debug-user"),
+}, ensure_ascii=False) + ";")
+PY
+
+  echo "Starting smoke frontend; log: $FRONTEND_LOG_FILE"
+  nohup "$VENV_DIR/bin/python" "$PROJECT_DIR/scripts/static_frontend_server.py" \
+    --host "$HAILIANG_FRONTEND_BIND_HOST" \
+    --port "$FRONTEND_PORT" \
+    --directory "$FRONTEND_DIR/dist" \
+    > "$FRONTEND_LOG_FILE" 2>&1 &
+  frontend_pid="$!"
+
+  frontend_url="http://$HAILIANG_FRONTEND_BIND_HOST:$FRONTEND_PORT/"
+  if ! wait_for_health "$frontend_url"; then
+    echo "Smoke frontend did not become ready: $frontend_url" >&2
+    tail -n 100 "$FRONTEND_LOG_FILE" >&2 || true
+    exit 1
+  fi
+  echo "Smoke frontend succeeded. PID: $frontend_pid"
+  echo "Frontend: $frontend_url"
+fi

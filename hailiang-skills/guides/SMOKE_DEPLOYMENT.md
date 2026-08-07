@@ -2,7 +2,7 @@
 
 `deploy-smoke.sh` 用于在已有旧测试服务的服务器上，以独立 PostgreSQL 数据库、Redis DB 和运行目录启动一份临时 API，验证转发服务器到指定 Base URL 的真实调用链。
 
-它不启动或重建 Docker 容器、不构建前端、不安装 systemd 服务，也不改动 `deploy-all.sh`。CentOS 7 会使用 `constraints/linux-legacy-ms-agent.txt` 和清华 PyPI 镜像安装兼容 wheel。
+它不启动或重建 Docker 容器、不安装 systemd 服务，也不改动 `deploy-all.sh`。默认只启动 API；传入 `--with-frontend` 时才会构建并启动内部前端。CentOS 7 会使用 `constraints/linux-legacy-ms-agent.txt` 和清华 PyPI 镜像安装兼容 wheel。
 
 ## 首次准备
 
@@ -35,6 +35,17 @@ python3.11 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.tok
 ```bash
 ./deploy-smoke.sh --env ./env.8015.sh --skip-install
 ```
+
+## 同时启动内部前端
+
+在私有环境文件中设置 `HAILIANG_FRONTEND_BIND_HOST`、`FRONTEND_PORT` 与
+`HAILIANG_PUBLIC_API_BASE_URL`，然后执行：
+
+```bash
+./deploy-smoke.sh --env ./env.8015.sh --replace-port --with-frontend
+```
+
+脚本会将浏览器运行时 API 地址写入 `frontend/dist/runtime-config.js`，并自动把前端 Origin 追加到 `HAILIANG_CORS_ORIGINS`。前端监听端口若已被占用，脚本会安全退出；请手动停止旧前端或更换 `FRONTEND_PORT`。
 
 成功后检查：
 
