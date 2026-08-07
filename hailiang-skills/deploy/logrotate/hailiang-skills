@@ -1,0 +1,10 @@
+/var/lib/hailiang-skills/*/logs/**/*.jsonl {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+    copytruncate
+}

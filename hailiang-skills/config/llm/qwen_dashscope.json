@@ -1,0 +1,24 @@
+{
+  "provider": "dashscope_compatible",
+  "base_url": "https://ws-cf2bl5wfrmj77y71.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "model": "deepseek-v4-flash",
+  "api_key_env": "DASHSCOPE_API_KEY",
+  "timeout_s": 120,
+  "temperature": 0,
+  "max_tokens": 8000,
+  "enable_thinking": false,
+  "return_reasoning": false,
+  "embedding": {
+    "enabled": true,
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "text-embedding-v4",
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "timeout_s": 8,
+    "max_batch_size": 10,
+    "cache_enabled": true
+  },
+  "route_suggestions": {
+    "monitor_every_turn": true,
+    "general_chat_card_threshold": 0.72
+  }
+}

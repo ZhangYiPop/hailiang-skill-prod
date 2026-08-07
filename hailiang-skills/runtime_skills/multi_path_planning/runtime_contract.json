@@ -1,0 +1,27 @@
+{
+  "skill_id": "multi_path_planning",
+  "skill_role": "child",
+  "stages": [
+    {"id": "intro", "kind": "entry", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false},
+    {"id": "profile", "kind": "collection", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false},
+    {"id": "preference", "kind": "collection", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": false},
+    {"id": "supplement", "kind": "collection", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": false},
+    {"id": "matching", "kind": "analysis", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": false},
+    {"id": "output", "kind": "summary", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": true}
+  ],
+  "facts": {
+    "global": ["grade", "student_province", "subject_group", "score_total", "score_recent_avg", "foreign_language", "english_exam_score"],
+    "skill": ["mode", "stage", "collected", "tier", "target_path", "matched_paths", "conclusion_summary"],
+    "stage": {
+      "profile": ["collected"],
+      "preference": ["collected", "tier"],
+      "supplement": ["collected", "tier"],
+      "matching": ["matched_paths"],
+      "output": ["matched_paths", "conclusion_summary"]
+    },
+    "exports": {"promote_to_global": [], "share_with_parent_skill": ["conclusion_summary"]}
+  },
+  "routes": [],
+  "accepts_scenes": ["多元路径规划", "多元路径", "多元升学路径"],
+  "metadata": {"module_group": "child", "scene_name": "多元路径推荐", "agent_label": "多元路径推荐", "business_version": "v20260724030720257966", "question_rule_table": "references/skill_question_option_rule_table.md"}
+}

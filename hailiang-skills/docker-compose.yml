@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set_in_protected_infra_env}
+      POSTGRES_DB: postgres
+      HAILIANG_PROD_DB_PASSWORD: ${HAILIANG_PROD_DB_PASSWORD:?set_in_protected_infra_env}
+      HAILIANG_TEST_DB_PASSWORD: ${HAILIANG_TEST_DB_PASSWORD:?set_in_protected_infra_env}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+
+  redis:
+    image: redis:7
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,24 @@
+[Unit]
+Description=Hailiang Skills API (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hailiang
+Group=hailiang
+EnvironmentFile=/etc/hailiang-skills/%i.env
+WorkingDirectory=/opt/hailiang-skills/current-%i
+ExecStartPre=/opt/hailiang-skills/current-%i/deploy/bin/check-environment.sh %i
+ExecStart=/opt/hailiang-skills/current-%i/.venv/bin/python -m uvicorn hailiang_skills.api.main:app --host ${HAILIANG_BIND_HOST} --port ${BACKEND_PORT} --workers ${UVICORN_WORKERS} --timeout-keep-alive 15 --timeout-graceful-shutdown 75 --no-access-log
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ReadWritePaths=/var/lib/hailiang-skills
+
+[Install]
+WantedBy=multi-user.target

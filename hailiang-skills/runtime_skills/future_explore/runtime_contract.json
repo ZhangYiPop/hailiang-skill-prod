@@ -1,0 +1,52 @@
+{
+  "skill_id": "future_explore",
+  "skill_role": "child",
+  "stages": [
+    {
+      "id": "init",
+      "kind": "entry",
+      "required_facts": [],
+      "enable_intent_check": false,
+      "enable_satisfaction_check": false
+    },
+    {
+      "id": "collect",
+      "kind": "collection",
+      "required_facts": ["grade"],
+      "enable_intent_check": false,
+      "enable_satisfaction_check": false
+    },
+    {
+      "id": "confirm",
+      "kind": "confirmation",
+      "required_facts": [],
+      "enable_intent_check": true,
+      "enable_satisfaction_check": true
+    },
+    {
+      "id": "analyze",
+      "kind": "analysis",
+      "required_facts": [],
+      "enable_intent_check": true,
+      "enable_satisfaction_check": true
+    }
+  ],
+  "facts": {
+    "global": ["grade", "score_level", "talent", "gender"],
+    "skill": ["scene_goal", "conclusion_summary"],
+    "stage": {
+      "collect": ["scene_goal"],
+      "confirm": ["revision_reason", "satisfaction_status"]
+    },
+    "exports": {
+      "promote_to_global": [],
+      "share_with_parent_skill": ["conclusion_summary"]
+    }
+  },
+  "routes": [],
+  "accepts_scenes": ["前景探路"],
+  "metadata": {
+    "module_group": "child",
+    "scene_name": "前景探路"
+  }
+}

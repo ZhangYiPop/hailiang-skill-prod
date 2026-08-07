@@ -1,0 +1,2730 @@
+[
+  {
+    "school_name": "北京大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10001",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "1",
+      "代表院校": "北京大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10001",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "清华大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10003",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "2",
+      "代表院校": "清华大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10003",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10008",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "3",
+      "代表院校": "浙江大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10008",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "复旦大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10006",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "4",
+      "代表院校": "复旦大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10006",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "上海交通大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10011",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "5",
+      "代表院校": "上海交通大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10011",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中国人民大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10015",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "6",
+      "代表院校": "中国人民大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10015",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南开大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10021",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "7",
+      "代表院校": "南开大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10021",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "华东师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10051",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "8",
+      "代表院校": "华东师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10051",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "四川大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10031",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "9",
+      "代表院校": "四川大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10031",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "武汉大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10017",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "10",
+      "代表院校": "武汉大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10017",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中央财经大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10157",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "11",
+      "代表院校": "中央财经大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10157",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中国政法大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10088",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "12",
+      "代表院校": "中国政法大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10088",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "北京邮电大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10069",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "13",
+      "代表院校": "北京邮电大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10069",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南京航空航天大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10074",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "14",
+      "代表院校": "南京航空航天大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10074",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "杭州电子科技大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10124",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "15",
+      "代表院校": "杭州电子科技大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10124",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "宁波大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10104",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "16",
+      "代表院校": "宁波大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10104",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江工业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10114",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "17",
+      "代表院校": "浙江工业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10114",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "杭州师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10219",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "18",
+      "代表院校": "杭州师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10219",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "温州医科大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10246",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "19",
+      "代表院校": "温州医科大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10246",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江中医药大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10315",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "20",
+      "代表院校": "浙江中医药大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10315",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江工商大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10195",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "21",
+      "代表院校": "浙江工商大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10195",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中国计量大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10313",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "22",
+      "代表院校": "中国计量大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10313",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江海洋大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10389",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "23",
+      "代表院校": "浙江海洋大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10389",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "温州大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10286",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "24",
+      "代表院校": "温州大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10286",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙大城市学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10850",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "25",
+      "代表院校": "浙大城市学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10850",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "嘉兴大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10502",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "26",
+      "代表院校": "嘉兴大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10502",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "湖州师范学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10580",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "27",
+      "代表院校": "湖州师范学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10580",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江科技大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10423",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "28",
+      "代表院校": "浙江科技大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10423",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江万里学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10510",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "29",
+      "代表院校": "浙江万里学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10510",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "台州学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10336",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "30",
+      "代表院校": "台州学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10336",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江外国语学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10593",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "31",
+      "代表院校": "浙江外国语学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10593",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江传媒学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10676",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "32",
+      "代表院校": "浙江传媒学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10676",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江工业大学之江学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11014",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "33",
+      "代表院校": "浙江工业大学之江学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11014",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江师范大学行知学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11005",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "34",
+      "代表院校": "浙江师范大学行知学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11005",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江树人学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11078",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "35",
+      "代表院校": "浙江树人学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11078",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江越秀外国语学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10982",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "36",
+      "代表院校": "浙江越秀外国语学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10982",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "金华职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11427",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "37",
+      "代表院校": "金华职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11427",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江警官职业学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11456",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "38",
+      "代表院校": "浙江警官职业学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11456",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江交通职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12496",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "39",
+      "代表院校": "浙江交通职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12496",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江机电职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11562",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "40",
+      "代表院校": "浙江机电职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11562",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江工业职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11469",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "41",
+      "代表院校": "浙江工业职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11469",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "天津滨海职业学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12517",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "42",
+      "代表院校": "天津滨海职业学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12517",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "武汉交通职业学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11714",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "43",
+      "代表院校": "武汉交通职业学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11714",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "义乌工商职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12112",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "44",
+      "代表院校": "义乌工商职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12112",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "北京汇佳职业学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12696",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "45",
+      "代表院校": "北京汇佳职业学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12696",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "上海邦德职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12044",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "46",
+      "代表院校": "上海邦德职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12044",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江宇翔职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11720",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "47",
+      "代表院校": "浙江宇翔职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11720",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江金华科贸职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12842",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "48",
+      "代表院校": "浙江金华科贸职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12842",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "太原理工大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10108",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "49",
+      "代表院校": "太原理工大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10108",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南京信息工程大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10239",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "50",
+      "代表院校": "南京信息工程大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10239",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "江苏大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10122",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "51",
+      "代表院校": "江苏大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10122",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "云南大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10093",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "52",
+      "代表院校": "云南大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10093",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "浙江理工大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10200",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "53",
+      "代表院校": "浙江理工大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10200",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "湖北大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10215",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "54",
+      "代表院校": "湖北大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10215",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "合肥大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10495",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "55",
+      "代表院校": "合肥大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10495",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "长春理工大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10216",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "56",
+      "代表院校": "长春理工大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10216",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "华北水利水电大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10446",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "57",
+      "代表院校": "华北水利水电大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10446",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "山东建筑大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10418",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "58",
+      "代表院校": "山东建筑大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10418",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "重庆文理学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10637",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "59",
+      "代表院校": "重庆文理学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10637",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "东北石油大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10310",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "60",
+      "代表院校": "东北石油大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10310",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南京大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10010",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "61",
+      "代表院校": "南京大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10010",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "东南大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10029",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "62",
+      "代表院校": "东南大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10029",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "上海财经大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10091",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "63",
+      "代表院校": "上海财经大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10091",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "苏州大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10086",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "64",
+      "代表院校": "苏州大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10086",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "武汉理工大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10076",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "65",
+      "代表院校": "武汉理工大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10076",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南京师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10090",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "66",
+      "代表院校": "南京师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10090",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南京邮电大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10193",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "67",
+      "代表院校": "南京邮电大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10193",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南京医科大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10184",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "68",
+      "代表院校": "南京医科大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10184",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南京林业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10177",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "69",
+      "代表院校": "南京林业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10177",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南京工业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10127",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "70",
+      "代表院校": "南京工业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10127",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "徐州医科大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10514",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "71",
+      "代表院校": "徐州医科大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10514",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "常州大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10390",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "72",
+      "代表院校": "常州大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10390",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "江苏师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10255",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "73",
+      "代表院校": "江苏师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10255",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南通理工学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11373",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "74",
+      "代表院校": "南通理工学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11373",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "无锡太湖学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11044",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "75",
+      "代表院校": "无锡太湖学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11044",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "三江学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11371",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "76",
+      "代表院校": "三江学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11371",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "东南大学成贤学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11111",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "77",
+      "代表院校": "东南大学成贤学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11111",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "深圳职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11420",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "78",
+      "代表院校": "深圳职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11420",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南京工业职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11377",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "79",
+      "代表院校": "南京工业职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11377",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "江苏经贸职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11545",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "80",
+      "代表院校": "江苏经贸职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11545",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "苏州幼儿师范高等专科学校",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12880",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "81",
+      "代表院校": "苏州幼儿师范高等专科学校",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12880",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中国科学技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10014",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "82",
+      "代表院校": "中国科学技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10014",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "安徽大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10167",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "83",
+      "代表院校": "安徽大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10167",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "合肥工业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10071",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "84",
+      "代表院校": "合肥工业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10071",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "河南大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10098",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "85",
+      "代表院校": "河南大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10098",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "首都师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10112",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "86",
+      "代表院校": "首都师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10112",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "安徽工业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10341",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "87",
+      "代表院校": "安徽工业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10341",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "安徽医科大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10345",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "88",
+      "代表院校": "安徽医科大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10345",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "安徽师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10196",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "89",
+      "代表院校": "安徽师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10196",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "合肥理工学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11099",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "90",
+      "代表院校": "合肥理工学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11099",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "安徽新华学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11183",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "91",
+      "代表院校": "安徽新华学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11183",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "合肥经济学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11125",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "92",
+      "代表院校": "合肥经济学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11125",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "安徽医科大学临床医学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11046",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "93",
+      "代表院校": "安徽医科大学临床医学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11046",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "安徽信息工程学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11051",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "94",
+      "代表院校": "安徽信息工程学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11051",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "淮北职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11556",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "95",
+      "代表院校": "淮北职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11556",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "安徽水利水电职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11669",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "96",
+      "代表院校": "安徽水利水电职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11669",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "安徽商贸职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11586",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "97",
+      "代表院校": "安徽商贸职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11586",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "华中科技大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10013",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "98",
+      "代表院校": "华中科技大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10013",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中国地质大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10183",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "99",
+      "代表院校": "中国地质大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10183",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "华中师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10059",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "100",
+      "代表院校": "华中师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10059",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西南石油大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10247",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "101",
+      "代表院校": "西南石油大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10247",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "武汉科技大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10139",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "102",
+      "代表院校": "武汉科技大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10139",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中南民族大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10209",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "103",
+      "代表院校": "中南民族大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10209",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "长江大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10252",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "104",
+      "代表院校": "长江大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10252",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "长江大学文理学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11221",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "105",
+      "代表院校": "长江大学文理学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11221",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "武昌理工学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11357",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "106",
+      "代表院校": "武昌理工学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11357",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "文华学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11116",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "107",
+      "代表院校": "文华学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11116",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "湖北大学知行学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11177",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "108",
+      "代表院校": "湖北大学知行学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11177",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "武汉职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11451",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "109",
+      "代表院校": "武汉职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11451",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "黄冈职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11531",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "110",
+      "代表院校": "黄冈职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11531",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "荆州理工职业学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11860",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "111",
+      "代表院校": "荆州理工职业学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11860",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "襄阳职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11443",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "112",
+      "代表院校": "襄阳职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11443",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "山东大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10022",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "113",
+      "代表院校": "山东大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10022",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中国海洋大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10061",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "114",
+      "代表院校": "中国海洋大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10061",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中国石油大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10115",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "115",
+      "代表院校": "中国石油大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10115",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南方科技大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10165",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "116",
+      "代表院校": "南方科技大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10165",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "山东师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10135",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "117",
+      "代表院校": "山东师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10135",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "青岛大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10241",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "118",
+      "代表院校": "青岛大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10241",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "山东理工大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10363",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "119",
+      "代表院校": "山东理工大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10363",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "济宁医学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10705",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "120",
+      "代表院校": "济宁医学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10705",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "山东财经大学东方学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11231",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "121",
+      "代表院校": "山东财经大学东方学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11231",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "齐鲁理工学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11108",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "122",
+      "代表院校": "齐鲁理工学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11108",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "山东协和学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11141",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "123",
+      "代表院校": "山东协和学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11141",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "潍坊科技学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11070",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "124",
+      "代表院校": "潍坊科技学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11070",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "淄博职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11449",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "125",
+      "代表院校": "淄博职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11449",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "山东医学高等专科学校",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11487",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "126",
+      "代表院校": "山东医学高等专科学校",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11487",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "山东电力高等专科学校",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11452",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "127",
+      "代表院校": "山东电力高等专科学校",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11452",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "曲阜远东职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12276",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "128",
+      "代表院校": "曲阜远东职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12276",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "厦门大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10038",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "129",
+      "代表院校": "厦门大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10038",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "贵州大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10205",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "130",
+      "代表院校": "贵州大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10205",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "遵义医科大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10515",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "131",
+      "代表院校": "遵义医科大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10515",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "贵州民族大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10451",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "132",
+      "代表院校": "贵州民族大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10451",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "贵阳学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10639",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "133",
+      "代表院校": "贵阳学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10639",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "贵州商学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10891",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "134",
+      "代表院校": "贵州商学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10891",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "茅台学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10843",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "135",
+      "代表院校": "茅台学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10843",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "贵阳人文科技学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11172",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "136",
+      "代表院校": "贵阳人文科技学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11172",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "贵州黔南经济学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11367",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "137",
+      "代表院校": "贵州黔南经济学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11367",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "贵州医科大学神奇民族医药学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11167",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "138",
+      "代表院校": "贵州医科大学神奇民族医药学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11167",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "贵阳康养职业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=70071",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "139",
+      "代表院校": "贵阳康养职业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=70071",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "贵州交通职业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11959",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "140",
+      "代表院校": "贵州交通职业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11959",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "铜仁幼儿师范高等专科学校",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12511",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "141",
+      "代表院校": "铜仁幼儿师范高等专科学校",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12511",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西安交通大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10025",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "142",
+      "代表院校": "西安交通大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10025",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西北工业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10040",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "143",
+      "代表院校": "西北工业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10040",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西北农林科技大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10082",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "144",
+      "代表院校": "西北农林科技大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10082",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "长安大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10161",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "145",
+      "代表院校": "长安大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10161",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "陕西师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10111",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "146",
+      "代表院校": "陕西师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10111",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西安电子科技大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10062",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "147",
+      "代表院校": "西安电子科技大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10062",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西安建筑科技大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10226",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "148",
+      "代表院校": "西安建筑科技大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10226",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西安理工大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10212",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "149",
+      "代表院校": "西安理工大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10212",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西北政法大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10387",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "150",
+      "代表院校": "西北政法大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10387",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "延安大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10462",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "151",
+      "代表院校": "延安大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10462",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西安交通大学城市学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11016",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "152",
+      "代表院校": "西安交通大学城市学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11016",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西安培华学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11129",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "153",
+      "代表院校": "西安培华学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11129",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西京学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11334",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "154",
+      "代表院校": "西京学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11334",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西安工商学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11030",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "155",
+      "代表院校": "西安工商学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11030",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "宝鸡中北职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=70081",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "156",
+      "代表院校": "宝鸡中北职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=70081",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西安汽车职业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10970",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "157",
+      "代表院校": "西安汽车职业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10970",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "陕西国防工业职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11505",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "158",
+      "代表院校": "陕西国防工业职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11505",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "陕西工业职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11422",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "159",
+      "代表院校": "陕西工业职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11422",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "重庆大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10055",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "160",
+      "代表院校": "重庆大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10055",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "暨南大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10079",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "161",
+      "代表院校": "暨南大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10079",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "广西大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10181",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "162",
+      "代表院校": "广西大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10181",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "华南师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10103",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "163",
+      "代表院校": "华南师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10103",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "华南农业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10099",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "164",
+      "代表院校": "华南农业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10099",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "广西医科大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10330",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "165",
+      "代表院校": "广西医科大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10330",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "桂林电子科技大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10295",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "166",
+      "代表院校": "桂林电子科技大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10295",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "桂林理工大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10279",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "167",
+      "代表院校": "桂林理工大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10279",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "广西财经学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10528",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "168",
+      "代表院校": "广西财经学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10528",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "北海艺术设计学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10901",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "169",
+      "代表院校": "北海艺术设计学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10901",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "桂林信息科技学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11019",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "170",
+      "代表院校": "桂林信息科技学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11019",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "柳州工学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11173",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "171",
+      "代表院校": "柳州工学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11173",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "北京航空航天大学北海学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10983",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "172",
+      "代表院校": "北京航空航天大学北海学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10983",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "柳州职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11450",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "173",
+      "代表院校": "柳州职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11450",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "广西机电职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11435",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "174",
+      "代表院校": "广西机电职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11435",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "广西工业职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11510",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "175",
+      "代表院校": "广西工业职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11510",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "桂林生命与健康职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12789",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "176",
+      "代表院校": "桂林生命与健康职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12789",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "兰州大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10050",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "177",
+      "代表院校": "兰州大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10050",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中国矿业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10113",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "178",
+      "代表院校": "中国矿业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10113",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "天津工业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10174",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "179",
+      "代表院校": "天津工业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10174",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西北师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10199",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "180",
+      "代表院校": "西北师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10199",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "兰州理工大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10244",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "181",
+      "代表院校": "兰州理工大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10244",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西北民族大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10342",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "182",
+      "代表院校": "西北民族大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10342",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "天水师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10716",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "183",
+      "代表院校": "天水师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10716",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "兰州博文科技学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11143",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "184",
+      "代表院校": "兰州博文科技学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11143",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "兰州工商学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11089",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "185",
+      "代表院校": "兰州工商学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11089",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "兰州信息科技学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11150",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "186",
+      "代表院校": "兰州信息科技学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11150",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "甘肃工业职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12314",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "187",
+      "代表院校": "甘肃工业职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12314",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "酒泉职业技术大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12355",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "188",
+      "代表院校": "酒泉职业技术大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12355",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "兰州外语职业学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12601",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "189",
+      "代表院校": "兰州外语职业学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12601",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "兰州科技职业学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11995",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "190",
+      "代表院校": "兰州科技职业学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11995",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "电子科技大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10053",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "191",
+      "代表院校": "电子科技大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10053",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西南交通大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10077",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "192",
+      "代表院校": "西南交通大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10077",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "成都理工大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10138",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "193",
+      "代表院校": "成都理工大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10138",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "四川大学锦江学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11130",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "194",
+      "代表院校": "四川大学锦江学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11130",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "吉利学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11182",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "195",
+      "代表院校": "吉利学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11182",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "成都东软学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11265",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "196",
+      "代表院校": "成都东软学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11265",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "四川交通职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11800",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "197",
+      "代表院校": "四川交通职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11800",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "成都大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10396",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "198",
+      "代表院校": "成都大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10396",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "成都职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12087",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "199",
+      "代表院校": "成都职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12087",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "四川电力职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12040",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "200",
+      "代表院校": "四川电力职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12040",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南充职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11745",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "201",
+      "代表院校": "南充职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11745",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "四川师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10256",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "202",
+      "代表院校": "四川师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10256",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西南医科大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10568",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "203",
+      "代表院校": "西南医科大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10568",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "成都信息工程大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10426",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "204",
+      "代表院校": "成都信息工程大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10426",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "电子科技大学成都学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11112",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "205",
+      "代表院校": "电子科技大学成都学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11112",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中国科学院大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "206",
+      "代表院校": "中国科学院大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "上海纽约大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "207",
+      "代表院校": "上海纽约大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "北京外国语大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "208",
+      "代表院校": "北京外国语大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "上海科技大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "209",
+      "代表院校": "上海科技大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "昆山杜克大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "210",
+      "代表院校": "昆山杜克大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "深圳北理莫斯科大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "211",
+      "代表院校": "深圳北理莫斯科大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "东北大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "212",
+      "代表院校": "东北大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "华东理工大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "213",
+      "代表院校": "华东理工大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "上海中医药大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "214",
+      "代表院校": "上海中医药大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "华南理工大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "215",
+      "代表院校": "华南理工大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "东华大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "216",
+      "代表院校": "东华大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "香港中文大学（深圳）",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "217",
+      "代表院校": "香港中文大学（深圳）",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "同济大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "218",
+      "代表院校": "同济大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "上海外国语大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "219",
+      "代表院校": "上海外国语大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "上海大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "220",
+      "代表院校": "上海大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西湖大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "221",
+      "代表院校": "西湖大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "扬州大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "222",
+      "代表院校": "扬州大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南京中医药大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "223",
+      "代表院校": "南京中医药大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "南通大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "224",
+      "代表院校": "南通大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "西交利物浦大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "225",
+      "代表院校": "西交利物浦大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "山东科技大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "226",
+      "代表院校": "山东科技大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "青岛科技大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "227",
+      "代表院校": "青岛科技大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "哈尔滨工业大学（威海）",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "228",
+      "代表院校": "哈尔滨工业大学（威海）",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中国石油大学（华东）",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "229",
+      "代表院校": "中国石油大学（华东）",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "山东财经大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "230",
+      "代表院校": "山东财经大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中南大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "231",
+      "代表院校": "中南大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "中山大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "232",
+      "代表院校": "中山大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "北师香港浸会大学",
+    "school_url": "暂无收录",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "233",
+      "代表院校": "北师香港浸会大学",
+      "院校链接": "暂无收录",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "云南师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10224",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "234",
+      "代表院校": "云南师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10224",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "吉林大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10032",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "235",
+      "代表院校": "吉林大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10032",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "内蒙古大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10192",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "236",
+      "代表院校": "内蒙古大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10192",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "内蒙古医科大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10517",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "237",
+      "代表院校": "内蒙古医科大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10517",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "内蒙古师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10358",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "238",
+      "代表院校": "内蒙古师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10358",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "内蒙古民族大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10573",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "239",
+      "代表院校": "内蒙古民族大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10573",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "赤峰大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10766",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "240",
+      "代表院校": "赤峰大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10766",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "内蒙古大学创业学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11275",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "241",
+      "代表院校": "内蒙古大学创业学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11275",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "内蒙古鸿德文理学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11263",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "242",
+      "代表院校": "内蒙古鸿德文理学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11263",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "包头职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11594",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "243",
+      "代表院校": "包头职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11594",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "内蒙古机电职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11660",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "244",
+      "代表院校": "内蒙古机电职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11660",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "包头铁道职业技术学院",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11780",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "245",
+      "代表院校": "包头铁道职业技术学院",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=11780",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "乌兰察布医学高等专科学校",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12167",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "246",
+      "代表院校": "乌兰察布医学高等专科学校",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=12167",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "哈尔滨工业大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10026",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "246",
+      "代表院校": "哈尔滨工业大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10026",
+      "学校简介": "暂无收录"
+    }
+  },
+  {
+    "school_name": "东北师范大学",
+    "school_url": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10100",
+    "school_intro": "暂无收录",
+    "source_payload": {
+      "序号": "247",
+      "代表院校": "东北师范大学",
+      "院校链接": "https://hailiangm.gaokaow.cc/colleges/detail?collegeCode=10100",
+      "学校简介": "暂无收录"
+    }
+  }
+]

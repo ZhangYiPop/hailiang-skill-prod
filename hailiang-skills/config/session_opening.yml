@@ -1,0 +1,5 @@
+session_opening:
+  enabled: true
+  default_message: |
+    你好！你可以直接告诉我想聊什么。
+    无论你是学生还是家长，我都会根据你的身份和需求来协助你。

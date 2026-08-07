@@ -1,0 +1,125 @@
+{
+  "skill_id": "interest_explore",
+  "skill_role": "child",
+  "stages": [
+    {
+      "id": "init",
+      "kind": "entry",
+      "required_facts": [],
+      "enable_intent_check": false,
+      "enable_satisfaction_check": false
+    },
+    {
+      "id": "r1_basic_info",
+      "kind": "collection",
+      "required_facts": ["grade", "score_level", "gender", "city"],
+      "enable_intent_check": false,
+      "enable_satisfaction_check": false
+    },
+    {
+      "id": "r1_experience",
+      "kind": "collection",
+      "required_facts": ["current_talent_activity", "current_activity_motivation", "past_talent_activity", "past_activity_stop_reason"],
+      "enable_intent_check": false,
+      "enable_satisfaction_check": false
+    },
+    {
+      "id": "r2_trait_labels",
+      "kind": "collection",
+      "required_facts": ["selected_trait_labels"],
+      "enable_intent_check": false,
+      "enable_satisfaction_check": false
+    },
+    {
+      "id": "r3_conditions",
+      "kind": "collection",
+      "required_facts": ["direction_pool", "budget_level"],
+      "enable_intent_check": true,
+      "enable_satisfaction_check": false
+    },
+    {
+      "id": "r4_recommendation",
+      "kind": "summary",
+      "required_facts": ["recommended_directions"],
+      "enable_intent_check": true,
+      "enable_satisfaction_check": true
+    }
+  ],
+  "facts": {
+    "global": ["grade", "score_level", "talent", "gender", "city"],
+    "skill": [
+      "scene_goal",
+      "current_talent_activity",
+      "current_activity_duration",
+      "current_activity_motivation",
+      "past_talent_activity",
+      "past_activity_stop_reason",
+      "selected_trait_labels",
+      "direction_pool",
+      "necessary_conditions",
+      "budget_level",
+      "international_accepted",
+      "excluded_directions",
+      "recommended_directions",
+      "risk_notes",
+      "starter_actions",
+      "observation_plan",
+      "conclusion_summary"
+    ],
+    "stage": {
+      "r1_basic_info": ["grade", "score_level", "gender", "city"],
+      "r1_experience": [
+        "current_talent_activity",
+        "current_activity_duration",
+        "current_activity_motivation",
+        "past_talent_activity",
+        "past_activity_stop_reason"
+      ],
+      "r2_trait_labels": ["selected_trait_labels", "direction_pool"],
+      "r3_conditions": ["necessary_conditions", "budget_level", "international_accepted", "excluded_directions"],
+      "r4_recommendation": [
+        "recommended_directions",
+        "risk_notes",
+        "starter_actions",
+        "observation_plan",
+        "conclusion_summary",
+        "satisfaction_status"
+      ]
+    },
+    "exports": {
+      "promote_to_global": ["talent", "gender", "city"],
+      "share_with_parent_skill": [
+        "selected_trait_labels",
+        "recommended_directions",
+        "excluded_directions",
+        "risk_notes",
+        "starter_actions",
+        "observation_plan",
+        "conclusion_summary"
+      ]
+    }
+  },
+  "routes": [],
+  "accepts_scenes": [
+    "兴趣探索",
+    "特长判断",
+    "特长方向诊断",
+    "特长培养",
+    "兴趣班选择",
+    "适合什么赛道"
+  ],
+  "metadata": {
+    "module_group": "child",
+    "scene_name": "兴趣探索",
+    "agent_label": "特长培养规划",
+    "dialogue_rounds": 4,
+    "school_stage_scope": "primary_junior",
+    "business_version": "特长培养规划",
+    "reference_modules": [
+      "references/references_01_特质标签与方向映射.md",
+      "references/references_02_方向必要条件库.md",
+      "references/references_03_输出模板与话术原则.md",
+      "references/references_04_起步建议通用库.md"
+    ]
+  }
+}

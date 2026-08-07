@@ -1,0 +1,23 @@
+[Unit]
+Description=Hailiang Skills internal frontend (%i)
+After=network-online.target hailiang-skills-api@%i.service
+Requires=hailiang-skills-api@%i.service
+
+[Service]
+Type=simple
+User=hailiang
+Group=hailiang
+EnvironmentFile=/etc/hailiang-skills/%i.env
+WorkingDirectory=/opt/hailiang-skills/current-%i
+ExecStartPre=/usr/bin/test -f /opt/hailiang-skills/current-%i/frontend/dist/index.html
+ExecStart=/opt/hailiang-skills/current-%i/.venv/bin/python /opt/hailiang-skills/current-%i/scripts/static_frontend_server.py --host ${HAILIANG_FRONTEND_BIND_HOST} --port ${FRONTEND_PORT} --directory /opt/hailiang-skills/current-%i/frontend/dist
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

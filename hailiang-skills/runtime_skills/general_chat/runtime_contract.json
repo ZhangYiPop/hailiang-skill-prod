@@ -1,0 +1,30 @@
+{
+  "skill_id": "general_chat",
+  "skill_role": "fallback",
+  "stages": [
+    {
+      "id": "answer",
+      "kind": "answer",
+      "required_facts": [],
+      "enable_intent_check": true,
+      "enable_satisfaction_check": false
+    }
+  ],
+  "facts": {
+    "global": ["grade", "score_level", "talent", "gender"],
+    "skill": ["scene_goal", "conclusion_summary"],
+    "stage": {
+      "answer": ["conclusion_summary"]
+    },
+    "exports": {
+      "promote_to_global": [],
+      "share_with_parent_skill": ["conclusion_summary"]
+    }
+  },
+  "routes": [],
+  "accepts_scenes": ["自由问答"],
+  "metadata": {
+    "module_group": "fallback",
+    "scene_name": "自由问答"
+  }
+}

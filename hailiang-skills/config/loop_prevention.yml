@@ -1,0 +1,40 @@
+loop_prevention:
+  scenario_switch_lock:
+    enabled: true
+    max_switches_per_round: 3
+    high_priority_exits:
+      - from_scenario: "admission_simulation"
+        to_scenario: "multi_path_planning"
+        reason: "用户从模拟升学转而追问多元路径规划"
+      - from_scenario: "admission_simulation"
+        to_scenario: "school_intro"
+        reason: "用户在模拟升学场景下主动问具体学校信息"
+      - from_scenario: "multi_path_planning"
+        to_scenario: "school_intro"
+        reason: "用户在多元路径规划场景下主动问具体学校信息"
+
+  skill_stability:
+    enabled: true
+    min_consecutive_rounds: 2
+    skip_stability_check:
+      - "school_intro"
+      - "path_drilldown"
+      - "facts_extractor"
+      - "terminate_or_recommend"
+
+  fact_ask_once:
+    enabled: true
+    tracked_in: "context.interaction_state.asked_facts"
+    allow_repeat_ask:
+      - "score_total"
+      - "score_recent_avg"
+
+  confidence_threshold:
+    enabled: true
+    default_threshold: 0.72
+    per_skill_threshold:
+      school_intro: 0.90
+      path_drilldown: 0.90
+      terminate_or_recommend: 0.80
+      convergence: 0.70
+      admission: 0.70

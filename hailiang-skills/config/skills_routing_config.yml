@@ -1,0 +1,79 @@
+# Skill 路由关键词配置
+# Router 根据这些关键词做 fallback 判断
+
+routing_keywords:
+  # 终止类关键词 - 用户不想继续补充，要求直接给建议
+  terminate:
+    keywords:
+      - "直接推荐"
+      - "先这样"
+      - "别问了"
+      - "不补充"
+      - "先别问"
+    confidence: 0.66
+    target_skill: "terminate_or_recommend"
+
+  # 路径深挖类关键词 - 用户想了解具体路径的详细信息
+  path_drilldown:
+    keywords:
+      - "详细讲"
+      - "展开讲"
+      - "适合吗"
+      - "风险"
+      - "强基"
+      - "少年班"
+    confidence: 0.62
+    target_skill: "path_drilldown"
+    target_scenario: "multi_path_planning"
+
+  # 多路径规划类关键词 - 用户想了解多种升学路径
+  convergence:
+    keywords:
+      - "路径"
+      - "升学路"
+      - "还有什么路"
+      - "多元"
+    confidence: 0.61
+    target_skill: "convergence"
+    target_scenario: "multi_path_planning"
+
+  # 模拟升学类关键词 - 用户提供省份、分数、选科等信息
+  admission:
+    keywords:
+      - "高考"
+      - "分数"
+      - "物理"
+      - "历史"
+      - "浙江"
+      - "江苏"
+      - "广东"
+    confidence: 0.60
+    target_skill: "admission"
+    target_scenario: "admission_simulation"
+
+# 后续可扩展的场景关键词（规划中）
+future_scenarios:
+  profile_building:
+    keywords:
+      - "性格"
+      - "兴趣"
+      - "学习风格"
+      - "了解自己"
+    target_skill: "profile_builder"
+    status: "planning"
+
+  subject_selection:
+    keywords:
+      - "选科"
+      - "专业"
+      - "职业规划"
+    target_skill: "subject_analysis"
+    status: "planning"
+
+  interest_plan:
+    keywords:
+      - "兴趣"
+      - "行动计划"
+      - "能力提升"
+    target_skill: "action_plan_builder"
+    status: "planning"

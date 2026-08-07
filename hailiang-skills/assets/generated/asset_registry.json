@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "global_policy": {
+    "directional_advice_allowed_without_assets": true,
+    "fallback_to_web_search_for_unknown_concrete_requests": true,
+    "external_search_tool": "web_search",
+    "external_disclaimer": "以下内容来自外部搜索，不是本地资产内容，仅供参考。",
+    "external_top_k": 5,
+    "concrete_request_keywords": [
+      "具体",
+      "详细",
+      "展开",
+      "深挖",
+      "怎么报",
+      "怎么走",
+      "流程",
+      "规则",
+      "政策",
+      "分数线",
+      "院校",
+      "学校",
+      "路径",
+      "路线",
+      "方案",
+      "推荐",
+      "时间轴",
+      "清单"
+    ]
+  },
+  "domains": {
+    "admission": {
+      "desc": "分省流转、分数带、院校层级相关资产",
+      "supports": [
+        "分流规则",
+        "分数线",
+        "院校层级"
+      ],
+      "intent_keywords": [
+        "分流",
+        "分数线",
+        "特控线",
+        "一段线",
+        "二段线",
+        "梯队",
+        "985",
+        "211",
+        "双一流",
+        "本科",
+        "专科",
+        "志愿",
+        "批次"
+      ],
+      "requires_asset_for": [
+        "具体省份规则",
+        "具体批次解释",
+        "具体院校层级对比"
+      ],
+      "fallback_to_web_search": false,
+      "disallow_freeform": true
+    },
+    "multiroute": {
+      "desc": "多元升学路径、适用对象、流程与推荐理由资产",
+      "supports": [
+        "综评",
+        "强基",
+        "国际路线",
+        "艺体路线",
+        "时间轴"
+      ],
+      "intent_keywords": [
+        "路径",
+        "路线",
+        "综评",
+        "强基",
+        "少年班",
+        "国际",
+        "艺体",
+        "特长",
+        "招飞",
+        "专项",
+        "3+2",
+        "单招",
+        "职教",
+        "时间轴",
+        "行动计划"
+      ],
+      "requires_asset_for": [
+        "具体路径流程",
+        "具体时间线",
+        "具体适配建议"
+      ],
+      "fallback_to_web_search": true,
+      "disallow_freeform": true
+    },
+    "school_intro": {
+      "desc": "学校简介与官网链接资产",
+      "supports": [
+        "学校介绍",
+        "学校官网链接",
+        "民办学校信息",
+        "公办学校信息"
+      ],
+      "intent_keywords": [
+        "学校",
+        "院校",
+        "民办",
+        "公办",
+        "学校介绍",
+        "学校信息",
+        "官网",
+        "海亮教育"
+      ],
+      "requires_asset_for": [
+        "具体学校介绍",
+        "具体学校推荐",
+        "学校清单",
+        "搜索"
+      ],
+      "fallback_to_web_search": true,
+      "disallow_freeform": true
+    }
+  }
+}

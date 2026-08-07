@@ -1,0 +1,7 @@
+skill_id: planner
+enabled: true
+description: Use LLM to plan current-turn skill execution, response mode and missing facts
+model:
+  provider: dashscope_compatible
+  model: qwen-plus-2025-12-01
+  mode: llm_first_fallback_rule

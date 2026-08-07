@@ -1,0 +1,7 @@
+skill_id: router
+enabled: true
+description: Route user input between chat, admission, convergence, drilldown and terminate flows with LLM-first intent recognition
+model:
+  provider: dashscope_compatible
+  model: qwen-plus-2025-12-01
+  mode: llm_first_fallback_heuristic

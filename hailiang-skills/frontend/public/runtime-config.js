@@ -1,0 +1,1 @@
+window.__HAILIANG_RUNTIME_CONFIG__ = window.__HAILIANG_RUNTIME_CONFIG__ || {};

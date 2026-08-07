@@ -1,0 +1,31 @@
+# Global intent-router settings.
+#
+# Child skills still declare their own matching materials in SKILL.md:
+# triggers, accepts_scenes, routing.scene_name, and routing.routing_examples.
+intent_router:
+  unclear_intent_patterns:
+    - 不知道从哪里开始
+    - 想规划一下
+    - 有点迷茫
+    - 帮我看看孩子情况
+    - 没有方向
+    - 想咨询升学规划
+    - 不知道该怎么规划
+    - 做生涯规划
+  enable_embedding: true
+  embedding_model: text-embedding-v4
+  embedding_timeout_s: 8
+  direct_threshold: 0.72
+  ambiguity_margin: 0.08
+  # Legacy alias; route_suggestions.card_threshold is canonical.
+  general_chat_choice_threshold: 0.72
+  general_chat_choice_max_candidates: 3
+  # Route cards and post-reply analysis share these thresholds.
+  route_suggestions:
+    min_confidence: 0.72
+    min_confidence_without_context: 0.72
+    card_threshold: 0.72
+    specialist_switch_threshold: 0.92
+  enable_llm_fallback: false
+  long_profile_message_min_chars: 80
+  long_profile_signal_threshold: 3

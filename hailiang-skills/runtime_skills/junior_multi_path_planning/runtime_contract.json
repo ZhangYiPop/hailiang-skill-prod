@@ -1,0 +1,45 @@
+{
+  "skill_id": "junior_multi_path_planning",
+  "skill_role": "child",
+  "stages": [
+    {
+      "id": "init",
+      "kind": "entry",
+      "required_facts": [],
+      "enable_intent_check": false,
+      "enable_satisfaction_check": false
+    },
+    {
+      "id": "collect",
+      "kind": "collection",
+      "required_facts": [],
+      "enable_intent_check": false,
+      "enable_satisfaction_check": false
+    },
+    {
+      "id": "analyze",
+      "kind": "analysis",
+      "required_facts": [],
+      "enable_intent_check": true,
+      "enable_satisfaction_check": true
+    }
+  ],
+  "facts": {
+    "global": ["grade", "score_level", "talent", "gender"],
+    "skill": ["scene_goal", "conclusion_summary"],
+    "stage": {
+      "collect": ["grade", "score_level", "talent"],
+      "analyze": ["conclusion_summary"]
+    },
+    "exports": {
+      "promote_to_global": ["grade", "score_level", "talent", "gender"],
+      "share_with_parent_skill": ["conclusion_summary"]
+    }
+  },
+  "routes": [],
+  "accepts_scenes": ["初中多元路径规划", "初中多元路径", "中考保底升学通道"],
+  "metadata": {
+    "module_group": "child",
+    "scene_name": "初中多元路径规划"
+  }
+}

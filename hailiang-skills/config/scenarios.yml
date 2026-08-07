@@ -1,0 +1,141 @@
+scenarios:
+  admission_simulation:
+    name: "模拟升学"
+    description: "基于学生省份、分数、选科，进行学校层次、可报学校与模拟升学问询"
+    status: "active"
+    entry_skill: "admission"
+    default_phase: "collect_info"
+    required_facts:
+      - "student_province"
+      - "subject_group"
+      - "score_total"
+    phases:
+      - id: "collect_info"
+        goal: "收集省份、分数、选科等基础信息"
+        entry_skill: "facts_extractor"
+        skill_candidates:
+          - "router"
+          - "facts_extractor"
+          - "planner"
+          - "admission"
+      - id: "admission_analysis"
+        goal: "做学校层次分析与模拟升学判断"
+        entry_skill: "admission"
+        skill_candidates:
+          - "admission"
+      - id: "school_lookup"
+        goal: "查询具体学校信息"
+        entry_skill: "school_intro"
+        skill_candidates:
+          - "school_intro"
+      - id: "final_recommend"
+        goal: "给出阶段性总结或直接推荐"
+        entry_skill: "terminate_or_recommend"
+        skill_candidates:
+          - "terminate_or_recommend"
+    exit_conditions:
+      - to_scenario: "multi_path_planning"
+        condition: "用户明确想看多元路径、替代路径、路径比较或路径收敛"
+      - to_scenario: "profile_building"
+        condition: "用户明确想先了解自己"
+      - to_scenario: "subject_selection"
+        condition: "用户明确想咨询选科或专业"
+      - to_scenario: "interest_plan"
+        condition: "用户明确想做兴趣行动计划"
+
+  multi_path_planning:
+    name: "多元路径规划"
+    description: "基于基础事实和补充条件，对多种升学路径做收敛、比较、深挖与结论输出"
+    status: "active"
+    entry_skill: "convergence"
+    default_phase: "collect_info"
+    required_facts:
+      - "student_province"
+      - "subject_group"
+      - "score_total"
+    phases:
+      - id: "collect_info"
+        goal: "收集省份、分数、选科等基础信息"
+        entry_skill: "facts_extractor"
+        skill_candidates:
+          - "router"
+          - "facts_extractor"
+          - "planner"
+      - id: "match_paths"
+        goal: "做路径匹配与收敛"
+        entry_skill: "convergence"
+        skill_candidates:
+          - "convergence"
+      - id: "deep_drill"
+        goal: "深挖具体路径"
+        entry_skill: "path_drilldown"
+        skill_candidates:
+          - "path_drilldown"
+      - id: "school_lookup"
+        goal: "查询具体学校信息"
+        entry_skill: "school_intro"
+        skill_candidates:
+          - "school_intro"
+      - id: "final_recommend"
+        goal: "给出阶段性总结或直接推荐"
+        entry_skill: "terminate_or_recommend"
+        skill_candidates:
+          - "terminate_or_recommend"
+    exit_conditions:
+      - to_scenario: "profile_building"
+        condition: "用户明确想先了解自己"
+      - to_scenario: "subject_selection"
+        condition: "用户明确想咨询选科或专业"
+      - to_scenario: "interest_plan"
+        condition: "用户明确想做兴趣行动计划"
+
+  profile_building:
+    name: "学生画像构建"
+    description: "收集学生的学习风格、兴趣爱好、性格特点、家庭背景，构建完整学生画像"
+    status: "planning"
+    default_phase: "basic_info"
+    phases:
+      - id: "basic_info"
+        goal: "收集基本信息"
+        entry_skill: "facts_extractor"
+      - id: "interest_discovery"
+        goal: "发现兴趣方向"
+        entry_skill: "interest_discovery"
+      - id: "personality_analysis"
+        goal: "分析性格与学习风格"
+        entry_skill: "personality_analysis"
+      - id: "profile_summary"
+        goal: "输出画像总结"
+        entry_skill: "terminate_or_recommend"
+
+  subject_selection:
+    name: "选科与专业问询"
+    description: "帮助学生了解选科组合对应的专业方向，以及专业选择策略"
+    status: "planning"
+    default_phase: "subject_analysis"
+    phases:
+      - id: "subject_analysis"
+        goal: "分析当前选科"
+        entry_skill: "subject_analysis"
+      - id: "major_mapping"
+        goal: "匹配可选专业"
+        entry_skill: "major_mapping"
+      - id: "selection_strategy"
+        goal: "给出选科策略"
+        entry_skill: "terminate_or_recommend"
+
+  interest_plan:
+    name: "兴趣培养与行动计划"
+    description: "基于学生兴趣，给出能力提升路径和阶段性行动计划"
+    status: "planning"
+    default_phase: "interest_assessment"
+    phases:
+      - id: "interest_assessment"
+        goal: "评估兴趣现状"
+        entry_skill: "interest_assessment"
+      - id: "path_design"
+        goal: "设计提升路径"
+        entry_skill: "action_plan_builder"
+      - id: "milestone_setting"
+        goal: "设定里程碑"
+        entry_skill: "milestone_tracker"

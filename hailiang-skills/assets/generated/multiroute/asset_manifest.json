@@ -1,0 +1,27 @@
+{
+  "source_file": "docs/多元升学路径/最新人路规则（13+内蒙古）更至20260520.xlsx",
+  "source_hash": "0c812d5ff7711980340adc927d136c65e14a14dcf702a7241d5174075aead9e2",
+  "sheet_names": [
+    "推荐理由（记得同步）",
+    "成绩分类展示",
+    "行动计划",
+    "1.普通高考",
+    "2.名校优生",
+    "3.弯道超车",
+    "4.接轨国际",
+    "5.艺体特长",
+    "6.定向就业",
+    "7.专项政策",
+    "8.地区特色",
+    "全国高考分数线",
+    "问题"
+  ],
+  "counts": {
+    "path_catalog": 31,
+    "reason_templates": 40,
+    "score_band_rules": 31,
+    "action_timeline": 36,
+    "province_score_lines": 24,
+    "question_bank": 5
+  }
+}

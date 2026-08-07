@@ -1,0 +1,52 @@
+runtime_dir: runtime
+soul_path: config/soul.md
+memory_enabled: true
+# Summarize messages older than the active window in the background. While a
+# summary is pending or fails, the uncovered original messages remain in the prompt.
+memory_async_update: true
+sandbox_prewarm_enabled: true
+local_fast_path_enabled: true
+# Keep this many recent user/assistant messages verbatim. Only older complete
+# pairs are summarized, so 8 messages means the latest 4 turns stay raw.
+active_window_messages: 8
+tool_routing:
+  # ms_agent removes the normal-turn standalone classifier call. Use
+  # standalone for a controlled rollback; invalid merged output still falls
+  # back to the old classifier by default.
+  mode: ms_agent
+  fallback_on_invalid: true
+progress_simulation:
+  # Add a small, configurable cadence to reasoning labels while the model is running.
+  enabled: true
+  interval_s: 0.45
+  jitter_s: 0.25
+  min_duration_s: 1.2
+skill_management:
+  # Missing entries remain enabled for backward compatibility.
+  enabled:
+    mock_admission: true
+    subject_advisor: true
+    multi_path_planning: true
+    interest_explore: true
+    career_plan_entity: true
+    junior_multi_path_planning: false
+    future_explore: false
+    score_improve: false
+# Empty means native Skill is the default. Add a public Skill ID only during a
+# controlled rollback; a running turn never falls back automatically.
+legacy_bridge_skill_ids: []
+security_moderation:
+  # A result passes only when every label returned by this provider is listed.
+  # Set HAILIANG_SECURITY_ALLOWED_LABELS to a comma-separated list to override
+  # the Aliyun labels without editing this file; an empty value disables them.
+  allowed_labels:
+    aliyun: [political_entity, political_n, inappropriate_discrimination]
+security_quarantine:
+  directory: runtime/security_quarantine
+  encryption_key_env: HAILIANG_SECURITY_QUARANTINE_KEY
+  admin_token_env: HAILIANG_SECURITY_ADMIN_TOKEN
+  retention_policy: indefinite
+sse_recording:
+  enabled: true
+  root_dir: logs/sse_recording/sessions
+  format: jsonl

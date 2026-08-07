@@ -1,0 +1,320 @@
+facts:
+  grade:
+    label: "孩子年级"
+    value_type: "string"
+    extractor: "extract_grade"
+    input_type: "single_select"
+    placeholder: "请选择孩子当前年级"
+    example: "例如：初二"
+    submit_mode: "auto"
+    allowed_values: ["小学", "初一", "初二", "初三", "高一", "高二", "高三"]
+    scope_policy: "profile"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  family_education_support:
+    label: "家庭教育支持"
+    value_type: "string"
+    extractor: "reserved"
+    scope_policy: "shared"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  student_province:
+    label: "高考省份"
+    value_type: "string"
+    extractor: "extract_province"
+    input_type: "text"
+    placeholder: "请输入省份"
+    example: "例如：浙江"
+    submit_mode: "manual"
+    scope_policy: "profile"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  student_region:
+    label: "所在地区/户籍地"
+    value_type: "string"
+    extractor: "extract_student_region"
+    scope_policy: "profile"
+    scenario: "multi_path_planning"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  subject_group:
+    label: "选科组合"
+    value_type: "string"
+    extractor: "extract_subject_group"
+    input_type: "single_select"
+    placeholder: "请选择选科"
+    example: "例如：物理"
+    submit_mode: "auto"
+    allowed_values: ["物理", "历史"]
+    scope_policy: "profile"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  foreign_language:
+    label: "高考外语科目"
+    value_type: "string"
+    extractor: "extract_foreign_language"
+    input_type: "single_select"
+    placeholder: "请选择高考外语科目"
+    example: "例如：英语"
+    submit_mode: "auto"
+    allowed_values: ["英语", "日语", "俄语", "德语", "法语", "西班牙语"]
+    scope_policy: "profile"
+    scenario: "multi_path_planning"
+    scenario_group: ["multi_path_planning"]
+    enabled: true
+  english_exam_score:
+    label: "英语大考成绩"
+    value_type: "number"
+    extractor: "extract_english_exam_score"
+    input_type: "text"
+    placeholder: "请输入英语大考成绩"
+    example: "例如：120"
+    submit_mode: "manual"
+    scope_policy: "profile"
+    scenario: "multi_path_planning"
+    scenario_group: ["multi_path_planning"]
+    enabled: true
+  score_total:
+    label: "当前可用分数"
+    value_type: "number"
+    extractor: "score_payload.score_total"
+    input_type: "text"
+    placeholder: "请输入分数"
+    example: "例如：580"
+    submit_mode: "manual"
+    scope_policy: "profile"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  score_recent_avg:
+    label: "最近三次大考均分"
+    value_type: "number"
+    extractor: "score_payload.score_recent_avg"
+    input_type: "text"
+    placeholder: "请输入最近三次大考均分"
+    example: "例如：565"
+    submit_mode: "manual"
+    scope_policy: "profile"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  score_source:
+    label: "分数来源"
+    value_type: "string"
+    extractor: "score_payload.score_source"
+    scope_policy: "profile"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  score_band_tag:
+    label: "分数段标签"
+    value_type: "string"
+    extractor: "reserved"
+    scope_policy: "profile"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: false
+  budget_level:
+    label: "预算水平"
+    value_type: "string"
+    extractor: "infer_budget_level"
+    input_type: "single_select"
+    placeholder: "请选择预算水平"
+    example: "例如：大于5万/年"
+    submit_mode: "auto"
+    allowed_values: [">5万", "<5万"]
+    scope_policy: "shared"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  family_type:
+    label: "家庭类型"
+    value_type: "string"
+    extractor: "infer_family_type"
+    scope_policy: "shared"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  ethnicity:
+    label: "民族信息"
+    value_type: "string"
+    extractor: "extract_ethnicity"
+    scope_policy: "profile"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  hukou_years:
+    label: "户籍年限"
+    value_type: "string"
+    extractor: "infer_hukou_years"
+    input_type: "single_select"
+    placeholder: "请选择户籍是否连续满三年？"
+    example: "例如：是"
+    submit_mode: "auto"
+    allowed_values: ["连续3年户籍", "否"]
+    scope_policy: "profile"
+    scenario: "multi_path_planning"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  guardian_hukou_match:
+    label: "监护人户籍一致性"
+    value_type: "boolean"
+    extractor: "infer_guardian_hukou_match"
+    scope_policy: "profile"
+    scenario: "multi_path_planning"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  school_status_years:
+    label: "学籍年限"
+    value_type: "string"
+    extractor: "infer_school_status_years"
+    scope_policy: "profile"
+    scenario: "multi_path_planning"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  exam_qualification_status:
+    label: "学考是否合格"
+    value_type: "string"
+    extractor: "infer_exam_qualification_status"
+    input_type: "single_select"
+    placeholder: "请选择学考是否合格"
+    example: "例如：合格"
+    submit_mode: "auto"
+    allowed_values: ["合格", "不合格"]
+    scope_policy: "profile"
+    scenario: "multi_path_planning"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  special_identity_tags:
+    label: "竞赛/特殊身份"
+    value_type: "string_list"
+    extractor: "extract_special_identity_tags"
+    input_type: "multi_select"
+    placeholder: "五大学科竞赛省级及以上奖项"
+    example: "例如：五大学科竞赛省级及以上奖项"
+    submit_mode: "manual"
+    allowed_values:
+      - "五大学科竞赛省级及以上奖项"
+      - "五大学科竞赛国家集训队成员"
+      - "其他"
+    scope_policy: "profile"
+    scenario: "multi_path_planning"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  career_orientation:
+    label: "职业兴趣"
+    value_type: "string_list"
+    extractor: "extract_career_orientation"
+    input_type: "multi_select"
+    placeholder: "请选择职业兴趣"
+    example: "例如：军警类、师范类"
+    submit_mode: "manual"
+    allowed_values: ["师范类", "军警类", "飞行员", "其他"]
+    scope_policy: "profile"
+    scenario: "multi_path_planning"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  physical_requirements:
+    label: "身高"
+    value_type: "string_list"
+    extractor: "reserved"
+    input_type: "text"
+    placeholder: "请输入身高"
+    example: "例如：175cm"
+    submit_mode: "manual"
+    scope_policy: "profile"
+    scenario: "multi_path_planning"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  termination_preference:
+    label: "终止偏好"
+    value_type: "string"
+    extractor: "infer_termination_preference"
+    scope_policy: "session"
+    scenario: "multi_path_planning"
+    enabled: true
+  focus_path_ids:
+    label: "关注路径"
+    value_type: "string_list"
+    extractor: "extract_focus_targets.ids"
+    scope_policy: "session"
+    scenario: "multi_path_planning"
+    enabled: true
+  focus_primary_categories:
+    label: "关注路径类别"
+    value_type: "string_list"
+    extractor: "extract_focus_targets.categories"
+    scope_policy: "session"
+    scenario: "multi_path_planning"
+    enabled: true
+  excluded_path_ids:
+    label: "排除路径"
+    value_type: "string_list"
+    extractor: "extract_excluded_targets.ids"
+    scope_policy: "session"
+    scenario: "multi_path_planning"
+    enabled: true
+  excluded_primary_categories:
+    label: "排除路径类别"
+    value_type: "string_list"
+    extractor: "extract_excluded_targets.categories"
+    scope_policy: "session"
+    scenario: "multi_path_planning"
+    enabled: true
+  focus_school_names:
+    label: "关注学校"
+    value_type: "string_list"
+    extractor: "extract_focus_school_names"
+    scope_policy: "session"
+    scenario: "admission_simulation"
+    scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+
+future_scenarios:
+  profile_building:
+    learning_style:
+      label: "学习风格"
+      value_type: "string"
+      status: "planning"
+    personality_traits:
+      label: "性格特征"
+      value_type: "string_list"
+      status: "planning"
+    interests:
+      label: "兴趣方向"
+      value_type: "string_list"
+      status: "planning"
+    family_background:
+      label: "家庭背景"
+      value_type: "string"
+      status: "planning"
+  subject_selection:
+    current_subjects:
+      label: "当前选科"
+      value_type: "string_list"
+      status: "planning"
+    subject_strengths:
+      label: "学科优势"
+      value_type: "string_list"
+      status: "planning"
+    career_aspirations:
+      label: "职业方向"
+      value_type: "string_list"
+      status: "planning"
+  interest_plan:
+    primary_interests:
+      label: "核心兴趣"
+      value_type: "string_list"
+      status: "planning"
+    current_level:
+      label: "当前水平"
+      value_type: "string"
+      status: "planning"
+    time_horizon:
+      label: "时间周期"
+      value_type: "string"
+      status: "planning"

@@ -1,0 +1,23 @@
+{
+  "skill_id": "mock_admission",
+  "skill_role": "child",
+  "stages": [
+    {"id": "init", "kind": "entry", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false},
+    {"id": "collect", "kind": "collection", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false},
+    {"id": "analyze", "kind": "analysis", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": true}
+  ],
+  "facts": {
+    "global": [],
+    "skill": ["mode", "student_province", "score_total", "subject_group", "target_tier", "conclusion_summary"],
+    "stage": {
+      "collect": ["student_province", "score_total", "subject_group"],
+      "analyze": ["target_tier", "conclusion_summary"]
+    },
+    "exports": {"promote_to_global": [], "share_with_parent_skill": ["conclusion_summary"]}
+  },
+  "routes": [
+    {"scene": "多元路径规划", "target_skill_id": "multi_path_planning", "required_global_facts": [], "required_skill_facts": []}
+  ],
+  "accepts_scenes": ["模拟升学"],
+  "metadata": {"module_group": "child", "scene_name": "模拟升学", "agent_label": "升学潜力评估", "business_version": "v20260723092858845842"}
+}

@@ -1,0 +1,10 @@
+# Conservative dependency set for old Linux servers (e.g. GCC 4.8.x).
+# Prefer versions that still publish compatible manylinux wheels for Python 3.11
+# so pip does not fall back to local source builds while installing ms-agent.
+numpy<2
+scipy<1.14
+scikit-learn<1.6
+pandas<2.3
+faiss-cpu<1.9
+matplotlib<3.9
+contourpy<1.3

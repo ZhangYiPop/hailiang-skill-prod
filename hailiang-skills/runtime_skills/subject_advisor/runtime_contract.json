@@ -1,0 +1,44 @@
+{
+  "skill_id": "subject_advisor",
+  "skill_role": "child",
+  "stages": [
+    { "id": "init", "kind": "entry", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false },
+    { "id": "classify", "kind": "analysis", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": false },
+    { "id": "collect", "kind": "collection", "required_facts": ["grade", "student_province"], "reuse_from_parent": ["grade", "student_province"], "enable_intent_check": false, "enable_satisfaction_check": false },
+    { "id": "diagnose", "kind": "analysis", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": false },
+    { "id": "analyze", "kind": "analysis", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": true },
+    { "id": "confirm", "kind": "confirmation", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": true }
+  ],
+  "facts": {
+    "global": ["grade", "student_province"],
+    "skill": [
+      "advisor_audience", "school_stage", "decision_stage", "demand_type", "conflict_tags", "primary_conflict", "secondary_conflicts",
+      "scene_goal", "junior_preparation_goal", "target_high_school", "school_subject_options", "candidate_subjects", "selected_subjects",
+      "subject_scores", "subject_rank_percentiles", "interest_preferences", "target_major", "target_university", "target_career",
+      "family_opinion", "constraint_conditions", "risk_preference", "information_completeness", "hypotheses", "decisive_question",
+      "recommended_plan", "fallback_plan", "risk_notes", "action_items", "conclusion_summary"
+    ],
+    "stage": {
+      "classify": ["advisor_audience", "school_stage", "decision_stage", "demand_type", "conflict_tags"],
+      "collect": ["junior_preparation_goal", "target_high_school", "school_subject_options", "candidate_subjects", "subject_scores", "subject_rank_percentiles", "interest_preferences", "target_major", "target_university", "target_career", "family_opinion", "constraint_conditions", "risk_preference"],
+      "diagnose": ["primary_conflict", "secondary_conflicts", "hypotheses", "decisive_question", "information_completeness"],
+      "analyze": ["recommended_plan", "fallback_plan", "risk_notes", "action_items", "conclusion_summary"],
+      "confirm": ["revision_reason", "satisfaction_status"]
+    },
+    "exports": {
+      "promote_to_global": ["grade", "student_province"],
+      "share_with_parent_skill": ["school_stage", "selected_subjects", "conflict_tags", "recommended_plan", "conclusion_summary"]
+    }
+  },
+  "tools": [
+    { "name": "subject_requirements", "exec": "scripts/subject_requirements_lookup.py", "kind": "cli_script", "purpose": "查询专业/职业/组合的全国通用选科最低要求" }
+  ],
+  "routes": [],
+  "accepts_scenes": ["选科参谋", "选课参谋"],
+  "metadata": {
+    "module_group": "child",
+    "scene_name": "选科参谋",
+    "version": "1.0.0",
+    "changelog": "v002：SKILL 瘦身、分类法下沉 references；显式声明 subject_requirements 工具与调用示例；节奏由轮次硬编改为状态驱动门槛；collect 增 reuse_from_parent 实现 student_province 透传；去重复内容；补 06 评测用例。"
+  }
+}

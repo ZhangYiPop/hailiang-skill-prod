@@ -1,0 +1,42 @@
+.DS_Store
+*.swp
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.venv/
+venv/
+.env
+.env.*
+env.local.sh
+# Private configuration for an isolated server smoke deployment.
+env.8015.sh
+.venv-*/
+runtime-smoke-*/
+logs-smoke-*/
+smoke-*.log
+# Only committed deployment environment templates belong under deploy/env/.
+deploy/env/*
+!deploy/env/*.example
+
+logs/
+runtime/
+ms_agent.log
+backend.log
+backend.local.log
+frontend/frontend.log
+.skill_runtime_cache/
+.trae/
+sessions/
+
+frontend/node_modules/
+frontend/dist/
+
+# runtime bridge 源码和生成资产需要提交，不要忽略：
+# src/hailiang_skills/skill_runtime/
+# src/hailiang_skills/runtime_bridge/
+# runtime_skills/
+# assets/generated/

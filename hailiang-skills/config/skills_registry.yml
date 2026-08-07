@@ -1,0 +1,196 @@
+# Skill 注册表
+# 定义每个 skill 的元信息、归属场景、入口阶段、可跳转目标
+
+skills:
+  router:
+    name: "Router"
+    description: "顶层意图识别，决定本轮应该调用哪个 skill"
+    scenario: "universal"
+    entry_phase: "any"
+    can_exit_to:
+      - "facts_extractor"
+      - "chat"
+      - "admission"
+      - "convergence"
+      - "path_drilldown"
+      - "school_intro"
+      - "terminate_or_recommend"
+    prompt_key: "router"
+    skip_stability_check: true
+
+  facts_extractor:
+    name: "Facts Extractor"
+    description: "抽取用户输入中的结构化事实"
+    scenario: "universal"
+    entry_phase: "collect_info"
+    can_exit_to:
+      - "router"
+    prompt_key: "facts_extractor"
+    skip_stability_check: true
+
+  planner:
+    name: "Planner"
+    description: "在 Router 选定方向后，决定本轮目标、回答模式、缺失 facts"
+    scenario: "universal"
+    entry_phase: "any"
+    can_exit_to:
+      - "admission"
+      - "convergence"
+      - "path_drilldown"
+      - "school_intro"
+      - "terminate_or_recommend"
+      - "chat"
+    prompt_key: "planner"
+    skip_stability_check: false
+
+  # ===== 业务 Skill（模拟升学 / 多元路径规划双场景） =====
+
+  admission:
+    name: "Admission"
+    description: "基于省份/分数/选科的院校层次与推荐路径分析"
+    scenario: "admission_simulation"
+    entry_phase: "admission_analysis"
+    can_exit_to:
+      - "convergence"
+      - "path_drilldown"
+      - "school_intro"
+      - "terminate_or_recommend"
+    prompt_key: "admission_response"
+    skip_stability_check: false
+    priority: 1
+
+  convergence:
+    name: "Convergence"
+    description: "多元升学路径规划、候选路径收敛、补充信息问答"
+    scenario: "multi_path_planning"
+    entry_phase: "match_paths"
+    can_exit_to:
+      - "admission"
+      - "path_drilldown"
+      - "school_intro"
+      - "terminate_or_recommend"
+    prompt_key: "convergence_response"
+    skip_stability_check: false
+    priority: 2
+
+  path_drilldown:
+    name: "Path DrillDown"
+    description: "对某条或多条具体路径进行深挖、解释、风险分析"
+    scenario: "multi_path_planning"
+    entry_phase: "deep_drill"
+    can_exit_to:
+      - "convergence"
+      - "admission"
+      - "school_intro"
+      - "terminate_or_recommend"
+    prompt_key: "path_drilldown_response"
+    skip_stability_check: true
+    priority: 3
+
+  school_intro:
+    name: "School Intro"
+    description: "对某个或某些学校做学校信息问询与介绍"
+    scenario: "admission_simulation"
+    entry_phase: "school_lookup"
+    can_exit_to:
+      - "path_drilldown"
+      - "admission"
+      - "convergence"
+      - "terminate_or_recommend"
+    prompt_key: "school_intro_response"
+    skip_stability_check: true
+    priority: 4
+    shared_across_scenarios:
+      - "multi_path_planning"
+
+  terminate_or_recommend:
+    name: "Terminate Or Recommend"
+    description: "用户不想继续补充，或要求直接给当前建议与总结"
+    scenario: "multi_path_planning"
+    entry_phase: "final_recommend"
+    can_exit_to: []
+    prompt_key: "terminate_or_recommend_response"
+    skip_stability_check: true
+    is_terminal: true
+    shared_across_scenarios:
+      - "admission_simulation"
+
+  chat:
+    name: "Chat"
+    description: "闲聊、寒暄、情绪缓冲"
+    scenario: "universal"
+    entry_phase: "any"
+    can_exit_to:
+      - "admission"
+      - "convergence"
+      - "path_drilldown"
+      - "school_intro"
+      - "terminate_or_recommend"
+    prompt_key: "chat_response"
+    skip_stability_check: false
+    priority: 0
+
+  # ===== 规划中的场景 Skill =====
+
+  profile_builder:
+    name: "Profile Builder"
+    description: "学生画像构建"
+    scenario: "profile_building"
+    status: "planning"
+    entry_phase: "basic_info"
+    can_exit_to: []
+    skip_stability_check: false
+
+  interest_discovery:
+    name: "Interest Discovery"
+    description: "发现兴趣方向"
+    scenario: "profile_building"
+    status: "planning"
+    entry_phase: "interest_discovery"
+    can_exit_to: []
+    skip_stability_check: false
+
+  personality_analysis:
+    name: "Personality Analysis"
+    description: "分析性格与学习风格"
+    scenario: "profile_building"
+    status: "planning"
+    entry_phase: "personality_analysis"
+    can_exit_to: []
+    skip_stability_check: false
+
+  subject_analysis:
+    name: "Subject Analysis"
+    description: "分析当前选科"
+    scenario: "subject_selection"
+    status: "planning"
+    entry_phase: "subject_analysis"
+    can_exit_to: []
+    skip_stability_check: false
+
+  major_mapping:
+    name: "Major Mapping"
+    description: "匹配可选专业"
+    scenario: "subject_selection"
+    status: "planning"
+    entry_phase: "major_mapping"
+    can_exit_to: []
+    skip_stability_check: false
+
+  interest_assessment:
+    name: "Interest Assessment"
+    description: "评估兴趣现状"
+    scenario: "interest_plan"
+    status: "planning"
+    entry_phase: "interest_assessment"
+    can_exit_to: []
+    skip_stability_check: false
+
+  action_plan_builder:
+    name: "Action Plan Builder"
+    description: "设计能力提升路径"
+    scenario: "interest_plan"
+    status: "planning"
+    entry_phase: "path_design"
+    can_exit_to: []
+    skip_stability_check: false

@@ -1,0 +1,75 @@
+{
+  "tools": {
+    "web_search": {
+      "enabled": false,
+      "description": "受控外部网页搜索：仅在本地资产不足时调用外部搜索，并要求明确披露外部来源。",
+      "max_results": 5,
+      "provider": "http_json",
+      "http": {
+        "base_url": "",
+        "method": "POST",
+        "api_key_env": "WEB_SEARCH_API_KEY",
+        "headers": {},
+        "request_template": {
+          "scope": "webpage",
+          "includeSummary": false,
+          "size": 10,
+          "includeRawContent": false,
+          "conciseSnippet": false
+        },
+        "request_query_field": "query",
+        "response_items_path": "webpages",
+        "field_mapping": {
+          "title": "title",
+          "link": "link",
+          "snippet": "snippet",
+          "position": "position",
+          "score": "score"
+        },
+        "timeout_s": 30
+      }
+    },
+    "rag": {
+      "enabled": true,
+      "description": "受控本地检索增强：仅检索已加载的 skill references 与仓库级 data/generated 资产。"
+    },
+    "status_track": {
+      "enabled": true,
+      "description": "技能状态跟踪：读取并更新当前对话阶段与已采集信息。"
+    },
+    "mcp": {
+      "enabled": true,
+      "description": "通用 MCP 工具桥接：仅允许调用 runtime 配置白名单中的 MCP 服务与工具。",
+      "servers": [
+        {
+          "name": "metaso",
+          "label": "Metaso MCP",
+          "enabled": true,
+          "transport": "streamable_http",
+          "priority": 10,
+          "server_url": "https://metaso.cn/api/mcp",
+          "api_key_env": "METASO_API_KEY",
+          "timeout_s": 30,
+          "initialize_first": true,
+          "allowed_tools": [
+            {
+              "name": "metaso_web_search",
+              "description": "根据关键词搜索网页、文档、论文、图片、视频、播客等内容。",
+              "allowed_argument_keys": [
+                "q",
+                "scope",
+                "includeSummary",
+                "includeRawContent",
+                "size"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "user_profile": {
+      "enabled": false,
+      "description": "预留给用户画像持久化能力，当前版本未启用。"
+    }
+  }
+}

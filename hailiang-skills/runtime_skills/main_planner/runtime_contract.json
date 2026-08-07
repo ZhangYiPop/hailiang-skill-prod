@@ -1,0 +1,40 @@
+{
+  "skill_id": "career_plan_entity",
+  "skill_role": "specialist",
+  "stages": [
+    { "id": "init", "kind": "entry", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false },
+    { "id": "collect", "kind": "collection", "required_facts": ["grade", "score_level", "talent"], "enable_intent_check": false, "enable_satisfaction_check": false },
+    { "id": "confirm", "kind": "confirmation", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": true },
+    { "id": "analyze", "kind": "analysis", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": true },
+    { "id": "summary", "kind": "summary", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": true }
+  ],
+  "facts": {
+    "global": ["grade", "score_level", "talent", "gender"],
+    "skill": ["selected_scene", "planning_direction", "conclusion_summary", "education_preference", "constraint", "subject_preference", "talent_level", "willingness_talent", "willingness_transfer"],
+    "stage": {
+      "collect": ["education_preference", "constraint"],
+      "confirm": ["subject_preference", "talent_level", "willingness_talent", "willingness_transfer", "revision_reason", "satisfaction_status"],
+      "analyze": ["selected_scene", "conclusion_summary"]
+    },
+    "exports": {
+      "promote_to_global": ["grade", "score_level", "talent", "gender", "subject_preference"],
+      "share_with_parent_skill": ["planning_direction", "conclusion_summary", "selected_scene"]
+    }
+  },
+  "routes": [
+    { "scene": "模拟升学", "target_skill_id": "mock_admission", "required_global_facts": ["grade"], "required_skill_facts": [] },
+    { "scene": "提分", "target_skill_id": "score_improve", "required_global_facts": ["grade"], "required_skill_facts": [] },
+    { "scene": "兴趣探索", "target_skill_id": "interest_explore", "required_global_facts": ["grade"], "required_skill_facts": [] },
+    { "scene": "前景探路", "target_skill_id": "future_explore", "required_global_facts": ["grade"], "required_skill_facts": [] },
+    { "scene": "选科参谋", "target_skill_id": "subject_advisor", "required_global_facts": ["grade"], "required_skill_facts": [] },
+    { "scene": "选课参谋", "target_skill_id": "subject_advisor", "required_global_facts": ["grade"], "required_skill_facts": [] },
+    { "scene": "多元路径规划", "target_skill_id": "multi_path_planning", "required_global_facts": ["grade"], "required_skill_facts": [] },
+    { "scene": "初中多元路径规划", "target_skill_id": "junior_multi_path_planning", "required_global_facts": ["grade"], "required_skill_facts": [] }
+  ],
+  "accepts_scenes": [],
+  "metadata": {
+    "module_group": "specialist",
+    "version": "2.1.0",
+    "changelog": "新增 subject_preference/talent_level/willingness_talent/willingness_transfer 等 confirm 阶段事实，支撑高中选科匹配与门控决策树；新增 多元路径规划 路由；按当前 Hailiang 子 skill 集群维护主链路路由。"
+  }
+}
