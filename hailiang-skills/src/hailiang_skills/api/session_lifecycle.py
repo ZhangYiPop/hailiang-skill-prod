@@ -35,11 +35,20 @@ class ContextData(BaseModel):
 
 
 def _seed_profile(fact_service: FactService, data: ContextData) -> str:
-    """Create/synchronise the profile only while opening a new session."""
+    """Resolve the shared profile while opening a new session.
+
+    The forwarding backend owns the user/profile relationship.  The runtime
+    therefore treats ``profile_id`` as the stable child identifier and does
+    not require it to belong to the current ``user_id``.  Existing profiles
+    are intentionally not renamed by another guardian opening a session.
+    """
     try:
-        profile = fact_service.profile_repo.update_profile(
-            data.user_id, data.profile_id, name=data.student_name
-        )
+        get_profile_by_id = getattr(fact_service.profile_repo, "get_profile_by_id", None)
+        if get_profile_by_id is not None:
+            profile = get_profile_by_id(data.profile_id)
+        else:
+            # Compatibility for lightweight test/dummy repositories.
+            profile = fact_service.profile_repo.get_profile(data.user_id, data.profile_id)
     except KeyError:
         try:
             profile = fact_service.profile_repo.create_profile(
@@ -49,14 +58,14 @@ def _seed_profile(fact_service: FactService, data: ContextData) -> str:
                 shared_facts_initialized=False,
             )
         except IntegrityError as exc:
+            # Another request may have created the shared profile concurrently.
             try:
-                profile = fact_service.profile_repo.update_profile(
-                    data.user_id, data.profile_id, name=data.student_name
-                )
+                get_profile_by_id = getattr(fact_service.profile_repo, "get_profile_by_id", None)
+                if get_profile_by_id is None:
+                    raise KeyError(data.profile_id)
+                profile = get_profile_by_id(data.profile_id)
             except KeyError as conflict:
                 raise HTTPException(status_code=409, detail="PROFILE_ID_CONFLICT") from conflict
-            if profile.get("user_id") not in (None, data.user_id):
-                raise HTTPException(status_code=409, detail="PROFILE_ID_CONFLICT") from exc
 
     profile_facts = fact_service.get_profile_facts(data.user_id, data.profile_id)
     if data.school_year is not None and data.grade is not None:

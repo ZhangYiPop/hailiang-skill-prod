@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Deploy one isolated, non-systemd API instance for BFF smoke testing.
 # This intentionally does not create or modify Docker infrastructure.
+
+# PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+# INSTALL_MS_AGENT_RUNTIME=auto \
+# ./deploy-smoke.sh \
+#   --env ./env.8015.sh \
+#   --replace-port \
+#   --with-frontend
+
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -130,6 +138,9 @@ PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-120}"
 PIP_RETRIES="${PIP_RETRIES:-5}"
 CONSTRAINTS_FILE="$PROJECT_DIR/constraints/linux-legacy-ms-agent.txt"
 FRONTEND_DIR="$PROJECT_DIR/frontend"
+INSTALL_MS_AGENT_RUNTIME="${INSTALL_MS_AGENT_RUNTIME:-auto}"
+MS_AGENT_LEGACY_WHEELS="${MS_AGENT_LEGACY_WHEELS:-1}"
+MS_AGENT_RUNTIME_READY=0
 
 mkdir -p "$HAILIANG_RUNTIME_DIR" "$HAILIANG_LOG_DIR"
 if [ -z "${SSL_CERT_FILE:-}" ] && [ -f /etc/pki/tls/cert.pem ]; then
@@ -163,17 +174,84 @@ fi
 
 if [ "$SKIP_INSTALL" = "0" ]; then
   command -v python3.11 >/dev/null 2>&1 || { echo "python3.11 is required" >&2; exit 2; }
-  python3.11 -m venv "$VENV_DIR"
-  "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel -i "$PIP_INDEX_URL"
-  "$VENV_DIR/bin/python" -m pip install --only-binary :all: greenlet -i "$PIP_INDEX_URL"
-  "$VENV_DIR/bin/python" -m pip install -r "$CONSTRAINTS_FILE" -i "$PIP_INDEX_URL"
-  "$VENV_DIR/bin/python" -m pip install -c "$CONSTRAINTS_FILE" -e "$PROJECT_DIR" -i "$PIP_INDEX_URL"
+  if [ ! -x "$VENV_DIR/bin/python" ]; then
+    python3.11 -m venv "$VENV_DIR"
+  fi
+  "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel \
+    -i "$PIP_INDEX_URL" --default-timeout "$PIP_DEFAULT_TIMEOUT" --retries "$PIP_RETRIES"
+  "$VENV_DIR/bin/python" -m pip install --only-binary :all: greenlet \
+    -i "$PIP_INDEX_URL" --default-timeout "$PIP_DEFAULT_TIMEOUT" --retries "$PIP_RETRIES"
+
+  # Pillow's source fallback is not compatible with the default C89 mode of
+  # the old CentOS toolchain. Prefer a manylinux wheel so gcc is not invoked.
+  if ! "$VENV_DIR/bin/python" -m pip install --only-binary :all: "Pillow>=10.0" \
+    -i "$PIP_INDEX_URL" --default-timeout "$PIP_DEFAULT_TIMEOUT" --retries "$PIP_RETRIES"; then
+    echo "Warning: no compatible Pillow binary wheel was found; project install may fall back to runtime-only mode." >&2
+  fi
+
+  # Keep the same old-Linux compatibility pipeline as venv-deploy.sh.  The
+  # constraints are a best-effort preinstall: a single unavailable wheel (for
+  # example Pillow on a particular mirror/Python ABI) must not abort smoke
+  # deployment, because pip can still resolve a compatible project set below.
+  constraint_args=()
+  if [ "$MS_AGENT_LEGACY_WHEELS" = "1" ] && [ -f "$CONSTRAINTS_FILE" ]; then
+    echo "Installing legacy Linux wheel constraints: $CONSTRAINTS_FILE"
+    if "$VENV_DIR/bin/python" -m pip install -r "$CONSTRAINTS_FILE" \
+      -i "$PIP_INDEX_URL" --default-timeout "$PIP_DEFAULT_TIMEOUT" \
+      --retries "$PIP_RETRIES"; then
+      constraint_args=(-c "$CONSTRAINTS_FILE")
+      echo "Legacy wheel constraints installed."
+    else
+      echo "Warning: legacy wheel constraints were not fully installable; continuing with normal resolution." >&2
+    fi
+  fi
+
+  install_backend_project() {
+    local mode="$INSTALL_MS_AGENT_RUNTIME"
+    if [ "$mode" = "0" ] || [ "$mode" = "false" ] || [ "$mode" = "False" ] || [ "$mode" = "no" ] || [ "$mode" = "skip" ]; then
+      echo "Skipping ms-agent runtime; installing backend base dependencies."
+      "$VENV_DIR/bin/python" -m pip install \
+        "fastapi>=0.115.0" "starlette>=0.40.0,<0.46.0" "uvicorn>=0.30.0" \
+        "pydantic>=2.8.0" "sqlalchemy>=2.0.0" "PyYAML>=6.0" "loguru>=0.7.0" \
+        -i "$PIP_INDEX_URL" --default-timeout "$PIP_DEFAULT_TIMEOUT" --retries "$PIP_RETRIES"
+      "$VENV_DIR/bin/python" -m pip install --no-deps -e "$PROJECT_DIR" -i "$PIP_INDEX_URL"
+      return 0
+    fi
+
+    echo "Installing backend project dependencies (including ms-agent runtime)..."
+    project_install_args=(-e "$PROJECT_DIR")
+    if [ "${#constraint_args[@]}" -gt 0 ]; then
+      project_install_args=("${constraint_args[@]}" "${project_install_args[@]}")
+    fi
+    if CFLAGS="${CFLAGS:-} -std=gnu99" "$VENV_DIR/bin/python" -m pip install "${project_install_args[@]}" \
+      -i "$PIP_INDEX_URL" --default-timeout "$PIP_DEFAULT_TIMEOUT" --retries "$PIP_RETRIES"; then
+      MS_AGENT_RUNTIME_READY=1
+      return 0
+    fi
+
+    if [ "$mode" = "1" ] || [ "$mode" = "true" ] || [ "$mode" = "TRUE" ] || [ "$mode" = "yes" ]; then
+      echo "ms-agent runtime installation failed in forced mode." >&2
+      exit 1
+    fi
+
+    echo "Warning: ms-agent runtime installation failed; installing backend base dependencies." >&2
+    "$VENV_DIR/bin/python" -m pip install \
+      "fastapi>=0.115.0" "starlette>=0.40.0,<0.46.0" "uvicorn>=0.30.0" \
+      "pydantic>=2.8.0" "sqlalchemy>=2.0.0" "PyYAML>=6.0" "loguru>=0.7.0" \
+      -i "$PIP_INDEX_URL" --default-timeout "$PIP_DEFAULT_TIMEOUT" --retries "$PIP_RETRIES"
+    "$VENV_DIR/bin/python" -m pip install --no-deps -e "$PROJECT_DIR" -i "$PIP_INDEX_URL"
+  }
+
+  install_backend_project
 fi
 
-PYTHONPATH="$PYTHONPATH" "$VENV_DIR/bin/python" - <<'PY'
+IMPORT_MODULES=("hailiang_skills.api.main" "agent_skill_runtime_core")
+[ "$MS_AGENT_RUNTIME_READY" = "1" ] && IMPORT_MODULES+=("ms_agent" "loguru")
+PYTHONPATH="$PYTHONPATH" "$VENV_DIR/bin/python" - "${IMPORT_MODULES[@]}" <<'PY'
 import importlib
+import sys
 
-for module in ("hailiang_skills.api.main", "agent_skill_runtime_core", "ms_agent"):
+for module in sys.argv[1:]:
     importlib.import_module(module)
 print("dependency imports passed")
 PY

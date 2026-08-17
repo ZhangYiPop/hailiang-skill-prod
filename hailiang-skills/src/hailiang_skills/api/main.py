@@ -13,6 +13,7 @@ from hailiang_skills.api.routes.security_quarantine import build_security_quaran
 from hailiang_skills.api.routes.skill_analytics import build_skill_analytics_router
 from hailiang_skills.api.routes.chat import build_chat_router
 from hailiang_skills.api.routes.chat_stream import build_chat_stream_router
+from hailiang_skills.api.routes.external_chat import build_external_chat_router
 from hailiang_skills.api.routes.facts import build_facts_router
 from hailiang_skills.api.routes.profiles import build_profiles_router
 from hailiang_skills.core.fact_service import FactService
@@ -87,6 +88,9 @@ _HTTP_ERROR_MESSAGES = {
     "INVALID_SUBMITTED_FACT_KEYS": "提交的 Fact 字段与表单不一致。",
     "LOG_EXPORT_DISABLED": "生产环境禁止导出原始会话日志。",
     "LLM_RATE_LIMITED": "模型服务当前繁忙，请稍后重试。",
+    "INVALID_API_KEY": "API Key 无效。",
+    "EXTERNAL_API_NOT_CONFIGURED": "外部测试接口尚未配置 API Key。",
+    "DIALOGUE_LAST_MESSAGE_MUST_BE_USER": "dialogue 最后一条消息必须是 user。",
 }
 
 
@@ -432,6 +436,10 @@ def create_app() -> FastAPI:
     app.include_router(build_chat_router(repository, orchestrator, fact_service, storage.user_metadata_repository), prefix="/api/v1")
     app.include_router(
         build_chat_stream_router(repository, fact_service, orchestrator, app.state.turn_coordinator, app.state.llm_rate_limiter), prefix="/api/v1"
+    )
+    app.include_router(
+        build_external_chat_router(repository, fact_service, orchestrator, app.state.turn_coordinator, app.state.llm_rate_limiter),
+        prefix="/api/v1",
     )
     app.include_router(build_facts_router(repository, fact_service), prefix="/api/v1")
     app.include_router(build_profiles_router(fact_service, storage.user_metadata_repository), prefix="/api/v1")

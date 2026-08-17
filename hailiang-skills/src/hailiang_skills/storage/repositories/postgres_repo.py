@@ -6,12 +6,12 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.core.telemetry import span
 from hailiang_skills.schemas.facts import FactRecord, KnownFacts
-from hailiang_skills.storage.database import ProfileRow, SessionRow, SharedFactsRow, UserMetadataRow
+from hailiang_skills.storage.database import AuditPayloadRow, ProfileRow, SessionEventRow, SessionRow, SharedFactsRow, UserMetadataRow
 from hailiang_skills.storage.repositories.base import BaseSessionRepository
 
 
@@ -137,6 +137,19 @@ class PostgresSessionRepository(BaseSessionRepository):
             context.session_meta["_storage_version"] = expected + 1
             return context
 
+    def delete(self, session_id: str, *, user_id: str, profile_id: str | None) -> None:
+        """Delete a session and its event index, guarded by its ownership."""
+        with span("postgres.session.delete", node="postgres_session_delete"):
+            with self._session_factory.begin() as db:
+                row = db.get(SessionRow, session_id)
+                if row is None:
+                    raise KeyError(session_id)
+                if row.user_id != user_id or row.profile_id != profile_id:
+                    raise PermissionError(session_id)
+                db.execute(delete(SessionEventRow).where(SessionEventRow.session_id == session_id))
+                db.execute(delete(AuditPayloadRow).where(AuditPayloadRow.session_id == session_id))
+                db.delete(row)
+
     def list(self) -> list[SessionContext]:
         with self._session_factory() as db:
             return [_context_from_row(row) for row in db.scalars(select(SessionRow)).all()]
@@ -233,9 +246,19 @@ class PostgresProfileRepository:
             return [dict(row.payload) for row in rows]
 
     def get_profile(self, user_id: str, profile_id: str) -> dict[str, object]:
+        """Return a profile by stable ID.
+
+        ``user_id`` remains in the method signature for API compatibility.
+        Guardian/profile authorization is owned by the forwarding backend;
+        this service only needs the profile record for an already trusted
+        request.
+        """
+        return self.get_profile_by_id(profile_id)
+
+    def get_profile_by_id(self, profile_id: str) -> dict[str, object]:
         with self._session_factory() as db:
             row = db.get(ProfileRow, profile_id)
-            if row is None or row.user_id != user_id:
+            if row is None:
                 raise KeyError(profile_id)
             return dict(row.payload)
 
@@ -295,14 +318,14 @@ class PostgresProfileRepository:
     def get_profile_facts(self, user_id: str, profile_id: str) -> KnownFacts:
         with self._session_factory() as db:
             row = db.get(ProfileRow, profile_id)
-            if row is None or row.user_id != user_id:
+            if row is None:
                 return KnownFacts()
             return _facts_from_payload(row.facts)
 
     def save_profile_facts(self, user_id: str, profile_id: str, facts: KnownFacts) -> KnownFacts:
         with self._session_factory.begin() as db:
             row = db.get(ProfileRow, profile_id)
-            if row is None or row.user_id != user_id:
+            if row is None:
                 raise KeyError(profile_id)
             row.facts = _facts_to_payload(facts)
             row.version += 1

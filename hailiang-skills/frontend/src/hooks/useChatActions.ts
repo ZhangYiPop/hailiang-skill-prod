@@ -4,6 +4,7 @@ import { useChatStore } from "@/store/useChatStore";
 import {
   clearUserFactsBySource,
   createProfile,
+  deleteSession,
   downloadSessionLogs,
   getEvents,
   getProfileFacts,
@@ -794,6 +795,33 @@ export function useChatActions() {
       }
     },
     [store],
+  );
+
+  const handleDeleteSession = useCallback(
+    async (sessionId: string) => {
+      const state = useChatStore.getState();
+      if (!state.userId || !state.activeProfileId) {
+        throw new Error("请先选择孩子档案");
+      }
+      try {
+        await deleteSession(store.apiBaseUrl, sessionId, state.userId, state.activeProfileId);
+        const remaining = useChatStore.getState().sessionList.filter((item) => item.session_id !== sessionId);
+        store.setSessionList(remaining);
+        if (useChatStore.getState().sessionId !== sessionId) {
+          return;
+        }
+        const nextSession = remaining[0];
+        if (nextSession) {
+          await loadSession(nextSession.session_id);
+          return;
+        }
+        await handleCreateSession();
+      } catch (error) {
+        store.setErrorMessage(error instanceof Error ? error.message : "删除会话失败");
+        throw error;
+      }
+    },
+    [handleCreateSession, loadSession, store],
   );
 
   const handleSendMessage = useCallback(
@@ -1694,6 +1722,7 @@ export function useChatActions() {
     handleCreateSession,
     resetDebugIdentity,
     handleRenameSession,
+    handleDeleteSession,
     handleSendMessage,
     handleRefreshEvents,
     handleDownloadSessionLogs,

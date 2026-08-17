@@ -1009,3 +1009,16 @@ export async function updateSessionTitle(
   });
   return parseResponse<{ session_id: string; title: string }>(response);
 }
+
+export async function deleteSession(
+  baseUrl: string,
+  sessionId: string,
+  userId: string,
+  profileId: string,
+): Promise<{ session_id: string; deleted: boolean }> {
+  const params = new URLSearchParams({ user_id: userId, profile_id: profileId });
+  const response = await fetchWithRetry(`${baseUrl}/api/v1/sessions/${sessionId}?${params}`, {
+    method: "DELETE",
+  });
+  return parseResponse<{ session_id: string; deleted: boolean }>(response);
+}

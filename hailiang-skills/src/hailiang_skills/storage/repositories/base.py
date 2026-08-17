@@ -19,6 +19,11 @@ class BaseSessionRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def delete(self, session_id: str, *, user_id: str, profile_id: str | None) -> None:
+        """Delete one session after verifying its owner and child profile."""
+        raise NotImplementedError
+
+    @abstractmethod
     def list(self) -> list[SessionContext]:
         raise NotImplementedError
 

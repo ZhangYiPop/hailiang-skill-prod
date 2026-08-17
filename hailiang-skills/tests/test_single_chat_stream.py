@@ -35,6 +35,12 @@ class _ProfileRepo:
             raise KeyError(profile_id)
         return dict(value)
 
+    def get_profile_by_id(self, profile_id: str) -> dict:
+        for (owner_id, candidate_id), value in self.profiles.items():
+            if candidate_id == profile_id:
+                return dict(value)
+        raise KeyError(profile_id)
+
     def create_profile(self, user_id: str, *, profile_id: str, name: str, **_: object) -> dict:
         if self.raise_integrity_once:
             self.raise_integrity_once = False
@@ -51,10 +57,12 @@ class _ProfileRepo:
         return dict(value)
 
     def get_profile_facts(self, user_id: str, profile_id: str) -> KnownFacts:
-        return self.facts.setdefault((user_id, profile_id), KnownFacts())
+        key = next((key for key in self.facts if key[1] == profile_id), (user_id, profile_id))
+        return self.facts.setdefault(key, KnownFacts())
 
     def save_profile_facts(self, user_id: str, profile_id: str, facts: KnownFacts) -> KnownFacts:
-        self.facts[(user_id, profile_id)] = facts
+        key = next((key for key in self.facts if key[1] == profile_id), (user_id, profile_id))
+        self.facts[key] = facts
         return facts
 
 
@@ -277,6 +285,27 @@ def test_open_or_resume_seeds_only_new_session(tmp_path: Path, monkeypatch) -> N
     assert created is False
     assert resumed.session_id == "sess_1"
     assert facts.get_profile_facts("u1", "p1").get_value("grade") == "高二"
+
+
+def test_new_session_allows_another_user_for_shared_profile(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(session_logging, "SESSION_LOG_ROOT", tmp_path / "sessions")
+    monkeypatch.setattr(session_logging, "USER_LOG_ROOT", tmp_path / "users")
+    repository = InMemorySessionRepository()
+    facts = _FactService()
+
+    first, created = open_or_resume_session(repository, facts, session_id="sess_parent_a", data=_context_data())
+    second, second_created = open_or_resume_session(
+        repository,
+        facts,
+        session_id="sess_parent_b",
+        data=_context_data().model_copy(update={"user_id": "u2"}),
+    )
+
+    assert created is True
+    assert second_created is True
+    assert first.profile_id == second.profile_id == "p1"
+    assert first.user_id == "u1"
+    assert second.user_id == "u2"
 
 
 def test_open_or_resume_rejects_session_owner_conflict(tmp_path: Path, monkeypatch) -> None:

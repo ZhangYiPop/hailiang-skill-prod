@@ -3,6 +3,8 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from hailiang_skills.api.routes.chat import (
     MessageInteractionUpdateRequest,
     build_chat_router,
@@ -325,6 +327,50 @@ def test_fact_form_interaction_is_persisted(tmp_path: Path, monkeypatch):
     assert response["state"]["status"] == "submitted"
     restored = repository.load_from_snapshot(context.session_id)
     assert restored.messages[-1]["interaction_states"]["fact_form:missing_facts_form"]["status"] == "submitted"
+
+
+def test_delete_session_removes_only_the_target_conversation_and_logs(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(session_logging, "SESSION_LOG_ROOT", tmp_path / "sessions")
+    monkeypatch.setattr(session_logging, "USER_LOG_ROOT", tmp_path / "users")
+    repository = InMemorySessionRepository()
+    target = SessionContext(session_id="sess_delete", user_id="user", profile_id="child")
+    target.add_message("user", "请删除这条会话")
+    other = SessionContext(session_id="sess_keep", user_id="user", profile_id="child")
+    other.add_message("user", "请保留这条会话")
+    repository.create(target)
+    repository.create(other)
+    endpoint = next(
+        route.endpoint
+        for route in build_chat_router(repository, _Orchestrator(), _FactService()).routes
+        if getattr(route, "path", "") == "/sessions/{session_id}" and "DELETE" in getattr(route, "methods", set())
+    )
+
+    result = endpoint(target.session_id, user_id="user", profile_id="child")
+
+    assert result == {"session_id": "sess_delete", "deleted": True}
+    assert not (session_logging.SESSION_LOG_ROOT / "sess_delete").exists()
+    assert (session_logging.SESSION_LOG_ROOT / "sess_keep").exists()
+    with pytest.raises(KeyError):
+        repository.get("sess_delete")
+    assert repository.get("sess_keep").session_id == "sess_keep"
+
+
+def test_delete_session_rejects_a_different_user_or_child(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(session_logging, "SESSION_LOG_ROOT", tmp_path / "sessions")
+    repository = InMemorySessionRepository()
+    context = SessionContext(session_id="sess_protected", user_id="user", profile_id="child")
+    repository.create(context)
+    endpoint = next(
+        route.endpoint
+        for route in build_chat_router(repository, _Orchestrator(), _FactService()).routes
+        if getattr(route, "path", "") == "/sessions/{session_id}" and "DELETE" in getattr(route, "methods", set())
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        endpoint(context.session_id, user_id="other-user", profile_id="child")
+
+    assert exc_info.value.status_code == 403
+    assert repository.get(context.session_id).session_id == context.session_id
 
 
 def test_route_transition_selects_current_suggestion():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -32,6 +33,25 @@ class SseRecordingConfig:
 
 def get_session_log_dir(session_id: str) -> Path:
     return SESSION_LOG_ROOT / session_id
+
+
+def delete_session_logs(session_id: str) -> None:
+    """Remove local development recordings for exactly one session.
+
+    Database records are the production source of truth.  This only removes
+    optional local snapshots/events and opt-in SSE recordings after validating
+    that the target remains directly under a configured session root.
+    """
+    if not session_id or Path(session_id).name != session_id:
+        raise ValueError("invalid session id")
+    roots = {SESSION_LOG_ROOT, load_sse_recording_config().root_dir}
+    for root in roots:
+        root_path = root.resolve()
+        target = (root_path / session_id).resolve()
+        if target.parent != root_path:
+            raise ValueError("invalid session log target")
+        if target.is_dir():
+            shutil.rmtree(target)
 
 
 def ensure_session_log_dir(session_id: str) -> Path:

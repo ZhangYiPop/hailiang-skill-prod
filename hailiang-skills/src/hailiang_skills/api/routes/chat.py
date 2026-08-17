@@ -25,7 +25,7 @@ from hailiang_skills.core.path_action_builder import (
     build_path_actions_block,
 )
 from hailiang_skills.core.session_logging import get_session_log_dir
-from hailiang_skills.core.session_logging import append_session_events, write_session_snapshot
+from hailiang_skills.core.session_logging import append_session_events, delete_session_logs, write_session_snapshot
 from hailiang_skills.core.logging import make_event, utc_now_iso
 from hailiang_skills.core.skill_display import build_skill_catalog
 from hailiang_skills.core.skill_ids import CAREER_PLAN_SKILL_ID
@@ -653,5 +653,16 @@ def build_chat_router(
             "session_id": context.session_id,
             "title": context.title,
         }
+
+    @router.delete("/sessions/{session_id}")
+    def delete_session(session_id: str, user_id: str = Query(min_length=1), profile_id: str = Query(min_length=1)) -> dict:
+        try:
+            repository.delete(session_id, user_id=user_id, profile_id=profile_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="session not found") from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="session does not belong to current user and profile") from exc
+        delete_session_logs(session_id)
+        return {"session_id": session_id, "deleted": True}
 
     return router

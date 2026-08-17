@@ -3,6 +3,7 @@
 
 # 必填：模型服务密钥。
 export DASHSCOPE_API_KEY=""
+export HAILIANG_EXTERNAL_API_KEY=""
 
 # 必填：生产模式审计加密密钥。生成方式：
 # .venv/bin/python -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("="))'

@@ -9,6 +9,7 @@ type SessionSidebarProps = {
   loading: boolean;
   onSelect: (sessionId: string) => void;
   onRename: (sessionId: string, title: string) => Promise<void>;
+  onDelete: (sessionId: string) => Promise<void>;
 };
 
 export function SessionSidebar({
@@ -18,6 +19,7 @@ export function SessionSidebar({
   loading,
   onSelect,
   onRename,
+  onDelete,
 }: SessionSidebarProps) {
   const [editingSessionId, setEditingSessionId] = useState("");
   const [draftTitle, setDraftTitle] = useState("");
@@ -92,16 +94,29 @@ export function SessionSidebar({
                     </button>
                   </div>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingSessionId(session.session_id);
-                      setDraftTitle(session.title || "");
-                    }}
-                    className="mt-3 text-xs text-cyan-200 transition hover:text-cyan-100"
-                  >
-                    重命名标题
-                  </button>
+                  <div className="mt-3 flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingSessionId(session.session_id);
+                        setDraftTitle(session.title || "");
+                      }}
+                      className="text-xs text-cyan-200 transition hover:text-cyan-100"
+                    >
+                      重命名标题
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`确认删除“${session.title?.trim() || "未命名会话"}”吗？此操作无法恢复。`)) {
+                          void onDelete(session.session_id);
+                        }
+                      }}
+                      className="text-xs text-rose-300 transition hover:text-rose-200"
+                    >
+                      删除
+                    </button>
+                  </div>
                 )}
               </div>
             );

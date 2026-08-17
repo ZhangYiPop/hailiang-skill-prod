@@ -12,6 +12,7 @@
 6. [Skill 埋点统计](#skill-埋点统计)
 7. [统一错误规范](#统一错误规范)
 8. [BFF 转发边界](#bff-转发边界)
+9. [外部大模型测试接口](#外部大模型测试接口)
 
 ## 接入约定
 
@@ -42,6 +43,71 @@
 | 健康 | GET | `/health`、`/health/live`、`/health/ready` | 仅 BFF/监控 | 健康检查。 |
 
 不应转发给业务前端：`/sessions/{session_id}/events`、`/sessions/{session_id}/logs/download`、`/security-quarantine/**`、`/assets/versions`。旧的非流式 `POST /sessions/{session_id}/messages` 仅兼容存量调用；新聊天一律使用流接口。
+
+## 外部大模型测试接口
+
+### 接口信息
+
+`POST /api/v1/external/chat` 面向外部测评和联调调用。服务端每次请求自动创建全新用户、档案、会话和运行 ID；调用方只需要传入 API Key 与自行拼接的完整 `dialogue`，不需要管理已有会话。
+
+请求头：
+
+```http
+Content-Type: application/json
+Authorization: Bearer ${api_key}
+```
+
+请求体：
+
+```json
+{
+  "model": "default",
+  "max_tokens": 1024,
+  "stream": false,
+  "dialogue": [
+    {"role": "user", "content": "请介绍一下北京。"},
+    {"role": "model", "content": "北京是中国的首都。"},
+    {"role": "user", "content": "请再介绍当地美食。"}
+  ]
+}
+```
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `model` | 字符串 | 否 | `default` | 模型标识；未传时使用服务默认模型。 |
+| `max_tokens` | 整数 | 否 | `1024` | 输出 token 上限，范围 `1-32768`。 |
+| `stream` | 布尔 | 否 | `false` | `false` 返回 JSON；`true` 返回 SSE。 |
+| `dialogue` | 数组 | 是 | 无 | 至少一条消息，最后一条必须是 `user`。 |
+| `dialogue[].role` | `user/model/assistant` | 是 | 无 | `model` 在内部转换为 `assistant`。 |
+| `dialogue[].content` | 非空字符串 | 是 | 无 | 消息内容。 |
+
+完整 `dialogue` 会作为本次新会话的上下文，最后一条 `user` 消息作为当前问题。历史会话不会被复用。
+
+非流式成功响应（HTTP 200）：
+
+```json
+{
+  "content": "模型回答内容",
+  "choices": [],
+  "status": "success",
+  "reason": "success",
+  "session_id": "sess_external_xxx",
+  "request_id": "req_xxx"
+}
+```
+
+业务执行失败仍返回 HTTP 200：`status` 为 `failed`，`content` 为空，`reason` 返回失败原因。API Key 错误、请求校验错误和限流等建连前错误使用 HTTP 4xx/429。
+
+流式调用：
+
+```bash
+curl -N "$ALGORITHM_BASE/api/v1/external/chat" \
+  -H 'Authorization: Bearer ${HAILIANG_EXTERNAL_API_KEY}' \
+  -H 'Content-Type: application/json' \
+  --data-raw '{"stream":true,"dialogue":[{"role":"user","content":"请介绍北京。"}]}'
+```
+
+流式每个 `data` 事件包含 `choices[].delta` 增量文本，最后一个事件包含 `finish_reason: "stop"`。内部 SSE 状态、Facts、Skill 状态和调试字段不会向外部暴露。
 
 ## Skill 埋点统计
 

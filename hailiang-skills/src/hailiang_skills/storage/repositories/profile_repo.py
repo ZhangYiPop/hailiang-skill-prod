@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from hailiang_skills.core.session_logging import (
+    USER_LOG_ROOT,
     load_profile_facts_snapshot,
     load_profiles_snapshot,
     write_profile_facts_snapshot,
@@ -28,7 +29,17 @@ class FileBackedProfileRepository:
         return [dict(item) for item in self._profiles_cache[user_id]]
 
     def get_profile(self, user_id: str, profile_id: str) -> dict[str, object]:
-        for item in self.list_profiles(user_id):
+        return self.get_profile_by_id(profile_id)
+
+    def get_profile_by_id(self, profile_id: str) -> dict[str, object]:
+        for user_dir in USER_LOG_ROOT.iterdir() if USER_LOG_ROOT.exists() else []:
+            if not user_dir.is_dir():
+                continue
+            owner_id = user_dir.name
+            for item in self.list_profiles(owner_id):
+                if item.get("profile_id") == profile_id:
+                    return item
+        for item in self.list_profiles(""):
             if item.get("profile_id") == profile_id:
                 return item
         raise KeyError(profile_id)
@@ -88,9 +99,10 @@ class FileBackedProfileRepository:
         return updated
 
     def get_profile_facts(self, user_id: str, profile_id: str) -> KnownFacts:
-        cache_key = (user_id, profile_id)
+        owner_id = self._profile_owner(profile_id, fallback=user_id)
+        cache_key = (owner_id, profile_id)
         if cache_key not in self._facts_cache:
-            snapshot = load_profile_facts_snapshot(user_id, profile_id)
+            snapshot = load_profile_facts_snapshot(owner_id, profile_id)
             facts = KnownFacts()
             for key, payload in (snapshot or {}).get("facts", {}).items():
                 facts.facts[key] = FactRecord.model_validate(payload)
@@ -98,14 +110,24 @@ class FileBackedProfileRepository:
         return self._facts_cache[cache_key]
 
     def save_profile_facts(self, user_id: str, profile_id: str, facts: KnownFacts) -> KnownFacts:
-        cache_key = (user_id, profile_id)
+        owner_id = self._profile_owner(profile_id, fallback=user_id)
+        cache_key = (owner_id, profile_id)
         self._facts_cache[cache_key] = facts
         write_profile_facts_snapshot(
-            user_id,
+            owner_id,
             profile_id,
             {key: record.model_dump() for key, record in facts.facts.items()},
         )
         return facts
+
+    def _profile_owner(self, profile_id: str, *, fallback: str) -> str:
+        for user_dir in USER_LOG_ROOT.iterdir() if USER_LOG_ROOT.exists() else []:
+            if not user_dir.is_dir():
+                continue
+            owner_id = user_dir.name
+            if any(item.get("profile_id") == profile_id for item in self.list_profiles(owner_id)):
+                return owner_id
+        return fallback
 
     def _persist_profiles(self, user_id: str) -> None:
         write_profiles_snapshot(user_id, self._profiles_cache[user_id])

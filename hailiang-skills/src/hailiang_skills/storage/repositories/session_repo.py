@@ -28,6 +28,12 @@ class InMemorySessionRepository(BaseSessionRepository):
         write_session_snapshot(context)
         return context
 
+    def delete(self, session_id: str, *, user_id: str, profile_id: str | None) -> None:
+        context = self.get(session_id)
+        if context.user_id != user_id or context.profile_id != profile_id:
+            raise PermissionError(session_id)
+        self._items.pop(session_id, None)
+
     def list(self) -> list[SessionContext]:
         return list(self._items.values())
 

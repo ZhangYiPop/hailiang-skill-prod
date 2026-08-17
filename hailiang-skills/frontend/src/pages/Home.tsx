@@ -76,6 +76,7 @@ export default function Home() {
     loadSession,
     handleCreateProfile,
     handleCreateSession,
+    handleDeleteSession,
     handleRenameSession,
     handleSendMessage,
     handleEnterSkill,
@@ -477,6 +478,9 @@ export default function Home() {
                 }}
                 onRename={async (targetSessionId, title) => {
                   await handleRenameSession(targetSessionId, title);
+                }}
+                onDelete={async (targetSessionId) => {
+                  await handleDeleteSession(targetSessionId);
                 }}
               />
             </aside>
