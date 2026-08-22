@@ -144,6 +144,55 @@ def _append_message_blocks_to_latest_assistant(
     return blocks
 
 
+def _expert_state_payload(context, orchestrator, switch: dict[str, Any] | None = None) -> dict[str, Any]:
+    team_id = str((context.session_meta or {}).get("expert_team_id") or "").strip()
+    expert_id = str(
+        (context.session_meta or {}).get("active_expert_id")
+        or (context.session_meta or {}).get("expert_id")
+        or ""
+    ).strip()
+    expert_registry = getattr(orchestrator, "expert_registry", None)
+    definition = expert_registry.get(expert_id) if expert_id and expert_registry is not None else None
+    active: dict[str, Any] = {}
+    team_payload: dict[str, Any] = {}
+    mode = "none"
+    if team_id:
+        team_registry = getattr(orchestrator, "expert_team_registry", None)
+        team = team_registry.get(team_id) if team_registry is not None else None
+        if team is not None:
+            mode = "team"
+            member = team.member_for_expert(expert_id)
+            team_payload = {
+                "team_id": team.team_id,
+                "name": team.name,
+                "coordinator_expert_id": team.coordinator_expert_id,
+            }
+            active = {
+                "expert_id": expert_id,
+                "name": definition.name if definition is not None else expert_id,
+                "mention_name": member.mention_name if member is not None else "",
+                "is_coordinator": expert_id == team.coordinator_expert_id,
+            }
+    elif definition is not None:
+        mode = "single"
+        active = {
+            "expert_id": definition.agent_id,
+            "name": definition.name,
+            "mention_name": "",
+            "is_coordinator": False,
+        }
+    transition: dict[str, Any] = {}
+    if isinstance(switch, dict):
+        transition = {
+            "status": "completed",
+            "source": str(switch.get("source") or ""),
+            "from_expert_id": str(switch.get("from_expert_id") or ""),
+            "to_expert_id": str(switch.get("target_expert_id") or expert_id),
+            "source_message_id": switch.get("source_message_id"),
+        }
+    return {"mode": mode, "team": team_payload, "active": active, "transition": transition}
+
+
 def _preactivate_requested_target_skill(
     context,
     requested_target_skill_id: str | None,
@@ -522,6 +571,7 @@ class StreamingRunner:
         return_reasoning: bool = False,
         requested_target_skill_id: str | None = None,
         handoff_context: dict[str, Any] | None = None,
+        team_member_switch: dict[str, Any] | None = None,
         lease: TurnLease | None = None,
         protocol: str = "legacy",
         source_endpoint: str = "sessions/chat/stream",
@@ -531,6 +581,10 @@ class StreamingRunner:
         parent_telemetry = current_telemetry()
         context = self.repository.get(session_id)
         context.user_id = user_id
+        if isinstance(team_member_switch, dict):
+            # Preserve the structured switch across this repository reload.
+            # Expert routing never depends on parsing the visible user text.
+            context.session_meta["team_member_switch"] = dict(team_member_switch)
         if context.profile_id:
             try:
                 profile = self.fact_service.profile_repo.get_profile(user_id, context.profile_id)
@@ -874,6 +928,7 @@ class StreamingRunner:
             context.session_meta.pop("reasoning_delta_callback", None)
             context.session_meta.pop("security_callback", None)
             context.session_meta.pop("model_error_callback", None)
+            context.session_meta.pop("team_handoff_callback", None)
             context.session_meta.pop("stream_cancel_check", None)
             context.session_meta.pop("streamed_reply_parts", None)
             context.session_meta.pop("streamed_reasoning_parts", None)
@@ -923,6 +978,9 @@ class StreamingRunner:
                 context.session_meta["reasoning_delta_callback"] = push_reasoning_delta
                 context.session_meta["security_callback"] = push_security
                 context.session_meta["model_error_callback"] = push_model_error
+                context.session_meta["team_handoff_callback"] = lambda payload: push(
+                    "team_handoff", payload
+                )
                 context.session_meta["streamed_reply_parts"] = []
                 context.session_meta["streamed_reasoning_parts"] = []
                 context.session_meta["skill_intro_emitted"] = False
@@ -1039,10 +1097,14 @@ class StreamingRunner:
                         assistant_message=result.assistant_message,
                         facts_delta=fact_changes,
                         runtime_registry=getattr(self.orchestrator, "runtime_registry", None),
-                        route_suggestion_client=getattr(
-                            self.orchestrator,
-                            "route_suggestion_client",
-                            getattr(self.orchestrator, "runtime_client", None),
+                        route_suggestion_client=(
+                            self.orchestrator.route_suggestion_client_for_context(context)
+                            if callable(getattr(self.orchestrator, "route_suggestion_client_for_context", None))
+                            else getattr(
+                                self.orchestrator,
+                                "route_suggestion_client",
+                                getattr(self.orchestrator, "runtime_client", None),
+                            )
                         ),
                         monitor_route_suggestions_every_turn=bool(
                             getattr(self.orchestrator, "route_suggestion_monitor_every_turn", False)
@@ -1085,6 +1147,16 @@ class StreamingRunner:
                         if block
                     ]
                     message_blocks = _append_message_blocks_to_latest_assistant(context, message_blocks)
+                    team_handoff = {}
+                    for message in reversed(context.messages):
+                        if message.get("role") != "assistant":
+                            continue
+                        raw_handoff = message.get("team_handoff")
+                        if not isinstance(raw_handoff, dict):
+                            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+                            raw_handoff = metadata.get("team_handoff")
+                        team_handoff = raw_handoff if isinstance(raw_handoff, dict) else {}
+                        break
                     if not is_current_stream():
                         prune_stale_assistant_turn(active_turn_id)
                         return
@@ -1107,6 +1179,7 @@ class StreamingRunner:
                             "context_compression": finalized_payload["context_compression"],
                             "route_suggestions": finalized_payload["route_suggestions"],
                             "is_final_summary": finalized_payload.get("is_final_summary") is True,
+                            "team_handoff": team_handoff,
                         },
                     )
                     for message in reversed(context.messages):
@@ -1140,6 +1213,7 @@ class StreamingRunner:
                             "conclusion_summary": finalized_payload["conclusion_summary"],
                             "context_compression": finalized_payload["context_compression"],
                             "route_suggestions": finalized_payload["route_suggestions"],
+                            "team_handoff": team_handoff,
                             "user_facts": serialize_known_facts(context.user_facts),
                             "shared_facts": serialize_known_facts(context.shared_facts),
                             "profile_facts": serialize_known_facts(context.profile_facts),
@@ -1241,6 +1315,7 @@ class StreamingRunner:
             SSE_ACTIVE.inc()
         first_event_started = __import__("time").perf_counter()
         push("run_started", {"session_id": session_id, "run_id": stream_generation, "risk_stage": "input"})
+        push("expert_context", _expert_state_payload(context, self.orchestrator, team_member_switch))
         for event, data in initial_events or []:
             push(event, data)
         if protocol == UNIFIED_PROTOCOL:

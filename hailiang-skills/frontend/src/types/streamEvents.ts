@@ -1,5 +1,5 @@
 import type { MessageBlock } from "@/types/messageBlocks";
-import type { ContextCompression, ConversationState, RouteSuggestion, SkillIntro } from "@/utils/api";
+import type { ContextCompression, ConversationState, RouteSuggestion, SkillIntro, TeamHandoff } from "@/utils/api";
 import type { SkillTransition } from "@/utils/api";
 
 export type StreamEventData = Record<string, unknown>;
@@ -76,6 +76,19 @@ export type SseV2State = {
   form: SseV2Form | Record<string, never>;
   path_options: SseV2PathOptions | Record<string, never>;
   skill_rooms: SseV2SkillRoom[];
+  team_handoff: TeamHandoff | Record<string, never>;
+  expert: {
+    mode: "none" | "single" | "team" | string;
+    team: { team_id?: string; name?: string; coordinator_expert_id?: string } | Record<string, never>;
+    active: { expert_id?: string; name?: string; mention_name?: string; is_coordinator?: boolean } | Record<string, never>;
+    transition: {
+      status?: "switching" | "completed" | "failed" | string;
+      source?: "team_handoff" | "toolbar" | string;
+      from_expert_id?: string;
+      to_expert_id?: string;
+      source_message_id?: string | null;
+    } | Record<string, never>;
+  };
   skill_transition: Record<string, unknown>;
   session: { active_skill: { skill_id?: string; title?: string; brief?: string; info?: string; description?: string; scene_name?: string } | Record<string, never> };
   risk: { status: "idle" | "checking" | "passed" | "degraded" | "blocked"; stage: string; blocked: boolean; message: string };

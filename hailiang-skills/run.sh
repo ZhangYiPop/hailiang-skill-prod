@@ -155,7 +155,16 @@ if [ "$HAILIANG_STORAGE_BACKEND" = "postgres" ]; then
   require_value HAILIANG_AUDIT_ENCRYPTION_KEY
 fi
 
+NEEDS_BACKEND_INSTALL=0
 if [ ! -x "$PROJECT_DIR/.venv/bin/python" ] || [ "$BOOTSTRAP" = "1" ]; then
+  NEEDS_BACKEND_INSTALL=1
+elif ! "$PROJECT_DIR/.venv/bin/python" -c 'import agentscope; assert agentscope.__version__ == "2.0.5"' >/dev/null 2>&1; then
+  # Existing virtual environments predate the AgentScope Expert runtime. Do
+  # not let an apparently successful boot loop forever on /health/ready.
+  NEEDS_BACKEND_INSTALL=1
+fi
+
+if [ "$NEEDS_BACKEND_INSTALL" = "1" ]; then
   echo "📦 安装后端依赖..."
   [ -x "$PROJECT_DIR/.venv/bin/python" ] || python3 -m venv "$PROJECT_DIR/.venv"
   "$PROJECT_DIR/.venv/bin/pip" install -e .

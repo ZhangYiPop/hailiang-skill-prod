@@ -9,6 +9,7 @@ export type MessageInteractionState = {
   updated_at?: string;
   submitted_fact_keys?: string[];
   selected_target_skill_id?: string;
+  selected_target_expert_id?: string;
 };
 
 export type SkillTransition = {
@@ -73,6 +74,13 @@ export type MessagePresentation = {
     source_message_id: string;
     source_interaction_id: string;
   }>;
+  team_handoff?: TeamHandoff | Record<string, never>;
+  expert?: {
+    mode: string;
+    team: Record<string, unknown>;
+    active: Record<string, unknown>;
+    transition: Record<string, unknown>;
+  };
   skill_transition: Record<string, unknown>;
   session: { active_skill: { skill_id?: string; title?: string; brief?: string; info?: string; description?: string; scene_name?: string } | Record<string, never> };
   risk: { status: string; stage: string; blocked: boolean; message: string };
@@ -110,7 +118,19 @@ export type ChatMessage = {
   messageType?: "skill_intro" | string;
   skillIntro?: SkillIntro;
   skillTransition?: SkillTransition;
+  teamHandoff?: TeamHandoff;
   presentation?: MessagePresentation;
+};
+
+export type TeamHandoff = {
+  handoff_id?: string;
+  status?: "active" | "selected" | "expired" | string;
+  team_id: string;
+  source_message_id?: string | null;
+  reason: string;
+  proposed_by_expert_id?: string;
+  selected_target_expert_id?: string;
+  candidates: Array<{ expert_id: string; name: string; mention_name: string; brief?: string }>;
 };
 
 export type ChatRetryRequest = {
@@ -163,6 +183,50 @@ export type SkillCatalogItem = {
   info?: string;
   scene_name?: string;
   skill_theme?: string;
+};
+
+export type ExpertCatalogItem = {
+  expert_id: string;
+  name: string;
+  description: string;
+  topology: "single_expert" | string;
+  skill_ids: string[];
+  skills: Array<{ skill_id: string; label: string }>;
+};
+
+export type SelectedExpert = {
+  expert_id: string;
+  name: string;
+  topology: string;
+  skill_ids: string[];
+};
+
+export type ExpertTeamMember = {
+  expert_id: string;
+  name?: string;
+  mention_name: string;
+  routing_brief?: string;
+  is_coordinator: boolean;
+};
+
+export type ExpertTeamCatalogItem = {
+  team_id: string;
+  name: string;
+  description: string;
+  topology: "team" | string;
+  coordinator_expert_id: string;
+  coordinator_name: string;
+  members: ExpertTeamMember[];
+};
+
+export type SelectedExpertTeam = {
+  team_id: string;
+  name: string;
+  coordinator_expert_id: string;
+  coordinator_mention_name: string;
+  active_expert_id: string;
+  active_mention_name: string;
+  members: ExpertTeamMember[];
 };
 
 export type CandidatePath = {
@@ -328,6 +392,8 @@ export type SessionResponse = {
   candidate_paths: CandidatePath[];
   message_count: number;
   skill_states: Record<string, Record<string, unknown>>;
+  expert?: SelectedExpert | null;
+  expert_team?: SelectedExpertTeam | null;
   conversation_state?: ConversationState;
   profile_school_facts?: Array<{ school_year: string; grade: string }>;
   skill_display?: {
@@ -356,6 +422,7 @@ export type SessionContextMessage = {
     skill_id?: string;
     skill_name?: string;
     agent_label?: string;
+    team_handoff?: TeamHandoff;
     skill_brief?: string;
     skill_info?: string;
     brief?: string;
@@ -376,6 +443,7 @@ export type SessionContextMessage = {
     skill_transition?: SkillTransition;
     generation_status?: string;
   };
+  team_handoff?: TeamHandoff;
   skill_id?: string;
   skill_name?: string;
   agent_label?: string;
@@ -413,6 +481,8 @@ export type SessionContextResponse = {
   session_facts: FactMap;
   effective_facts: FactMap;
   skill_states: Record<string, Record<string, unknown>>;
+  expert?: SelectedExpert | null;
+  expert_team?: SelectedExpertTeam | null;
   interaction_state: Record<string, unknown>;
   candidate_paths: CandidatePath[];
   event_count: number;
@@ -545,6 +615,8 @@ export type CreateSessionResponse = {
   interaction_state: Record<string, unknown>;
   skill_states: Record<string, Record<string, unknown>>;
   conversation_state: ConversationState;
+  expert?: SelectedExpert | null;
+  expert_team?: SelectedExpertTeam | null;
 };
 
 export type ConversationState = {
@@ -708,6 +780,46 @@ export async function listRuntimeSkills(baseUrl: string, grade = ""): Promise<Sk
   const response = await fetchWithRetry(`${baseUrl}/api/v1/skills${query}`, { method: "GET" });
   const payload = await parseResponse<{ skills?: SkillCatalogItem[] }>(response);
   return Array.isArray(payload.skills) ? payload.skills : [];
+}
+
+export async function listExperts(baseUrl: string): Promise<ExpertCatalogItem[]> {
+  const response = await fetchWithRetry(`${baseUrl}/api/v1/experts`, { method: "GET" });
+  const payload = await parseResponse<{ experts?: ExpertCatalogItem[] }>(response);
+  return Array.isArray(payload.experts) ? payload.experts : [];
+}
+
+export async function listExpertTeams(baseUrl: string): Promise<ExpertTeamCatalogItem[]> {
+  const response = await fetchWithRetry(`${baseUrl}/api/v1/expert-teams`, { method: "GET" });
+  const payload = await parseResponse<{ expert_teams?: ExpertTeamCatalogItem[] }>(response);
+  return Array.isArray(payload.expert_teams) ? payload.expert_teams : [];
+}
+
+export async function selectSessionExpert(
+  baseUrl: string,
+  sessionId: string,
+  expertId: string | null,
+  contextData?: Record<string, string>,
+): Promise<{ session_id: string; expert: SelectedExpert | null }> {
+  const response = await fetchWithRetry(`${baseUrl}/api/v1/sessions/${sessionId}/expert`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expert_id: expertId, ...(contextData ? { context_data: contextData } : {}) }),
+  });
+  return parseResponse<{ session_id: string; expert: SelectedExpert | null }>(response);
+}
+
+export async function selectSessionExpertTeam(
+  baseUrl: string,
+  sessionId: string,
+  teamId: string | null,
+  contextData?: Record<string, string>,
+): Promise<{ session_id: string; expert: SelectedExpert | null; expert_team: SelectedExpertTeam | null }> {
+  const response = await fetchWithRetry(`${baseUrl}/api/v1/sessions/${sessionId}/expert-team`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ team_id: teamId, ...(contextData ? { context_data: contextData } : {}) }),
+  });
+  return parseResponse<{ session_id: string; expert: SelectedExpert | null; expert_team: SelectedExpertTeam | null }>(response);
 }
 
 export async function createSession(

@@ -90,6 +90,14 @@ _HTTP_ERROR_MESSAGES = {
     "LLM_RATE_LIMITED": "模型服务当前繁忙，请稍后重试。",
     "INVALID_API_KEY": "API Key 无效。",
     "EXTERNAL_API_NOT_CONFIGURED": "外部测试接口尚未配置 API Key。",
+    "EXPERT_NOT_FOUND": "专家不存在或当前不可用。",
+    "EXPERT_TEAM_NOT_FOUND": "专家团不存在或当前不可用。",
+    "EXPERT_NOT_IN_ACTIVE_TEAM": "当前专家不属于已进入的专家团。",
+    "EXPERT_TEAM_NOT_ACTIVE": "当前会话尚未进入专家团。",
+    "TEAM_HANDOFF_NOT_ACTIVE": "该专家转交建议已失效。",
+    "TEAM_HANDOFF_TARGET_NOT_ALLOWED": "该专家不在本次可转交范围内。",
+    "TEAM_SWITCH_BLOCKED_BY_PENDING_FORM": "请先完成或取消当前表单，再切换专家。",
+    "SKILL_ENTRY_BLOCKED_IN_EXPERT_TEAM": "专家团内不能直接进入单个 Skill。",
     "DIALOGUE_LAST_MESSAGE_MUST_BE_USER": "dialogue 最后一条消息必须是 user。",
 }
 
@@ -369,11 +377,16 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health() -> dict:
+        expert_runtime = orchestrator.expert_runtime.health()
+        runtime_ready = bool(expert_runtime["available"] and expert_runtime["expert_loaded"] and orchestrator.ms_agent_probe.available)
         return {
-            "status": "ok",
+            "status": "ok" if runtime_ready else "degraded",
             "skills": registry.names(),
             "runtime": {
+                "entry_expert": expert_runtime["default_expert_id"],
                 "entry_skill": GENERAL_CHAT_SKILL_ID,
+                "expert_runtime": expert_runtime,
+                "ms_agent_available": orchestrator.ms_agent_probe.available,
                 "skills": sorted(
                     key
                     for key in orchestrator.runtime_registry.enabled_bundles().keys()
@@ -411,7 +424,9 @@ def create_app() -> FastAPI:
         audit_ready = storage.backend != "postgres" or audit_store is not None
         ready = storage.ready() and (storage.backend != "postgres" or redis_ready) and audit_ready
         limiter_ready = app.state.llm_rate_limiter.ready()
-        ready = ready and limiter_ready
+        expert_runtime = orchestrator.expert_runtime.health()
+        runtime_ready = bool(expert_runtime["available"] and expert_runtime["expert_loaded"] and orchestrator.ms_agent_probe.available)
+        ready = ready and limiter_ready and runtime_ready
         payload = {
             "status": "ok" if ready else "not_ready",
             "postgres": storage.ready(),
@@ -420,6 +435,8 @@ def create_app() -> FastAPI:
             "llm_enabled": llm_config.enabled,
             "audit_encryption": audit_store is not None,
             "llm_rate_limiter": limiter_ready,
+            "expert_runtime": expert_runtime,
+            "ms_agent_available": orchestrator.ms_agent_probe.available,
             "environment": deployment_environment(),
             "version": release_version(),
             "node": node_name(),

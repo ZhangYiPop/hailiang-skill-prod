@@ -1,0 +1,14 @@
+{
+  "lock_version": 1,
+  "skills": [
+    {"skill_id": "career_plan_entity", "version": "2.1.0"},
+    {"skill_id": "subject_advisor", "version": "1.0.0"},
+    {"skill_id": "multi_path_planning", "version": "v20260728064507403665"},
+    {"skill_id": "junior_multi_path_planning", "version": "0.0.0"},
+    {"skill_id": "interest_explore", "version": "0.0.0"},
+    {"skill_id": "future_explore", "version": "0.1.0"},
+    {"skill_id": "score_improve", "version": "0.1.0"},
+    {"skill_id": "mock_admission", "version": "v20260723092858845842"},
+    {"skill_id": "general_chat", "version": "1.0.0"}
+  ]
+}

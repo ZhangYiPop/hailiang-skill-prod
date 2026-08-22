@@ -1,0 +1,22 @@
+schema_version: 1
+id: career_plan_expert
+name: 升学规划专家
+rule_file: AGENT.md
+topology: single_expert
+skills:
+  - career_plan_entity
+  - subject_advisor
+  - multi_path_planning
+  - junior_multi_path_planning
+  - interest_explore
+  - future_explore
+  - score_improve
+  - mock_admission
+  - general_chat
+budget:
+  max_iters: 4
+  max_skill_calls: 3
+capabilities:
+  - execute_skill
+  - request_declared_form
+  - read_effective_facts

@@ -1,0 +1,13 @@
+schema_version: 1
+id: student_growth_expert_team
+name: 学生成长专家团
+topology: team
+rule_file: TEAM.md
+coordinator_expert_id: career_plan_expert
+members:
+  - expert_id: career_plan_expert
+    mention_name: 升学规划专家
+    routing_brief: 负责升学路径、选科、院校专业与学业规划，并作为主协调专家兜底。
+  - expert_id: family_education_expert
+    mention_name: 家庭教育专家
+    routing_brief: 负责亲子沟通、家庭规则、学习习惯与明确请求的 MBTI 自我探索。

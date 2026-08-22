@@ -28,18 +28,21 @@ from hailiang_skills.core.session_logging import get_session_log_dir
 from hailiang_skills.core.session_logging import append_session_events, delete_session_logs, write_session_snapshot
 from hailiang_skills.core.logging import make_event, utc_now_iso
 from hailiang_skills.core.skill_display import build_skill_catalog
+from hailiang_skills.runtime_bridge.expert_bundle import build_expert_catalog
+from hailiang_skills.runtime_bridge.expert_team_bundle import build_expert_team_catalog
 from hailiang_skills.core.skill_ids import CAREER_PLAN_SKILL_ID
 from hailiang_skills.core.streaming_runner import _diff_facts
 from hailiang_skills.core.streaming_runner import _append_message_blocks_to_latest_assistant
 from hailiang_skills.core.conversation_state import get_conversation_state, record_security_result
 from hailiang_skills.core.sse_protocol import presentation_from_message
-from hailiang_skills.core.message_interactions import ACTIVE, SUBMITTED, ensure_message_interactions, update_interaction
+from hailiang_skills.core.message_interactions import ACTIVE, SUBMITTED, ensure_message_interactions, expire_active_interactions, update_interaction
 from hailiang_skills.core.telemetry import span
 from hailiang_skills.storage.repositories.session_index_repo import (
     FileBackedSessionIndexRepository,
 )
 from hailiang_skills.storage.repositories.session_repo import InMemorySessionRepository
 from hailiang_skills.security.models import ModerationBlockedError
+from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 
 
 def build_session_logs_archive(session_id: str) -> bytes:
@@ -127,6 +130,8 @@ class CreateSessionResponse(BaseModel):
     interaction_state: dict[str, Any] = Field(default_factory=dict)
     skill_states: dict[str, Any] = Field(default_factory=dict)
     conversation_state: dict[str, Any] = Field(default_factory=dict)
+    expert: dict[str, Any] | None = None
+    expert_team: dict[str, Any] | None = None
 
 
 class ProfileSchoolFact(BaseModel):
@@ -144,6 +149,21 @@ class CreateSessionRequest(BaseModel):
 
 class UpdateSessionRequest(BaseModel):
     title: str = Field(min_length=1)
+
+
+class ExpertSelectionRequest(BaseModel):
+    # ``null`` explicitly leaves expert mode and restores standalone Skill
+    # testing. The server validates every non-empty ID against its local
+    # Expert Bundle registry.
+    expert_id: str | None = None
+    # The frontend creates sessions lazily on the first interaction. Supplying
+    # identity here allows an expert to be the *first* interaction too.
+    context_data: ContextData | None = None
+
+
+class ExpertTeamSelectionRequest(BaseModel):
+    team_id: str | None = None
+    context_data: ContextData | None = None
 
 
 class MessageFeedbackRequest(BaseModel):
@@ -247,7 +267,53 @@ def build_chat_router(
             interaction_state=context.interaction_state,
             skill_states=context.skill_states,
             conversation_state=get_conversation_state(context),
+            expert=selected_expert(context),
+            expert_team=selected_expert_team(context),
         )
+
+    def selected_expert(context: SessionContext) -> dict[str, Any] | None:
+        expert_id = str(context.session_meta.get("active_expert_id") or context.session_meta.get("expert_id") or "").strip()
+        if not expert_id:
+            return None
+        registry = getattr(orchestrator, "expert_registry", None)
+        definition = registry.get(expert_id) if registry is not None else None
+        if definition is None:
+            return None
+        return {
+            "expert_id": definition.agent_id,
+            "name": definition.name,
+            "topology": definition.topology,
+            "skill_ids": list(definition.authorized_skill_ids),
+        }
+
+    def selected_expert_team(context: SessionContext) -> dict[str, Any] | None:
+        team_id = str(context.session_meta.get("expert_team_id") or "").strip()
+        if not team_id:
+            return None
+        registry = getattr(orchestrator, "expert_team_registry", None)
+        team = registry.get(team_id) if registry is not None else None
+        if team is None:
+            return None
+        active_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
+        active_member = team.member_for_expert(active_expert_id)
+        coordinator = team.member_for_expert(team.coordinator_expert_id)
+        return {
+            "team_id": team.team_id,
+            "name": team.name,
+            "coordinator_expert_id": team.coordinator_expert_id,
+            "coordinator_mention_name": coordinator.mention_name if coordinator else "",
+            "active_expert_id": active_expert_id,
+            "active_mention_name": active_member.mention_name if active_member else "",
+            "members": [
+                {
+                    "expert_id": member.expert_id,
+                    "mention_name": member.mention_name,
+                    "routing_brief": member.routing_brief,
+                    "is_coordinator": member.expert_id == team.coordinator_expert_id,
+                }
+                for member in team.members
+            ],
+        }
 
     @router.get("/skills")
     def list_runtime_skills(grade: str = Query(default="")) -> dict:
@@ -258,6 +324,104 @@ def build_chat_router(
                 grade=grade,
             )
         }
+
+    @router.get("/experts")
+    def list_experts() -> dict:
+        return {
+            "experts": build_expert_catalog(
+                getattr(orchestrator, "expert_registry", None),
+                getattr(orchestrator, "runtime_registry", None),
+            )
+        }
+
+    @router.get("/expert-teams")
+    def list_expert_teams() -> dict:
+        return {
+            "expert_teams": build_expert_team_catalog(
+                getattr(orchestrator, "expert_team_registry", None),
+                getattr(orchestrator, "expert_registry", None),
+            )
+        }
+
+    @router.put("/sessions/{session_id}/expert")
+    def select_session_expert(session_id: str, request: ExpertSelectionRequest) -> dict:
+        try:
+            context = repository.get(session_id)
+        except KeyError:
+            if request.context_data is None:
+                raise HTTPException(status_code=404, detail="session not found") from None
+            context, _ = open_or_resume_session(
+                repository,
+                fact_service,
+                session_id=session_id,
+                data=request.context_data,
+            )
+        expert_id = str(request.expert_id or "").strip()
+        registry = getattr(orchestrator, "expert_registry", None)
+        definition = registry.get(expert_id) if expert_id and registry is not None else None
+        if expert_id and definition is None:
+            raise HTTPException(status_code=422, detail="EXPERT_NOT_FOUND")
+        if definition is None:
+            context.session_meta.pop("expert_id", None)
+            context.session_meta.pop("active_expert_id", None)
+            context.session_meta.pop("expert_requested_skill_id", None)
+        else:
+            context.session_meta["expert_id"] = definition.agent_id
+            context.session_meta["active_expert_id"] = definition.agent_id
+            context.session_meta.pop("expert_requested_skill_id", None)
+        # An independent expert is intentionally outside a team. Structured
+        # expert switches must never inherit stale team authorization.
+        context.session_meta.pop("expert_team_id", None)
+        context.session_meta.pop("pending_team_handoff", None)
+        # A selected expert makes the next normal chat turn responsible for
+        # routing; it must not inherit an unrelated previously-entered Skill.
+        context.interaction_state["active_skill"] = "general_chat"
+        runtime_state = context.skill_states.setdefault("skill_runtime", {})
+        if isinstance(runtime_state, dict):
+            runtime_state["active_skill_id"] = "general_chat"
+        event = make_event(
+            "expert_selected" if definition else "expert_exited",
+            {"expert_id": definition.agent_id if definition else None},
+        )
+        context.event_trace.append(event)
+        append_session_events(session_id, [event])
+        repository.save(context)
+        return {"session_id": session_id, "expert": selected_expert(context)}
+
+    @router.put("/sessions/{session_id}/expert-team")
+    def select_session_expert_team(session_id: str, request: ExpertTeamSelectionRequest) -> dict:
+        try:
+            context = repository.get(session_id)
+        except KeyError:
+            if request.context_data is None:
+                raise HTTPException(status_code=404, detail="session not found") from None
+            context, _ = open_or_resume_session(repository, fact_service, session_id=session_id, data=request.context_data)
+        team_id = str(request.team_id or "").strip()
+        registry = getattr(orchestrator, "expert_team_registry", None)
+        team = registry.get(team_id) if team_id and registry is not None else None
+        if team_id and team is None:
+            raise HTTPException(status_code=422, detail="EXPERT_TEAM_NOT_FOUND")
+        if team is None:
+            context.session_meta.pop("expert_team_id", None)
+            context.session_meta.pop("pending_team_handoff", None)
+        else:
+            context.session_meta["expert_team_id"] = team.team_id
+            context.session_meta["active_expert_id"] = team.coordinator_expert_id
+            context.session_meta["expert_id"] = team.coordinator_expert_id
+            context.session_meta.pop("expert_requested_skill_id", None)
+            context.session_meta.pop("pending_team_handoff", None)
+        context.interaction_state["active_skill"] = "general_chat"
+        runtime_state = context.skill_states.setdefault("skill_runtime", {})
+        if isinstance(runtime_state, dict):
+            runtime_state["active_skill_id"] = "general_chat"
+        event = make_event("team_selected" if team else "team_exited", {
+            "team_id": team.team_id if team else None,
+            "coordinator_expert_id": team.coordinator_expert_id if team else None,
+        })
+        context.event_trace.append(event)
+        append_session_events(session_id, [event])
+        repository.save(context)
+        return {"session_id": session_id, "expert_team": selected_expert_team(context), "expert": selected_expert(context)}
 
     @router.get("/users/{user_id}/profiles/{profile_id}/sessions")
     def list_profile_sessions(user_id: str, profile_id: str) -> dict:
@@ -302,10 +466,14 @@ def build_chat_router(
             except KeyError:
                 pass
         fact_service.hydrate_context(context)
+        if expire_active_interactions(context.messages):
+            context.session_meta.pop("pending_team_handoff", None)
         before_facts = serialize_known_facts(context.known_facts)
         context.session_meta["enable_thinking"] = request.enable_thinking
         context.session_meta["return_reasoning"] = request.return_reasoning
         if request.requested_target_skill_id:
+            if context.session_meta.get("expert_team_id"):
+                raise HTTPException(status_code=409, detail="SKILL_ENTRY_BLOCKED_IN_EXPERT_TEAM")
             context.session_meta["requested_target_skill_id"] = request.requested_target_skill_id
             context.session_meta["handoff_context"] = request.handoff_context or {}
         try:
@@ -480,6 +648,9 @@ def build_chat_router(
             "conversation_state": get_conversation_state(context),
             "profile_school_facts": profile_school_facts(context),
             "skill_states": context.skill_states,
+            "expert": selected_expert(context),
+            "expert_team": selected_expert_team(context),
+            "expert_team": selected_expert_team(context),
             "skill_display": build_skill_display(
                 context,
                 runtime_registry=getattr(orchestrator, "runtime_registry", None),
@@ -613,6 +784,7 @@ def build_chat_router(
             "session_facts": serialize_known_facts(context.session_facts),
             "effective_facts": serialize_known_facts(context.known_facts),
             "skill_states": context.skill_states,
+            "expert": selected_expert(context),
             "interaction_state": context.interaction_state,
             "candidate_paths": context.candidate_paths,
             "conversation_state": get_conversation_state(context),

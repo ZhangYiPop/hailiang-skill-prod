@@ -10,6 +10,9 @@ import type {
   CandidatePath,
   ChatMessage,
   DebugIdentity,
+  ExpertCatalogItem,
+  ExpertTeamCatalogItem,
+  SelectedExpertTeam,
   FactMap,
   MessageResponse,
   ProfileSummary,
@@ -88,6 +91,10 @@ type ChatStore = {
   activeProfileName: string;
   activeSkill: string;
   skillCatalog: SkillCatalogItem[];
+  expertCatalog: ExpertCatalogItem[];
+  expertTeamCatalog: ExpertTeamCatalogItem[];
+  activeExpertId: string;
+  activeExpertTeam: SelectedExpertTeam | null;
   messages: ChatMessage[];
   candidatePaths: CandidatePath[];
   events: SkillEvent[];
@@ -127,6 +134,10 @@ type ChatStore = {
   setActiveProfileName: (value: string) => void;
   setActiveSkill: (value: string) => void;
   setSkillCatalog: (value: SkillCatalogItem[]) => void;
+  setExpertCatalog: (value: ExpertCatalogItem[]) => void;
+  setExpertTeamCatalog: (value: ExpertTeamCatalogItem[]) => void;
+  setActiveExpertId: (value: string) => void;
+  setActiveExpertTeam: (value: SelectedExpertTeam | null) => void;
   setMessages: (messages: ChatMessage[]) => void;
   appendMessage: (message: ChatMessage) => void;
   updateMessage: (messageId: string, updater: (message: ChatMessage) => ChatMessage) => void;
@@ -337,6 +348,10 @@ export const useChatStore = create<ChatStore>((set) => ({
   activeProfileName: "",
   activeSkill: "",
   skillCatalog: [],
+  expertCatalog: [],
+  expertTeamCatalog: [],
+  activeExpertId: "",
+  activeExpertTeam: null,
   messages: [],
   candidatePaths: [],
   events: [],
@@ -394,6 +409,10 @@ export const useChatStore = create<ChatStore>((set) => ({
   setActiveProfileName: (value) => set({ activeProfileName: value }),
   setActiveSkill: (value) => set({ activeSkill: value }),
   setSkillCatalog: (value) => set({ skillCatalog: value }),
+  setExpertCatalog: (value) => set({ expertCatalog: value }),
+  setExpertTeamCatalog: (value) => set({ expertTeamCatalog: value }),
+  setActiveExpertId: (value) => set({ activeExpertId: value }),
+  setActiveExpertTeam: (value) => set({ activeExpertTeam: value }),
   setMessages: (messages) => set({ messages }),
   appendMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   updateMessage: (messageId, updater) =>
@@ -574,6 +593,8 @@ export const useChatStore = create<ChatStore>((set) => ({
       sessionId: "",
       sessionTitle: "",
       activeSkill: "",
+      activeExpertId: "",
+      activeExpertTeam: null,
       currentScenario: "",
       messages: [],
       candidatePaths: [],

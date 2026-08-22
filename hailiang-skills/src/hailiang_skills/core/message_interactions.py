@@ -45,6 +45,12 @@ def _candidate_states(message: dict[str, Any]) -> dict[str, dict[str, Any]]:
         suggestions = metadata.get("route_suggestions")
     if isinstance(suggestions, list) and suggestions:
         candidates["route_suggestions"] = {"kind": "route_suggestions"}
+    handoff = message.get("team_handoff")
+    if not isinstance(handoff, dict):
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        handoff = metadata.get("team_handoff")
+    if isinstance(handoff, dict) and isinstance(handoff.get("candidates"), list) and handoff["candidates"]:
+        candidates["team_handoff"] = {"kind": "team_handoff"}
     return candidates
 
 

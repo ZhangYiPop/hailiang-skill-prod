@@ -20,6 +20,7 @@ from hailiang_skills.core.session_logging import append_session_events
 from hailiang_skills.core.telemetry import current_telemetry
 from hailiang_skills.core.skill_ids import (
     CAREER_PLAN_SKILL_ID,
+    EXPERT_DIRECT_EXECUTION_ID,
     GENERAL_CHAT_SKILL_ID,
     LEGACY_MAIN_PLANNER_SKILL_ID,
     canonical_skill_id,
@@ -50,6 +51,13 @@ from hailiang_skills.runtime_bridge.native_questionnaire import (
     stage_questionnaire_form,
 )
 from hailiang_skills.runtime_bridge.native_path_options import resolve_native_path_options
+from hailiang_skills.runtime_bridge.agentscope_expert_runtime import (
+    AGENT_RUNTIME_STATE_KEY,
+    AgentScopeExpertRuntime,
+    DEFAULT_EXPERT_ID,
+)
+from hailiang_skills.runtime_bridge.expert_bundle import load_local_expert_registry
+from hailiang_skills.runtime_bridge.expert_team_bundle import load_local_expert_team_registry
 from hailiang_skills.runtime_bridge.imports import PROJECT_ROOT, ensure_skill_runtime_importable
 from hailiang_skills.runtime_bridge.runtime_config import load_runtime_bridge_config
 from hailiang_skills.skills.base import SkillResult
@@ -766,6 +774,8 @@ def _tool_intent_label(decision: RoutingDecision, name: str) -> str:
 
 
 PROJECT_RUNTIME_SKILLS_ROOT = PROJECT_ROOT / "runtime_skills"
+PROJECT_RUNTIME_AGENTS_ROOT = PROJECT_ROOT / "runtime_agents"
+PROJECT_RUNTIME_AGENT_TEAMS_ROOT = PROJECT_ROOT / "runtime_agent_teams"
 MAIN_PLANNER_ID = CAREER_PLAN_SKILL_ID
 GENERAL_CHAT_ID = GENERAL_CHAT_SKILL_ID
 JUNIOR_MULTI_PATH_SKILL_ID = "junior_multi_path_planning"
@@ -1015,6 +1025,16 @@ class MainPlannerOrchestrator:
         self.scenario_engine = ScenarioEngine()
         self.loop_defense = LoopDefense()
         self.runtime_registry = self._load_runtime_registry()
+        # Expert Bundles are validated at boot. They reference this registry
+        # only; no Skill from an expert package is ever loaded or installed.
+        self.expert_registry = load_local_expert_registry(
+            PROJECT_RUNTIME_AGENTS_ROOT,
+            self.runtime_registry,
+        )
+        self.expert_team_registry = load_local_expert_team_registry(
+            PROJECT_RUNTIME_AGENT_TEAMS_ROOT,
+            self.expert_registry,
+        )
         self.main_bundle = self.runtime_registry.get_raw(MAIN_PLANNER_ID)
         if self.main_bundle is None:
             raise RuntimeError("skill-runtime career_plan_entity skill is not available")
@@ -1068,6 +1088,14 @@ class MainPlannerOrchestrator:
             llm_client=self.runtime_client,
             embedding_cache_enabled=bool(getattr(llm_config.embedding, "cache_enabled", True)),
             embedding_cache_dir=str(getattr(llm_config.embedding, "cache_dir", "") or ""),
+        )
+        self.expert_runtime = AgentScopeExpertRuntime(
+            self.expert_registry,
+            self.runtime_registry,
+            team_registry=self.expert_team_registry,
+            default_expert_id=DEFAULT_EXPERT_ID,
+            client_factory=self._runtime_client_for_context,
+            event_recorder=self._record_events,
         )
 
     def _load_runtime_registry(self) -> RuntimeSkillRegistry:
@@ -3008,6 +3036,14 @@ class MainPlannerOrchestrator:
         }
 
     def handle_message(self, user_message: str, context) -> SkillResult:
+        """Run the default Expert, retaining the existing API/result contract."""
+        return self.expert_runtime.handle_message(
+            user_message,
+            context,
+            self._handle_message_legacy,
+        )
+
+    def _handle_message_legacy(self, user_message: str, context) -> SkillResult:
         self._normalize_planner_state_alias(context)
         turn_id = f"turn_{uuid4().hex[:12]}"
         context.session_meta["active_turn_id"] = turn_id
@@ -3054,7 +3090,10 @@ class MainPlannerOrchestrator:
         if context.session_meta.pop("hide_next_user_message", False):
             user_metadata["hidden"] = True
             user_metadata["message_type"] = "skill_transition_command"
-        context.add_message("user", user_message, metadata=user_metadata)
+        visible_user_message = str(
+            context.session_meta.pop("team_handoff_visible_user_message", "") or user_message
+        )
+        context.add_message("user", visible_user_message, metadata=user_metadata)
         context.session_meta["active_turn_index"] = sum(
             1 for item in context.messages if item.get("role") == "user"
         )
@@ -3064,12 +3103,58 @@ class MainPlannerOrchestrator:
         persisted_runtime = context.skill_states.get(RUNTIME_STATE_KEY, {})
         persisted_skill = str(persisted_runtime.get("active_skill_id") or "") if isinstance(persisted_runtime, dict) else ""
         active_before_turn = str((context.interaction_state or {}).get("active_skill") or persisted_skill or GENERAL_CHAT_ID)
-        if active_before_turn != GENERAL_CHAT_ID:
+        if active_before_turn not in {GENERAL_CHAT_ID, EXPERT_DIRECT_EXECUTION_ID}:
             self._record_events(context, self.scenario_engine.ensure_context_initialized(context))
 
         runtime_state = self._load_runtime_state(context)
         runtime_state.messages = self._runtime_messages_from_context(context)
         sync_context_to_runtime_state(context, runtime_state)
+        expert_direct = context.session_meta.pop("expert_direct_reply", None)
+        if isinstance(expert_direct, dict) and str(expert_direct.get("reply") or "").strip():
+            # AgentScope already produced the role-bounded final answer.  Do
+            # not send the same turn through general_chat, whose legacy soul
+            # prompt is intentionally broad and may contradict this expert.
+            reply = str(expert_direct["reply"]).strip()
+            expert_id = str(expert_direct.get("expert_id") or "")
+            # This response was generated by the selected Expert Agent, not
+            # by the legacy general_chat Skill. Preserve that distinction in
+            # state, trace, memory, and the UI. ``expert_direct`` never takes
+            # part in Skill routing; it is only an execution-source marker.
+            runtime_state.active_skill_id = EXPERT_DIRECT_EXECUTION_ID
+            context.add_message(
+                "assistant",
+                reply,
+                metadata=self._assistant_message_metadata(context, EXPERT_DIRECT_EXECUTION_ID),
+            )
+            self._emit_reply_delta(context, reply)
+            runtime_state.messages.append(ChatMessage(role="assistant", content=reply))
+            self._persist_runtime_state(context, runtime_state)
+            context.interaction_state["active_skill"] = EXPERT_DIRECT_EXECUTION_ID
+            self._record_events(
+                context,
+                [
+                    make_event(
+                        "expert_direct_response",
+                        {
+                            "expert_id": expert_id,
+                            "active_skill": EXPERT_DIRECT_EXECUTION_ID,
+                            "execution_mode": "expert_direct",
+                            "message_preview": reply[:200],
+                        },
+                    )
+                ],
+            )
+            result = SkillResult(
+                assistant_message=reply,
+                state_patch={
+                    "runtime_active_skill_id": EXPERT_DIRECT_EXECUTION_ID,
+                    "expert_id": expert_id,
+                    "execution_mode": "expert_direct",
+                },
+                events=[],
+            )
+            self._append_turn_memory(context, runtime_state, user_message, reply)
+            return result
         active_bundle = self.runtime_registry.get(runtime_state.active_skill_id)
         if runtime_state.active_skill_id and active_bundle is None:
             runtime_state.active_skill_id = GENERAL_CHAT_ID
@@ -3301,6 +3386,10 @@ class MainPlannerOrchestrator:
         )
         question_block = attach_staged_questionnaire_form(context, runtime_state)
         if question_block:
+            context.skill_states.setdefault(AGENT_RUNTIME_STATE_KEY, {})["pending_form"] = {
+                "skill_id": runtime_state.active_skill_id,
+                "form_id": question_block.get("payload", {}).get("form_id"),
+            }
             self._record_events(
                 context,
                 [
@@ -3572,6 +3661,30 @@ class MainPlannerOrchestrator:
 
     def _route_with_main_planner(self, state: SessionState, context) -> str:
         ensure_runtime_state(state, self.main_bundle)
+        # AgentScope's execute_skill tool only writes an authorized selection
+        # hint.  Hailiang still owns state, fact_form and native Skill
+        # execution; therefore a stale or unauthorized hint can never route a
+        # request outside the active Expert Bundle.
+        expert_state = context.skill_states.get(AGENT_RUNTIME_STATE_KEY, {})
+        expert_selected = str(context.session_meta.pop("expert_requested_skill_id", "") or "")
+        expert_id = str(expert_state.get("expert_id") or DEFAULT_EXPERT_ID)
+        expert_definition = self.expert_registry.get(expert_id)
+        authorized = bool(expert_definition) and expert_selected in set(expert_definition.authorized_skill_ids)
+        if authorized and self.runtime_registry.is_enabled(expert_selected):
+            state.active_skill_id = expert_selected
+            state.status_flags["expert_selected_skill_id"] = expert_selected
+            context.skill_states.setdefault(MAIN_PLANNER_ID, {})["intent_route"] = {
+                "route_mode": "expert",
+                "target_skill_id": expert_selected,
+                "reason": "AgentScope 专家已在授权范围内选择该 Skill。",
+                "source": "agentscope",
+            }
+            self._record_events(
+                context,
+                [make_event("expert_skill_selected", {"expert_id": expert_id, "skill_id": expert_selected})],
+            )
+            self._split_multi_path_skill_by_stage(state, context)
+            return state.active_skill_id or GENERAL_CHAT_ID
         entry_skill_id = state.active_skill_id or GENERAL_CHAT_ID
         is_entry_skill = entry_skill_id in {MAIN_PLANNER_ID, GENERAL_CHAT_ID}
         # ``career_plan_entity`` is both the public career-consultant Skill

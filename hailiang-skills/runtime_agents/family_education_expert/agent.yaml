@@ -1,0 +1,15 @@
+schema_version: 1
+id: family_education_expert
+name: 家庭教育专家
+rule_file: AGENT.md
+topology: single_expert
+skills:
+  - parenting_action_planner
+  - mbti_self_exploration
+budget:
+  max_iters: 4
+  max_skill_calls: 2
+capabilities:
+  - execute_skill
+  - request_declared_form
+  - read_effective_facts

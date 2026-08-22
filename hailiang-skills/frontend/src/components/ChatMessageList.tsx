@@ -114,6 +114,7 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
     handlePathAction,
     handleSubmitFactForm,
     handleRouteSuggestion,
+    handleConfirmTeamHandoff,
     handleRetryMessage,
     handleMessageFeedback,
   } = useChatActions();
@@ -166,7 +167,15 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
         const otherBlocks = presentation && "form_id" in presentation.form
           ? [{ type: "fact_form" as const, payload: presentation.form }]
           : message.blocks.filter((block) => !isCitationsBlock(block) && !isStatusTimelineBlock(block));
-        const skillRooms = !isUser ? presentation?.skill_rooms ?? [] : [];
+        const teamHandoff = !isUser ? message.teamHandoff : undefined;
+        const teamHandoffInteraction = message.interactionStates?.team_handoff;
+        const showTeamHandoff = Boolean(
+          teamHandoff?.candidates.length
+          && (!teamHandoffInteraction?.status || teamHandoffInteraction.status === "active"),
+        );
+        // Team handoff takes precedence while it is actionable. Once the
+        // user confirms or it expires, the recommendation card disappears.
+        const skillRooms = !isUser && !showTeamHandoff ? presentation?.skill_rooms ?? [] : [];
         const routeSuggestions = !presentation && !isUser && message.id === latestAssistantId && routeSuggestionsEnabled
           ? message.routeSuggestions ?? []
           : [];
@@ -310,6 +319,38 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
                               );
                             })}
                           </div>
+                        </div>
+                      ) : showTeamHandoff && teamHandoff ? (
+                        <div className="rounded-2xl border border-violet-300/20 bg-violet-300/[0.07] px-5 py-4">
+                          <p className="text-center text-xs uppercase tracking-[0.2em] text-violet-100">建议由以下专家接管</p>
+                          {teamHandoff.reason ? <p className="mt-2 text-center text-xs leading-relaxed text-slate-300">{teamHandoff.reason}</p> : null}
+                          <div className="mt-4 flex flex-wrap justify-center gap-3">
+                            {teamHandoff.candidates.map((candidate) => {
+                              const selected = teamHandoffInteraction?.status === "selected" && teamHandoffInteraction.selected_target_skill_id === candidate.expert_id;
+                              const locked =
+                                !message.messageId ||
+                                teamHandoffInteraction?.status === "selected" ||
+                                teamHandoffInteraction?.status === "expired";
+                              return (
+                                <div key={candidate.expert_id} className="flex min-w-[160px] flex-col items-center gap-1">
+                                  <button
+                                    type="button"
+                                    disabled={Boolean(locked)}
+                                    onClick={() => void handleConfirmTeamHandoff(message.id, candidate.expert_id, candidate.mention_name)}
+                                    className={[
+                                      "w-full rounded-full border px-5 py-2.5 text-sm font-medium transition",
+                                      selected ? "border-violet-200/70 bg-violet-200/20 text-violet-50" : "border-white/10 bg-white/[0.06] text-slate-200 hover:border-violet-300/40 hover:bg-violet-300/10 hover:text-violet-50",
+                                      locked ? "cursor-not-allowed opacity-40" : "",
+                                    ].join(" ")}
+                                  >
+                                    {selected ? "已转交：" : "@"}{candidate.mention_name}
+                                  </button>
+                                  {candidate.brief ? <span className="text-center text-[11px] leading-relaxed text-slate-400">{candidate.brief}</span> : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {teamHandoffInteraction?.status === "expired" ? <p className="mt-3 text-center text-xs text-slate-400">该转交建议已失效，请以最新对话为准。</p> : null}
                         </div>
                       ) : routeSuggestions.length ? (
                         <div className="rounded-2xl border border-cyan-300/15 bg-cyan-300/[0.06] px-5 py-4">

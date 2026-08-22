@@ -14,6 +14,7 @@ from unittest.mock import patch
 from starlette.responses import JSONResponse
 
 from hailiang_skills.core.context import SessionContext
+from hailiang_skills.core.skill_ids import EXPERT_DIRECT_EXECUTION_ID
 from hailiang_skills.core.session_opening_config import (
     build_historical_session_opening_message,
     build_session_opening_message,
@@ -397,6 +398,40 @@ def build_orchestrator_with_config(llm_config) -> MainPlannerOrchestrator:
 
 
 class RuntimeBridgeTest(unittest.TestCase):
+    def test_expert_direct_reply_is_not_persisted_as_general_chat(self) -> None:
+        orchestrator = build_orchestrator()
+        context = SessionContext(user_id="u1")
+        context.skill_states["agent_runtime"] = {
+            "expert_id": "family_education_expert",
+            "expert_name": "家庭教育专家",
+            "expert_team_id": "student_growth_expert_team",
+        }
+        context.session_meta["expert_direct_reply"] = {
+            "expert_id": "family_education_expert",
+            "reply": "建议先约定一个双方都能接受的沟通时间。",
+        }
+
+        result = orchestrator._handle_message_legacy("孩子不愿意沟通", context)
+
+        self.assertEqual(result.assistant_message, "建议先约定一个双方都能接受的沟通时间。")
+        self.assertEqual(context.interaction_state["active_skill"], EXPERT_DIRECT_EXECUTION_ID)
+        self.assertEqual(
+            context.skill_states["skill_runtime"]["active_skill_id"],
+            EXPERT_DIRECT_EXECUTION_ID,
+        )
+        self.assertEqual(context.messages[-1]["metadata"]["agent_label"], "家庭教育专家")
+        direct_events = [event for event in context.event_trace if event["event_type"] == "expert_direct_response"]
+        self.assertEqual(direct_events[-1]["payload"]["active_skill"], EXPERT_DIRECT_EXECUTION_ID)
+        finalized, lifecycle_events = build_finalized_payload(
+            context,
+            assistant_message=result.assistant_message,
+            runtime_registry=orchestrator.runtime_registry,
+        )
+        self.assertEqual(finalized["active_skill"], EXPERT_DIRECT_EXECUTION_ID)
+        self.assertEqual(finalized["agent_label"], "家庭教育专家")
+        self.assertEqual(finalized["route_suggestions"], [])
+        self.assertEqual(lifecycle_events[-1]["payload"]["skipped_reason"], "expert_direct_response")
+
     def test_status_label_redacts_current_skill_file_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             skill_root = Path(directory)

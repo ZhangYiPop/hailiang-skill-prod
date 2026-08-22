@@ -11,7 +11,7 @@
   前端以该帧整体替换当前消息的展示状态。
 - 同一 `run_id` 只应用 `seq` **严格大于**本地已处理序号的状态帧；重复帧、旧帧直接丢弃。
 - 所有顶层字段始终存在；无内容时使用 `{}`、`[]`、空字符串或 `null`，不省略字段。
-- 固定渲染顺序：`intent → assistant.content → form → path_options → skill_rooms`。
+- 固定渲染顺序：`intent → assistant.content → form → path_options → team_handoff → skill_rooms`；页面当前专家只取 `expert.active`。
 
 ## 2. SSE 事件层
 
@@ -52,6 +52,8 @@ data: {"protocol":"hailiang.sse.v2", "run_id":"run_xxx", "seq":12, "status":"com
   "form": {},
   "path_options": {},
   "skill_rooms": [],
+  "team_handoff": {},
+  "expert": { "mode": "none", "team": {}, "active": {}, "transition": {} },
   "skill_transition": {},
   "session": { "active_skill": {} },
   "risk": { "status": "passed", "stage": "input", "blocked": false, "message": "" },
@@ -76,6 +78,8 @@ data: {"protocol":"hailiang.sse.v2", "run_id":"run_xxx", "seq":12, "status":"com
 | `form` | 对象或 `{}` | 缺失 Facts 时出现、提交后状态更新 | 显示在正文底部；无内容不渲染。 |
 | `path_options` | 对象或 `{}` | 高中多元路径 Skill 产出多个可继续展开的路径时出现 | 显示路径选择卡片；点击后发送普通 `chat` 文本，不切换 Skill。 |
 | `skill_rooms` | 数组 | general_chat 模型给出合法推荐后出现 | 显示在表单后；只有满足可点击条件的卡片可操作。 |
+| `team_handoff` | 对象或 `{}` | 主协调专家直接提出团内转交建议时出现 | 即时显示专家接管卡；`message_id` 产生前只展示、不可点击。 |
+| `expert` | 固定对象 | 建流后立即给出；切换专家时更新 | 当前专家与切换结果的唯一权威来源，禁止前端根据点击动作提前切换。 |
 | `skill_transition` | 对象或 `{}` | 进入/退出 Skill | 即时更新顶部当前主题；可展示转场提示。 |
 | `session.active_skill` | 对象或 `{}` | 首帧、转场、最终状态 | 页面顶部的唯一当前 Skill 来源；历史消息不得覆盖。 |
 | `risk` | 固定对象 | 输入/输出风控检测时 | 驱动通用安全提示；不得显示内部标签或供应商详情。 |
@@ -304,7 +308,65 @@ Content-Type: application/json
 - toolbar 进入 Skill 使用 `source="toolbar"`，不携带上述来源字段
 - 服务端会校验 `source_message_id` 指向的消息必须是**当前最新 assistant 消息**且该推荐仍为 `active`；否则常见返回为 `409 route suggestion is no longer current`
 
-### 4.4 Skill 状态与转场
+### 4.5 专家团接管 `team_handoff`
+
+主协调专家调用受控接管工具后，服务端会立即填充本字段，不等待异步路由后处理：
+
+```json
+{
+  "handoff_id": "handoff_xxx",
+  "status": "active",
+  "team_id": "student_growth_expert_team",
+  "source_message_id": "msg_xxx",
+  "reason": "该问题更适合聚焦亲子沟通",
+  "proposed_by_expert_id": "career_plan_expert",
+  "candidates": [{
+    "expert_id": "family_education_expert",
+    "name": "家庭教育专家",
+    "mention_name": "家庭教育专家",
+    "brief": "亲子沟通与家庭教育支持"
+  }]
+}
+```
+
+- v1 只有主协调专家能生成该对象；普通成员的状态始终为 `{}`。
+- 点击候选人时提交 `confirm_team_handoff`，并透传当前 `message_id` 为 `source_message_id`。
+- 确认后，来源消息的 `team_handoff` 交互状态变为 `selected`；目标专家的新回复不得重复携带旧卡片。
+- 字段与确认动作已经保留 `proposed_by_expert_id`，未来放开成员提议能力时无需升级 SSE 协议。
+
+### 4.6 当前专家与切换结果 `expert`
+
+```json
+{
+  "mode": "team",
+  "team": {
+    "team_id": "student_growth_expert_team",
+    "name": "学生成长专家团",
+    "coordinator_expert_id": "career_plan_expert"
+  },
+  "active": {
+    "expert_id": "family_education_expert",
+    "name": "家庭教育专家",
+    "mention_name": "家庭教育专家",
+    "is_coordinator": false
+  },
+  "transition": {
+    "status": "completed",
+    "source": "toolbar",
+    "from_expert_id": "career_plan_expert",
+    "to_expert_id": "family_education_expert",
+    "source_message_id": null
+  }
+}
+```
+
+- `mode` 为 `none`、`single` 或 `team`。
+- 推荐卡确认的 `transition.source` 为 `team_handoff`；工具栏指定为 `toolbar`。
+- 工具栏请求必须传 `switch_team_member.target_expert_id` 和独立的 `content`，后端不解析正文中的 `@名称`。
+- 普通 `chat` 即使以 `@` 开头也不会切换专家。
+- 前端只根据 `expert.active.expert_id` 更新当前专家；刷新会话时则以会话查询中的 `expert_team.active_expert_id` 恢复。
+
+### 4.7 Skill 状态与转场
 
 ```json
 {

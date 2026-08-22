@@ -267,11 +267,43 @@ curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
 | `action` | 必填字段 | `source` | 说明 |
 | --- | --- | --- | --- |
 | `chat` | `content`：非空字符串 | `chat` | 普通聊天。 |
+| `switch_team_member` | `target_expert_id`、`content`：非空字符串 | `toolbar` | 从当前专家团工具栏指定专家并携带问题；禁止从 `content` 解析专家名称。 |
+| `confirm_team_handoff` | `source_message_id`、`target_expert_id` | `team_handoff` | 确认主协调专家消息中的有效候选卡片。 |
 | `enter_skill` | `target_skill_id`：非空字符串 | `toolbar`、`route_suggestion` | 推荐跳转时额外需要 `source_message_id`、`source_interaction_id`。 |
 | `quit_skill` | `target_skill_id`：非空字符串 | `toolbar`、`exit_button` | `target_skill_id` 必须等于当前活动 Skill。 |
 | `stop` | 无 | `composer` | 取消当前 run。 |
 
 `enable_thinking`、`return_reasoning` 均为可选布尔值，默认 `false`。未知字段、错误类型或枚举不匹配返回 `422 REQUEST_VALIDATION_ERROR`。
+
+专家切换必须使用结构化 `target_expert_id`。`chat.content` 中即使出现 `@专家名称` 也只是普通对话文本，不触发路由；`context_data.expert_id` 也不能替代本轮结构化切换动作。
+
+#### 专家团工具栏指定专家并携带问题
+
+```bash
+curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
+  -H 'Accept: text/event-stream' -H 'Content-Type: application/json' \
+  -H 'X-SSE-Protocol: hailiang.sse.v2' \
+  --data-raw '{
+    "session_id":"session-1","run_id":"run-expert-toolbar-001",
+    "input":"{\"action\":\"switch_team_member\",\"source\":\"toolbar\",\"target_expert_id\":\"family_education_expert\",\"content\":\"孩子最近不愿意和我沟通，怎么办？\"}",
+    "context_data":{"student_name":"zz","user_id":"test-0723-1","profile_id":"pro-0723-1"}
+  }'
+```
+
+服务端只允许切换到当前专家团成员，并自行根据 `target_expert_id` 生成可见的 `@专家名称 + content` 历史记录。前端不得把专家名称拼进 `content` 作为路由依据。
+
+#### 确认主协调专家推荐卡
+
+```json
+{
+  "action": "confirm_team_handoff",
+  "source": "team_handoff",
+  "source_message_id": "msg_xxx",
+  "target_expert_id": "family_education_expert"
+}
+```
+
+两种来源的校验规则不同：`team_handoff` 只能选择来源卡片中的有效候选；`toolbar` 可以选择当前专家团任一成员，且不携带 `source_message_id`。
 
 ### 3. 工具栏进入与退出 Skill
 

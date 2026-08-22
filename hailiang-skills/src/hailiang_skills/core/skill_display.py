@@ -5,6 +5,7 @@ from typing import Any
 
 from hailiang_skills.core.skill_ids import (
     CAREER_PLAN_SKILL_ID,
+    EXPERT_DIRECT_EXECUTION_ID,
     GENERAL_CHAT_SKILL_ID,
     LEGACY_MAIN_PLANNER_SKILL_ID,
     canonical_skill_id,
@@ -48,6 +49,9 @@ def resolve_active_skill_id(context, fallback: str | None = None) -> str:
 
 def build_skill_display(context, active_skill: str | None = None, runtime_registry=None) -> dict[str, str]:
     skill_id = canonical_skill_id(active_skill or resolve_active_skill_id(context))
+    if skill_id == EXPERT_DIRECT_EXECUTION_ID:
+        return _build_expert_direct_display(context)
+
     main_state = (context.skill_states or {}).get(CAREER_PLAN_SKILL_ID, {})
     if not main_state:
         main_state = (context.skill_states or {}).get(LEGACY_MAIN_PLANNER_SKILL_ID, {})
@@ -108,6 +112,42 @@ def build_skill_display(context, active_skill: str | None = None, runtime_regist
         "scene_name": scene_name,
         "skill_theme": theme_key,
         "theme_key": theme_key,
+    }
+
+
+def _build_expert_direct_display(context) -> dict[str, str]:
+    """Build user-facing state for a direct reply from an Expert Agent.
+
+    ``expert_direct`` is intentionally not a registered Skill, so it has no
+    runtime metadata.  Its display identity must instead come from the active
+    expert recorded by the Agent runtime.
+    """
+    skill_states = getattr(context, "skill_states", {}) or {}
+    agent_runtime = skill_states.get("agent_runtime", {}) if isinstance(skill_states, dict) else {}
+    agent_runtime = agent_runtime if isinstance(agent_runtime, dict) else {}
+    expert_id = str(
+        agent_runtime.get("expert_id")
+        or agent_runtime.get("active_expert_id")
+        or ""
+    ).strip()
+    expert_name = str(agent_runtime.get("expert_name") or "").strip() or expert_id or "专家"
+    team_id = str(agent_runtime.get("expert_team_id") or "").strip()
+    description = (
+        f"由专家团成员 {expert_name} 基于当前对话和专家规则直接回答。"
+        if team_id
+        else f"由 {expert_name} 基于当前对话和专家规则直接回答。"
+    )
+    return {
+        "skill_id": EXPERT_DIRECT_EXECUTION_ID,
+        "skill_name": expert_name,
+        "description": description,
+        "brief": description,
+        "info": description,
+        "active_skill_label": expert_name,
+        "agent_label": expert_name,
+        "scene_name": "",
+        "skill_theme": "expert-direct",
+        "theme_key": "expert-direct",
     }
 
 

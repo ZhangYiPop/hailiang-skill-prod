@@ -45,6 +45,10 @@ export default function Home() {
     sessionTitle,
     activeSkill,
     skillCatalog,
+    expertCatalog,
+    expertTeamCatalog,
+    activeExpertId,
+    activeExpertTeam,
     messages,
     candidatePaths,
     sharedFacts,
@@ -79,8 +83,9 @@ export default function Home() {
     handleDeleteSession,
     handleRenameSession,
     handleSendMessage,
-    handleEnterSkill,
-    handleExitSkill,
+    handleSelectExpert,
+    handleExitExpert,
+    handleSelectExpertTeam,
     handleStopGeneration,
     handleRefreshEvents,
     handleDownloadSessionLogs,
@@ -102,6 +107,10 @@ export default function Home() {
   const activeSkillLabel = useMemo(
     () => skillCatalog.find((skill) => skill.skill_id === activeSkill)?.label || activeSkill,
     [activeSkill, skillCatalog],
+  );
+  const activeExpert = useMemo(
+    () => expertCatalog.find((expert) => expert.expert_id === activeExpertId) ?? null,
+    [activeExpertId, expertCatalog],
   );
 
   useEffect(() => {
@@ -227,6 +236,10 @@ export default function Home() {
         <StatusPill label={userId ? `用户 ${userId}` : "未登录"} />
         <StatusPill label={activeProfileName ? `孩子 ${activeProfileName}` : "未选择孩子"} />
         <StatusPill
+          label={activeExpertTeam ? `专家团 ${activeExpertTeam.name} · ${activeExpertTeam.active_mention_name}` : activeExpert ? `专家 ${activeExpert.name}` : "未选择专家"}
+          tone={activeExpertTeam || activeExpert ? "info" : "default"}
+        />
+        <StatusPill
           label={enableThinking ? "Thinking 已开启" : "Thinking 已关闭"}
           tone={enableThinking ? "info" : "default"}
         />
@@ -294,8 +307,14 @@ export default function Home() {
           disabled={!sessionId}
           showQuickPrompts={showQuickPrompts}
           onSubmit={handleSendMessage}
-          onSelectSkill={handleEnterSkill}
-          onExitSkill={handleExitSkill}
+          expertCatalog={expertCatalog}
+          expertTeamCatalog={expertTeamCatalog}
+          activeExpertId={activeExpertId}
+          activeExpertTeam={activeExpertTeam}
+          onSelectExpert={handleSelectExpert}
+          onExitExpert={handleExitExpert}
+          onSelectExpertTeam={handleSelectExpertTeam}
+          onExitExpertTeam={() => handleSelectExpertTeam("")}
           isGenerating={isSending}
           isCancelling={isCancellingRun}
           onStopGeneration={handleStopGeneration}
@@ -405,6 +424,10 @@ export default function Home() {
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                   <StatusPill label="对话测试前端" tone="success" />
                   <StatusPill label={sessionId ? "会话已建立" : "等待创建会话"} />
+                  <StatusPill
+                    label={activeExpertTeam ? `专家团：${activeExpertTeam.name}` : activeExpert ? `已进入 ${activeExpert.name}` : "未选择专家"}
+                    tone={activeExpertTeam || activeExpert ? "info" : "default"}
+                  />
                 </div>
                 <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
                   hailiang-skills 对话测试台

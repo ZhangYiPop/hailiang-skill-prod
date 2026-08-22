@@ -11,6 +11,10 @@ from __future__ import annotations
 CAREER_PLAN_SKILL_ID = "career_plan_entity"
 LEGACY_MAIN_PLANNER_SKILL_ID = "main_planner"
 GENERAL_CHAT_SKILL_ID = "general_chat"
+# This is an execution-source marker, not a registered runtime Skill. It
+# distinguishes an Agent's role-bounded answer from the legacy general-chat
+# fallback in state, traces, and user-facing session metadata.
+EXPERT_DIRECT_EXECUTION_ID = "expert_direct"
 
 
 def canonical_skill_id(value: object, *, default: str = "") -> str:

@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 import hailiang_skills.api.routes.chat_stream as chat_stream
 from hailiang_skills.api.routes.chat_stream import build_chat_stream_router
-from hailiang_skills.api.routes.chat_stream import ChatInput, EnterSkillInput, StopInput, _parse_input
+from hailiang_skills.api.routes.chat_stream import ChatInput, EnterSkillInput, StopInput, SwitchTeamMemberInput, _parse_input
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 from hailiang_skills.core import session_logging
 from hailiang_skills.core.concurrency import TurnCoordinator
@@ -344,6 +344,8 @@ def test_input_contract_and_external_run_id() -> None:
     assert isinstance(parsed, EnterSkillInput)
     parsed = _parse_input('{"action":"stop","source":"composer"}')
     assert isinstance(parsed, StopInput)
+    parsed = _parse_input('{"action":"switch_team_member","source":"toolbar","target_expert_id":"family_education_expert","content":"孩子沉迷手机怎么办"}')
+    assert isinstance(parsed, SwitchTeamMemberInput)
     with pytest.raises(HTTPException, match="INVALID_INPUT_JSON"):
         _parse_input("not-json")
     with pytest.raises(HTTPException, match="requires source_message_id"):

@@ -63,6 +63,8 @@ def empty_message_state(*, session_id: str, run_id: str) -> dict[str, Any]:
         "form": {},
         "path_options": {},
         "skill_rooms": [],
+        "team_handoff": {},
+        "expert": {"mode": "none", "team": {}, "active": {}, "transition": {}},
         "skill_transition": {},
         "session": {"active_skill": {}},
         "risk": empty_risk_state(),
@@ -340,7 +342,7 @@ class SseEnvelopeBuilder:
     def presentation(self) -> dict[str, Any]:
         return {
             key: deepcopy(self.state[key])
-            for key in ("assistant", "intent", "form", "path_options", "skill_rooms", "skill_transition", "session", "risk", "error")
+            for key in ("assistant", "intent", "form", "path_options", "skill_rooms", "team_handoff", "expert", "skill_transition", "session", "risk", "error")
         }
 
     def encode(self, event: str, data: dict[str, Any]) -> str | None:
@@ -469,6 +471,17 @@ class SseEnvelopeBuilder:
                 changed |= self._set("session", {"active_skill": active})
             return changed
 
+        if event == "team_handoff":
+            return self._set("team_handoff", _as_mapping(data))
+
+        if event == "expert_context":
+            return self._set("expert", {
+                "mode": str(data.get("mode") or "none"),
+                "team": _as_mapping(data.get("team")),
+                "active": _as_mapping(data.get("active")),
+                "transition": _as_mapping(data.get("transition")),
+            })
+
         if event == "skill_transition":
             transition = {
                 "action": str(data.get("action") or ""),
@@ -503,6 +516,8 @@ class SseEnvelopeBuilder:
                 "skill_rooms",
                 _skill_rooms_from_suggestions(data.get("route_suggestions"), message_id=self.state.get("message_id")),
             )
+            if "team_handoff" in data:
+                changed |= self._set("team_handoff", _as_mapping(data.get("team_handoff")))
             active = _active_skill(data)
             if active:
                 changed |= self._set("session", {"active_skill": active})
@@ -524,6 +539,8 @@ class SseEnvelopeBuilder:
                     message_id=data.get("message_id") or self.state.get("message_id"),
                 ),
             )
+            if "team_handoff" in data:
+                changed |= self._set("team_handoff", _as_mapping(data.get("team_handoff")))
             return changed
 
         if event == "security":
@@ -543,6 +560,7 @@ class SseEnvelopeBuilder:
             changed |= self._set("form", {})
             changed |= self._set("path_options", {})
             changed |= self._set("skill_rooms", [])
+            changed |= self._set("team_handoff", {})
             changed |= self._set("risk", {
                 "status": "blocked",
                 "stage": str(data.get("stage") or ""),
@@ -563,6 +581,7 @@ class SseEnvelopeBuilder:
             changed |= self._set("form", {})
             changed |= self._set("path_options", {})
             changed |= self._set("skill_rooms", [])
+            changed |= self._set("team_handoff", {})
             return changed
 
         if event in {"model_error", "run_failed"}:

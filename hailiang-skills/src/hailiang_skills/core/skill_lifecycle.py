@@ -12,6 +12,7 @@ from hailiang_skills.core.logging import make_event
 from hailiang_skills.core.skill_display import build_skill_display
 from hailiang_skills.core.skill_ids import (
     CAREER_PLAN_SKILL_ID,
+    EXPERT_DIRECT_EXECUTION_ID,
     GENERAL_CHAT_SKILL_ID,
     LEGACY_MAIN_PLANNER_SKILL_ID,
     canonical_skill_id,
@@ -130,11 +131,52 @@ def build_finalized_payload(
         "handoff_notes": handoff_notes,
         "source_skill_id": active_skill,
     }
-    is_specialist = active_skill not in {GENERAL_CHAT_SKILL_ID, CAREER_PLAN_SKILL_ID}
+    is_expert_direct = active_skill == EXPERT_DIRECT_EXECUTION_ID
+    is_specialist = active_skill not in {
+        GENERAL_CHAT_SKILL_ID,
+        CAREER_PLAN_SKILL_ID,
+        EXPERT_DIRECT_EXECUTION_ID,
+    }
     is_skill_transition_entry_turn = bool(
         (context.session_meta or {}).get("include_internal_transition_turn")
     ) and active_skill != GENERAL_CHAT_SKILL_ID
-    if is_skill_transition_entry_turn:
+    is_expert_team_turn = bool((context.session_meta or {}).get("expert_team_id"))
+    if is_expert_direct:
+        # A role-bounded Agent reply is not a runtime Skill transition. Do
+        # not attach generic Skill cards to it, which would misrepresent the
+        # execution source and bypass the Expert's own handoff protocol.
+        route_suggestions = []
+        route_analysis_event = {
+            "active_skill": active_skill,
+            "suggestion_count": 0,
+            "suggestion_source": "",
+            "llm_available": route_suggestion_client is not None,
+            "fallback_used": False,
+            "monitor_every_turn": monitor_route_suggestions_every_turn,
+            "skipped_reason": "expert_direct_response",
+            "analysis_reason": "专家 Agent 直接回答不生成通用 Skill 建议。",
+            "error": "",
+            "duration_ms": 0,
+        }
+    elif is_expert_team_turn:
+        # A team has its own, explicit handoff protocol.  Generic Skill route
+        # cards would bypass member confirmation and, worse, look identical
+        # to a team recommendation in the UI.  Only the coordinator's
+        # ``team_handoff`` card may offer a transfer in this mode.
+        route_suggestions = []
+        route_analysis_event = {
+            "active_skill": active_skill,
+            "suggestion_count": 0,
+            "suggestion_source": "",
+            "llm_available": route_suggestion_client is not None,
+            "fallback_used": False,
+            "monitor_every_turn": monitor_route_suggestions_every_turn,
+            "skipped_reason": "expert_team_turn",
+            "analysis_reason": "专家团会话仅使用主协调专家的成员转交卡，不生成通用 Skill 建议。",
+            "error": "",
+            "duration_ms": 0,
+        }
+    elif is_skill_transition_entry_turn:
         # The user has just confirmed this Skill by clicking its card or the
         # toolbar. Its entry reply must establish that consultation, rather
         # than immediately offering the alternatives the user just declined.

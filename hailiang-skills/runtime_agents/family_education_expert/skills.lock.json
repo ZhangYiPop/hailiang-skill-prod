@@ -1,0 +1,7 @@
+{
+  "lock_version": 1,
+  "skills": [
+    {"skill_id": "parenting_action_planner", "version": "1.0.0"},
+    {"skill_id": "mbti_self_exploration", "version": "1.0.0"}
+  ]
+}
