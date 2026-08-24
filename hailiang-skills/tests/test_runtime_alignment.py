@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_skill_runtime_core import MSAgentRuntimeProbe
+from agent_skill_runtime_core import MSAgentRuntimeProbe, parse_script_json_output
 
 from hailiang_skills.runtime_bridge.conversation_memory import (
     ConversationMemoryStore,
     supplement_questionnaire_evidence,
 )
-from hailiang_skills.runtime_bridge.main_planner import MainPlannerOrchestrator
+from hailiang_skills.runtime_bridge.main_planner import MainPlannerOrchestrator, _summarize_ms_agent_runtime_trace
 from hailiang_skills.runtime_bridge.ms_agent_adapter import MSAgentRuntimeAdapter, SandboxPrepareResult
 from hailiang_skills.skill_runtime.models import ChatMessage, SessionState
 from hailiang_skills.skill_runtime.session import build_prompt_assembly
@@ -48,12 +50,13 @@ class FakeSkillContainer:
     async def execute_python_script(self, script_path: Path, *, skill_id: str, input_spec: FakeExecutionInput):
         del skill_id
         FakeSkillContainer.execute_calls += 1
+        payload = json.loads(input_spec.stdin)
         return {
             "exit_code": 0,
-            "stdout": "ok",
+            "stdout": json.dumps({"ok": True, "payload": payload}, ensure_ascii=False),
             "stderr": "",
             "script_path": str(script_path),
-            "stdin_payload": json.loads(input_spec.stdin),
+            "stdin_payload": payload,
         }
 
 
@@ -190,12 +193,19 @@ def test_script_execution_waits_for_prepare_and_uses_script_inputs(tmp_path: Pat
         execute_scripts=True,
         script_inputs={
             "*": {"query": "fallback"},
-            "tool.py": {"query": "hello", "active_skill_id": "sample"},
+            "tool.py": {
+                "query": "hello",
+                "active_skill_id": "sample",
+                "messages": [{"role": "user", "content": "开始"}],
+            },
         },
     )
 
     assert outputs[0]["stdin_payload"]["query"] == "hello"
     assert outputs[0]["stdin_payload"]["active_skill_id"] == "sample"
+    assert outputs[0]["stdin_payload"]["messages"] == [{"role": "user", "content": "开始"}]
+    assert outputs[0]["return_value"] == outputs[0]["json_output"]
+    assert outputs[0]["return_value"]["payload"]["messages"] == [{"role": "user", "content": "开始"}]
     assert FakeSkillContainer.execute_calls == 1
     assert any(step.name == "sandbox_prepare" for step in steps)
     assert any(step.name == "requirements_cache" and step.payload["state"] == "hit" for step in steps)
@@ -226,7 +236,65 @@ def test_main_planner_allowlisted_scripts_use_local_fast_path(tmp_path: Path) ->
     assert len(outputs) == 2
     assert all(item["execution_mode"] == "local_fast_path" for item in outputs)
     assert all(item["exit_code"] == 0 for item in outputs)
+    assert all(item["return_value"] == item["json_output"] for item in outputs)
+    assert outputs[0]["return_value"]["payload"]["query"] == "给孩子做规划"
     assert any(step.name == "script_execution" and step.payload["execution_mode"] == "local_fast_path" for step in steps)
+
+
+def test_script_stdout_json_parser_accepts_final_json_line() -> None:
+    assert parse_script_json_output('{"ok": true, "round": 0}') == {"ok": True, "round": 0}
+    assert parse_script_json_output('debug log\n{"game_started": true, "phase": "play"}\n') == {
+        "game_started": True,
+        "phase": "play",
+    }
+    assert parse_script_json_output("debug log") is None
+
+
+def test_guess_profession_skill_starts_from_stdin_history() -> None:
+    skill_dir = Path(__file__).resolve().parents[1] / "runtime_skills" / "guess-profession"
+    script = skill_dir / "scripts" / "pick_profession.py"
+    payload = {
+        "messages": [
+            {"role": "user", "content": "开始"},
+            {"role": "assistant", "content": "开场"},
+            {"role": "user", "content": "给点线索"},
+        ]
+    }
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        input=json.dumps(payload, ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    output = json.loads(result.stdout)
+
+    assert output["game_started"] is True
+    assert output["round"] == 1
+    assert output["phase"] == "play"
+    assert output["current_profession"]
+
+
+def test_script_trace_keeps_structured_stdout_result() -> None:
+    result = {"game_started": True, "round": 0, "phase": "play"}
+    trace = _summarize_ms_agent_runtime_trace(
+        {
+            "execution_outputs": [
+                {
+                    "script": "pick_profession.py",
+                    "stdin_payload": {"messages": [{"role": "user", "content": "开始"}]},
+                    "stdout": json.dumps(result, ensure_ascii=False),
+                    "return_value": result,
+                    "json_output": result,
+                }
+            ]
+        }
+    )
+
+    output = trace["execution_outputs"][0]
+    assert output["stdin_payload"]["messages"] == [{"role": "user", "content": "开始"}]
+    assert output["return_value"] == result
+    assert output["json_output"] == result
 
 
 def test_sandbox_prepare_blocks_execution_when_docker_is_missing(tmp_path: Path) -> None:

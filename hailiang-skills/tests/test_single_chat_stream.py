@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -111,9 +112,14 @@ class _FakeRunner:
         lease = kwargs["lease"]
         builder = SseEnvelopeBuilder(run_id=lease.generation, session_id=session_id)
         try:
+            for event, data in kwargs.get("initial_events", []):
+                yield builder.encode(event, data)
             yield builder.encode("run_started", {"risk_stage": "input"})
             yield builder.encode("run_completed", {"message_id": "msg_fake", "status": "completed"})
         finally:
+            context = self.repository.get(session_id)
+            context.session_meta.setdefault("run_ledger", {}).setdefault(lease.generation, {})["status"] = "completed"
+            self.repository.save(context)
             self.turn_coordinator.release(lease)
 
     def prepare_skill_transition(self, session_id: str, user_id: str, **kwargs: object):
@@ -132,10 +138,15 @@ class _FakeRunner:
         to_skill = target if action == "enter" else "general_chat"
         builder = SseEnvelopeBuilder(run_id=lease.generation, session_id=session_id)
         try:
+            for event, data in kwargs.get("initial_events", []):
+                yield builder.encode(event, data)
             yield builder.encode("run_started", {"risk_stage": "input"})
             yield builder.encode("skill_transition", {"action": action, "to_skill_id": to_skill, "source": kwargs["source"]})
             yield builder.encode("run_completed", {"message_id": "msg_transition", "status": "completed"})
         finally:
+            context = self.repository.get(session_id)
+            context.session_meta.setdefault("run_ledger", {}).setdefault(lease.generation, {})["status"] = "completed"
+            self.repository.save(context)
             self.turn_coordinator.release(lease)
 
 
@@ -247,7 +258,9 @@ def test_new_session_seeds_registered_forwarded_facts_from_envelope_and_extra_fi
 
 def _api_payload(*, session_id: str = "sess_1", run_id: str = "run_1", input_payload: dict | str | None = None) -> dict:
     if input_payload is None:
-        input_payload = {"action": "chat", "content": "你好", "source": "chat"}
+        input_payload = {"action": "chat", "profile_id": "p1", "content": "你好", "source": "chat"}
+    elif isinstance(input_payload, dict) and input_payload.get("action") != "stop":
+        input_payload = {"profile_id": "p1", **input_payload}
     raw_input = input_payload if isinstance(input_payload, str) else __import__("json").dumps(input_payload)
     return {
         "session_id": session_id,
@@ -265,11 +278,12 @@ def api_client(monkeypatch, tmp_path: Path) -> tuple[TestClient, InMemorySession
     monkeypatch.setattr(chat_stream, "StreamingRunner", _FakeRunner)
     repository = InMemorySessionRepository()
     app = FastAPI()
-    app.include_router(build_chat_stream_router(repository, _FactService(), object()), prefix="/api/v1")
+    router = build_chat_stream_router(repository, _FactService(), object())
+    app.include_router(router, prefix="/api/v2")
     return TestClient(app), repository
 
 
-def test_open_or_resume_seeds_only_new_session(tmp_path: Path, monkeypatch) -> None:
+def test_open_or_resume_refreshes_matched_application_projection(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(session_logging, "SESSION_LOG_ROOT", tmp_path / "sessions")
     monkeypatch.setattr(session_logging, "USER_LOG_ROOT", tmp_path / "users")
     repository = InMemorySessionRepository()
@@ -284,7 +298,7 @@ def test_open_or_resume_seeds_only_new_session(tmp_path: Path, monkeypatch) -> N
     resumed, created = open_or_resume_session(repository, facts, session_id="sess_1", data=_context_data())
     assert created is False
     assert resumed.session_id == "sess_1"
-    assert facts.get_profile_facts("u1", "p1").get_value("grade") == "高二"
+    assert facts.get_profile_facts("u1", "p1").get_value("grade") == "高一"
 
 
 def test_new_session_allows_another_user_for_shared_profile(tmp_path: Path, monkeypatch) -> None:
@@ -319,7 +333,7 @@ def test_open_or_resume_rejects_session_owner_conflict(tmp_path: Path, monkeypat
             repository,
             facts,
             session_id="sess_1",
-            data=_context_data().model_copy(update={"profile_id": "p2"}),
+            data=_context_data().model_copy(update={"user_id": "u2"}),
         )
 
 
@@ -338,18 +352,20 @@ def test_open_or_resume_tolerates_concurrent_profile_insert(tmp_path: Path, monk
 
 
 def test_input_contract_and_external_run_id() -> None:
-    parsed = _parse_input('{"action":"chat","content":"你好","source":"chat"}')
+    parsed = _parse_input('{"action":"chat","profile_id":"p1","content":"你好","source":"chat"}')
     assert isinstance(parsed, ChatInput)
-    parsed = _parse_input('{"action":"enter_skill","target_skill_id":"interest_explore","source":"toolbar"}')
+    parsed = _parse_input('{"action":"enter_skill","profile_id":"p1","target_skill_id":"interest_explore","source":"toolbar"}')
     assert isinstance(parsed, EnterSkillInput)
     parsed = _parse_input('{"action":"stop","source":"composer"}')
     assert isinstance(parsed, StopInput)
-    parsed = _parse_input('{"action":"switch_team_member","source":"toolbar","target_expert_id":"family_education_expert","content":"孩子沉迷手机怎么办"}')
+    reserved = _parse_input('{"action":"open_session","profile_id":"p1","opening_mode":"model"}')
+    assert reserved.action == "open_session"
+    parsed = _parse_input('{"action":"switch_team_member","profile_id":"p1","source":"toolbar","target_expert_id":"family_education_expert","content":"孩子沉迷手机怎么办"}')
     assert isinstance(parsed, SwitchTeamMemberInput)
     with pytest.raises(HTTPException, match="INVALID_INPUT_JSON"):
         _parse_input("not-json")
     with pytest.raises(HTTPException, match="requires source_message_id"):
-        _parse_input('{"action":"enter_skill","target_skill_id":"interest_explore","source":"route_suggestion"}')
+        _parse_input('{"action":"enter_skill","profile_id":"p1","target_skill_id":"interest_explore","source":"route_suggestion"}')
 
     coordinator = TurnCoordinator()
     lease = coordinator.acquire("sess_1", "u1", run_id="bff_run_1")
@@ -360,7 +376,7 @@ def test_input_contract_and_external_run_id() -> None:
 def test_chat_stream_api_creates_session_and_uses_external_run_id(api_client) -> None:
     client, repository = api_client
 
-    response = client.post("/api/v1/sessions/chat/stream", json=_api_payload(run_id="bff_run_1"))
+    response = client.post("/api/v2/sessions/chat/stream", json=_api_payload(run_id="bff_run_1"))
 
     assert response.status_code == 200
     frames = _state_frames(response.text)
@@ -377,8 +393,8 @@ def test_chat_stream_api_creates_session_and_uses_external_run_id(api_client) ->
 def test_chat_stream_api_rejects_duplicate_external_run_id(api_client) -> None:
     client, repository = api_client
 
-    first = client.post("/api/v1/sessions/chat/stream", json=_api_payload(run_id="same_run"))
-    second = client.post("/api/v1/sessions/chat/stream", json=_api_payload(run_id="same_run"))
+    first = client.post("/api/v2/sessions/chat/stream", json=_api_payload(run_id="same_run"))
+    second = client.post("/api/v2/sessions/chat/stream", json=_api_payload(run_id="same_run"))
 
     assert first.status_code == 200
     assert second.status_code == 409
@@ -386,12 +402,84 @@ def test_chat_stream_api_rejects_duplicate_external_run_id(api_client) -> None:
     assert repository.get("sess_1").session_meta["external_run_ids"] == ["same_run"]
 
 
+def test_mismatch_routes_to_input_profile_without_seeding_forwarded_child(api_client) -> None:
+    client, repository = api_client
+    payload = _api_payload(
+        session_id="sess_mismatch_api",
+        run_id="run_mismatch",
+        input_payload={"action": "chat", "profile_id": "p2", "content": "聊 B", "source": "chat"},
+    )
+    payload["context_data"]["expert_id"] = "must_not_control_routing"
+
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+
+    assert response.status_code == 200
+    frames = _state_frames(response.text)
+    assert all(frame["profile_id"] == "p2" for frame in frames)
+    assert all(frame["profile_context_status"] == "mismatched" for frame in frames)
+    context = repository.get("sess_mismatch_api")
+    assert context.profile_id == "p2"
+    assert context.profile_name is None
+    assert "expert_id" not in context.session_meta
+    mismatch = [item for item in context.event_trace if item["event_type"] == "profile_context_mismatch"]
+    assert mismatch[-1]["payload"]["input_profile_id"]["sha256"]
+    assert mismatch[-1]["payload"]["context_profile_id"]["sha256"]
+    assert "student_name" not in mismatch[-1]["payload"]
+
+
+def test_manual_expert_is_bound_to_chat_and_persists_on_profile_branch(monkeypatch) -> None:
+    monkeypatch.setattr(chat_stream, "StreamingRunner", _FakeRunner)
+    repository = InMemorySessionRepository()
+    coordinator = SimpleNamespace(agent_id="career_plan_expert")
+    family = SimpleNamespace(agent_id="family_education_expert")
+    team = SimpleNamespace(
+        team_id="student_growth_expert_team",
+        coordinator_expert_id="career_plan_expert",
+        member_expert_ids={"career_plan_expert", "family_education_expert"},
+    )
+    orchestrator = SimpleNamespace(
+        expert_registry={
+            "career_plan_expert": coordinator,
+            "family_education_expert": family,
+        },
+        expert_team_registry={"student_growth_expert_team": team},
+    )
+    app = FastAPI()
+    app.include_router(build_chat_stream_router(repository, _FactService(), orchestrator), prefix="/api/v2")
+    client = TestClient(app)
+    session_id = "sess_manual_expert_" + uuid4().hex
+    first = _api_payload(
+        session_id=session_id,
+        run_id="manual_1",
+        input_payload={
+            "action": "chat",
+            "profile_id": "p1",
+            "expert_id": "family_education_expert",
+            "content": "分析亲子沟通",
+            "source": "chat",
+        },
+    )
+
+    assert client.post("/api/v2/sessions/chat/stream", json=first).status_code == 200
+    context = repository.get(session_id)
+    assert context.session_meta["active_expert_id"] == "family_education_expert"
+    assert context.session_meta["expert_selection_source"] == "manual"
+
+    follow_up = _api_payload(
+        session_id=session_id,
+        run_id="manual_2",
+        input_payload={"action": "chat", "profile_id": "p1", "content": "继续", "source": "chat"},
+    )
+    assert client.post("/api/v2/sessions/chat/stream", json=follow_up).status_code == 200
+    assert repository.get(session_id).session_meta["active_expert_id"] == "family_education_expert"
+
+
 def test_chat_stream_api_validates_input_contract(api_client) -> None:
     client, _ = api_client
 
-    invalid_json = client.post("/api/v1/sessions/chat/stream", json=_api_payload(input_payload="not-json"))
+    invalid_json = client.post("/api/v2/sessions/chat/stream", json=_api_payload(input_payload="not-json"))
     missing_route_fields = client.post(
-        "/api/v1/sessions/chat/stream",
+        "/api/v2/sessions/chat/stream",
         json=_api_payload(
             run_id="run_2",
             input_payload={
@@ -402,7 +490,7 @@ def test_chat_stream_api_validates_input_contract(api_client) -> None:
         ),
     )
     bad_source = client.post(
-        "/api/v1/sessions/chat/stream",
+        "/api/v2/sessions/chat/stream",
         json=_api_payload(
             run_id="run_3",
             input_payload={"action": "chat", "content": "你好", "source": "toolbar"},
@@ -417,13 +505,13 @@ def test_chat_stream_api_validates_input_contract(api_client) -> None:
 
 def test_stop_accepts_session_and_run_id_without_context_data(api_client) -> None:
     client, _repository = api_client
-    initial = client.post("/api/v1/sessions/chat/stream", json=_api_payload(run_id="initial_run"))
+    initial = client.post("/api/v2/sessions/chat/stream", json=_api_payload(run_id="initial_run"))
     assert initial.status_code == 200
 
     runner = _FakeRunner.instances[-1]
     runner.reserve_turn("sess_1", "u1", run_id="stop_run")
     response = client.post(
-        "/api/v1/sessions/chat/stream",
+        "/api/v2/sessions/chat/stream",
         json={
             "session_id": "sess_1",
             "run_id": "stop_run",
@@ -441,11 +529,11 @@ def test_non_stop_actions_still_require_session_and_context_data(api_client) -> 
     client, _repository = api_client
 
     response = client.post(
-        "/api/v1/sessions/chat/stream",
+        "/api/v2/sessions/chat/stream",
         json={
             "session_id": "sess_1",
             "run_id": "missing_context",
-            "input": '{"action":"chat","content":"你好","source":"chat"}',
+            "input": '{"action":"chat","profile_id":"p1","content":"你好","source":"chat"}',
         },
     )
 
@@ -457,14 +545,14 @@ def test_skill_transition_api_uses_single_endpoint_and_external_run_id(api_clien
     client, repository = api_client
 
     enter = client.post(
-        "/api/v1/sessions/chat/stream",
+        "/api/v2/sessions/chat/stream",
         json=_api_payload(
             run_id="run_enter",
             input_payload={"action": "enter_skill", "target_skill_id": "interest_explore", "source": "toolbar"},
         ),
     )
     quit_skill = client.post(
-        "/api/v1/sessions/chat/stream",
+        "/api/v2/sessions/chat/stream",
         json=_api_payload(
             run_id="run_quit",
             input_payload={"action": "quit_skill", "target_skill_id": "interest_explore", "source": "exit_button"},
@@ -477,7 +565,8 @@ def test_skill_transition_api_uses_single_endpoint_and_external_run_id(api_clien
     assert enter_frames[-1]["skill_transition"]["to_skill_id"] == "interest_explore"
     assert quit_skill.status_code == 200
     quit_frames = _state_frames(quit_skill.text)
-    assert [frame["status"] for frame in quit_frames] == ["streaming", "streaming", "completed"]
+    assert quit_frames[-1]["status"] == "completed"
+    assert all(frame["profile_id"] == "p1" for frame in quit_frames)
     assert quit_frames[-1]["run_id"] == "run_quit"
     assert quit_frames[-1]["skill_transition"]["to_skill_id"] == "general_chat"
     assert repository.get("sess_1").interaction_state["active_skill"] == "general_chat"
@@ -486,7 +575,7 @@ def test_skill_transition_api_uses_single_endpoint_and_external_run_id(api_clien
 def test_quit_skill_target_mismatch_does_not_claim_run_id(api_client) -> None:
     client, repository = api_client
     client.post(
-        "/api/v1/sessions/chat/stream",
+        "/api/v2/sessions/chat/stream",
         json=_api_payload(
             run_id="run_enter",
             input_payload={"action": "enter_skill", "target_skill_id": "interest_explore", "source": "toolbar"},
@@ -494,7 +583,7 @@ def test_quit_skill_target_mismatch_does_not_claim_run_id(api_client) -> None:
     )
 
     response = client.post(
-        "/api/v1/sessions/chat/stream",
+        "/api/v2/sessions/chat/stream",
         json=_api_payload(
             run_id="bad_quit",
             input_payload={"action": "quit_skill", "target_skill_id": "score_improve", "source": "exit_button"},

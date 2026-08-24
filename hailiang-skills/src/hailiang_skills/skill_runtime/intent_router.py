@@ -218,7 +218,7 @@ class IntentRouter:
     def embedding_error(self) -> str:
         return self._embedding_error
 
-    def route(self, user_message: str, state: SessionState) -> IntentRouteDecision:
+    def route(self, user_message: str, state: SessionState, *, llm_client=None) -> IntentRouteDecision:
         self.last_llm_error: Exception | None = None
         normalized = _normalize(user_message)
         active_skill_id = canonical_skill_id(state.active_skill_id, default=self.main_skill_id)
@@ -392,8 +392,9 @@ class IntentRouter:
         candidate, candidate_debug = self._best_candidate(normalized)
         route_debug.update(candidate_debug)
         candidate_skills = self._general_chat_candidate_skills(candidate_debug)
-        if candidate is None and self._llm_enabled():
-            llm_decision = self._route_with_llm(normalized, state)
+        router_llm_client = llm_client if llm_client is not None else self.llm_client
+        if candidate is None and self._llm_enabled(router_llm_client):
+            llm_decision = self._route_with_llm(normalized, state, router_llm_client)
             if llm_decision:
                 route_debug["llm_fallback_used"] = True
                 return llm_decision
@@ -772,11 +773,15 @@ class IntentRouter:
             return ()
         return tuple(float(value) for value in vectors[0])
 
-    def _llm_enabled(self) -> bool:
-        return bool(self.llm_client and self._intent_router_config().enable_llm_fallback)
+    def _llm_enabled(self, llm_client=None) -> bool:
+        return bool(
+            (llm_client if llm_client is not None else self.llm_client)
+            and self._intent_router_config().enable_llm_fallback
+        )
 
-    def _route_with_llm(self, normalized_message: str, state: SessionState) -> IntentRouteDecision | None:
-        if not self.llm_client:
+    def _route_with_llm(self, normalized_message: str, state: SessionState, llm_client=None) -> IntentRouteDecision | None:
+        llm_client = llm_client if llm_client is not None else self.llm_client
+        if not llm_client:
             return None
         examples_by_skill: dict[str, list[str]] = {}
         for example in self._examples:
@@ -800,11 +805,11 @@ class IntentRouter:
             ]
             complete_kwargs: dict[str, Any] = {}
             try:
-                if "request_purpose" in inspect.signature(self.llm_client.complete).parameters:
+                if "request_purpose" in inspect.signature(llm_client.complete).parameters:
                     complete_kwargs["request_purpose"] = "intent_router_fallback"
             except (TypeError, ValueError):
                 pass
-            raw = self.llm_client.complete(messages, **complete_kwargs)
+            raw = llm_client.complete(messages, **complete_kwargs)
         except Exception as exc:  # noqa: BLE001
             self.last_llm_error = exc
             return None

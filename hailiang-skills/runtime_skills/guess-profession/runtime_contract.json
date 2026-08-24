@@ -1,0 +1,21 @@
+{
+  "skill_id": "guess-profession",
+  "skill_role": "child",
+  "stages": [
+    {"id": "idle", "kind": "entry", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false},
+    {"id": "play", "kind": "game", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false},
+    {"id": "rescue", "kind": "game", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": true}
+  ],
+  "facts": {
+    "global": [],
+    "skill": ["current_profession", "round", "phase", "game_started"],
+    "stage": {
+      "play": ["current_profession", "round", "phase"],
+      "rescue": ["current_profession", "round", "phase"]
+    },
+    "exports": {"promote_to_global": [], "share_with_parent_skill": []}
+  },
+  "routes": [],
+  "accepts_scenes": ["猜职业游戏", "职业猜谜"],
+  "metadata": {"module_group": "interactive_game", "scene_name": "猜职业游戏"}
+}

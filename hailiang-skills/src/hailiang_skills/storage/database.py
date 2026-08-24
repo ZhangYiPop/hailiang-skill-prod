@@ -11,7 +11,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import DateTime, Integer, LargeBinary, String, Text, create_engine
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.types import JSON
@@ -32,12 +32,12 @@ class Base(DeclarativeBase):
 
 
 class SessionRow(Base):
-    __tablename__ = "advisor_sessions"
+    __tablename__ = "chat_sessions"
 
     session_id: Mapped[str] = mapped_column(String(80), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(160), index=True)
-    profile_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
-    profile_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    profile_id: Mapped[str | None] = mapped_column("active_profile_id", String(80), nullable=True, index=True)
+    profile_name: Mapped[str | None] = mapped_column("active_profile_name", String(160), nullable=True)
     title: Mapped[str | None] = mapped_column(String(256), nullable=True)
     payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -46,7 +46,7 @@ class SessionRow(Base):
 
 
 class SharedFactsRow(Base):
-    __tablename__ = "advisor_shared_facts"
+    __tablename__ = "chat_shared_facts"
 
     user_id: Mapped[str] = mapped_column(String(160), primary_key=True)
     facts: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
@@ -65,13 +65,80 @@ class UserMetadataRow(Base):
 
 
 class ProfileRow(Base):
-    __tablename__ = "advisor_profiles"
+    __tablename__ = "application_profile_projections"
 
     profile_id: Mapped[str] = mapped_column(String(80), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(160), index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
     facts: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class SessionProfileRow(Base):
+    __tablename__ = "chat_session_profiles"
+
+    session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.session_id", ondelete="CASCADE"), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    profile_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    state: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    branch_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class SessionItemRow(Base):
+    __tablename__ = "chat_session_items"
+    __table_args__ = (UniqueConstraint("session_id", "ordinal", name="uq_chat_session_item_ordinal"),)
+
+    item_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.session_id", ondelete="CASCADE"), index=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    item_type: Mapped[str] = mapped_column(String(40), index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    model_visible: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ChatRunRow(Base):
+    __tablename__ = "chat_runs"
+
+    run_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.session_id", ondelete="CASCADE"), index=True)
+    profile_id: Mapped[str] = mapped_column(String(80), index=True)
+    branch_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    action: Mapped[str] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(40), default="running", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class ContextCheckpointRow(Base):
+    __tablename__ = "chat_context_checkpoints"
+    __table_args__ = (UniqueConstraint("session_id", "profile_id", "covered_ordinal", name="uq_chat_checkpoint_coverage"),)
+
+    checkpoint_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.session_id", ondelete="CASCADE"), index=True)
+    profile_id: Mapped[str] = mapped_column(String(80), index=True)
+    covered_ordinal: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    source_item_ids: Mapped[list[Any]] = mapped_column(_json_type(), default=list)
+    token_metrics: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ContextJobRow(Base):
+    __tablename__ = "chat_context_jobs"
+
+    job_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.session_id", ondelete="CASCADE"), index=True)
+    profile_id: Mapped[str] = mapped_column(String(80), index=True)
+    target_ordinal: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(40), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 

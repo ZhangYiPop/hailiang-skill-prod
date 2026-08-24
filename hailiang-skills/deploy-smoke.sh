@@ -120,8 +120,8 @@ require_value AGENT_SKILL_RUNTIME_CORE_PATH
 # The normal test database and Redis namespace belong to the legacy test
 # service.  Requiring a distinct name prevents a smoke migration from changing it.
 case "$HAILIANG_DATABASE_URL" in
-  *hailiang_skills_test_*) ;;
-  *) echo "Smoke database must use a distinct name such as hailiang_skills_test_411" >&2; exit 2 ;;
+  *hailiang_skills_test_multi_profile_v1_smoke_*) ;;
+  *) echo "Smoke database must use a distinct name such as hailiang_skills_test_multi_profile_v1_smoke_411" >&2; exit 2 ;;
 esac
 case "$HAILIANG_REDIS_KEY_PREFIX" in
   hailiang:smoke*) ;;
@@ -256,6 +256,11 @@ for module in sys.argv[1:]:
 print("dependency imports passed")
 PY
 
+HAILIANG_DATABASE_URL="$(
+  HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" \
+    "$VENV_DIR/bin/python" scripts/prepare_database_baseline.py --mode strict
+)"
+export HAILIANG_DATABASE_URL
 if [ "$SKIP_MIGRATIONS" = "0" ]; then
   PYTHONPATH=src "$VENV_DIR/bin/alembic" upgrade head
 fi

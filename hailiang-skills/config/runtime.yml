@@ -6,9 +6,12 @@ memory_enabled: true
 memory_async_update: true
 sandbox_prewarm_enabled: true
 local_fast_path_enabled: true
-# Keep this many recent user/assistant messages verbatim. Only older complete
-# pairs are summarized, so 8 messages means the latest 4 turns stay raw.
-active_window_messages: 8
+# Keep the latest 8 user/assistant turns verbatim; only older complete pairs
+# are eligible for a profile-bound checkpoint.
+active_window_messages: 16
+context_window_tokens: 32000
+async_checkpoint_ratio: 0.60
+sync_compression_ratio: 0.80
 tool_routing:
   # ms_agent removes the normal-turn standalone classifier call. Use
   # standalone for a controlled rollback; invalid merged output still falls
@@ -50,3 +53,11 @@ sse_recording:
   enabled: true
   root_dir: logs/sse_recording/sessions
   format: jsonl
+# The interaction input currently owns the target child.  ``context_data`` is
+# only a forwarding-backend snapshot and may become authoritative later
+# without changing the public request envelope.
+session_profile_resolution:
+  authority: input
+
+expert_runtime:
+  default_team_id: student_growth_expert_team

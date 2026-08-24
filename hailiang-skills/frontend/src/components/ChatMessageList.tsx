@@ -149,6 +149,7 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
         // They must still render as system cards; otherwise their empty
         // assistant content becomes a blank bubble below the route card.
         const isTransition = message.messageType === "skill_transition";
+        const isProfileSwitch = message.messageType === "profile_switch";
         const statusBlocks = !isUser
           ? presentation && "steps" in presentation.intent
             ? [{
@@ -183,6 +184,17 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
         const routeInteraction = message.interactionStates?.route_suggestions;
         const routeExpired = routeInteraction?.status === "expired";
         const routeSelected = routeInteraction?.status === "selected";
+        if (isProfileSwitch) {
+          return (
+            <div key={message.id} className="flex items-center gap-3 py-1 text-xs text-slate-500">
+              <span className="h-px flex-1 bg-white/10" />
+              <span className="rounded-full border border-white/10 bg-slate-950/70 px-3 py-1.5">
+                {message.content}
+              </span>
+              <span className="h-px flex-1 bg-white/10" />
+            </div>
+          );
+        }
         if (isTransition && message.skillTransition) {
           const transition = message.skillTransition;
           const transitionInfo = transition.skill?.info || transition.skill?.description || "";
@@ -217,6 +229,7 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
                 >
                   <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-400">
                     <span>{isUser ? "你" : "助手"}</span>
+                    {message.profileName ? <span>· {message.profileName}</span> : null}
                     <span>{formatTime(message.createdAt)}</span>
                     {!isUser && message.streamingStatus === "streaming" ? <span>推理中</span> : null}
                     {!isUser && message.generationStatus === "cancelled" ? <span>已停止</span> : null}

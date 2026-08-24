@@ -34,6 +34,7 @@ class OpenAICompatibleChatClient:
         if not config.api_key:
             raise MissingAPIKeyError(f"缺少环境变量 {config.api_key_env}，无法调用模型接口")
         self._config = config
+        self._llm_route = "test_whitelist" if config.provider == "test_openai_compatible" else "default"
         self._http = httpx.Client(
             timeout=httpx.Timeout(config.timeout_s, connect=min(10, config.timeout_s)),
             limits=httpx.Limits(
@@ -178,13 +179,23 @@ class OpenAICompatibleChatClient:
         }
         try:
             started = perf_counter()
-            with span("llm.chat_completions", node="llm_request", attributes={"provider": "openai_compatible", "model": self._config.model, "mode": tool_mode}):
+            with span(
+                "llm.chat_completions",
+                node="llm_request",
+                attributes={
+                    "provider": self._config.provider,
+                    "model": self._config.model,
+                    "llm_route": self._llm_route,
+                    "mode": tool_mode,
+                },
+            ):
                 response = self._http.post(endpoint, content=body, headers=headers)
                 response.raise_for_status()
                 raw_response = response.text
                 usage = _extract_usage(raw_response)
                 metrics = {
                     "request_purpose": request_purpose,
+                    "llm_route": self._llm_route,
                     "stream": False,
                     "model": self._config.model,
                     "prompt_chars": prompt_chars,
@@ -257,7 +268,15 @@ class OpenAICompatibleChatClient:
             ttft_ms: float | None = None
             content_ttft_ms: float | None = None
             usage: dict[str, int | None] = {}
-            with span("llm.chat_completions.stream", node="llm_stream", attributes={"provider": "openai_compatible", "model": self._config.model}):
+            with span(
+                "llm.chat_completions.stream",
+                node="llm_stream",
+                attributes={
+                    "provider": self._config.provider,
+                    "model": self._config.model,
+                    "llm_route": self._llm_route,
+                },
+            ):
                 with self._http.stream("POST", endpoint, content=body, headers=headers) as response:
                     response.raise_for_status()
                     watcher_stop = threading.Event()
@@ -320,6 +339,7 @@ class OpenAICompatibleChatClient:
                         watcher_stop.set()
                         metrics = {
                             "request_purpose": request_purpose,
+                            "llm_route": self._llm_route,
                             "stream": True,
                             "model": self._config.model,
                             "prompt_chars": prompt_chars,

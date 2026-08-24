@@ -1,0 +1,486 @@
+{
+  "meta": {
+    "name": "MBTI 93题计分规则",
+    "version": "2.0",
+    "description": "从Excel Sheet3重新提取的计分规则（按实际题号解析）",
+    "totalRules": 93,
+    "dimensionCount": {
+      "E": 21,
+      "I": 21,
+      "S": 26,
+      "N": 26,
+      "T": 24,
+      "F": 24,
+      "J": 22,
+      "P": 22
+    },
+    "source": "MBTI测评－Excel M量表－93题自测版-Final.xls Sheet3"
+  },
+  "rules": [
+    {
+      "id": 1,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 2,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 3,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 4,
+      "optionA": "E",
+      "optionB": "I"
+    },
+    {
+      "id": 5,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 6,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 7,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 8,
+      "optionA": "E",
+      "optionB": "I"
+    },
+    {
+      "id": 9,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 10,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 11,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 12,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 13,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 14,
+      "optionA": "E",
+      "optionB": "I"
+    },
+    {
+      "id": 15,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 16,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 17,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 18,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 19,
+      "optionA": "E",
+      "optionB": "I"
+    },
+    {
+      "id": 20,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 21,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 22,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 23,
+      "optionA": "E",
+      "optionB": "I"
+    },
+    {
+      "id": 24,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 25,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 26,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 27,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 28,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 29,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 30,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 31,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 32,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 33,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 34,
+      "optionA": "E",
+      "optionB": "I"
+    },
+    {
+      "id": 35,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 36,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 37,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 38,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 39,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 40,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 41,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 42,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 43,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 44,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 45,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 46,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 47,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 48,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 49,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 50,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 51,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 52,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 53,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 54,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 55,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 56,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 57,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 58,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 59,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 60,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 61,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 62,
+      "optionA": "E",
+      "optionB": "I"
+    },
+    {
+      "id": 63,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 64,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 65,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 66,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 67,
+      "optionA": "E",
+      "optionB": "I"
+    },
+    {
+      "id": 68,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 69,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 70,
+      "optionA": "J",
+      "optionB": "P"
+    },
+    {
+      "id": 71,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 72,
+      "optionA": "I",
+      "optionB": "E"
+    },
+    {
+      "id": 73,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 74,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 75,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 76,
+      "optionA": "P",
+      "optionB": "J"
+    },
+    {
+      "id": 77,
+      "optionA": "E",
+      "optionB": "I"
+    },
+    {
+      "id": 78,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 79,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 80,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 81,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 82,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 83,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 84,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 85,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 86,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 87,
+      "optionA": "N",
+      "optionB": "S"
+    },
+    {
+      "id": 88,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 89,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 90,
+      "optionA": "S",
+      "optionB": "N"
+    },
+    {
+      "id": 91,
+      "optionA": "F",
+      "optionB": "T"
+    },
+    {
+      "id": 92,
+      "optionA": "T",
+      "optionB": "F"
+    },
+    {
+      "id": 93,
+      "optionA": "S",
+      "optionB": "N"
+    }
+  ]
+}

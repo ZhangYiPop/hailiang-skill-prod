@@ -57,6 +57,12 @@ def empty_message_state(*, session_id: str, run_id: str) -> dict[str, Any]:
         "ts": "",
         "elapsed_ms": 0,
         "message_id": None,
+        "profile_id": "",
+        "profile_name": "",
+        "branch_version": 0,
+        "profile_context_status": "matched",
+        "session_created": False,
+        "profile_switched": False,
         "status": "streaming",
         "assistant": {"content": "", "status": "streaming"},
         "intent": {},
@@ -387,6 +393,18 @@ class SseEnvelopeBuilder:
 
     def _apply(self, event: str, data: dict[str, Any]) -> bool:
         changed = False
+        if event == "profile_context":
+            for key in (
+                "profile_id",
+                "profile_name",
+                "branch_version",
+                "profile_context_status",
+                "session_created",
+                "profile_switched",
+            ):
+                if key in data:
+                    changed |= self._set(key, data[key])
+            return changed
         if event == "run_started":
             changed |= self._set("status", "streaming")
             changed |= self._set("assistant", {"content": "", "status": "streaming"})

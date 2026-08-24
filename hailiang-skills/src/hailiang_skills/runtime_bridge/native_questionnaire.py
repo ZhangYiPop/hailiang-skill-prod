@@ -92,6 +92,11 @@ def build_questionnaire_protocol(bundle: Any, state: Any) -> str:
 
 def question_specs(bundle: Any) -> list[dict[str, Any]]:
     config = questionnaire_config(bundle)
+    catalog_path = str(config.get("question_catalog_path") or "").strip()
+    if catalog_path:
+        path = Path(bundle.root_dir) / catalog_path
+        if path.is_file():
+            return _parse_json_question_catalog(path)
     table_path = str(config.get("rule_table") or "").strip()
     if table_path:
         path = Path(bundle.root_dir) / table_path
@@ -115,11 +120,19 @@ def available_question_specs(bundle: Any, state: Any) -> list[dict[str, Any]]:
     skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
     answers = _answers(state, skill_id)
     tier = _derive_tier(bundle, answers)
-    return [
+    specs = [
         _materialize_spec(spec, answers, tier)
         for spec in question_specs(bundle)
         if _question_visible(spec, answers, tier)
     ]
+    # Assessments may contain a large fixed catalog (for example MBTI's 93
+    # questions).  Expose only the next page to the model and client, while
+    # keeping every option server-declared and resumable in skill state.
+    page_size = _positive_int(questionnaire_config(bundle).get("sequential_page_size"))
+    if page_size:
+        unanswered = [item for item in specs if str(item["question_id"]) not in answers]
+        return unanswered[:page_size]
+    return specs
 
 
 def questionnaire_continuation_context(bundle: Any, state: Any) -> dict[str, Any] | None:
@@ -680,6 +693,50 @@ def _parse_rule_table(content: str) -> list[dict[str, Any]]:
             "display_condition": "当升学诉求包含稳就业时显示；选项由升学诉求规则行的二级选项定义",
             "option_conditions": {},
             "rule": "来源：升学诉求行的“稳就业下二级选项为军警、师范、农科、医学、飞行员”。",
+        })
+    return specs
+
+
+def _parse_json_question_catalog(path: Path) -> list[dict[str, Any]]:
+    """Load a strict A/B assessment catalog without putting it in the prompt."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    entries = payload.get("questions") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return []
+    specs: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        raw_id = entry.get("id")
+        try:
+            number = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        question = str(entry.get("question") or "").strip()
+        options = entry.get("options")
+        if not question or not isinstance(options, dict):
+            continue
+        option_a = str(options.get("A") or "").strip()
+        option_b = str(options.get("B") or "").strip()
+        if not option_a or not option_b:
+            continue
+        specs.append({
+            "question_id": f"mbti_{number:03d}",
+            "label": f"第 {number} 题：{question}",
+            "input_type": "single_select",
+            "value_type": "string",
+            "options": [
+                {"label": f"A. {option_a}", "value": "A"},
+                {"label": f"B. {option_b}", "value": "B"},
+            ],
+            "max_selections": 1,
+            "decimal_places": None,
+            "display_condition": "",
+            "option_conditions": {},
+            "rule": "MBTI 93 题题库；每题只能选择 A 或 B。",
         })
     return specs
 

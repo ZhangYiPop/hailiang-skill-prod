@@ -32,6 +32,8 @@ def load_session_context_from_snapshot(session_id: str) -> SessionContext:
         asset_version=snapshot.get("asset_version", "dev"),
         session_meta=snapshot.get("session_meta", {}),
         last_fact_changes=snapshot.get("last_fact_changes", []),
+        profile_branches=snapshot.get("profile_branches", {}),
+        timeline_items=snapshot.get("timeline_items", []),
     )
     shared_facts = _build_known_facts(snapshot.get("shared_facts"))
     profile_facts = _build_known_facts(snapshot.get("profile_facts"))

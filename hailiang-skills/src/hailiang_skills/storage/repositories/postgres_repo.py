@@ -11,7 +11,17 @@ from sqlalchemy import delete, select, update
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.core.telemetry import span
 from hailiang_skills.schemas.facts import FactRecord, KnownFacts
-from hailiang_skills.storage.database import AuditPayloadRow, ProfileRow, SessionEventRow, SessionRow, SharedFactsRow, UserMetadataRow
+from hailiang_skills.storage.database import (
+    AuditPayloadRow,
+    ChatRunRow,
+    ProfileRow,
+    SessionEventRow,
+    SessionItemRow,
+    SessionProfileRow,
+    SessionRow,
+    SharedFactsRow,
+    UserMetadataRow,
+)
 from hailiang_skills.storage.repositories.base import BaseSessionRepository
 
 
@@ -43,6 +53,7 @@ def _jsonable(value: Any) -> Any:
 
 
 def _context_payload(context: SessionContext) -> dict[str, Any]:
+    context.sync_active_branch()
     return {
         "messages": _jsonable(context.messages),
         "shared_facts": _facts_to_payload(context.shared_facts),
@@ -56,11 +67,29 @@ def _context_payload(context: SessionContext) -> dict[str, Any]:
         "asset_version": context.asset_version,
         "session_meta": _jsonable(context.session_meta),
         "last_fact_changes": _jsonable(context.last_fact_changes),
+        "profile_branches": _jsonable(context.profile_branches),
+        "timeline_items": _jsonable(context.timeline_items),
     }
 
 
-def _context_from_row(row: SessionRow) -> SessionContext:
+def _context_from_row(
+    row: SessionRow,
+    *,
+    branches: list[SessionProfileRow] | None = None,
+    items: list[SessionItemRow] | None = None,
+) -> SessionContext:
     payload = row.payload or {}
+    branch_payloads = dict(payload.get("profile_branches") or {})
+    for branch in branches or []:
+        branch_payloads[branch.profile_id] = {
+            **dict(branch.state or {}),
+            "profile_id": branch.profile_id,
+            "profile_name": branch.profile_name,
+            "branch_version": branch.branch_version,
+        }
+    timeline_items = list(payload.get("timeline_items") or [])
+    if items is not None:
+        timeline_items = [dict(item.payload or {}) for item in items]
     context = SessionContext(
         session_id=row.session_id,
         user_id=row.user_id,
@@ -76,6 +105,8 @@ def _context_from_row(row: SessionRow) -> SessionContext:
         asset_version=str(payload.get("asset_version") or "dev"),
         session_meta=dict(payload.get("session_meta") or {}),
         last_fact_changes=list(payload.get("last_fact_changes") or []),
+        profile_branches=branch_payloads,
+        timeline_items=timeline_items,
     )
     context.load_effective_facts(
         shared_facts=_facts_from_payload(payload.get("shared_facts")),
@@ -104,6 +135,8 @@ class PostgresSessionRepository(BaseSessionRepository):
                     payload=_context_payload(context),
                     version=1,
                 ))
+                db.flush()
+                self._sync_profile_storage(db, context)
             context.session_meta["_storage_version"] = 1
             return context
 
@@ -113,7 +146,15 @@ class PostgresSessionRepository(BaseSessionRepository):
                 row = db.get(SessionRow, session_id)
                 if row is None:
                     raise KeyError(session_id)
-                return _context_from_row(row)
+                branches = db.scalars(
+                    select(SessionProfileRow).where(SessionProfileRow.session_id == session_id)
+                ).all()
+                items = db.scalars(
+                    select(SessionItemRow)
+                    .where(SessionItemRow.session_id == session_id)
+                    .order_by(SessionItemRow.ordinal)
+                ).all()
+                return _context_from_row(row, branches=list(branches), items=list(items))
 
     def save(self, context: SessionContext) -> SessionContext:
         expected = int(context.session_meta.get("_storage_version") or 1)
@@ -134,6 +175,7 @@ class PostgresSessionRepository(BaseSessionRepository):
                 )
                 if result.rowcount != 1:
                     raise SessionVersionConflict(f"session {context.session_id} was updated concurrently")
+                self._sync_profile_storage(db, context)
             context.session_meta["_storage_version"] = expected + 1
             return context
 
@@ -152,16 +194,79 @@ class PostgresSessionRepository(BaseSessionRepository):
 
     def list(self) -> list[SessionContext]:
         with self._session_factory() as db:
-            return [_context_from_row(row) for row in db.scalars(select(SessionRow)).all()]
+            rows = db.scalars(select(SessionRow)).all()
+            return [self.get(row.session_id) for row in rows]
 
     def list_by_profile(self, user_id: str, profile_id: str) -> list[SessionContext]:
         with self._session_factory() as db:
             query = (
                 select(SessionRow)
-                .where(SessionRow.user_id == user_id, SessionRow.profile_id == profile_id)
+                .join(SessionProfileRow, SessionProfileRow.session_id == SessionRow.session_id)
+                .where(SessionRow.user_id == user_id, SessionProfileRow.profile_id == profile_id)
                 .order_by(SessionRow.updated_at.desc())
             )
-            return [_context_from_row(row) for row in db.scalars(query).all()]
+            return [self.get(row.session_id) for row in db.scalars(query).all()]
+
+    def _sync_profile_storage(self, db, context: SessionContext) -> None:
+        context.sync_active_branch()
+        for profile_id, raw_state in context.profile_branches.items():
+            state = dict(raw_state or {})
+            branch = db.get(SessionProfileRow, (context.session_id, profile_id))
+            if branch is None:
+                branch = SessionProfileRow(
+                    session_id=context.session_id,
+                    profile_id=profile_id,
+                    profile_name=state.get("profile_name"),
+                    state=state,
+                    branch_version=int(state.get("branch_version") or 1),
+                )
+                db.add(branch)
+            else:
+                branch.profile_name = state.get("profile_name")
+                branch.state = state
+                branch.branch_version = int(state.get("branch_version") or branch.branch_version or 1)
+                branch.updated_at = datetime.now(timezone.utc)
+        for ordinal, raw_item in enumerate(context.timeline_items, start=1):
+            item = dict(raw_item or {})
+            item_id = str(item.get("item_id") or f"item_{uuid4().hex[:16]}")
+            item["item_id"] = item_id
+            row = db.get(SessionItemRow, item_id)
+            if row is None:
+                db.add(SessionItemRow(
+                    item_id=item_id,
+                    session_id=context.session_id,
+                    ordinal=ordinal,
+                    profile_id=str(item.get("profile_id") or "") or None,
+                    item_type=str(item.get("item_type") or "message"),
+                    payload=item,
+                    model_visible=bool(item.get("model_visible", True)),
+                ))
+            else:
+                row.ordinal = ordinal
+                row.profile_id = str(item.get("profile_id") or "") or None
+                row.item_type = str(item.get("item_type") or "message")
+                row.payload = item
+                row.model_visible = bool(item.get("model_visible", True))
+
+    def record_run(self, context: SessionContext, run_id: str, action: str) -> None:
+        with self._session_factory.begin() as db:
+            if db.get(ChatRunRow, run_id) is not None:
+                return
+            db.add(ChatRunRow(
+                run_id=run_id,
+                session_id=context.session_id,
+                profile_id=str(context.profile_id or ""),
+                branch_version=int(context.session_meta.get("_active_branch_version") or 1),
+                action=action,
+                status="running",
+            ))
+
+    def update_run_status(self, run_id: str, status: str) -> None:
+        with self._session_factory.begin() as db:
+            row = db.get(ChatRunRow, run_id)
+            if row is not None:
+                row.status = status
+                row.updated_at = datetime.now(timezone.utc)
 
     def recent_session_payloads(self, user_id: str, profile_id: str, *, limit: int = 2) -> list[dict]:
         """Fetch only the data needed to build a new-session greeting.
@@ -173,8 +278,9 @@ class PostgresSessionRepository(BaseSessionRepository):
         with span("postgres.session.recent_summary", node="recent_summary_lookup"):
             with self._session_factory() as db:
                 query = (
-                    select(SessionRow.payload)
-                    .where(SessionRow.user_id == user_id, SessionRow.profile_id == profile_id)
+                    select(SessionProfileRow.state)
+                    .join(SessionRow, SessionRow.session_id == SessionProfileRow.session_id)
+                    .where(SessionRow.user_id == user_id, SessionProfileRow.profile_id == profile_id)
                     .order_by(SessionRow.updated_at.desc())
                     .limit(max(1, limit))
                 )

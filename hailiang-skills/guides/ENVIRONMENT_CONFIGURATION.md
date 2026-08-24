@@ -14,9 +14,19 @@ sudo nano /etc/hailiang-skills/test.env
 | 参数 | 含义 | 测试 | 正式 |
 | --- | --- | --- | --- |
 | `DASHSCOPE_API_KEY` | 大模型服务密钥 | 测试密钥或共享密钥 | 生产密钥 |
+| `HAILIANG_SESSION_PROFILE_AUTHORITY` | 孩子 ID 权威策略：`input` / `context_data` / `strict_match` | `input` | `input` |
+| `HAILIANG_DEFAULT_EXPERT_TEAM_ID` | 新孩子分支默认专家团 | `student_growth_expert_team` | `student_growth_expert_team` |
+| `HAILIANG_CONTEXT_WINDOW_TOKENS` | 单孩子分支的上下文预算 | `32000` | 按模型窗口设置 |
+| `HAILIANG_ASYNC_CHECKPOINT_RATIO` | 异步检查点触发比例 | `0.60` | `0.60` |
+| `HAILIANG_SYNC_COMPRESSION_RATIO` | 同步压缩触发比例 | `0.80` | `0.80` |
+| `HAILIANG_TEST_LLM_ENABLED` | 是否启用测试模型白名单分流 | `false` | 必须为 `false` |
+| `HAILIANG_TEST_LLM_USER_IDS` | 测试用户 ID，逗号或换行分隔 | 空 | 不配置 |
+| `HAILIANG_TEST_LLM_BASE_URL` | 测试模型 OpenAI 兼容 base URL | 空 | 不配置 |
+| `HAILIANG_TEST_LLM_API_KEY` | 测试模型 API Key | 空 | 不配置 |
+| `HAILIANG_TEST_LLM_MODEL` | 测试模型名称 | `qwen3.7-plus` | 不配置 |
 | `HAILIANG_AUDIT_ENCRYPTION_KEY` | 审计加密密钥 | 独立密钥 | 独立密钥 |
 | `HAILIANG_SECURITY_QUARANTINE_KEY` | 风控拦截证据加密密钥 | 独立密钥 | 独立密钥 |
-| `HAILIANG_DATABASE_URL` | PostgreSQL 连接串 | `hailiang_skills_test` | `hailiang_skills` |
+| `HAILIANG_DATABASE_URL` | PostgreSQL 连接串（多孩子新基线） | `hailiang_skills_test_multi_profile_v1` | `hailiang_skills_multi_profile_v1` |
 | `HAILIANG_STORAGE_BACKEND` | 会话、事实和审计的持久化后端 | 固定 `postgres` | 固定 `postgres` |
 | `HAILIANG_BIND_HOST` | API 监听地址 | `127.0.0.1` | BFF 可访问的私网 IP |
 | `HAILIANG_FRONTEND_BIND_HOST` | 内部测试网页监听地址 | 测试人员可访问的私网 IP | 测试人员可访问的私网 IP |

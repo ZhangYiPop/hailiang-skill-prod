@@ -1,4 +1,4 @@
-from agent_skill_runtime_core.core import AgentSkillRuntimeCore
+from agent_skill_runtime_core.core import AgentSkillRuntimeCore, parse_script_json_output
 from agent_skill_runtime_core.models import (
     CoreTraceStep,
     LoadedSkillContext,
@@ -18,5 +18,6 @@ __all__ = [
     "SkillPackageError",
     "TraceStatus",
     "probe_ms_agent_runtime",
+    "parse_script_json_output",
     "validate_skill_directory",
 ]

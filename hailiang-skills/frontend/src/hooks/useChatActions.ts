@@ -11,10 +11,13 @@ import {
   getSession,
   getSessionContext,
   getUserFacts,
-  listProfileSessions,
+  listExperts,
+  listExpertTeams,
+  listUserSessions,
   listProfiles,
   listRuntimeSkills,
   normalizeMessageBlocks,
+  updateProfile,
   updateSessionTitle,
   updateMessageFeedback,
   updateMessageInteraction,
@@ -33,6 +36,7 @@ import {
   type SkillCatalogItem,
   type SkillTransition,
   type SessionContextMessage,
+  type TeamHandoff,
 } from "@/utils/api";
 import { postSseStream } from "@/utils/sse";
 import { buildClientOpeningMessage } from "@/utils/opening";
@@ -48,7 +52,7 @@ import type {
 
 const supersededStreamControllers = new WeakSet<AbortController>();
 
-function makeMessageId(role: "user" | "assistant" | "session" | "run"): string {
+function makeMessageId(role: "user" | "assistant" | "session" | "run" | "profile"): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `${role}-${crypto.randomUUID()}`;
   }
@@ -79,6 +83,8 @@ function presentationFromState(state: SseV2State): MessagePresentation {
     form: state.form,
     path_options: state.path_options,
     skill_rooms: state.skill_rooms,
+    team_handoff: state.team_handoff,
+    expert: state.expert,
     skill_transition: state.skill_transition,
     session: state.session,
     risk: state.risk,
@@ -96,12 +102,18 @@ function normalizeContextMessages(messages: SessionContextMessage[]): ChatMessag
   .map((message, index) => {
     const metadata = message.metadata ?? {};
     const presentation = message.presentation ?? (metadata as { presentation?: MessagePresentation }).presentation;
+    const messageType = message.message_type ?? metadata.message_type;
+    const content = messageType === "profile_switch"
+      ? `已从 ${String(metadata.from_profile_name ?? metadata.from_profile_id ?? "上一位孩子")} 切换到 ${String(metadata.to_profile_name ?? metadata.to_profile_id ?? "当前孩子")}`
+      : presentation?.assistant.content ?? message.content;
     return {
       id: `${message.role}-${index}`,
       messageId: message.message_id,
       role: message.role,
-      content: presentation?.assistant.content ?? message.content,
+      content,
       createdAt: message.created_at ?? new Date().toISOString(),
+      profileId: String(metadata.profile_id ?? "") || undefined,
+      profileName: String(metadata.profile_name ?? "") || undefined,
       blocks: presentation ? [] : normalizeMessageBlocks(message.blocks ?? metadata.blocks ?? []),
       presentation,
       skillId: message.skill_id ?? metadata.skill_id,
@@ -118,9 +130,10 @@ function normalizeContextMessages(messages: SessionContextMessage[]): ChatMessag
       interactionStates: message.interaction_states ?? metadata.interaction_states ?? {},
       feedback: message.feedback ?? metadata.feedback,
       feedbackUpdatedAt: message.feedback_updated_at ?? metadata.feedback_updated_at,
-      messageType: message.message_type ?? metadata.message_type,
+      messageType,
       skillIntro: message.skill_intro ?? metadata.skill_intro,
       skillTransition: message.skill_transition ?? metadata.skill_transition,
+      teamHandoff: message.team_handoff ?? metadata.team_handoff,
       generationStatus: (message.generation_status ?? metadata.generation_status) as string | undefined,
       streamingStatus: "completed",
     };
@@ -302,6 +315,23 @@ function currentSchoolYear(facts: FactMap): string {
     : "";
 }
 
+function profileSchoolFactsForIdentity(existingFacts: FactMap, identity: DebugIdentity): Array<Record<string, string>> | null {
+  if (!identity.school_year && !identity.grade) {
+    return null;
+  }
+  const current = existingFacts.profile_school_facts?.value;
+  const history = Array.isArray(current)
+    ? current.filter((item): item is Record<string, string> => typeof item === "object" && item !== null)
+    : [];
+  const latest = history.at(-1) ?? {};
+  const schoolYear = identity.school_year || String(latest.school_year ?? "");
+  const grade = identity.grade || String(latest.grade ?? "");
+  if (!schoolYear && !grade) {
+    return null;
+  }
+  return [...history.slice(0, -1), { ...(schoolYear ? { school_year: schoolYear } : {}), ...(grade ? { grade } : {}) }];
+}
+
 type ApplyDebugIdentityOptions = {
   refreshProfileWorkspace?: boolean;
 };
@@ -342,12 +372,11 @@ export function useChatActions() {
     }
     try {
       await postSseStream({
-        url: `${state.apiBaseUrl}/api/v1/sessions/chat/stream`,
+        url: `${state.apiBaseUrl}/api/v2/sessions/chat/stream`,
         body: {
           session_id: state.sessionId,
           run_id: runId,
           input: JSON.stringify({ action: "stop", source: "composer" }),
-          context_data: buildContextData(identity),
         },
         onEvent: (event) => {
           if (event.event !== "state") {
@@ -398,17 +427,27 @@ export function useChatActions() {
     store.setActiveProfileName(sessionResult.profile_name ?? state.activeProfileName);
     store.setCandidatePaths(sessionResult.candidate_paths);
     store.setSkillStates(sessionResult.skill_states);
+    store.setActiveExpertId(sessionResult.expert?.expert_id ?? "");
+    store.setActiveExpertTeam(sessionResult.expert_team ?? null);
     store.setEvents(eventsResult.events);
   }, [store]);
 
   const loadSkillCatalog = useCallback(async () => {
     const state = useChatStore.getState();
     try {
-      const skills = await listRuntimeSkills(state.apiBaseUrl, state.debugIdentity?.grade ?? "");
+      const [skills, experts, teams] = await Promise.all([
+        listRuntimeSkills(state.apiBaseUrl, state.debugIdentity?.grade ?? ""),
+        listExperts(state.apiBaseUrl),
+        listExpertTeams(state.apiBaseUrl),
+      ]);
       store.setSkillCatalog(skills);
+      store.setExpertCatalog(experts);
+      store.setExpertTeamCatalog(teams);
       return skills;
     } catch {
       store.setSkillCatalog([]);
+      store.setExpertCatalog([]);
+      store.setExpertTeamCatalog([]);
       return [];
     }
   }, [store]);
@@ -477,8 +516,11 @@ export function useChatActions() {
       store.setSessionId(targetSessionId);
       store.setSessionTitle(contextResult.title ?? sessionResult.title ?? "");
       store.setActiveProfileId(nextProfileId);
+      store.setSelectedProfileId(nextProfileId);
       store.setActiveProfileName(nextProfileName);
       store.setActiveSkill(nextActiveSkill);
+      store.setActiveExpertId(contextResult.expert?.expert_id ?? sessionResult.expert?.expert_id ?? "");
+      store.setActiveExpertTeam(contextResult.expert_team ?? sessionResult.expert_team ?? null);
       store.setCurrentScenario(nextScenario);
       const contextMessages = normalizeContextMessages(contextResult.messages);
       store.setMessages(
@@ -510,13 +552,13 @@ export function useChatActions() {
     async (profileId: string, userIdOverride?: string) => {
       const state = useChatStore.getState();
       const userId = userIdOverride ?? state.userId;
-      if (!userId || !profileId) {
+      if (!userId) {
         store.setSessionList([]);
         return [];
       }
       store.setLoadingSessions(true);
       try {
-        const response = await listProfileSessions(state.apiBaseUrl, userId, profileId);
+        const response = await listUserSessions(state.apiBaseUrl, userId);
         store.setSessionList(response.sessions ?? []);
         const currentSessionId = useChatStore.getState().sessionId;
         if (currentSessionId) {
@@ -567,6 +609,57 @@ export function useChatActions() {
     }
   }, [store]);
 
+  const ensureDebugProfile = useCallback(async (identity: DebugIdentity): Promise<DebugIdentity> => {
+    const state = useChatStore.getState();
+    const profilesResponse = await listProfiles(state.apiBaseUrl, identity.user_id);
+    const profiles = profilesResponse.profiles ?? [];
+    const requestedProfileId = identity.profile_id.trim();
+    let profile = requestedProfileId
+      ? profiles.find((item) => item.profile_id === requestedProfileId)
+      : profiles[0];
+    let resolvedProfileId = profile?.profile_id ?? (requestedProfileId || makeMessageId("profile"));
+    const fallbackName = identity.display_name.trim() || "未命名孩子";
+
+    if (!profile) {
+      const created = await createProfile(state.apiBaseUrl, identity.user_id, {
+        name: fallbackName,
+        profile_id: resolvedProfileId,
+        initialize_from_shared_facts: false,
+      });
+      profile = created.profile;
+      resolvedProfileId = profile.profile_id;
+    } else if (identity.display_name.trim() && identity.display_name.trim() !== profile.name) {
+      const updated = await updateProfile(state.apiBaseUrl, identity.user_id, profile.profile_id, {
+        name: identity.display_name.trim(),
+      });
+      profile = updated.profile;
+    }
+
+    const profileFactsResponse = await getProfileFacts(state.apiBaseUrl, identity.user_id, resolvedProfileId);
+    const updates: Array<{ key: string; value: unknown }> = [];
+    const schoolHistory = profileSchoolFactsForIdentity(profileFactsResponse.facts ?? {}, identity);
+    if (schoolHistory) updates.push({ key: "profile_school_facts", value: schoolHistory });
+    if (identity.grade) updates.push({ key: "grade", value: identity.grade });
+    if (updates.length > 0) {
+      await upsertProfileFacts(state.apiBaseUrl, identity.user_id, resolvedProfileId, {
+        scope: "profile",
+        source: {
+          type: "debug_identity",
+          source_id: `debug_identity:${resolvedProfileId}`,
+          source_label: "测试工作区身份资料",
+        },
+        updates,
+      });
+    }
+
+    return {
+      ...identity,
+      display_name: profile.name || fallbackName,
+      profile_id: resolvedProfileId,
+      session_id: identity.session_id || makeMessageId("session"),
+    };
+  }, []);
+
   const applyDebugIdentity = useCallback(
     async (identity: DebugIdentity, options: ApplyDebugIdentityOptions = {}) => {
       const applySequence = ++identityApplySequenceRef.current;
@@ -577,58 +670,85 @@ export function useChatActions() {
       store.setSessionList([]);
       store.resetConversation();
       store.setActiveProfileId("");
+      store.setSelectedProfileId("");
       store.setActiveProfileName("");
       store.setErrorMessage("");
       store.setUserId(identity.user_id);
 
+      // Applying either identity mode is an explicit application-side
+      // synchronization point.  Do not wait for the first chat SSE request:
+      // the profile card and Facts workspace must already represent this
+      // child before a user starts a conversation.
+      const synchronizedIdentity = await ensureDebugProfile(identity);
+      if (!isCurrentApply()) return;
+      store.setDebugIdentity(synchronizedIdentity);
+      const state = useChatStore.getState();
+
       if (!options.refreshProfileWorkspace) {
-        // The single stream endpoint creates the session lazily on the first
-        // message. Local debugging deliberately follows the BFF payload shape.
-        store.setActiveProfileId(identity.profile_id);
-        store.setActiveProfileName(identity.display_name);
-        store.setSessionId(identity.session_id);
+        // Session creation remains lazy, but the child projection is already
+        // synchronized above so the debug workspace never shows an empty
+        // child archive after applying an identity.
+        store.setActiveProfileId(synchronizedIdentity.profile_id);
+        store.setSelectedProfileId(synchronizedIdentity.profile_id);
+        store.setActiveProfileName(synchronizedIdentity.display_name);
+        store.setSessionId(synchronizedIdentity.session_id);
+        const [profileFactsResponse, userFactsResponse] = await Promise.all([
+          getProfileFacts(state.apiBaseUrl, synchronizedIdentity.user_id, synchronizedIdentity.profile_id),
+          getUserFacts(state.apiBaseUrl, synchronizedIdentity.user_id),
+        ]);
+        if (!isCurrentApply()) return;
+        const profileFacts = profileFactsResponse.facts ?? {};
+        const sharedFacts = userFactsResponse.shared_facts ?? userFactsResponse.facts ?? {};
+        store.setProfiles((await listProfiles(state.apiBaseUrl, synchronizedIdentity.user_id)).profiles ?? []);
+        store.setFactsSnapshot({
+          userFacts: userFactsResponse.facts,
+          sharedFacts,
+          profileFacts,
+          effectiveFacts: { ...sharedFacts, ...profileFacts },
+        });
         await loadSkillCatalog();
         return;
       }
 
-      const state = useChatStore.getState();
-      const profilesResponse = await listProfiles(state.apiBaseUrl, identity.user_id);
+      const profilesResponse = await listProfiles(state.apiBaseUrl, synchronizedIdentity.user_id);
       if (!isCurrentApply()) return;
       const profiles = profilesResponse.profiles ?? [];
       store.setProfiles(profiles);
-      const profile = profiles.find((item) => item.profile_id === identity.profile_id) ?? profiles[0];
+      const profile = profiles.find((item) => item.profile_id === synchronizedIdentity.profile_id) ?? profiles[0];
 
       if (!profile) {
         // Preserve the established forwarding fallback for a user whose first
         // request creates its profile lazily through the stream endpoint.
-        store.setActiveProfileId(identity.profile_id);
-        store.setActiveProfileName(identity.display_name);
-        store.setSessionId(identity.session_id || makeMessageId("session"));
+        store.setActiveProfileId(synchronizedIdentity.profile_id);
+        store.setSelectedProfileId(synchronizedIdentity.profile_id);
+        store.setActiveProfileName(synchronizedIdentity.display_name);
+        store.setSessionId(synchronizedIdentity.session_id);
         await loadSkillCatalog();
         return;
       }
 
       const [profileFactsResponse, userFactsResponse, sessionsResponse] = await Promise.all([
-        getProfileFacts(state.apiBaseUrl, identity.user_id, profile.profile_id),
-        getUserFacts(state.apiBaseUrl, identity.user_id),
-        listProfileSessions(state.apiBaseUrl, identity.user_id, profile.profile_id),
+        getProfileFacts(state.apiBaseUrl, synchronizedIdentity.user_id, profile.profile_id),
+        getUserFacts(state.apiBaseUrl, synchronizedIdentity.user_id),
+        listUserSessions(state.apiBaseUrl, synchronizedIdentity.user_id),
       ]);
       if (!isCurrentApply()) return;
 
       const profileFacts = profileFactsResponse.facts ?? {};
       const sharedFacts = userFactsResponse.shared_facts ?? userFactsResponse.facts ?? {};
       const sessions = sessionsResponse.sessions ?? [];
-      const session = sessions.find((item) => item.session_id === identity.session_id) ?? sessions[0];
+      const session = sessions.find((item) => item.session_id === synchronizedIdentity.session_id) ?? sessions[0];
       const resolvedIdentity: DebugIdentity = {
-        ...identity,
-        display_name: profile.name || identity.display_name,
+        ...synchronizedIdentity,
+        display_name: profile.name || synchronizedIdentity.display_name,
         profile_id: profile.profile_id,
         session_id: session?.session_id ?? makeMessageId("session"),
-        school_year: currentSchoolYear(profileFacts),
-        grade: textFactValue(profileFacts, "grade"),
+        school_year: currentSchoolYear(profileFacts) || synchronizedIdentity.school_year,
+        grade: textFactValue(profileFacts, "grade") || synchronizedIdentity.grade,
       };
       store.setDebugIdentity(resolvedIdentity);
       store.setActiveProfileId(profile.profile_id);
+      store.setSelectedProfileId(profile.profile_id);
       store.setActiveProfileName(profile.name);
       store.setSessionList(sessions);
       store.setFactsSnapshot({
@@ -648,7 +768,7 @@ export function useChatActions() {
       store.setSessionTitle("");
       store.setActiveSkill("");
     },
-    [abortCurrentStream, loadSkillCatalog, refreshSessionData, store],
+    [abortCurrentStream, ensureDebugProfile, loadSkillCatalog, refreshSessionData, store],
   );
 
   const resetDebugIdentity = useCallback(async () => {
@@ -658,6 +778,7 @@ export function useChatActions() {
     store.setProfiles([]);
     store.setSessionList([]);
     store.setActiveProfileId("");
+    store.setSelectedProfileId("");
     store.setActiveProfileName("");
   }, [abortCurrentStream, store]);
 
@@ -673,6 +794,7 @@ export function useChatActions() {
     if (identity.profile_id && identity.session_id) {
       store.setUserId(identity.user_id);
       store.setActiveProfileId(identity.profile_id);
+      store.setSelectedProfileId(identity.profile_id);
       store.setActiveProfileName(identity.display_name);
       store.setSessionId(identity.session_id);
       return;
@@ -689,29 +811,43 @@ export function useChatActions() {
         return;
       }
       const state = useChatStore.getState();
-      store.setActiveProfileId(profileId);
       const profile = state.profiles.find((item) => item.profile_id === profileId);
-      store.setActiveProfileName(profile?.name ?? "");
-      const sessions = await loadSessionList(profileId, state.userId);
-      const preferredSession = sessions[0] ?? null;
-      if (preferredSession?.session_id) {
-        await loadSession(preferredSession.session_id);
-        return;
-      }
-      // A newly created child may not have any session yet. Keep the workspace
-      // usable by creating its first session immediately instead of leaving an
-      // empty, disabled composer behind.
-      store.resetConversation();
-      store.setActiveProfileId(profileId);
-      store.setActiveProfileName(profile?.name ?? "");
-      store.setActiveSkill("");
-      const sessionId = makeMessageId("session");
-      store.setSessionId(sessionId);
-      store.setSessionTitle("");
+      // Selection is a browser-side intent. The session changes only when the
+      // next profile-bound SSE action is accepted by the server.
+      store.setSelectedProfileId(profileId);
       const identity = useChatStore.getState().debugIdentity;
-      if (identity) store.setDebugIdentity({ ...identity, profile_id: profileId, session_id: sessionId });
+      if (identity) {
+        // ``context_data`` is re-applied by the server on the next SSE turn.
+        // Never carry school metadata from the previously selected child into
+        // that request. Clear it first so an immediate send is safe, then
+        // replace it with the selected child's persisted profile Facts.
+        store.setDebugIdentity({
+          ...identity,
+          profile_id: profileId,
+          display_name: profile?.name ?? identity.display_name,
+          school_year: "",
+          grade: "",
+        });
+        try {
+          const response = await getProfileFacts(state.apiBaseUrl, state.userId, profileId);
+          const currentIdentity = useChatStore.getState().debugIdentity;
+          if (currentIdentity?.profile_id !== profileId) {
+            return;
+          }
+          const facts = response.facts ?? {};
+          store.setDebugIdentity({
+            ...currentIdentity,
+            school_year: currentSchoolYear(facts),
+            grade: textFactValue(facts, "grade"),
+          });
+        } catch {
+          // Empty basic fields are safer than the previous child's fields.
+          // The next matched forwarding request will not overwrite this
+          // profile until its own facts can be read successfully.
+        }
+      }
     },
-    [loadSession, loadSessionList, store],
+    [store],
   );
 
   const handleCreateProfile = useCallback(
@@ -761,7 +897,7 @@ export function useChatActions() {
 
   const handleCreateSession = useCallback(async () => {
     const state = useChatStore.getState();
-    if (!state.userId || !state.activeProfileId) {
+    if (!state.userId || !(state.selectedProfileId || state.activeProfileId)) {
       throw new Error("请先选择孩子档案");
     }
     store.setCreatingSession(true);
@@ -769,7 +905,8 @@ export function useChatActions() {
     try {
       const sessionId = makeMessageId("session");
       store.resetConversation();
-      store.setActiveProfileId(state.activeProfileId);
+      store.setSelectedProfileId(state.selectedProfileId || state.activeProfileId);
+      store.setActiveProfileId("");
       store.setActiveProfileName(state.activeProfileName);
       store.setActiveSkill("");
       store.setSessionId(sessionId);
@@ -781,7 +918,7 @@ export function useChatActions() {
     } finally {
       store.setCreatingSession(false);
     }
-  }, [loadSessionList, store]);
+  }, [store]);
 
   const handleRenameSession = useCallback(
     async (sessionId: string, title: string) => {
@@ -840,20 +977,41 @@ export function useChatActions() {
           sourceMessageId?: string;
           sourceInteractionId?: string;
         };
+        teamHandoff?: {
+          sourceMessageId: string;
+          targetExpertId: string;
+        };
+        teamMemberSwitch?: {
+          targetExpertId: string;
+        };
       } = {},
     ) => {
       if (!store.sessionId) {
         throw new Error("请先创建会话");
       }
 
+      const requestState = useChatStore.getState();
+      const targetProfileId = requestState.selectedProfileId || requestState.activeProfileId;
+      if (!targetProfileId) {
+        throw new Error("请先选择孩子档案");
+      }
+      const requestedExpertId = requestState.pendingExpertId.trim();
+
       const trimmed = content.trim();
       if (!trimmed) {
         return;
       }
+      const activeTeam = useChatStore.getState().activeExpertTeam;
+      const toolbarTarget = options.teamMemberSwitch
+        ? activeTeam?.members.find((member) => member.expert_id === options.teamMemberSwitch?.targetExpertId)
+        : undefined;
 
       const currentAbortController = useChatStore.getState().streamAbortController;
       if (currentAbortController && !options.reuseAssistantMessageId) {
-        supersededStreamControllers.add(currentAbortController);
+        const activeRunId = useChatStore.getState().currentRunId;
+        if (activeRunId) {
+          await cancelStreamRun(currentAbortController, activeRunId);
+        }
         currentAbortController.abort();
         store.setStreamAbortController(null);
         store.setSending(false);
@@ -896,6 +1054,10 @@ export function useChatActions() {
       let streamFailed = false;
       let abortController: AbortController | null = null;
       let mainContentEnded = false;
+      // A profile switch is accepted by the server as part of this stream.
+      // Once it completes, the browser must replace its old branch cache with
+      // the server-restored branch rather than merely changing the profile ID.
+      let profileSwitchedDuringRun = false;
 
       try {
         if (exitTransition) {
@@ -932,7 +1094,14 @@ export function useChatActions() {
               };
             }),
           );
-          store.appendMessage(makeMessage("user", trimmed));
+          const visibleUserContent = toolbarTarget
+            ? `@${toolbarTarget.mention_name} ${trimmed}`
+            : trimmed;
+          const targetProfile = useChatStore.getState().profiles.find((item) => item.profile_id === targetProfileId);
+          store.appendMessage(makeMessage("user", visibleUserContent, [], {
+            profileId: targetProfileId,
+            profileName: targetProfile?.name,
+          }));
           assistantMessageId = store.createAssistantPlaceholder();
           store.setComposerValue("");
         } else if (assistantMessageId) {
@@ -980,6 +1149,7 @@ export function useChatActions() {
         const input = options.transition
           ? {
               action: options.transition.action === "enter" ? "enter_skill" : "quit_skill",
+              profile_id: targetProfileId,
               target_skill_id: options.transition.targetSkillId ?? useChatStore.getState().activeSkill ?? "career_plan_entity",
               source: options.transition.source,
               source_message_id: options.transition.sourceMessageId,
@@ -987,16 +1157,50 @@ export function useChatActions() {
               enable_thinking: thinkingEnabledForTurn,
               return_reasoning: thinkingEnabledForTurn,
             }
-          : { action: "chat", content: trimmed, source: "chat", enable_thinking: thinkingEnabledForTurn, return_reasoning: thinkingEnabledForTurn };
+          : options.teamHandoff
+            ? {
+                action: "confirm_team_handoff",
+                profile_id: targetProfileId,
+                source_message_id: options.teamHandoff.sourceMessageId,
+                target_expert_id: options.teamHandoff.targetExpertId,
+                source: "team_handoff",
+                enable_thinking: thinkingEnabledForTurn,
+                return_reasoning: thinkingEnabledForTurn,
+              }
+            : options.teamMemberSwitch
+              ? {
+                  action: "switch_team_member",
+                  profile_id: targetProfileId,
+                  source: "toolbar",
+                  target_expert_id: options.teamMemberSwitch.targetExpertId,
+                  content: trimmed,
+                  enable_thinking: thinkingEnabledForTurn,
+                  return_reasoning: thinkingEnabledForTurn,
+                }
+            : {
+                action: "chat",
+                profile_id: targetProfileId,
+                ...(requestedExpertId ? { expert_id: requestedExpertId } : {}),
+                content: trimmed,
+                source: "chat",
+                enable_thinking: thinkingEnabledForTurn,
+                return_reasoning: thinkingEnabledForTurn,
+              };
         const runId = makeMessageId("run");
         let latestStateSeq = -1;
         await postSseStream({
-            url: `${store.apiBaseUrl}/api/v1/sessions/chat/stream`,
+            url: `${store.apiBaseUrl}/api/v2/sessions/chat/stream`,
             body: {
               session_id: store.sessionId,
               run_id: runId,
               input: JSON.stringify(input),
-              context_data: buildContextData(identity),
+              context_data: buildContextData({
+                ...identity,
+                profile_id: targetProfileId,
+                display_name:
+                  useChatStore.getState().profiles.find((item) => item.profile_id === targetProfileId)?.name
+                  ?? identity.display_name,
+              }),
             },
             signal: abortController.signal,
             onEvent: (event: StreamEvent) => {
@@ -1005,8 +1209,31 @@ export function useChatActions() {
                 if (state.run_id !== runId || state.seq <= latestStateSeq) {
                   return;
                 }
+                if (state.profile_id && state.profile_id !== targetProfileId) {
+                  return;
+                }
+                const knownBranchVersion = state.profile_id
+                  ? useChatStore.getState().profileBranches[state.profile_id]?.branchVersion ?? 0
+                  : 0;
+                if (state.branch_version && state.branch_version < knownBranchVersion) {
+                  return;
+                }
                 latestStateSeq = state.seq;
                 store.setCurrentRunId(state.run_id);
+                profileSwitchedDuringRun ||= state.profile_switched;
+                if (state.profile_id) {
+                  store.setActiveProfileId(state.profile_id);
+                  store.setSelectedProfileId(state.profile_id);
+                  store.setActiveProfileName(state.profile_name ?? "");
+                  store.setProfileBranch(state.profile_id, {
+                    activeExpertId: state.expert.active.expert_id ?? "",
+                    activeSkill: state.session.active_skill.skill_id ?? "",
+                    branchVersion: state.branch_version,
+                  });
+                  if (requestedExpertId) {
+                    store.setPendingExpertId("");
+                  }
+                }
                 if (pendingStopStreamRef.current === abortController && abortController) {
                   void cancelStreamRun(abortController, state.run_id);
                 } else {
@@ -1017,11 +1244,48 @@ export function useChatActions() {
                   store.setActiveSkill(activeSkill);
                   store.setCurrentScenario(state.session.active_skill.scene_name ?? "");
                 }
+                const authoritativeExpertId = state.expert.active.expert_id ?? "";
+                if (state.expert.mode !== "none") {
+                  store.setActiveExpertId(authoritativeExpertId);
+                }
+                if (state.expert.mode === "team" && authoritativeExpertId) {
+                  const currentTeam = useChatStore.getState().activeExpertTeam;
+                  const teamId = state.expert.team.team_id ?? "";
+                  const catalogTeam = useChatStore.getState().expertTeamCatalog.find((item) => item.team_id === teamId);
+                  const baseTeam = currentTeam?.team_id === teamId
+                    ? currentTeam
+                    : catalogTeam
+                      ? {
+                          team_id: catalogTeam.team_id,
+                          name: catalogTeam.name,
+                          coordinator_expert_id: catalogTeam.coordinator_expert_id,
+                          coordinator_mention_name:
+                            catalogTeam.members.find((item) => item.is_coordinator)?.mention_name ?? "",
+                          active_expert_id: authoritativeExpertId,
+                          active_mention_name: "",
+                          members: catalogTeam.members,
+                        }
+                      : null;
+                  if (baseTeam) {
+                    const member = baseTeam.members.find((item) => item.expert_id === authoritativeExpertId);
+                    store.setActiveExpertTeam({
+                      ...baseTeam,
+                      active_expert_id: authoritativeExpertId,
+                      active_mention_name: member?.mention_name ?? state.expert.active.mention_name ?? "",
+                    });
+                  }
+                } else if (state.expert.mode === "single") {
+                  store.setActiveExpertTeam(null);
+                }
                 store.updateMessage(assistantMessageId, (message) => ({
                   ...message,
                   messageId: state.message_id ?? message.messageId,
                   content: state.assistant.content,
                   presentation: presentationFromState(state),
+                  teamHandoff:
+                    "candidates" in state.team_handoff && Array.isArray(state.team_handoff.candidates)
+                      ? (state.team_handoff as TeamHandoff)
+                      : undefined,
                   blocks: [],
                   routeSuggestions: [],
                   reasoningContent: "",
@@ -1239,6 +1503,8 @@ export function useChatActions() {
                       message.contextCompression,
                     routeSuggestions:
                       (actionData.route_suggestions as RouteSuggestion[] | undefined) ?? message.routeSuggestions,
+                    teamHandoff:
+                      (actionData as SkillActionData & { team_handoff?: typeof message.teamHandoff }).team_handoff ?? message.teamHandoff,
                     streamingStatus: "completed",
                   }));
                   if (actionData.active_skill) {
@@ -1283,6 +1549,8 @@ export function useChatActions() {
                     agentLabel: (finalData.agent_label as string | null | undefined) ?? message.agentLabel,
                     skillBrief: (finalData as FinalMessageData & { skill_brief?: string }).skill_brief ?? message.skillBrief,
                     skillInfo: (finalData as FinalMessageData & { skill_info?: string }).skill_info ?? message.skillInfo,
+                    teamHandoff:
+                      (finalData as FinalMessageData & { team_handoff?: typeof message.teamHandoff }).team_handoff ?? message.teamHandoff,
                     sceneName: (finalData.scene_name as string | null | undefined) ?? nextScenario,
                     themeKey: (finalData.skill_theme as string | null | undefined) ?? message.themeKey,
                     conclusionSummary:
@@ -1385,7 +1653,11 @@ export function useChatActions() {
           return;
         }
 
-        await refreshEventPanels();
+        if (profileSwitchedDuringRun) {
+          await refreshSessionData(useChatStore.getState().sessionId);
+        } else {
+          await refreshEventPanels();
+        }
         await loadSessionList(useChatStore.getState().activeProfileId);
       } catch (error) {
         if (abortController && supersededStreamControllers.has(abortController)) {
@@ -1413,7 +1685,7 @@ export function useChatActions() {
         }
       }
     },
-    [cancelStreamRun, loadSessionList, refreshEventPanels, store],
+    [cancelStreamRun, loadSessionList, refreshEventPanels, refreshSessionData, store],
   );
 
   const handleRetryMessage = useCallback(
@@ -1437,10 +1709,93 @@ export function useChatActions() {
 
   const handleEnterSkill = useCallback(
     async (skill: SkillCatalogItem) => {
+      // A toolbar Skill entry is deliberately standalone. The backend clears
+      // expert mode too, so old clients cannot bypass an expert lock.
+      store.setActiveExpertId("");
       await handleSendMessage(`进入${skill.label}`, {
         appendUserMessage: false,
         transition: { action: "enter", targetSkillId: skill.skill_id, source: "toolbar" },
       });
+    },
+    [handleSendMessage, store],
+  );
+
+  const handleSelectExpert = useCallback(
+    async (expertId: string) => {
+      const state = useChatStore.getState();
+      const normalizedExpertId = expertId.trim();
+      const expert = state.expertCatalog.find((item) => item.expert_id === normalizedExpertId);
+      if (normalizedExpertId && !expert) {
+        throw new Error("专家不存在或当前不可用");
+      }
+      // Selection is only a client-side intent. The next chat request carries
+      // input.expert_id and atomically activates the expert with that message.
+      store.setPendingExpertId(normalizedExpertId);
+    },
+    [store],
+  );
+
+  const handleExitExpert = useCallback(async () => {
+    const state = useChatStore.getState();
+    const coordinatorId = state.activeExpertTeam?.coordinator_expert_id
+      ?? state.expertTeamCatalog[0]?.coordinator_expert_id
+      ?? "";
+    store.setPendingExpertId(coordinatorId);
+  }, [store]);
+
+  const handleSelectExpertTeam = useCallback(
+    async (teamId: string) => {
+      const state = useChatStore.getState();
+      const normalizedTeamId = teamId.trim();
+      const team = state.expertTeamCatalog.find((item) => item.team_id === normalizedTeamId);
+      if (normalizedTeamId && !team) {
+        throw new Error("专家团不存在或当前不可用");
+      }
+      // The configured default team is branch state. Selecting it merely
+      // chooses its coordinator for the next chat; no hidden mutation API.
+      store.setPendingExpertId(team?.coordinator_expert_id ?? "");
+    },
+    [store],
+  );
+
+  const handleConfirmTeamHandoff = useCallback(
+    async (messageId: string, targetExpertId: string, mentionName: string) => {
+      const source = useChatStore.getState().messages.find((message) => message.id === messageId);
+      if (!source?.messageId) {
+        throw new Error("转交卡已失效，请重新提问");
+      }
+      useChatStore.getState().updateMessage(messageId, (message) => ({
+        ...message,
+        interactionStates: {
+          ...(message.interactionStates ?? {}),
+          team_handoff: {
+            ...(message.interactionStates?.team_handoff ?? { kind: "team_handoff" }),
+            status: "selected",
+            selected_target_skill_id: targetExpertId,
+          },
+        },
+      }));
+      try {
+        // Keep context_data on the current coordinator until the server has
+        // atomically confirmed the card.  Optimistically changing it here
+        // used to pre-switch the session before confirmation was persisted.
+        await handleSendMessage(`@${mentionName}`, {
+          teamHandoff: { sourceMessageId: source.messageId, targetExpertId },
+        });
+      } catch (error) {
+        useChatStore.getState().updateMessage(messageId, (message) => ({
+          ...message,
+          interactionStates: {
+            ...(message.interactionStates ?? {}),
+            team_handoff: {
+              ...(message.interactionStates?.team_handoff ?? { kind: "team_handoff" }),
+              status: "active",
+              selected_target_skill_id: undefined,
+            },
+          },
+        }));
+        throw error;
+      }
     },
     [handleSendMessage],
   );
@@ -1732,6 +2087,10 @@ export function useChatActions() {
     handleRetryMessage,
     handleEnterSkill,
     handleExitSkill,
+    handleSelectExpert,
+    handleExitExpert,
+    handleSelectExpertTeam,
+    handleConfirmTeamHandoff,
     handleStopGeneration,
     handleClearUserFactsBySource,
     handleMessageFeedback,

@@ -42,7 +42,6 @@ from hailiang_skills.storage.repositories.session_index_repo import (
 )
 from hailiang_skills.storage.repositories.session_repo import InMemorySessionRepository
 from hailiang_skills.security.models import ModerationBlockedError
-from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 
 
 def build_session_logs_archive(session_id: str) -> bytes:
@@ -139,31 +138,8 @@ class ProfileSchoolFact(BaseModel):
     grade: str = Field(min_length=1)
 
 
-class CreateSessionRequest(BaseModel):
-    session_id: str = Field(min_length=1)
-    user_id: str = Field(min_length=1)
-    profile_id: str = Field(min_length=1)
-    parent_name: str | None = None  # legacy compatibility; not used for opening copy
-    profile_school_facts: list[ProfileSchoolFact] = Field(default_factory=list)
-
-
 class UpdateSessionRequest(BaseModel):
     title: str = Field(min_length=1)
-
-
-class ExpertSelectionRequest(BaseModel):
-    # ``null`` explicitly leaves expert mode and restores standalone Skill
-    # testing. The server validates every non-empty ID against its local
-    # Expert Bundle registry.
-    expert_id: str | None = None
-    # The frontend creates sessions lazily on the first interaction. Supplying
-    # identity here allows an expert to be the *first* interaction too.
-    context_data: ContextData | None = None
-
-
-class ExpertTeamSelectionRequest(BaseModel):
-    team_id: str | None = None
-    context_data: ContextData | None = None
 
 
 class MessageFeedbackRequest(BaseModel):
@@ -205,18 +181,42 @@ def build_chat_router(
         return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
     def public_messages(context: SessionContext) -> list[dict[str, Any]]:
-        """Expose one v2 presentation shape for both new and legacy history."""
+        """Expose the active child's history in the v2 presentation shape.
+
+        ``timeline_items`` is deliberately cross-profile and append-only for
+        audit/navigation.  It must not be used as a chat branch's visible
+        history: doing so makes messages from another child appear after a
+        branch switch.  ``context.messages`` is restored by
+        ``activate_profile_branch`` and is therefore the authoritative,
+        profile-isolated history for this endpoint.
+        """
+        timeline = [
+            {
+                "item_type": "message",
+                "profile_id": context.profile_id,
+                "profile_name": context.profile_name,
+                "message": message,
+            }
+            for message in context.messages
+        ]
         latest_assistant_id = next(
             (
-                str(message.get("message_id") or "")
-                for message in reversed(context.messages)
-                if message.get("role") == "assistant"
+                str((item.get("message") or {}).get("message_id") or "")
+                for item in reversed(timeline)
+                if item.get("item_type") == "message" and (item.get("message") or {}).get("role") == "assistant"
             ),
             "",
         )
         items: list[dict[str, Any]] = []
-        for message in context.messages:
+        for item in timeline:
+            message = item.get("message") if isinstance(item.get("message"), dict) else None
+            if message is None:
+                continue
             copy = dict(message)
+            metadata = dict(copy.get("metadata") or {})
+            metadata.setdefault("profile_id", item.get("profile_id"))
+            metadata.setdefault("profile_name", item.get("profile_name"))
+            copy["metadata"] = metadata
             if copy.get("role") == "assistant":
                 copy["presentation"] = presentation_from_message(
                     copy,
@@ -224,6 +224,27 @@ def build_chat_router(
                 )
             items.append(copy)
         return items
+
+    @router.get("/users/{user_id}/sessions")
+    def list_user_sessions(user_id: str) -> dict:
+        contexts = [context for context in repository.list() if context.user_id == user_id]
+        return {
+            "sessions": [
+                {
+                    "session_id": context.session_id,
+                    "user_id": context.user_id,
+                    "profile_id": context.profile_id,
+                    "profile_name": context.profile_name,
+                    "participant_profile_ids": sorted(context.profile_branches),
+                    "title": context.title,
+                    "message_count": sum(
+                        1 for item in context.timeline_items if item.get("item_type") == "message"
+                    ),
+                    "active_skill": context.interaction_state.get("active_skill"),
+                }
+                for context in contexts
+            ]
+        }
 
     def replace_profile_school_facts(user_id: str, profile_id: str, items: list[ProfileSchoolFact]) -> None:
         school_facts = sorted([item.model_dump() for item in items], key=lambda item: item["school_year"])
@@ -342,86 +363,6 @@ def build_chat_router(
                 getattr(orchestrator, "expert_registry", None),
             )
         }
-
-    @router.put("/sessions/{session_id}/expert")
-    def select_session_expert(session_id: str, request: ExpertSelectionRequest) -> dict:
-        try:
-            context = repository.get(session_id)
-        except KeyError:
-            if request.context_data is None:
-                raise HTTPException(status_code=404, detail="session not found") from None
-            context, _ = open_or_resume_session(
-                repository,
-                fact_service,
-                session_id=session_id,
-                data=request.context_data,
-            )
-        expert_id = str(request.expert_id or "").strip()
-        registry = getattr(orchestrator, "expert_registry", None)
-        definition = registry.get(expert_id) if expert_id and registry is not None else None
-        if expert_id and definition is None:
-            raise HTTPException(status_code=422, detail="EXPERT_NOT_FOUND")
-        if definition is None:
-            context.session_meta.pop("expert_id", None)
-            context.session_meta.pop("active_expert_id", None)
-            context.session_meta.pop("expert_requested_skill_id", None)
-        else:
-            context.session_meta["expert_id"] = definition.agent_id
-            context.session_meta["active_expert_id"] = definition.agent_id
-            context.session_meta.pop("expert_requested_skill_id", None)
-        # An independent expert is intentionally outside a team. Structured
-        # expert switches must never inherit stale team authorization.
-        context.session_meta.pop("expert_team_id", None)
-        context.session_meta.pop("pending_team_handoff", None)
-        # A selected expert makes the next normal chat turn responsible for
-        # routing; it must not inherit an unrelated previously-entered Skill.
-        context.interaction_state["active_skill"] = "general_chat"
-        runtime_state = context.skill_states.setdefault("skill_runtime", {})
-        if isinstance(runtime_state, dict):
-            runtime_state["active_skill_id"] = "general_chat"
-        event = make_event(
-            "expert_selected" if definition else "expert_exited",
-            {"expert_id": definition.agent_id if definition else None},
-        )
-        context.event_trace.append(event)
-        append_session_events(session_id, [event])
-        repository.save(context)
-        return {"session_id": session_id, "expert": selected_expert(context)}
-
-    @router.put("/sessions/{session_id}/expert-team")
-    def select_session_expert_team(session_id: str, request: ExpertTeamSelectionRequest) -> dict:
-        try:
-            context = repository.get(session_id)
-        except KeyError:
-            if request.context_data is None:
-                raise HTTPException(status_code=404, detail="session not found") from None
-            context, _ = open_or_resume_session(repository, fact_service, session_id=session_id, data=request.context_data)
-        team_id = str(request.team_id or "").strip()
-        registry = getattr(orchestrator, "expert_team_registry", None)
-        team = registry.get(team_id) if team_id and registry is not None else None
-        if team_id and team is None:
-            raise HTTPException(status_code=422, detail="EXPERT_TEAM_NOT_FOUND")
-        if team is None:
-            context.session_meta.pop("expert_team_id", None)
-            context.session_meta.pop("pending_team_handoff", None)
-        else:
-            context.session_meta["expert_team_id"] = team.team_id
-            context.session_meta["active_expert_id"] = team.coordinator_expert_id
-            context.session_meta["expert_id"] = team.coordinator_expert_id
-            context.session_meta.pop("expert_requested_skill_id", None)
-            context.session_meta.pop("pending_team_handoff", None)
-        context.interaction_state["active_skill"] = "general_chat"
-        runtime_state = context.skill_states.setdefault("skill_runtime", {})
-        if isinstance(runtime_state, dict):
-            runtime_state["active_skill_id"] = "general_chat"
-        event = make_event("team_selected" if team else "team_exited", {
-            "team_id": team.team_id if team else None,
-            "coordinator_expert_id": team.coordinator_expert_id if team else None,
-        })
-        context.event_trace.append(event)
-        append_session_events(session_id, [event])
-        repository.save(context)
-        return {"session_id": session_id, "expert_team": selected_expert_team(context), "expert": selected_expert(context)}
 
     @router.get("/users/{user_id}/profiles/{profile_id}/sessions")
     def list_profile_sessions(user_id: str, profile_id: str) -> dict:
@@ -645,6 +586,8 @@ def build_chat_router(
             "effective_facts": serialize_known_facts(context.known_facts),
             "candidate_paths": context.candidate_paths,
             "message_count": len(context.messages),
+            "timeline_message_count": sum(1 for item in context.timeline_items if item.get("item_type") == "message"),
+            "participant_profile_ids": sorted(context.profile_branches),
             "conversation_state": get_conversation_state(context),
             "profile_school_facts": profile_school_facts(context),
             "skill_states": context.skill_states,
@@ -778,6 +721,8 @@ def build_chat_router(
             "profile_name": context.profile_name,
             "title": context.title,
             "messages": public_messages(context),
+            "timeline_items": context.timeline_items,
+            "participant_profile_ids": sorted(context.profile_branches),
             "user_facts": serialize_known_facts(context.user_facts),
             "shared_facts": serialize_known_facts(context.shared_facts),
             "profile_facts": serialize_known_facts(context.profile_facts),

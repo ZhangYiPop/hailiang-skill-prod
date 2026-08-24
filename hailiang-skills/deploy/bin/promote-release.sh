@@ -22,10 +22,32 @@ wait_for_url() {
   curl --fail --silent --show-error "$url" >/dev/null
 }
 
+HAILIANG_DATABASE_URL="$(
+  cd "$release"
+  HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" \
+    .venv/bin/python scripts/prepare_database_baseline.py --mode strict
+)"
+export HAILIANG_DATABASE_URL
+
 if [ "$environment" = prod ]; then
   mkdir -p /var/lib/hailiang-skills/prod/backups
-  backup="/var/lib/hailiang-skills/prod/backups/hailiang_skills-$(date +%Y%m%d%H%M%S).dump"
+  backup="/var/lib/hailiang-skills/prod/backups/hailiang_skills_multi_profile_v1-$(date +%Y%m%d%H%M%S).dump"
   pg_dump_url="${HAILIANG_PGDUMP_URL:-${HAILIANG_DATABASE_URL:?source /etc/hailiang-skills/prod.env first}}"
+  database_pair="$(
+    HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" HAILIANG_PGDUMP_URL="$pg_dump_url" \
+      "$release/.venv/bin/python" - <<'PY'
+import os
+from sqlalchemy.engine import make_url
+
+target = make_url(os.environ["HAILIANG_DATABASE_URL"]).database or ""
+backup = make_url(os.environ["HAILIANG_PGDUMP_URL"]).database or ""
+print(f"{target}|{backup}")
+PY
+  )"
+  if [ "${database_pair%%|*}" != "${database_pair#*|}" ]; then
+    echo "HAILIANG_PGDUMP_URL 必须与 HAILIANG_DATABASE_URL 指向同一个数据库" >&2
+    exit 2
+  fi
   # SQLAlchemy's explicit psycopg dialect is not understood by libpq tools.
   pg_dump_url="${pg_dump_url/postgresql+psycopg:\/\//postgresql:\/\/}"
   pg_dump --dbname "$pg_dump_url" --format=custom --file "$backup"

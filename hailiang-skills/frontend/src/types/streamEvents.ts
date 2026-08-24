@@ -70,6 +70,12 @@ export type SseV2State = {
   ts: string;
   elapsed_ms: number;
   message_id: string | null;
+  profile_id: string;
+  profile_name: string;
+  branch_version: number;
+  profile_context_status: "matched" | "mismatched";
+  session_created: boolean;
+  profile_switched: boolean;
   status: "streaming" | "completed" | "stopped" | "superseded" | "blocked" | "failed";
   assistant: { content: string; status: string };
   intent: { status: "streaming" | "completed"; steps: SseV2IntentStep[] } | Record<string, never>;

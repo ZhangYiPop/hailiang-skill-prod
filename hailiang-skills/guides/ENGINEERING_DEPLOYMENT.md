@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | API 端口 | 8010 | 8011 |
 | 网页端口 | 4175 | 4176 |
-| 数据库 | `hailiang_skills_test` | `hailiang_skills` |
+| 数据库 | `hailiang_skills_test_multi_profile_v1` | `hailiang_skills_multi_profile_v1` |
 | Redis | DB 1 | DB 2 |
 | 模型限流 | 5 QPS | 45 QPS |
 | 原始 SSE 记录 | 开启 | 默认关闭 |
@@ -49,6 +49,17 @@ sudo docker compose --env-file /etc/hailiang-skills/infra.env ps
 ```
 
 首次启动会创建测试/生产数据库和账号。Docker 数据卷已经存在时，初始化脚本不会重新执行；不要删除线上数据卷来重复初始化。
+若数据卷早于多孩子基线，需要 DBA 使用既有角色手工创建上述两个新数据库，并同步更新
+`/etc/hailiang-skills/test.env` 和 `prod.env`。部署脚本只校验空库或
+`0001_multi_profile_runtime`，不会在服务器上自动创建数据库，也不会修改旧库。
+
+```sql
+CREATE DATABASE hailiang_skills_test_multi_profile_v1 OWNER hailiang_test;
+CREATE DATABASE hailiang_skills_multi_profile_v1 OWNER hailiang_prod;
+```
+
+不要对旧库执行 `alembic stamp`。如果生产环境单独设置了 `HAILIANG_PGDUMP_URL`，它也必须
+指向 `hailiang_skills_multi_profile_v1`；发布脚本会在备份前校验数据库名。
 
 5. 安装服务和日志轮转配置：
 

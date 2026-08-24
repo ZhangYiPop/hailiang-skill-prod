@@ -655,6 +655,15 @@ class StreamingRunner:
                                     "run_superseded": "superseded",
                                     "run_failed": "failed",
                                 }.get(event, "completed"))
+                        if hasattr(self.repository, "update_run_status"):
+                            self.repository.update_run_status(
+                                stream_generation,
+                                str(data.get("status") or {
+                                    "run_cancelled": "stopped",
+                                    "run_superseded": "superseded",
+                                    "run_failed": "failed",
+                                }.get(event, "completed")),
+                            )
                     queue.put(encoded, timeout=1)
                 except Exception:
                     # A disconnected/slow client must not let unbounded events grow.
@@ -1189,6 +1198,9 @@ class StreamingRunner:
                             if isinstance(metadata, dict):
                                 metadata["presentation"] = message["presentation"]
                             break
+                    if context.session_meta.get("resume_recap_pending"):
+                        context.session_meta.pop("resume_recap_pending", None)
+                        context.session_meta["resume_recap_completed_run_id"] = stream_generation
                     self.repository.save(context)
                     for block in message_blocks:
                         push("message_block", block)
@@ -1314,10 +1326,10 @@ class StreamingRunner:
         if SSE_ACTIVE:
             SSE_ACTIVE.inc()
         first_event_started = __import__("time").perf_counter()
-        push("run_started", {"session_id": session_id, "run_id": stream_generation, "risk_stage": "input"})
-        push("expert_context", _expert_state_payload(context, self.orchestrator, team_member_switch))
         for event, data in initial_events or []:
             push(event, data)
+        push("run_started", {"session_id": session_id, "run_id": stream_generation, "risk_stage": "input"})
+        push("expert_context", _expert_state_payload(context, self.orchestrator, team_member_switch))
         if protocol == UNIFIED_PROTOCOL:
             # Always provide one immediate, safe placeholder. Its normalized
             # label is also the stable name for this stage in both the live
@@ -1630,6 +1642,7 @@ class StreamingRunner:
         lease: TurnLease | None = None,
         protocol: str = "legacy",
         source_endpoint: str = "sessions/chat/stream",
+        initial_events: list[tuple[str, dict[str, Any]]] | None = None,
     ) -> Iterator[str]:
         transition = prepared_transition or self.prepare_skill_transition(
             session_id,
@@ -1650,6 +1663,18 @@ class StreamingRunner:
                 protocol=transition_protocol,
             )
             try:
+                for event, data in initial_events or []:
+                    encoded = self._encode_and_record_sse(
+                        builder=transition_builder,
+                        session_id=session_id,
+                        run_id=lease.generation,
+                        user_id=user_id,
+                        source_endpoint=source_endpoint,
+                        internal_event=event,
+                        data=data,
+                    )
+                    if encoded:
+                        yield encoded
                 started = self._encode_and_record_sse(
                     builder=transition_builder,
                     session_id=session_id,
@@ -1727,7 +1752,7 @@ class StreamingRunner:
             lease=lease,
             protocol=transition_protocol,
             source_endpoint=source_endpoint,
-            initial_events=[("skill_transition", _public_transition(transition))],
+            initial_events=[*(initial_events or []), ("skill_transition", _public_transition(transition))],
         )
         context = self.repository.get(session_id)
         ledger = context.session_meta.get("run_ledger") if isinstance(context.session_meta, dict) else {}

@@ -38,6 +38,7 @@ export default function Home() {
     themeMode,
     enableThinking,
     profiles,
+    selectedProfileId,
     activeProfileId,
     activeProfileName,
     sessionList,
@@ -48,6 +49,7 @@ export default function Home() {
     expertCatalog,
     expertTeamCatalog,
     activeExpertId,
+    pendingExpertId,
     activeExpertTeam,
     messages,
     candidatePaths,
@@ -310,11 +312,11 @@ export default function Home() {
           expertCatalog={expertCatalog}
           expertTeamCatalog={expertTeamCatalog}
           activeExpertId={activeExpertId}
+          pendingExpertId={pendingExpertId}
           activeExpertTeam={activeExpertTeam}
           onSelectExpert={handleSelectExpert}
           onExitExpert={handleExitExpert}
           onSelectExpertTeam={handleSelectExpertTeam}
-          onExitExpertTeam={() => handleSelectExpertTeam("")}
           isGenerating={isSending}
           isCancelling={isCancellingRun}
           onStopGeneration={handleStopGeneration}
@@ -334,7 +336,7 @@ export default function Home() {
   const profileSwitcherCard = (
     <ProfileSwitcher
       profiles={profiles}
-      activeProfileId={activeProfileId}
+      activeProfileId={selectedProfileId || activeProfileId}
       loading={isLoadingProfiles}
       onSelect={(profileId) => {
         void selectProfile(profileId);

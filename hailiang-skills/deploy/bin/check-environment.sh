@@ -19,8 +19,8 @@ expected_env="${1:?systemd instance env is required}"
 [ -n "${HAILIANG_CORS_ORIGINS:-}" ] || { echo "HAILIANG_CORS_ORIGINS is required for the internal frontend" >&2; exit 2; }
 
 case "$expected_env" in
-  test) [[ "$HAILIANG_DATABASE_URL" == *"hailiang_skills_test"* ]] && [[ "$HAILIANG_REDIS_URL" == */1 ]] && [[ "$HAILIANG_REDIS_KEY_PREFIX" == "hailiang:test:"* ]] ;;
-  prod) [[ "$HAILIANG_DATABASE_URL" == *"hailiang_skills"* && "$HAILIANG_DATABASE_URL" != *"hailiang_skills_test"* ]] && [[ "$HAILIANG_REDIS_URL" == */2 ]] && [[ "$HAILIANG_REDIS_KEY_PREFIX" == "hailiang:prod:"* ]] ;;
+  test) [[ "$HAILIANG_DATABASE_URL" == *"hailiang_skills_test_multi_profile_v1"* ]] && [[ "$HAILIANG_REDIS_URL" == */1 ]] && [[ "$HAILIANG_REDIS_KEY_PREFIX" == "hailiang:test:"* ]] ;;
+  prod) [[ "$HAILIANG_DATABASE_URL" == *"hailiang_skills_multi_profile_v1"* && "$HAILIANG_DATABASE_URL" != *"hailiang_skills_test_"* ]] && [[ "$HAILIANG_REDIS_URL" == */2 ]] && [[ "$HAILIANG_REDIS_KEY_PREFIX" == "hailiang:prod:"* ]] ;;
 esac || { echo "database, Redis DB, or key prefix does not match $expected_env" >&2; exit 2; }
 
 for directory in "${HAILIANG_LOG_DIR:?}" "${HAILIANG_STATE_DIR:?}"; do
@@ -48,6 +48,11 @@ with build_engine().connect() as connection:
 if not get_llm_rate_limiter().ready():
     raise SystemExit("Redis/rate limiter is not ready")
 PY
+HAILIANG_DATABASE_URL="$(
+  HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" \
+    "$(dirname "$0")/../../.venv/bin/python" scripts/prepare_database_baseline.py --mode strict
+)"
+export HAILIANG_DATABASE_URL
 PYTHONPATH=src "$(dirname "$0")/../../.venv/bin/alembic" current >/dev/null
 
 echo "environment validation passed: $expected_env"

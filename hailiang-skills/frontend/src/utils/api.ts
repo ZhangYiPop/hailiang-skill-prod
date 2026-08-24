@@ -93,6 +93,8 @@ export type ChatMessage = {
   role: MessageRole;
   content: string;
   createdAt: string;
+  profileId?: string;
+  profileName?: string;
   blocks: MessageBlock[];
   retryRequest?: ChatRetryRequest;
   skillId?: string;
@@ -442,6 +444,12 @@ export type SessionContextMessage = {
     interaction_states?: Record<string, MessageInteractionState>;
     skill_transition?: SkillTransition;
     generation_status?: string;
+    profile_id?: string;
+    profile_name?: string;
+    from_profile_id?: string;
+    from_profile_name?: string;
+    to_profile_id?: string;
+    to_profile_name?: string;
   };
   team_handoff?: TeamHandoff;
   skill_id?: string;
@@ -576,6 +584,8 @@ export type ProfileResponse = {
 
 export type CreateProfileRequest = {
   name: string;
+  /** Stable child ID supplied by the trusted forwarding/debug adapter. */
+  profile_id?: string;
   initialize_from_shared_facts?: boolean;
 };
 
@@ -586,14 +596,6 @@ export type UpdateProfileRequest = {
 
 export type SessionListResponse = {
   sessions: SessionListItem[];
-};
-
-export type CreateSessionRequest = {
-  session_id: string;
-  user_id: string;
-  profile_id: string;
-  parent_name?: string | null;
-  profile_school_facts: Array<{ school_year: string; grade: string }>;
 };
 
 export type CreateSessionResponse = {
@@ -793,55 +795,6 @@ export async function listExpertTeams(baseUrl: string): Promise<ExpertTeamCatalo
   const payload = await parseResponse<{ expert_teams?: ExpertTeamCatalogItem[] }>(response);
   return Array.isArray(payload.expert_teams) ? payload.expert_teams : [];
 }
-
-export async function selectSessionExpert(
-  baseUrl: string,
-  sessionId: string,
-  expertId: string | null,
-  contextData?: Record<string, string>,
-): Promise<{ session_id: string; expert: SelectedExpert | null }> {
-  const response = await fetchWithRetry(`${baseUrl}/api/v1/sessions/${sessionId}/expert`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ expert_id: expertId, ...(contextData ? { context_data: contextData } : {}) }),
-  });
-  return parseResponse<{ session_id: string; expert: SelectedExpert | null }>(response);
-}
-
-export async function selectSessionExpertTeam(
-  baseUrl: string,
-  sessionId: string,
-  teamId: string | null,
-  contextData?: Record<string, string>,
-): Promise<{ session_id: string; expert: SelectedExpert | null; expert_team: SelectedExpertTeam | null }> {
-  const response = await fetchWithRetry(`${baseUrl}/api/v1/sessions/${sessionId}/expert-team`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ team_id: teamId, ...(contextData ? { context_data: contextData } : {}) }),
-  });
-  return parseResponse<{ session_id: string; expert: SelectedExpert | null; expert_team: SelectedExpertTeam | null }>(response);
-}
-
-export async function createSession(
-  baseUrl: string,
-  payload: CreateSessionRequest,
-): Promise<CreateSessionResponse> {
-  const response = await fetchWithRetry(
-    `${baseUrl}/api/v1/sessions`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    },
-    {
-      retryCount: 1,
-    },
-  );
-  return parseResponse<CreateSessionResponse>(response);
-}
-
 
 export async function sendMessage(
   baseUrl: string,
@@ -1104,6 +1057,14 @@ export async function listProfileSessions(
   const response = await fetchWithRetry(
     `${baseUrl}/api/v1/users/${userId}/profiles/${profileId}/sessions`,
   );
+  return parseResponse<SessionListResponse>(response);
+}
+
+export async function listUserSessions(
+  baseUrl: string,
+  userId: string,
+): Promise<SessionListResponse> {
+  const response = await fetchWithRetry(`${baseUrl}/api/v1/users/${userId}/sessions`);
   return parseResponse<SessionListResponse>(response);
 }
 

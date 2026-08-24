@@ -211,6 +211,7 @@ def write_session_snapshot(context) -> None:
     if os.getenv("HAILIANG_LOCAL_SESSION_CACHE_ENABLED", default_cache).strip().lower() not in {"1", "true", "yes", "on"}:
         return
     log_dir = ensure_session_log_dir(context.session_id)
+    context.sync_active_branch()
     snapshot = {
         "session_id": context.session_id,
         "user_id": context.user_id,
@@ -233,6 +234,8 @@ def write_session_snapshot(context) -> None:
         "event_count": len(context.event_trace),
         "session_meta": _sanitize_jsonable(context.session_meta),
         "last_fact_changes": context.last_fact_changes,
+        "profile_branches": _sanitize_jsonable(context.profile_branches),
+        "timeline_items": _sanitize_jsonable(context.timeline_items),
     }
     (log_dir / "snapshot.json").write_text(
         json.dumps(snapshot, ensure_ascii=False, indent=2),

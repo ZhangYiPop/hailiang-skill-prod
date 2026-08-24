@@ -170,6 +170,24 @@ if [ "$NEEDS_BACKEND_INSTALL" = "1" ]; then
   "$PROJECT_DIR/.venv/bin/pip" install -e .
 fi
 
+# Fail before starting infrastructure when env.local.sh points at an older or
+# incompatible checkout of the shared runtime core. Importing only the package
+# name is insufficient because an editable install from another workspace may
+# still be present in site-packages.
+if [ ! -d "$AGENT_SKILL_RUNTIME_CORE_PATH/agent_skill_runtime_core" ]; then
+  echo "❌ AGENT_SKILL_RUNTIME_CORE_PATH 不是有效的 runtime core 目录："
+  echo "   $AGENT_SKILL_RUNTIME_CORE_PATH"
+  exit 1
+fi
+if ! PYTHONPATH="$PROJECT_DIR/src:$AGENT_SKILL_RUNTIME_CORE_PATH" \
+  "$PROJECT_DIR/.venv/bin/python" -c \
+  'from agent_skill_runtime_core import parse_script_json_output' >/dev/null 2>&1; then
+  echo "❌ agent_skill_runtime_core 版本与当前 Hailiang 不兼容。"
+  echo "   当前路径：$AGENT_SKILL_RUNTIME_CORE_PATH"
+  echo "   请将 env.local.sh 中的 AGENT_SKILL_RUNTIME_CORE_PATH 指向本项目同版本的 agent_skill_runtime_core。"
+  exit 1
+fi
+
 if [ "$BOOTSTRAP" = "1" ] || [ ! -d "$FRONTEND_DIR/node_modules" ]; then
   echo "📦 安装前端依赖..."
   (cd "$FRONTEND_DIR" && npm ci)
@@ -201,6 +219,16 @@ if [ "$START_INFRA" = "1" ] && [ "$HAILIANG_STORAGE_BACKEND" = "postgres" ]; the
 fi
 
 if [ "$HAILIANG_STORAGE_BACKEND" = "postgres" ]; then
+  DATABASE_BASELINE_MODE="strict"
+  if [[ "$HAILIANG_DATABASE_URL" == *"@127.0.0.1:"* ]] || [[ "$HAILIANG_DATABASE_URL" == *"@localhost:"* ]]; then
+    DATABASE_BASELINE_MODE="local-auto"
+  fi
+  HAILIANG_DATABASE_URL="$(
+    HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" \
+      "$PROJECT_DIR/.venv/bin/python" scripts/prepare_database_baseline.py --mode "$DATABASE_BASELINE_MODE"
+  )"
+  export HAILIANG_DATABASE_URL
+  echo "   迁移目标：${HAILIANG_DATABASE_URL##*/}"
   echo "🗃️  执行数据库迁移..."
   PYTHONPATH=src "$PROJECT_DIR/.venv/bin/alembic" upgrade head
   if [ "$MIGRATE_FILE_LOGS" = "1" ]; then
@@ -229,10 +257,10 @@ for _ in $(seq 1 30); do
     echo "❌ 后端进程已退出，请查看：tail -n 100 $PROJECT_DIR/backend.local.log"
     exit 1
   fi
-  if curl --connect-timeout 1 --max-time 3 -fsS "http://127.0.0.1:${BACKEND_PORT}/health/ready" >/dev/null; then break; fi
+  if curl --connect-timeout 1 --max-time 3 -fsS "http://127.0.0.1:${BACKEND_PORT}/health/ready" >/dev/null 2>&1; then break; fi
   sleep 1
 done
-if ! curl --connect-timeout 1 --max-time 3 -fsS "http://127.0.0.1:${BACKEND_PORT}/health/ready" >/dev/null; then
+if ! curl --connect-timeout 1 --max-time 3 -fsS "http://127.0.0.1:${BACKEND_PORT}/health/ready" >/dev/null 2>&1; then
   echo "❌ 后端未就绪，请查看：tail -n 100 $PROJECT_DIR/backend.local.log"
   exit 1
 fi

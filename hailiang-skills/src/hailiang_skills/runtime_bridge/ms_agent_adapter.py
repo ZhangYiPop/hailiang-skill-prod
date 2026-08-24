@@ -16,7 +16,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agent_skill_runtime_core import AgentSkillRuntimeCore, CoreTraceStep, MSAgentRuntimeProbe, probe_ms_agent_runtime
+from agent_skill_runtime_core import (
+    AgentSkillRuntimeCore,
+    CoreTraceStep,
+    MSAgentRuntimeProbe,
+    parse_script_json_output,
+    probe_ms_agent_runtime,
+)
 
 from hailiang_skills.core.skill_ids import CAREER_PLAN_SKILL_ID
 from hailiang_skills.runtime_bridge.script_review import review_scripts
@@ -190,19 +196,22 @@ class MSAgentRuntimeAdapter:
                     timeout=10,
                     check=False,
                 )
-                outputs.append(
-                    {
-                        "script": script_path.name,
-                        "args": args,
-                        "stdin_payload": payload,
-                        "duration_ms": _elapsed_ms(started),
-                        "exit_code": completed.returncode,
-                        "stdout": completed.stdout,
-                        "stderr": completed.stderr,
-                        "ok": completed.returncode == 0,
-                        "execution_mode": "local_fast_path",
-                    }
-                )
+                output_data = {
+                    "script": script_path.name,
+                    "args": args,
+                    "stdin_payload": payload,
+                    "duration_ms": _elapsed_ms(started),
+                    "exit_code": completed.returncode,
+                    "stdout": completed.stdout,
+                    "stderr": completed.stderr,
+                    "ok": completed.returncode == 0,
+                    "execution_mode": "local_fast_path",
+                }
+                structured_output = parse_script_json_output(completed.stdout)
+                if structured_output is not None:
+                    output_data["return_value"] = structured_output
+                    output_data["json_output"] = structured_output
+                outputs.append(output_data)
             except (OSError, subprocess.SubprocessError) as exc:
                 outputs.append(
                     {

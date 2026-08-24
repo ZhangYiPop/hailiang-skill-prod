@@ -60,6 +60,8 @@ from hailiang_skills.runtime_bridge.expert_bundle import load_local_expert_regis
 from hailiang_skills.runtime_bridge.expert_team_bundle import load_local_expert_team_registry
 from hailiang_skills.runtime_bridge.imports import PROJECT_ROOT, ensure_skill_runtime_importable
 from hailiang_skills.runtime_bridge.runtime_config import load_runtime_bridge_config
+from hailiang_skills.llm.test_routing import TestLLMRoutingConfig
+from hailiang_skills.core.deployment import deployment_environment
 from hailiang_skills.skills.base import SkillResult
 
 ensure_skill_runtime_importable()
@@ -640,6 +642,8 @@ def _summarize_ms_agent_runtime_trace(raw_trace: dict[str, Any]) -> dict[str, An
                 "duration_ms": item.get("duration_ms"),
                 "execution_mode": item.get("execution_mode") or "sandbox",
                 "error": item.get("error", ""),
+                "return_value": item.get("return_value"),
+                "json_output": item.get("json_output"),
                 "stdout_preview": _truncate_debug_text(str(item.get("stdout") or ""), limit=800),
                 "stderr_preview": _truncate_debug_text(str(item.get("stderr") or ""), limit=800),
             }
@@ -1020,6 +1024,7 @@ class MainPlannerOrchestrator:
     def __init__(self, registry, llm_config, moderation_service=None) -> None:
         self.registry = registry
         self.llm_config = llm_config
+        self.test_llm_routing = TestLLMRoutingConfig.from_environment()
         self.moderation_service = moderation_service
         self.runtime_bridge_config = load_runtime_bridge_config()
         self.scenario_engine = ScenarioEngine()
@@ -1079,6 +1084,9 @@ class MainPlannerOrchestrator:
             runtime_dir=self.runtime_bridge_config.runtime_dir,
             enabled=self.runtime_bridge_config.memory_enabled,
             active_window_messages=self.runtime_bridge_config.active_window_messages,
+            context_window_tokens=self.runtime_bridge_config.context_window_tokens,
+            async_checkpoint_ratio=self.runtime_bridge_config.async_checkpoint_ratio,
+            sync_compression_ratio=self.runtime_bridge_config.sync_compression_ratio,
         )
         self.embedding_client = self._build_embedding_client(llm_config)
         self.intent_router = IntentRouter(
@@ -1517,9 +1525,42 @@ class MainPlannerOrchestrator:
 
     def _runtime_client_for_context(self, context):
         meta = context.session_meta or {}
+        selected_config = self._llm_config_for_context(context)
         if "enable_thinking" in meta or "return_reasoning" in meta:
-            return self._build_runtime_client(self.llm_config, self._runtime_thinking_options(context))
+            return self._build_runtime_client(selected_config, self._runtime_thinking_options(context))
+        if selected_config is not self.llm_config:
+            return self._build_runtime_client(selected_config)
         return self.runtime_client
+
+    def _llm_config_for_context(self, context):
+        if not self.test_llm_routing.matches(
+            str(getattr(context, "user_id", "") or ""),
+            environment=deployment_environment(),
+        ):
+            return self.llm_config
+        return replace(
+            self.llm_config,
+            provider="test_openai_compatible",
+            base_url=self.test_llm_routing.base_url,
+            model=self.test_llm_routing.model,
+            api_key_env="HAILIANG_TEST_LLM_API_KEY",
+            timeout_s=self.test_llm_routing.timeout_s,
+            temperature=self.test_llm_routing.temperature,
+            max_tokens=self.test_llm_routing.max_tokens,
+        )
+
+    def _auxiliary_client_for_context(self, context, default_client, options):
+        selected_config = self._llm_config_for_context(context)
+        if selected_config is self.llm_config:
+            return default_client
+        return self._build_runtime_client(selected_config, options)
+
+    def route_suggestion_client_for_context(self, context):
+        return self._auxiliary_client_for_context(
+            context,
+            self.route_suggestion_client,
+            {"enable_thinking": False, "return_reasoning": False, "temperature": 0.1, "max_tokens": 700},
+        )
 
     def _apply_legacy_llm_options(self, context) -> None:
         options = self._runtime_thinking_options(context)
@@ -1890,15 +1931,15 @@ class MainPlannerOrchestrator:
         plan: dict[str, Any] | None,
     ) -> dict[str, dict[str, Any]]:
         parameters = dict(plan.get("parameters") or {}) if isinstance(plan, dict) else {}
-        query = str(parameters.get("query") or latest_user_message or "")
-        if query == "<from_session_context>":
-            query = latest_user_message
+        query = str(latest_user_message or parameters.get("query") or "")
         user_id = str(getattr(context, "user_id", "") or state.session_id or "")
         turn_index = len([item for item in state.messages if item.role == "user"])
         messages = [
             {"role": item.role, "content": item.content}
             for item in state.messages
         ]
+        if not messages or messages[-1] != {"role": "user", "content": latest_user_message}:
+            messages.append({"role": "user", "content": latest_user_message})
         base_payload = {
             "query": query,
             "user_id": user_id,
@@ -1931,6 +1972,14 @@ class MainPlannerOrchestrator:
             profile_payload.setdefault("base_info", {})
         if profile_payload["action"] == "save":
             profile_payload.setdefault("child_data", {})
+        mbti_payload = {
+            **base_payload,
+            # MBTI answers are deliberately scoped to this Skill.  They are
+            # not copied into global facts, and the deterministic Python
+            # scorer receives only the A/B answer map it needs.
+            "answers": dict(state.skill_facts.get("mbti_self_exploration", {}).get("answers", {})),
+            "skill_facts": dict(state.skill_facts.get("mbti_self_exploration", {})),
+        }
         return {
             "*": base_payload,
             "__default__": base_payload,
@@ -1938,6 +1987,8 @@ class MainPlannerOrchestrator:
             "scripts/status_track.py": status_payload,
             "profile_op.py": profile_payload,
             "scripts/profile_op.py": profile_payload,
+            "mbti_score.py": mbti_payload,
+            "scripts/mbti_score.py": mbti_payload,
         }
 
     def _resolve_runtime_reply(
@@ -2366,7 +2417,11 @@ class MainPlannerOrchestrator:
         first_delta_ms: int | None = None
         raw_parts: list[str] = []
         streamed = False
-        client = self.questionnaire_client
+        client = self._auxiliary_client_for_context(
+            context,
+            self.questionnaire_client,
+            {"enable_thinking": False, "return_reasoning": False, "temperature": 0.2, "max_tokens": 600},
+        )
         try:
             if client is None:
                 raw_reply = ""
@@ -2512,7 +2567,11 @@ class MainPlannerOrchestrator:
         first_delta_ms: int | None = None
         parts: list[str] = []
         streamed = False
-        client = self.questionnaire_client
+        client = self._auxiliary_client_for_context(
+            context,
+            self.questionnaire_client,
+            {"enable_thinking": False, "return_reasoning": False, "temperature": 0.2, "max_tokens": 600},
+        )
         try:
             if client is not None and callable(getattr(client, "stream_complete", None)):
                 stream_kwargs: dict[str, Any] = {"logger": logger}
@@ -2939,9 +2998,10 @@ class MainPlannerOrchestrator:
             user_id=str(getattr(context, "user_id", "") or ""),
             run_id=str(telemetry.run_id if telemetry else ""),
         )
+        memory_scope_id = self._profile_memory_scope_id(context, fallback=state.session_id)
         memory_result = self.memory_store.prepare_for_turn(
             user_id=str(getattr(context, "user_id", "") or "anonymous"),
-            session_id=str(getattr(context, "session_id", "") or state.session_id),
+            session_id=memory_scope_id,
             active_skill_id=active_skill_id or MAIN_PLANNER_ID,
             skill_dir=bundle.root_dir if bundle else None,
             llm_client=self._runtime_client_for_context(context),
@@ -2952,6 +3012,11 @@ class MainPlannerOrchestrator:
             memory_result.context,
             list(getattr(context, "messages", []) or []),
         )
+        if bool((getattr(context, "session_meta", {}) or {}).get("resume_recap_pending")):
+            memory_context["continuity_instruction"] = (
+                "This child branch was just resumed. Begin the next answer with a concise one- or two-sentence Chinese recap "
+                "of the prior topic, unresolved items, and the restored Skill/expert state, then answer the current request."
+            )
         state.conversation_memory = memory_context
         memory_summary = str(memory_context.get("summary") or "")
         memory_facts = memory_context.get("facts") if isinstance(memory_context.get("facts"), dict) else {}
@@ -3008,7 +3073,7 @@ class MainPlannerOrchestrator:
         )
         memory = self.memory_store.append_turn(
             user_id=str(getattr(context, "user_id", "") or "anonymous"),
-            session_id=str(getattr(context, "session_id", "") or state.session_id),
+            session_id=self._profile_memory_scope_id(context, fallback=state.session_id),
             active_skill_id=active_skill_id,
             user_message=user_message,
             assistant_message=assistant_message,
@@ -3020,6 +3085,13 @@ class MainPlannerOrchestrator:
             "runtime_contract_hash": memory.get("runtime_contract_hash"),
             "runtime_contract_available": bool(memory.get("runtime_contract_available")),
         }
+
+    @staticmethod
+    def _profile_memory_scope_id(context, *, fallback: str) -> str:
+        session_id = str(getattr(context, "session_id", "") or fallback)
+        profile_id = str(getattr(context, "profile_id", "") or "unscoped")
+        safe_profile = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in profile_id)
+        return f"{session_id}__profile__{safe_profile}"
 
     def _soul_context(self) -> dict[str, Any]:
         path = self.runtime_bridge_config.soul_path
@@ -3720,7 +3792,11 @@ class MainPlannerOrchestrator:
         # may provide ranked candidates to the general-chat model later in the
         # turn, but it must not mutate the session's active Skill or scenario.
         routing_state = replace(state, active_skill_id=MAIN_PLANNER_ID) if entry_skill_id == GENERAL_CHAT_ID else state
-        route_decision = self.intent_router.route(latest_user, routing_state)
+        route_decision = self.intent_router.route(
+            latest_user,
+            routing_state,
+            llm_client=self._runtime_client_for_context(context),
+        )
         self._emit_router_error_if_present(context)
         if entry_skill_id == GENERAL_CHAT_ID:
             candidates = () if is_short_contextual_reply(latest_user) else route_decision.candidate_skills

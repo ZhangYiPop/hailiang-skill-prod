@@ -230,6 +230,17 @@ class AgentScopeExpertRuntime:
             enabled_capabilities.add("propose_member_handoff")
         model = _HailiangChatModel(client)
         catalog = self._catalog(definition)
+        # AgentScope does not implicitly receive SessionContext. Previously
+        # the expert was merely given a tool *capable* of reading Facts, which
+        # allowed a first-turn greeting to skip the tool and ask again for a
+        # child's already-known grade. The active profile branch is isolated
+        # before this method runs, so this snapshot is both safe to inject and
+        # authoritative for the current turn.
+        effective_facts = json.dumps(
+            self._read_effective_facts(context),
+            ensure_ascii=False,
+            default=str,
+        )
         team_prompt = ""
         if team is not None:
             roster = "\n".join(
@@ -253,7 +264,9 @@ class AgentScopeExpertRuntime:
                 )
         system_prompt = (
             f"你是 {definition.name}。只能使用受控工具，不能读取文件、执行 Shell、安装工具或修改事实。\n"
-            "先根据业务规则和有效事实判断；需要专项能力时调用 execute_skill。"
+            "先根据业务规则和下方已注入的有效事实判断；需要专项能力时调用 execute_skill。"
+            "不得重复询问下方已经有明确值的资料（例如年级、学年）；只有资料缺失或存在冲突时才追问。\n"
+            f"\n# 当前孩子的有效事实（本轮可信上下文）\n{effective_facts}\n"
             "每次 execute_skill 必须传已选 Skill ID 和用户任务，且不得超过预算。\n\n"
             f"# 专家规则\n{definition.rules_markdown}\n\n# 授权 Skill 目录\n{catalog}{team_prompt}"
         )

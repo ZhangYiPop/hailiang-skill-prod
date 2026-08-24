@@ -6,7 +6,7 @@
 
 ## 首次准备
 
-1. 在已有 PostgreSQL 容器中创建一个独立的角色和数据库，例如 `hailiang_smoke_411` 与 `hailiang_skills_test_411`。不要对旧的 `hailiang_skills_test` 执行本版本的迁移。
+1. 在已有 PostgreSQL 容器中创建一个独立的角色和空数据库，例如 `hailiang_smoke_411` 与 `hailiang_skills_test_multi_profile_v1_smoke_411`。不要对旧的 `hailiang_skills_test` 或持久测试库执行冒烟迁移。
 2. 复制 `deploy/env/smoke.env.example` 为项目根目录的私有文件，例如 `env.8015.sh`；填写真实值后执行 `chmod 600 env.8015.sh`。
 3. 两把加密密钥分别生成，不能复用：
 
@@ -29,6 +29,8 @@ python3.11 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.tok
 ```
 
 脚本只会对命令行中包含 `hailiang_skills.api.main:app` 且监听相同端口的进程发送 `SIGTERM`；其他进程会拒绝停止。
+迁移前脚本会直接读取 `alembic_version`；数据库非空且不是
+`0001_multi_profile_runtime` 时立即退出，不会执行 `stamp` 或覆盖表。
 
 日常重新启动、依赖未变化时可跳过安装：
 

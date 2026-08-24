@@ -344,6 +344,7 @@ class AgentSkillRuntimeCore:
                     )
                 )
                 output_data = output.to_dict() if hasattr(output, "to_dict") else dict(output)
+                _attach_structured_stdout(output_data)
                 outputs.append(
                     {
                         "script": script_path.name,
@@ -656,6 +657,11 @@ class AgentSkillRuntimeCore:
             skill_dir=skill_schema.skill_path,
             loaded_scripts=loaded_scripts,
             execute_scripts=execute_scripts,
+            script_inputs=_turn_script_inputs(
+                message=message,
+                history=history,
+                parameters=plan_payload.get("parameters"),
+            ),
         )
         steps.extend(script_steps)
         context = self.build_skill_runtime_context(
@@ -821,3 +827,70 @@ def _script_args_from_payload(payload: dict[str, Any]) -> list[str]:
         args.append(f"--{cli_key}")
         args.append(",".join(str(item) for item in value) if isinstance(value, list) else str(value))
     return args
+
+
+def parse_script_json_output(stdout: Any) -> dict[str, Any] | None:
+    """Return a script's JSON-object result from stdout, if it emitted one.
+
+    State-oriented Skills may log diagnostics before writing their final JSON
+    line.  Prefer parsing all stdout first, then fall back to its last nonempty
+    line.  Only objects are accepted because the script protocol's result is a
+    JSON object.
+    """
+    text = str(stdout or "").strip()
+    if not text:
+        return None
+    candidates = [text]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines and lines[-1] != text:
+        candidates.append(lines[-1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _attach_structured_stdout(output_data: dict[str, Any]) -> None:
+    """Expose stdout JSON as the portable cross-process script return value."""
+    structured_output = parse_script_json_output(output_data.get("stdout"))
+    if structured_output is None:
+        return
+    # A Python subprocess has no meaningful function return value.  stdout is
+    # the script protocol, so it intentionally replaces a platform null here.
+    output_data["return_value"] = structured_output
+    output_data["json_output"] = structured_output
+
+
+def _turn_script_inputs(
+    *,
+    message: str,
+    history: list[Any],
+    parameters: Any,
+) -> dict[str, dict[str, Any]]:
+    """Build the common stdin protocol for a complete standalone Skill turn."""
+    normalized_parameters = dict(parameters) if isinstance(parameters, dict) else {}
+    messages = [_script_message(item) for item in history]
+    messages.append({"role": "user", "content": message})
+    payload = {
+        "query": message,
+        "messages": messages,
+        "parameters": normalized_parameters,
+        "facts": {},
+    }
+    return {"*": payload, "__default__": payload}
+
+
+def _script_message(item: Any) -> dict[str, Any]:
+    if isinstance(item, dict):
+        return {
+            "role": str(item.get("role") or ""),
+            "content": item.get("content", ""),
+        }
+    return {
+        "role": str(getattr(item, "role", "") or ""),
+        "content": getattr(item, "content", ""),
+    }

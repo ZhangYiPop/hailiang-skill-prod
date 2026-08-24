@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.core.registry import SkillRegistry
@@ -62,6 +65,52 @@ def test_multi_path_question_rules_produce_canonical_form_metadata():
     assert field["input_type"] == "multi_select"
     assert field["max_selections"] == 3
     assert field["scope"] == "skill_session"
+
+
+def test_mbti_assessment_pages_declared_ab_questions_and_keeps_answers_in_skill_state():
+    bundle = _bundle("mbti_self_exploration")
+    state = SessionState(session_id="sess_mbti", active_skill_id="mbti_self_exploration")
+
+    first_page = available_question_specs(bundle, state)
+    assert [item["question_id"] for item in first_page] == [f"mbti_{number:03d}" for number in range(1, 11)]
+    assert all([option["value"] for option in item["options"]] == ["A", "B"] for item in first_page)
+
+    text, block = decode_questionnaire_reply(
+        bundle,
+        state,
+        json.dumps({"assistant_message": "请完成本页。", "question_ids": [item["question_id"] for item in first_page]}),
+    )
+    assert text == "请完成本页。"
+    stage_questionnaire_form(state, bundle, block)
+    context = SessionContext(session_id="sess_mbti")
+    answer_message = "\n".join(f"{item['label']}：A" for item in first_page)
+    result = consume_pending_questionnaire_answer(state, context, bundle, answer_message)
+
+    assert result is not None
+    assert len(state.skill_facts["mbti_self_exploration"]["answers"]) == 10
+    assert context.global_facts == {}
+    assert [item["question_id"] for item in available_question_specs(bundle, state)] == [
+        f"mbti_{number:03d}" for number in range(11, 21)
+    ]
+
+
+def test_mbti_python_scorer_is_deterministic_and_has_no_node_runtime_dependency():
+    skill_dir = SKILLS_ROOT / "mbti_self_exploration"
+    payload = {"answers": {f"mbti_{number:03d}": "A" for number in range(1, 94)}}
+    completed = subprocess.run(
+        [sys.executable, str(skill_dir / "scripts" / "mbti_score.py")],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    report = json.loads(completed.stdout)
+
+    assert report["ok"] is True
+    assert report["answered_count"] == 93
+    assert report["type"] == "ISFJ"
+    assert not list(skill_dir.rglob("*.js"))
+    assert not (skill_dir / "scripts" / "package.json").exists()
 
 
 def test_multi_path_native_protocol_exposes_path_catalog_and_structured_output_contract():

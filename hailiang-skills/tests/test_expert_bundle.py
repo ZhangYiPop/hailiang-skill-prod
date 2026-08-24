@@ -173,7 +173,7 @@ def test_team_import_rejects_missing_member_and_nested_team(tmp_path: Path):
         load_expert_team_bundle(target, experts)
 
 
-def test_expert_catalog_and_session_selection_api_keep_skill_mode_separate():
+def test_expert_catalog_has_no_out_of_band_session_mutation_api():
     skill_registry = _runtime_registry()
     experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
     repository = InMemorySessionRepository()
@@ -190,13 +190,8 @@ def test_expert_catalog_and_session_selection_api_keep_skill_mode_separate():
     assert family["skill_ids"] == ["parenting_action_planner", "mbti_self_exploration"]
 
     selected = client.put("/api/v1/sessions/expert-selection/expert", json={"expert_id": "family_education_expert"})
-    assert selected.status_code == 200
-    assert selected.json()["expert"]["expert_id"] == "family_education_expert"
-    assert repository.get("expert-selection").interaction_state["active_skill"] == "general_chat"
-
-    cleared = client.put("/api/v1/sessions/expert-selection/expert", json={"expert_id": None})
-    assert cleared.status_code == 200
-    assert cleared.json()["expert"] is None
+    assert selected.status_code == 404
+    assert "expert_id" not in repository.get("expert-selection").session_meta
 
 
 @pytest.mark.parametrize(
@@ -350,6 +345,7 @@ def test_toolbar_switch_request_validates_team_member_by_id():
         SimpleNamespace(expert_team_registry=teams),
         SwitchTeamMemberInput(
             action="switch_team_member",
+            profile_id="profile_a",
             source="toolbar",
             target_expert_id="family_education_expert",
             content="孩子沉迷手机怎么办",
@@ -422,3 +418,38 @@ def test_agentscope_react_agent_can_only_select_an_authorized_skill():
     runtime._run_agent(definition, "怎么提分", context, FakeOpenAICompatibleClient(), state)
     assert context.session_meta["expert_requested_skill_id"] == "score_improve"
     assert state["budget"]["skill_calls"] == 1
+
+
+def test_expert_prompt_includes_active_profile_facts_and_forbids_reasking_them():
+    class FactCapturingClient:
+        _config = SimpleNamespace(api_key="test", base_url="http://example.invalid", model="test")
+
+        def __init__(self) -> None:
+            self.messages = []
+
+        def complete_with_tools(self, messages, _specs, **_kwargs):
+            self.messages = messages
+            return AssistantTurnResult(final_text="已知孩子目前是初中阶段。")
+
+    skill_registry = _runtime_registry()
+    experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
+    runtime = AgentScopeExpertRuntime(experts, skill_registry)
+    context = SessionContext(profile_id="profile_x", profile_name="许琳")
+    context.profile_facts.set_fact("grade", "初中", source_skill="project_backend", scope="profile")
+    context.profile_facts.set_fact(
+        "profile_school_facts",
+        [{"school_year": "2019", "grade": "初中"}],
+        source_skill="project_backend",
+        scope="profile",
+    )
+    definition = experts.require("career_plan_expert")
+    state = runtime._state(context, definition)
+    state["budget"] = {"max_iters": 4, "max_skill_calls": 3, "skill_calls": 0}
+    client = FactCapturingClient()
+
+    runtime._run_agent(definition, "你好", context, client, state)
+
+    prompt = "\n".join(str(message) for message in client.messages)
+    assert "当前孩子的有效事实" in prompt
+    assert "不得重复询问" in prompt
+    assert "初中" in prompt

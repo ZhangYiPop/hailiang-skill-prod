@@ -34,7 +34,13 @@ class ContextData(BaseModel):
     facts: dict[str, object] = Field(default_factory=dict)
 
 
-def _seed_profile(fact_service: FactService, data: ContextData) -> str:
+def _seed_profile(
+    fact_service: FactService,
+    data: ContextData,
+    *,
+    profile_id: str | None = None,
+    allow_context_seed: bool = True,
+) -> str | None:
     """Resolve the shared profile while opening a new session.
 
     The forwarding backend owns the user/profile relationship.  The runtime
@@ -42,33 +48,52 @@ def _seed_profile(fact_service: FactService, data: ContextData) -> str:
     not require it to belong to the current ``user_id``.  Existing profiles
     are intentionally not renamed by another guardian opening a session.
     """
+    target_profile_id = str(profile_id or data.profile_id).strip()
+    profile_created = False
     try:
         get_profile_by_id = getattr(fact_service.profile_repo, "get_profile_by_id", None)
         if get_profile_by_id is not None:
-            profile = get_profile_by_id(data.profile_id)
+            profile = get_profile_by_id(target_profile_id)
         else:
             # Compatibility for lightweight test/dummy repositories.
-            profile = fact_service.profile_repo.get_profile(data.user_id, data.profile_id)
+            get_profile = getattr(fact_service.profile_repo, "get_profile", None)
+            if get_profile is None:
+                raise KeyError(target_profile_id)
+            profile = get_profile(data.user_id, target_profile_id)
     except KeyError:
         try:
             profile = fact_service.profile_repo.create_profile(
                 data.user_id,
-                profile_id=data.profile_id,
-                name=data.student_name,
+                profile_id=target_profile_id,
+                name=data.student_name if allow_context_seed else "",
                 shared_facts_initialized=False,
             )
+            profile_created = True
         except IntegrityError as exc:
             # Another request may have created the shared profile concurrently.
             try:
                 get_profile_by_id = getattr(fact_service.profile_repo, "get_profile_by_id", None)
                 if get_profile_by_id is None:
-                    raise KeyError(data.profile_id)
-                profile = get_profile_by_id(data.profile_id)
+                    raise KeyError(target_profile_id)
+                profile = get_profile_by_id(target_profile_id)
             except KeyError as conflict:
                 raise HTTPException(status_code=409, detail="PROFILE_ID_CONFLICT") from conflict
 
-    profile_facts = fact_service.get_profile_facts(data.user_id, data.profile_id)
-    if data.school_year is not None and data.grade is not None:
+    if allow_context_seed and str(profile.get("name") or "") != data.student_name:
+        try:
+            profile = fact_service.profile_repo.update_profile(
+                data.user_id,
+                target_profile_id,
+                name=data.student_name,
+            )
+        except KeyError:
+            # Shared profiles can be owned by another guardian. The trusted
+            # forwarder remains authoritative for this session's name without
+            # rewriting another owner's projection row.
+            profile = {**profile, "name": data.student_name}
+
+    profile_facts = fact_service.get_profile_facts(data.user_id, target_profile_id)
+    if allow_context_seed and data.school_year is not None and data.grade is not None:
         school_facts = [{"school_year": data.school_year, "grade": data.grade}]
         profile_facts.set_fact(
             "profile_school_facts",
@@ -78,8 +103,10 @@ def _seed_profile(fact_service: FactService, data: ContextData) -> str:
             source_label="context_data",
             scope="profile",
         )
-    fact_service.profile_repo.save_profile_facts(data.user_id, data.profile_id, profile_facts)
-    return str(profile.get("name") or data.student_name)
+    fact_service.profile_repo.save_profile_facts(data.user_id, target_profile_id, profile_facts)
+    if not allow_context_seed and profile_created:
+        return None
+    return str(profile.get("name") or (data.student_name if allow_context_seed else "")) or None
 
 
 def _context_fact_values(data: ContextData) -> dict[str, object]:
@@ -118,34 +145,81 @@ def _seed_context_facts(fact_service: FactService, context: SessionContext, data
     fact_service.persist_context(context)
 
 
-def open_or_resume_session(repository, fact_service: FactService, *, session_id: str, data: ContextData) -> tuple[SessionContext, bool]:
+def open_or_resume_session(
+    repository,
+    fact_service: FactService,
+    *,
+    session_id: str,
+    data: ContextData,
+    target_profile_id: str | None = None,
+    allow_context_seed: bool = True,
+) -> tuple[SessionContext, bool]:
     """Return ``(context, created)`` without generating an opening message."""
     try:
         context = repository.get(session_id)
     except KeyError:
         context = None
 
+    target_profile_id = str(target_profile_id or data.profile_id).strip()
     if context is not None:
-        if context.user_id != data.user_id or context.profile_id != data.profile_id:
+        if context.user_id != data.user_id:
             raise HTTPException(status_code=409, detail="SESSION_ID_CONFLICT")
-        # context_data is a creation-time seed.  Do not overwrite facts that
-        # the later conversation has extracted or that the user has supplied.
+        context.session_meta["_session_created"] = False
+        context.session_meta["_profile_switched"] = False
+        context.session_meta["_profile_branch_created"] = False
+        previous_profile_id = str(context.profile_id or "")
+        previous_profile_name = context.profile_name
+        profile_name = _seed_profile(
+            fact_service,
+            data,
+            profile_id=target_profile_id,
+            allow_context_seed=allow_context_seed,
+        )
+        branch_created = False
+        if previous_profile_id != target_profile_id:
+            branch_created = context.activate_profile_branch(
+                target_profile_id,
+                profile_name=profile_name,
+            )
+            context.append_profile_switch(
+                from_profile_id=previous_profile_id,
+                from_profile_name=previous_profile_name,
+            )
+            context.session_meta["_profile_switched"] = True
+        elif profile_name:
+            context.profile_name = profile_name
         fact_service.hydrate_context(context)
-        if _normalize_legacy_default_skill(context):
+        # Matched forwarding data is the application-side base projection and
+        # refreshes on every request. A mismatch never reaches this writer.
+        if allow_context_seed:
+            _seed_context_facts(fact_service, context, data)
+        if branch_created:
+            _initialize_general_chat_state(context)
+            get_conversation_state(context)
+        context.session_meta["_profile_branch_created"] = branch_created
+        if branch_created or previous_profile_id != target_profile_id or _normalize_legacy_default_skill(context):
             repository.save(context)
         return context, False
 
-    profile_name = _seed_profile(fact_service, data)
+    profile_name = _seed_profile(
+        fact_service,
+        data,
+        profile_id=target_profile_id,
+        allow_context_seed=allow_context_seed,
+    )
     context = SessionContext(
         session_id=session_id,
         user_id=data.user_id,
-        profile_id=data.profile_id,
+        profile_id=target_profile_id,
         profile_name=profile_name,
     )
     fact_service.hydrate_context(context)
-    _seed_context_facts(fact_service, context, data)
+    if allow_context_seed:
+        _seed_context_facts(fact_service, context, data)
     _initialize_general_chat_state(context)
     get_conversation_state(context)
+    context.session_meta["_session_created"] = True
+    context.session_meta["_profile_branch_created"] = True
     repository.create(context)
     return context, True
 

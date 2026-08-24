@@ -17,22 +17,31 @@ from hailiang_skills.storage.repositories.session_repo import InMemorySessionRep
 from hailiang_skills.storage.repositories.postgres_repo import SessionVersionConflict
 from hailiang_skills.core.rate_limit import LLMRateLimitError, LLMRateLimiter
 from hailiang_skills.core.logging import make_event
+from hailiang_skills.core.telemetry import PROFILE_CONTEXT_MISMATCHES
 from hailiang_skills.core.message_interactions import ACTIVE, SELECTED, ensure_message_interactions, expire_active_interactions, update_interaction
+from hailiang_skills.api.profile_targeting import ProfileTargetResolver
+from hailiang_skills.runtime_bridge.default_expert_team import initialize_default_expert_team
+from hailiang_skills.core.session_logging import append_session_events
 
 
 class StrictInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ChatInput(StrictInput):
+class ProfileBoundInput(StrictInput):
+    profile_id: str = Field(min_length=1)
+
+
+class ChatInput(ProfileBoundInput):
     action: Literal["chat"]
+    expert_id: str | None = Field(default=None, min_length=1)
     content: str = Field(min_length=1)
     source: Literal["chat"]
     enable_thinking: bool = False
     return_reasoning: bool = False
 
 
-class EnterSkillInput(StrictInput):
+class EnterSkillInput(ProfileBoundInput):
     action: Literal["enter_skill"]
     target_skill_id: str = Field(min_length=1)
     source: Literal["toolbar", "route_suggestion"]
@@ -42,7 +51,7 @@ class EnterSkillInput(StrictInput):
     return_reasoning: bool = False
 
 
-class QuitSkillInput(StrictInput):
+class QuitSkillInput(ProfileBoundInput):
     action: Literal["quit_skill"]
     target_skill_id: str = Field(min_length=1)
     source: Literal["toolbar", "exit_button"]
@@ -50,7 +59,7 @@ class QuitSkillInput(StrictInput):
     return_reasoning: bool = False
 
 
-class ConfirmTeamHandoffInput(StrictInput):
+class ConfirmTeamHandoffInput(ProfileBoundInput):
     action: Literal["confirm_team_handoff"]
     source_message_id: str = Field(min_length=1)
     target_expert_id: str = Field(min_length=1)
@@ -59,7 +68,7 @@ class ConfirmTeamHandoffInput(StrictInput):
     return_reasoning: bool = False
 
 
-class SwitchTeamMemberInput(StrictInput):
+class SwitchTeamMemberInput(ProfileBoundInput):
     action: Literal["switch_team_member"]
     target_expert_id: str = Field(min_length=1)
     content: str = Field(min_length=1)
@@ -68,12 +77,19 @@ class SwitchTeamMemberInput(StrictInput):
     return_reasoning: bool = False
 
 
+class OpenSessionInput(ProfileBoundInput):
+    """Reserved wire contract for a future model-generated opening."""
+
+    action: Literal["open_session"]
+    opening_mode: Literal["model"]
+
+
 class StopInput(StrictInput):
     action: Literal["stop"]
     source: Literal["composer"]
 
 
-StreamInput = Annotated[ChatInput | EnterSkillInput | QuitSkillInput | ConfirmTeamHandoffInput | SwitchTeamMemberInput | StopInput, Field(discriminator="action")]
+StreamInput = Annotated[ChatInput | EnterSkillInput | QuitSkillInput | ConfirmTeamHandoffInput | SwitchTeamMemberInput | OpenSessionInput | StopInput, Field(discriminator="action")]
 
 
 class ChatStreamRequest(StrictInput):
@@ -110,6 +126,8 @@ def _parse_input(raw: str) -> StreamInput:
             return ConfirmTeamHandoffInput.model_validate(payload)
         if action == "switch_team_member":
             return SwitchTeamMemberInput.model_validate(payload)
+        if action == "open_session":
+            return OpenSessionInput.model_validate(payload)
         if action == "stop":
             return StopInput.model_validate(payload)
         raise HTTPException(status_code=422, detail="unsupported action")
@@ -137,6 +155,8 @@ def _claim_external_run(repository, context, run_id: str, *, action: str):
         ledger[run_id] = {"status": "running", "action": action}
         try:
             repository.save(context)
+            if hasattr(repository, "record_run"):
+                repository.record_run(context, run_id, action)
             return context
         except SessionVersionConflict:
             context = repository.get(context.session_id)
@@ -255,6 +275,7 @@ def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffI
     from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
     context.session_meta["active_expert_id"] = input_data.target_expert_id
     context.session_meta["expert_id"] = input_data.target_expert_id
+    context.session_meta["expert_selection_source"] = "handoff_card"
     context.session_meta.pop("pending_team_handoff", None)
     source_user_message = ""
     source_index = context.messages.index(source)
@@ -293,6 +314,7 @@ def _switch_team_member(context, orchestrator, input_data: SwitchTeamMemberInput
     from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
     context.session_meta["active_expert_id"] = member.expert_id
     context.session_meta["expert_id"] = member.expert_id
+    context.session_meta["expert_selection_source"] = "manual"
     context.session_meta.pop("pending_team_handoff", None)
     expire_active_interactions(context.messages)
     return {
@@ -316,6 +338,7 @@ def build_chat_stream_router(
 ) -> APIRouter:
     router = APIRouter()
     runner = StreamingRunner(repository, fact_service, orchestrator, turn_coordinator=turn_coordinator)
+    profile_target_resolver = ProfileTargetResolver()
 
     @router.post("/sessions/chat/stream")
     def post_chat_stream(request: ChatStreamRequest, http_request: Request) -> StreamingResponse:
@@ -348,6 +371,10 @@ def build_chat_stream_router(
                 status_code=422,
                 detail="context_data is required for non-stop actions",
             )
+        if isinstance(input_data, OpenSessionInput):
+            # The contract is deliberately reserved now, while the current
+            # product keeps client_opening presentation-only and non-persistent.
+            raise HTTPException(status_code=501, detail="MODEL_OPENING_NOT_ENABLED")
         if llm_rate_limiter is not None:
             request_id = str(getattr(http_request.state, "hailiang_request_id", "") or "")
             try:
@@ -358,10 +385,62 @@ def build_chat_stream_router(
                     detail="LLM_RATE_LIMITED",
                     headers={"Retry-After": "1"},
                 ) from exc
-        context, _ = open_or_resume_session(
-            repository, fact_service, session_id=request.session_id, data=request.context_data
+        resolution = profile_target_resolver.resolve(
+            input_profile_id=input_data.profile_id,
+            context_data=request.context_data,
         )
-        requested_expert_id = str((request.context_data.model_extra or {}).get("expert_id") or "").strip()
+        try:
+            existing_context = repository.get(request.session_id)
+        except KeyError:
+            existing_context = None
+        if existing_context is not None and existing_context.user_id != request.context_data.user_id:
+            raise HTTPException(status_code=409, detail="SESSION_ID_CONFLICT")
+        if existing_context is not None and str(existing_context.profile_id or "") != resolution.target_profile_id:
+            ledger = existing_context.session_meta.get("run_ledger")
+            running = [
+                run_id
+                for run_id, item in (ledger.items() if isinstance(ledger, dict) else [])
+                if isinstance(item, dict) and item.get("status") == "running" and run_id != request.run_id
+            ]
+            if running:
+                raise HTTPException(status_code=409, detail="ACTIVE_RUN_MUST_STOP")
+
+        context, session_created = open_or_resume_session(
+            repository,
+            fact_service,
+            session_id=request.session_id,
+            data=request.context_data,
+            target_profile_id=resolution.target_profile_id,
+            allow_context_seed=resolution.allow_context_seed,
+        )
+        profile_switched = bool(context.session_meta.get("_profile_switched"))
+        branch_created = bool(context.session_meta.get("_profile_branch_created"))
+        team_initialized = False
+        if branch_created and getattr(orchestrator, "expert_team_registry", None) is not None:
+            team_initialized = initialize_default_expert_team(context, orchestrator, force=True)
+
+        profile_context_event = {
+            "profile_id": resolution.target_profile_id,
+            "profile_name": context.profile_name or "",
+            "branch_version": int(context.session_meta.get("_active_branch_version") or 0),
+            "profile_context_status": resolution.status,
+            "session_created": bool(session_created),
+            "profile_switched": profile_switched,
+        }
+        context.session_meta["_sse_profile_context"] = profile_context_event
+        if resolution.status == "mismatched":
+            if PROFILE_CONTEXT_MISMATCHES:
+                PROFILE_CONTEXT_MISMATCHES.labels(authority=resolution.authority).inc()
+            mismatch_event = make_event("profile_context_mismatch", {
+                "input_profile_id": resolution.input_profile_id,
+                "context_profile_id": resolution.context_profile_id,
+                "target_profile_id": resolution.target_profile_id,
+                "authority": resolution.authority,
+            })
+            context.event_trace.append(mismatch_event)
+            append_session_events(request.session_id, [mismatch_event])
+
+        requested_expert_id = str(input_data.expert_id or "").strip() if isinstance(input_data, ChatInput) else ""
         if requested_expert_id:
             expert_registry = getattr(orchestrator, "expert_registry", None)
             definition = expert_registry.get(requested_expert_id) if expert_registry is not None else None
@@ -372,15 +451,18 @@ def build_chat_stream_router(
             team = teams.get(team_id) if team_id and teams is not None else None
             if team is not None and definition.agent_id not in team.member_expert_ids:
                 raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
-            if team is not None and context.session_meta.get("active_expert_id") != definition.agent_id:
-                raise HTTPException(status_code=409, detail="EXPERT_SWITCH_REQUIRES_STRUCTURED_ACTION")
-            if context.session_meta.get("expert_id") != definition.agent_id:
-                context.session_meta["expert_id"] = definition.agent_id
-                context.session_meta["active_expert_id"] = definition.agent_id
-                context.session_meta.pop("expert_requested_skill_id", None)
-                repository.save(context)
+            if team is None:
+                raise HTTPException(status_code=409, detail="EXPERT_TEAM_NOT_ACTIVE")
+            context.session_meta["expert_id"] = definition.agent_id
+            context.session_meta["active_expert_id"] = definition.agent_id
+            context.session_meta["expert_selection_source"] = "manual"
+            context.session_meta.pop("expert_requested_skill_id", None)
+            context.session_meta.pop("pending_team_handoff", None)
 
-        if hasattr(runner, "supersede_active_run"):
+        if team_initialized or requested_expert_id or resolution.status == "mismatched":
+            repository.save(context)
+
+        if not profile_switched and hasattr(runner, "supersede_active_run"):
             runner.supersede_active_run(request.session_id, context.user_id, next_run_id=request.run_id)
         if isinstance(input_data, ConfirmTeamHandoffInput):
             team_member_switch = _confirm_team_handoff(context, orchestrator, input_data)
@@ -417,6 +499,7 @@ def build_chat_stream_router(
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
                 source_endpoint="sessions/chat/stream",
+                initial_events=[("profile_context", profile_context_event)],
             )
         elif isinstance(input_data, SwitchTeamMemberInput):
             team_member_switch = _switch_team_member(context, orchestrator, input_data)
@@ -451,6 +534,7 @@ def build_chat_stream_router(
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
                 source_endpoint="sessions/chat/stream",
+                initial_events=[("profile_context", profile_context_event)],
             )
         elif isinstance(input_data, ChatInput):
             # A new free-form turn supersedes any unconfirmed coordinator
@@ -475,6 +559,7 @@ def build_chat_stream_router(
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
                 source_endpoint="sessions/chat/stream",
+                initial_events=[("profile_context", profile_context_event)],
             )
         else:
             action = "enter" if input_data.action == "enter_skill" else "exit"
@@ -532,6 +617,7 @@ def build_chat_stream_router(
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
                 source_endpoint="sessions/chat/stream",
+                initial_events=[("profile_context", profile_context_event)],
             )
         return StreamingResponse(
             _with_done_event(stream, session_id=request.session_id, run_id=request.run_id),

@@ -10,6 +10,7 @@ type ComposerProps = {
   expertCatalog?: ExpertCatalogItem[];
   expertTeamCatalog?: ExpertTeamCatalogItem[];
   activeExpertId?: string;
+  pendingExpertId?: string;
   activeExpertTeam?: SelectedExpertTeam | null;
   onSelectExpert?: (expertId: string) => Promise<void>;
   onExitExpert?: () => Promise<void>;
@@ -26,7 +27,7 @@ const quickPrompts = [
   "强基计划详细讲讲，我现在适合吗",
 ];
 
-export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertCatalog = [], expertTeamCatalog = [], activeExpertId = "", activeExpertTeam = null, onSelectExpert, onExitExpert, onSelectExpertTeam, onExitExpertTeam, isGenerating = false, isCancelling = false, onStopGeneration }: ComposerProps) {
+export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertCatalog = [], expertTeamCatalog = [], activeExpertId = "", pendingExpertId = "", activeExpertTeam = null, onSelectExpert, onExitExpert, onSelectExpertTeam, onExitExpertTeam, isGenerating = false, isCancelling = false, onStopGeneration }: ComposerProps) {
   const { composerValue, setComposerValue } = useChatStore();
   const [toolbarTargetExpertId, setToolbarTargetExpertId] = useState("");
   const toolbarTarget = activeExpertTeam?.members.find((member) => member.expert_id === toolbarTargetExpertId);
@@ -140,7 +141,7 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
               </button>
             ))}
             {expertCatalog.map((expert) => {
-              const selected = activeExpertId === expert.expert_id;
+              const selected = (pendingExpertId || activeExpertId) === expert.expert_id;
               const skillLabels = expert.skills.map((skill) => skill.label).join("、");
               return (
                 <button
@@ -161,7 +162,7 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
                     "disabled:cursor-not-allowed disabled:opacity-40",
                   ].join(" ")}
                 >
-                  {expert.name}
+                  {expert.name}{pendingExpertId === expert.expert_id ? "（待下次发送）" : ""}
                 </button>
               );
             })}

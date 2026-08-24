@@ -84,6 +84,7 @@ type ChatStore = {
   enableThinking: boolean;
   returnReasoning: boolean;
   profiles: ProfileSummary[];
+  selectedProfileId: string;
   activeProfileId: string;
   sessionList: SessionListItem[];
   sessionId: string;
@@ -94,7 +95,9 @@ type ChatStore = {
   expertCatalog: ExpertCatalogItem[];
   expertTeamCatalog: ExpertTeamCatalogItem[];
   activeExpertId: string;
+  pendingExpertId: string;
   activeExpertTeam: SelectedExpertTeam | null;
+  profileBranches: Record<string, { activeExpertId?: string; activeSkill?: string; branchVersion?: number }>;
   messages: ChatMessage[];
   candidatePaths: CandidatePath[];
   events: SkillEvent[];
@@ -127,6 +130,7 @@ type ChatStore = {
   setEnableThinking: (value: boolean) => void;
   setReturnReasoning: (value: boolean) => void;
   setProfiles: (profiles: ProfileSummary[]) => void;
+  setSelectedProfileId: (value: string) => void;
   setActiveProfileId: (value: string) => void;
   setSessionList: (value: SessionListItem[]) => void;
   setSessionId: (value: string) => void;
@@ -137,7 +141,9 @@ type ChatStore = {
   setExpertCatalog: (value: ExpertCatalogItem[]) => void;
   setExpertTeamCatalog: (value: ExpertTeamCatalogItem[]) => void;
   setActiveExpertId: (value: string) => void;
+  setPendingExpertId: (value: string) => void;
   setActiveExpertTeam: (value: SelectedExpertTeam | null) => void;
+  setProfileBranch: (profileId: string, value: { activeExpertId?: string; activeSkill?: string; branchVersion?: number }) => void;
   setMessages: (messages: ChatMessage[]) => void;
   appendMessage: (message: ChatMessage) => void;
   updateMessage: (messageId: string, updater: (message: ChatMessage) => ChatMessage) => void;
@@ -341,6 +347,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   enableThinking: false,
   returnReasoning: false,
   profiles: [],
+  selectedProfileId: "",
   activeProfileId: "",
   sessionList: [],
   sessionId: "",
@@ -351,7 +358,9 @@ export const useChatStore = create<ChatStore>((set) => ({
   expertCatalog: [],
   expertTeamCatalog: [],
   activeExpertId: "",
+  pendingExpertId: "",
   activeExpertTeam: null,
+  profileBranches: {},
   messages: [],
   candidatePaths: [],
   events: [],
@@ -402,6 +411,7 @@ export const useChatStore = create<ChatStore>((set) => ({
     }));
   },
   setProfiles: (profiles) => set({ profiles }),
+  setSelectedProfileId: (value) => set({ selectedProfileId: value }),
   setActiveProfileId: (value) => set({ activeProfileId: value }),
   setSessionList: (value) => set({ sessionList: value }),
   setSessionId: (value) => set({ sessionId: value }),
@@ -412,7 +422,14 @@ export const useChatStore = create<ChatStore>((set) => ({
   setExpertCatalog: (value) => set({ expertCatalog: value }),
   setExpertTeamCatalog: (value) => set({ expertTeamCatalog: value }),
   setActiveExpertId: (value) => set({ activeExpertId: value }),
+  setPendingExpertId: (value) => set({ pendingExpertId: value }),
   setActiveExpertTeam: (value) => set({ activeExpertTeam: value }),
+  setProfileBranch: (profileId, value) => set((state) => ({
+    profileBranches: {
+      ...state.profileBranches,
+      [profileId]: { ...(state.profileBranches[profileId] ?? {}), ...value },
+    },
+  })),
   setMessages: (messages) => set({ messages }),
   appendMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   updateMessage: (messageId, updater) =>
@@ -594,7 +611,9 @@ export const useChatStore = create<ChatStore>((set) => ({
       sessionTitle: "",
       activeSkill: "",
       activeExpertId: "",
+      pendingExpertId: "",
       activeExpertTeam: null,
+      profileBranches: {},
       currentScenario: "",
       messages: [],
       candidatePaths: [],

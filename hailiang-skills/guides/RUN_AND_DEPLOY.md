@@ -23,6 +23,11 @@ Collector，执行 Alembic 迁移，后台启动后端，最后以前台方式�
 浏览器访问 `http://127.0.0.1:4175`。按 `Ctrl+C` 停止本次前后端进程；数据库
 容器保留，数据不会丢失。
 
+本版本使用全新的多孩子数据库基线。若本地连接的旧库仍记录
+`0002_add_operator_user_metadata`，`run.sh` 会保留旧库，并自动创建、切换到
+`hailiang_skills_multi_profile_v1`（或当前库名加 `_multi_profile_v1`），然后执行迁移。
+对远程数据库不会自动创建或切换，必须由运维先提供空数据库。
+
 ## 本地调试身份与转发服务
 
 算法服务不提供登录接口，也不要求 `Authorization`。本地前端打开后，在“本地调试身份”
@@ -44,6 +49,9 @@ Collector，执行 Alembic 迁移，后台启动后端，最后以前台方式�
 ```
 
 ## 从旧 logs/ 迁移历史数据
+
+注意：旧单孩子 PostgreSQL 数据库不能直接升级到本版本。下面的导入命令只处理旧
+`logs/` 文件快照；若需要迁移旧 PostgreSQL 数据，应另行编写经过业务校验的数据转换任务。
 
 `logs/` 是旧的文件存储；数据库迁移只创建表，不会自动导入这些历史数据。首次
 切到 PostgreSQL 时先备份 `logs/`，然后执行：
@@ -67,6 +75,8 @@ Collector，执行 Alembic 迁移，后台启动后端，最后以前台方式�
 - 如果你使用外部托管 PostgreSQL/Redis：
   - 将地址改成真实远程地址
   - 设置 `START_INFRA=0`
+  - 为本版本创建空数据库；建议测试库使用 `hailiang_skills_test_multi_profile_v1`，
+    正式库使用 `hailiang_skills_multi_profile_v1`
 
 然后：
 

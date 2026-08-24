@@ -1,0 +1,16 @@
+{
+  "skill_id": "parenting_action_planner",
+  "skill_role": "child",
+  "stages": [
+    {"id": "init", "kind": "entry", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false},
+    {"id": "plan", "kind": "analysis", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": true}
+  ],
+  "facts": {
+    "global": ["grade"],
+    "skill": ["child_age", "parenting_problem", "action_plan_summary"],
+    "exports": {"promote_to_global": [], "share_with_parent_skill": ["action_plan_summary"]}
+  },
+  "routes": [],
+  "accepts_scenes": ["家庭教育行动规划", "育儿行为规划"],
+  "metadata": {"module_group": "family_education", "scene_name": "家庭教育行动规划"}
+}

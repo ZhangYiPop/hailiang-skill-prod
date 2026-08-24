@@ -59,6 +59,7 @@ from hailiang_skills.core.rate_limit import get_llm_rate_limiter
 from hailiang_skills.core.deployment import deployment_environment, node_name, release_version, state_root
 from hailiang_skills.storage.event_store import configure_event_store
 from hailiang_skills.storage.repositories.postgres_repo import SessionVersionConflict
+from hailiang_skills.runtime_bridge.default_expert_team import require_default_expert_team
 from pathlib import Path
 import os
 import json
@@ -99,6 +100,9 @@ _HTTP_ERROR_MESSAGES = {
     "TEAM_SWITCH_BLOCKED_BY_PENDING_FORM": "请先完成或取消当前表单，再切换专家。",
     "SKILL_ENTRY_BLOCKED_IN_EXPERT_TEAM": "专家团内不能直接进入单个 Skill。",
     "DIALOGUE_LAST_MESSAGE_MUST_BE_USER": "dialogue 最后一条消息必须是 user。",
+    "ACTIVE_RUN_MUST_STOP": "当前回答仍在生成，请先停止并等待完成后再切换孩子。",
+    "INPUT_PROFILE_ID_REQUIRED": "非停止操作必须在 input 中提供 profile_id。",
+    "PROFILE_CONTEXT_MISMATCH": "input 与 context_data 的孩子 ID 不一致。",
 }
 
 
@@ -153,6 +157,15 @@ def _extract_request_context(request: Request, *, body_payload: dict[str, object
     if isinstance(context_data, dict):
         user_id = user_id or str(context_data.get("user_id") or "")
         profile_id = profile_id or str(context_data.get("profile_id") or "")
+    raw_input = payload.get("input")
+    if isinstance(raw_input, str):
+        try:
+            parsed_input = json.loads(raw_input)
+        except json.JSONDecodeError:
+            parsed_input = None
+        if isinstance(parsed_input, dict):
+            # Interaction input currently owns profile targeting.
+            profile_id = str(parsed_input.get("profile_id") or profile_id)
     return {
         "session_id": session_id,
         "profile_id": profile_id,
@@ -257,6 +270,7 @@ def create_app() -> FastAPI:
     )
     app.state.moderation_service = moderation_service
     orchestrator = MainPlannerOrchestrator(registry, llm_config, moderation_service=moderation_service)
+    require_default_expert_team(orchestrator)
     configured_origins = [item.strip() for item in os.getenv("HAILIANG_CORS_ORIGINS", "").split(",") if item.strip()]
     cors_origins = configured_origins or [
         "http://127.0.0.1:4174",
@@ -452,7 +466,7 @@ def create_app() -> FastAPI:
 
     app.include_router(build_chat_router(repository, orchestrator, fact_service, storage.user_metadata_repository), prefix="/api/v1")
     app.include_router(
-        build_chat_stream_router(repository, fact_service, orchestrator, app.state.turn_coordinator, app.state.llm_rate_limiter), prefix="/api/v1"
+        build_chat_stream_router(repository, fact_service, orchestrator, app.state.turn_coordinator, app.state.llm_rate_limiter), prefix="/api/v2"
     )
     app.include_router(
         build_external_chat_router(repository, fact_service, orchestrator, app.state.turn_coordinator, app.state.llm_rate_limiter),

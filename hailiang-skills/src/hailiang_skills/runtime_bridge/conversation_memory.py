@@ -28,11 +28,17 @@ class ConversationMemoryStore:
         *,
         runtime_dir: Path,
         enabled: bool = True,
-        active_window_messages: int = 8,
+        active_window_messages: int = 16,
+        context_window_tokens: int = 32_000,
+        async_checkpoint_ratio: float = 0.0,
+        sync_compression_ratio: float = 0.80,
     ) -> None:
         self.runtime_dir = Path(runtime_dir)
         self.enabled = enabled
         self.active_window_messages = min(20, max(1, active_window_messages))
+        self.context_window_tokens = max(4_000, int(context_window_tokens))
+        self.async_checkpoint_ratio = min(0.95, max(0.0, float(async_checkpoint_ratio)))
+        self.sync_compression_ratio = min(0.99, max(self.async_checkpoint_ratio, float(sync_compression_ratio)))
         self._jobs_lock = threading.Lock()
         self._active_jobs: dict[tuple[str, str], str] = {}
         self._file_locks_lock = threading.Lock()
@@ -69,8 +75,32 @@ class ConversationMemoryStore:
         memory["runtime_contract_available"] = bool(facts_schema.get("available"))
 
         complete_count = self._complete_message_count(memory.get("messages") or [])
+        estimated_tokens = self._estimated_context_tokens(memory, complete_count=complete_count)
+        usage_ratio = estimated_tokens / self.context_window_tokens
+        memory["estimated_context_tokens"] = estimated_tokens
+        memory["context_window_tokens"] = self.context_window_tokens
+        memory["context_usage_ratio"] = round(usage_ratio, 4)
+        memory["checkpoint_mode"] = (
+            "sync_compression"
+            if usage_ratio >= self.sync_compression_ratio
+            else "async_checkpoint"
+            if usage_ratio >= self.async_checkpoint_ratio
+            else "below_threshold"
+        )
         processed_count = int(memory.get("summary_updated_through_message_index") or 0)
         summary_target_count = self._summary_target_message_count(complete_count)
+        if self.async_checkpoint_ratio > 0 and usage_ratio < self.async_checkpoint_ratio:
+            memory["memory_update_status"] = "idle"
+            self._save_memory(user_id, session_id, memory)
+            return MemoryTurnResult(
+                context=self._memory_context(memory),
+                step=CoreTraceStep(
+                    name="memory_update",
+                    status="skipped",
+                    detail="context remains below asynchronous checkpoint threshold",
+                    payload=self._memory_trace_payload(memory),
+                ),
+            )
         if summary_target_count <= processed_count:
             memory["memory_update_status"] = "idle"
             self._save_memory(user_id, session_id, memory)
@@ -99,6 +129,15 @@ class ConversationMemoryStore:
             )
 
         if llm_client is None:
+            if usage_ratio >= self.sync_compression_ratio:
+                return self._apply_extract_checkpoint(
+                    user_id=user_id,
+                    session_id=session_id,
+                    memory=memory,
+                    pending_messages=pending_messages,
+                    update_through_message_index=summary_target_count,
+                    detail="hard-threshold checkpoint used deterministic fallback because the memory LLM is unavailable",
+                )
             detail = "memory update skipped because runtime LLM client is unavailable"
             memory["memory_update_status"] = "skipped"
             memory["last_error"] = detail
@@ -114,7 +153,9 @@ class ConversationMemoryStore:
                 ),
             )
 
-        if defer_update:
+        # At the hard threshold, compaction happens in this request so the
+        # prompt cannot continue growing while a background job is pending.
+        if defer_update and usage_ratio < self.sync_compression_ratio:
             return self._schedule_memory_update(
                 user_id=user_id,
                 session_id=session_id,
@@ -169,6 +210,15 @@ class ConversationMemoryStore:
                 ),
             )
         except Exception as exc:  # noqa: BLE001
+            if usage_ratio >= self.sync_compression_ratio:
+                return self._apply_extract_checkpoint(
+                    user_id=user_id,
+                    session_id=session_id,
+                    memory=memory,
+                    pending_messages=pending_messages,
+                    update_through_message_index=summary_target_count,
+                    detail=f"hard-threshold checkpoint used deterministic fallback after {type(exc).__name__}",
+                )
             memory["memory_update_status"] = "error"
             memory["last_error"] = f"{type(exc).__name__}: {exc}"
             memory["last_memory_updated_at"] = datetime.now(UTC).isoformat()
@@ -657,6 +707,10 @@ class ConversationMemoryStore:
             "runtime_contract_hash": memory.get("runtime_contract_hash"),
             "runtime_contract_available": bool(memory.get("runtime_contract_available")),
             "last_error": memory.get("last_error"),
+            "estimated_context_tokens": int(memory.get("estimated_context_tokens") or 0),
+            "context_window_tokens": int(memory.get("context_window_tokens") or self.context_window_tokens),
+            "context_usage_ratio": float(memory.get("context_usage_ratio") or 0.0),
+            "checkpoint_mode": str(memory.get("checkpoint_mode") or "below_threshold"),
         }
 
     def _complete_message_count(self, messages: list[Any]) -> int:
@@ -678,6 +732,59 @@ class ConversationMemoryStore:
         # configured active window verbatim and only summarize older pairs.
         target = max(0, int(complete_count) - self.active_window_messages)
         return target - (target % 2)
+
+    @staticmethod
+    def _estimated_context_tokens(memory: dict[str, Any], *, complete_count: int) -> int:
+        summarized_count = min(
+            complete_count,
+            int(memory.get("summary_updated_through_message_index") or 0),
+        )
+        messages = list(memory.get("messages") or [])[summarized_count:complete_count]
+        characters = len(str(memory.get("conversation_summary") or ""))
+        for item in messages:
+            content = item.get("content") if isinstance(item, dict) else getattr(item, "content", "")
+            characters += len(str(content or ""))
+        # A conservative multilingual approximation; Chinese is commonly
+        # near one token per character while Latin prose is cheaper.
+        return max(0, (characters * 3 + 1) // 4)
+
+    def _apply_extract_checkpoint(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        memory: dict[str, Any],
+        pending_messages: list[Any],
+        update_through_message_index: int,
+        detail: str,
+    ) -> MemoryTurnResult:
+        """Bound prompt growth without inventing facts when semantic compaction fails."""
+        lines: list[str] = []
+        for item in pending_messages:
+            role = item.get("role") if isinstance(item, dict) else getattr(item, "role", "")
+            content = item.get("content") if isinstance(item, dict) else getattr(item, "content", "")
+            cleaned = " ".join(str(content or "").split())[:180]
+            if cleaned:
+                lines.append(f"{'用户' if role == 'user' else '助手'}：{cleaned}")
+        previous = str(memory.get("conversation_summary") or "").strip()
+        memory["conversation_summary"] = self._trim_memory_summary(
+            "\n".join(item for item in [previous, *lines] if item)
+        )
+        memory["summary_updated_through_message_index"] = update_through_message_index
+        # No facts are inferred by this fallback; retain the last safe facts checkpoint.
+        memory["memory_update_status"] = "degraded_success"
+        memory["last_error"] = detail
+        memory["last_memory_updated_at"] = datetime.now(UTC).isoformat()
+        self._save_memory(user_id, session_id, memory)
+        return MemoryTurnResult(
+            context=self._memory_context(memory),
+            step=CoreTraceStep(
+                name="memory_update",
+                status="warning",
+                detail=detail,
+                payload=self._memory_trace_payload(memory),
+            ),
+        )
 
     def _trim_memory_summary(self, summary: str, limit: int = 1800) -> str:
         cleaned = summary.strip()

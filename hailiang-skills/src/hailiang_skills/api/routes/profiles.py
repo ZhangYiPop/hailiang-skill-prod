@@ -8,6 +8,11 @@ from hailiang_skills.core.fact_service import FactService, serialize_known_facts
 
 class CreateProfileRequest(BaseModel):
     name: str
+    # The normal "new child" flow lets the runtime generate an ID.  A trusted
+    # forwarding/debug adapter, however, already has the application's stable
+    # child ID and must be able to create the corresponding projection before
+    # the first SSE message is sent.
+    profile_id: str | None = None
     initialize_from_shared_facts: bool = True
 
 
@@ -32,6 +37,7 @@ def build_profiles_router(fact_service: FactService, user_metadata_repository=No
         profile = fact_service.profile_repo.create_profile(
             user_id,
             name=request.name,
+            profile_id=request.profile_id,
             shared_facts_initialized=request.initialize_from_shared_facts,
         )
         if request.initialize_from_shared_facts:

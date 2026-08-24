@@ -5,6 +5,23 @@
 export DASHSCOPE_API_KEY=""
 export HAILIANG_EXTERNAL_API_KEY=""
 
+# Multi-profile routing and profile-bound long-context thresholds.
+export HAILIANG_SESSION_PROFILE_AUTHORITY="input"
+export HAILIANG_DEFAULT_EXPERT_TEAM_ID="student_growth_expert_team"
+export HAILIANG_CONTEXT_WINDOW_TOKENS="32000"
+export HAILIANG_ASYNC_CHECKPOINT_RATIO="0.60"
+export HAILIANG_SYNC_COMPRESSION_RATIO="0.80"
+
+# Optional test-only model routing. Never enable this in production.
+export HAILIANG_TEST_LLM_ENABLED="false"
+export HAILIANG_TEST_LLM_USER_IDS="100228,100227,100226,100225,100224,100223,100222,100221,100220,100219"
+export HAILIANG_TEST_LLM_BASE_URL="https://ws-cf2bl5wfrmj77y71.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+export HAILIANG_TEST_LLM_API_KEY=""
+export HAILIANG_TEST_LLM_MODEL="qwen3.7-plus"
+export HAILIANG_TEST_LLM_TIMEOUT_S="120"
+export HAILIANG_TEST_LLM_TEMPERATURE="0"
+export HAILIANG_TEST_LLM_MAX_TOKENS="8000"
+
 # 必填：生产模式审计加密密钥。生成方式：
 # .venv/bin/python -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("="))'
 export HAILIANG_AUDIT_ENCRYPTION_KEY=""
@@ -46,7 +63,7 @@ export HAILIANG_SECURITY_ADMIN_TOKEN=""
 # 仅当你使用外部托管 PostgreSQL/Redis 时，才改成真实远程地址，并设置
 # START_INFRA=0。
 export HAILIANG_STORAGE_BACKEND="postgres"
-export HAILIANG_DATABASE_URL="postgresql+psycopg://hailiang:hailiang@127.0.0.1:5432/hailiang_skills"
+export HAILIANG_DATABASE_URL="postgresql+psycopg://hailiang:hailiang@127.0.0.1:5432/hailiang_skills_multi_profile_v1"
 export HAILIANG_REDIS_URL="redis://127.0.0.1:6379/0"
 export START_INFRA="1"
 

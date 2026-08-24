@@ -14,6 +14,7 @@ venv/
 env.local.sh
 # Private configuration for an isolated server smoke deployment.
 env.8015.sh
+env.7000.sh
 .venv-*/
 runtime-smoke-*/
 logs-smoke-*/

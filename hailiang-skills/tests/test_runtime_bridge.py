@@ -328,6 +328,8 @@ class FakeMSAgentRuntime:
                 "stdout": '{"ok": true, "profile": {}}',
                 "stderr": "",
                 "duration_ms": 1,
+                "return_value": {"ok": True, "profile": {}},
+                "json_output": {"ok": True, "profile": {}},
             }
         ], [
             CoreTraceStep(
@@ -572,10 +574,13 @@ class RuntimeBridgeTest(unittest.TestCase):
         self.assertEqual(profile_payload["session_id"], context.session_id)
         self.assertEqual(profile_payload["active_skill_id"], "main_planner")
         self.assertEqual(profile_payload["query"], "给孩子做规划")
+        self.assertEqual(profile_payload["messages"], [{"role": "user", "content": "给孩子做规划"}])
         outputs = state.status_flags["ms_agent_runtime"]["execution_outputs"]
         self.assertEqual(outputs[0]["script"], "profile_op.py")
         self.assertEqual(outputs[0]["exit_code"], 0)
         self.assertEqual(outputs[0]["stdin_payload"]["action"], "read")
+        self.assertEqual(outputs[0]["return_value"], {"ok": True, "profile": {}})
+        self.assertEqual(outputs[0]["json_output"], {"ok": True, "profile": {}})
         runtime_events = [event for event in context.event_trace if event.get("event_type") == "ms_agent_runtime"]
         runtime_steps = [event.get("payload", {}).get("step") for event in runtime_events]
         self.assertIn("script_review", runtime_steps)

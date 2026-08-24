@@ -370,6 +370,11 @@ prepare_database() {
     return 0
   fi
   echo "🗃️  检查 PostgreSQL 与 Redis 连接..."
+  HAILIANG_DATABASE_URL="$(
+    HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" \
+      "$VENV_DIR/bin/python" "$PROJECT_DIR/scripts/prepare_database_baseline.py" --mode strict
+  )"
+  export HAILIANG_DATABASE_URL
   HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" HAILIANG_REDIS_URL="$HAILIANG_REDIS_URL" \
     "$VENV_DIR/bin/python" - <<'PY'
 from hailiang_skills.storage.database import build_engine

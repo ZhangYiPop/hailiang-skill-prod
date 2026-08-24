@@ -28,7 +28,10 @@ class RuntimeBridgeConfig:
     memory_async_update: bool = True
     sandbox_prewarm_enabled: bool = True
     local_fast_path_enabled: bool = True
-    active_window_messages: int = 8
+    active_window_messages: int = 16
+    context_window_tokens: int = 32_000
+    async_checkpoint_ratio: float = 0.60
+    sync_compression_ratio: float = 0.80
     legacy_bridge_skill_ids: frozenset[str] = frozenset()
     skill_enabled_by_id: dict[str, bool] = field(default_factory=dict)
     tool_routing_mode: str = "ms_agent"
@@ -114,6 +117,27 @@ def load_runtime_bridge_config(path: Path | None = None) -> RuntimeBridgeConfig:
             default=True,
         ),
         active_window_messages=_clamp_active_window(data.get("active_window_messages")),
+        context_window_tokens=_read_int(
+            os.getenv("HAILIANG_CONTEXT_WINDOW_TOKENS"),
+            data.get("context_window_tokens"),
+            default=32_000,
+            minimum=4_000,
+            maximum=1_000_000,
+        ),
+        async_checkpoint_ratio=_read_float(
+            os.getenv("HAILIANG_ASYNC_CHECKPOINT_RATIO"),
+            data.get("async_checkpoint_ratio"),
+            default=0.60,
+            minimum=0.10,
+            maximum=0.95,
+        ),
+        sync_compression_ratio=_read_float(
+            os.getenv("HAILIANG_SYNC_COMPRESSION_RATIO"),
+            data.get("sync_compression_ratio"),
+            default=0.80,
+            minimum=0.20,
+            maximum=0.99,
+        ),
         legacy_bridge_skill_ids=frozenset(
             item.strip()
             for item in str(
@@ -197,7 +221,16 @@ def _read_float(
 
 def _clamp_active_window(value: Any) -> int:
     try:
-        parsed = int(value if value is not None else 8)
+        parsed = int(value if value is not None else 16)
     except (TypeError, ValueError):
-        parsed = 8
+        parsed = 16
     return min(20, max(1, parsed))
+
+
+def _read_int(env_value: Any, configured: Any, *, default: int, minimum: int, maximum: int) -> int:
+    raw = env_value if env_value not in {None, ""} else configured
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(maximum, max(minimum, parsed))

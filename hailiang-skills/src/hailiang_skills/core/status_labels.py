@@ -43,7 +43,7 @@ def normalize_ms_agent_progress_label(value: object, *, fallback: str = "推进�
         label = label[2:].strip()
     # The prefix is part of the product copy, so reserve ten characters for
     # the action and keep the complete label within twelve characters.
-    return f"正在{label[:15]}"
+    return f"正在{label[:10]}"
 
 
 def redact_skill_file_names(value: object, skill_root: str | Path | None) -> str:

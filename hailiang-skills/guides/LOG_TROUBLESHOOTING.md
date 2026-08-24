@@ -54,7 +54,10 @@ docker compose logs --tail 100 postgres
 docker compose logs --tail 100 redis
 ```
 
-然后确认环境文件中的数据库连接串使用正确库名：测试为 `hailiang_skills_test`，正式为 `hailiang_skills`。
+然后确认环境文件中的数据库连接串使用正确库名：测试为
+`hailiang_skills_test_multi_profile_v1`，正式为 `hailiang_skills_multi_profile_v1`。
+若看到 `Can't locate revision identified by '0002_add_operator_user_metadata'`，说明仍连接旧基线；
+不要执行 `alembic stamp`，应保留旧库并改连全新的空数据库。
 
 ### 收到 429 或 MODEL_RATE_LIMITED
 

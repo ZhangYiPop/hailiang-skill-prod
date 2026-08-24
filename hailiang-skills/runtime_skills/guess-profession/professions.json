@@ -1,0 +1,2395 @@
+{
+  "version": "v009",
+  "description": "猜职业游戏权威职业库。由后端依据中国自然日确定性生成当日职业，模型不接触本文件，仅接收选中的那一条结果。",
+  "count": 398,
+  "professions": [
+    {
+      "name": "互联网程序员",
+      "accent": "改需求、线上 bug、灰度、对齐、一坐 14 小时、debug 到凌晨",
+      "distractor1": "产品经理",
+      "distractor2": "测试工程师"
+    },
+    {
+      "name": "急诊护士",
+      "accent": "医嘱、值班连轴、生命体征、抢救、交班",
+      "distractor1": "急诊医生",
+      "distractor2": "护工"
+    },
+    {
+      "name": "米其林厨师",
+      "accent": "火候、出餐节奏、备料、摆盘、食安",
+      "distractor1": "餐厅经理",
+      "distractor2": "美食博主"
+    },
+    {
+      "name": "潜水教练",
+      "accent": "气瓶、中性浮力、沉船证、升水、耳压",
+      "distractor1": "游泳教练",
+      "distractor2": "户外领队"
+    },
+    {
+      "name": "房产中介",
+      "accent": "带看、成交、满五唯一、学区、佣金",
+      "distractor1": "装修工长",
+      "distractor2": "贷款顾问"
+    },
+    {
+      "name": "自由插画师",
+      "accent": "约稿、商稿、图层、甲方改 N 版、版权",
+      "distractor1": "UI 设计师",
+      "distractor2": "漫画作者"
+    },
+    {
+      "name": "消防员",
+      "accent": "出警、演练、破拆、隐患排查、装备",
+      "distractor1": "急救员",
+      "distractor2": "安全员"
+    },
+    {
+      "name": "花艺师",
+      "accent": "花材、保水、色彩搭配、宴会用花、构图、保鲜",
+      "distractor1": "园艺师",
+      "distractor2": "软装买手"
+    },
+    {
+      "name": "网约车司机",
+      "accent": "接单、空驶、路况、高峰期、平台派单",
+      "distractor1": "出租车司机",
+      "distractor2": "货运司机"
+    },
+    {
+      "name": "纪录片导演",
+      "accent": "跟拍、素材、剪辑节奏、旁白、选题",
+      "distractor1": "短视频编导",
+      "distractor2": "记者"
+    },
+    {
+      "name": "宠物行为训练师",
+      "accent": "脱敏、正向激励、社会化、吠叫矫正、随行、定点排泄",
+      "distractor1": "兽医",
+      "distractor2": "宠物美容师"
+    },
+    {
+      "name": "主播",
+      "accent": "直播间、涨粉、带货、镜头感、下播",
+      "distractor1": "声乐老师",
+      "distractor2": "客服主管"
+    },
+    {
+      "name": "芭蕾舞者",
+      "accent": "足尖、托举、巡演、基训、旧伤",
+      "distractor1": "普拉提教练",
+      "distractor2": "体操退役"
+    },
+    {
+      "name": "咖啡师",
+      "accent": "萃取、拉花、豆子风味、出杯量、吧台",
+      "distractor1": "调酒师",
+      "distractor2": "烘焙师"
+    },
+    {
+      "name": "无人机飞手",
+      "accent": "航拍、炸机、禁飞区、云台、图传",
+      "distractor1": "摄影师",
+      "distractor2": "测绘员"
+    },
+    {
+      "name": "剧本杀编剧",
+      "accent": "机制、本格、沉浸、复盘、NPC",
+      "distractor1": "桌游设计师",
+      "distractor2": "小说作者"
+    },
+    {
+      "name": "健身教练",
+      "accent": "力线、代偿、RM、饮食计划、体测",
+      "distractor1": "康复师",
+      "distractor2": "运动员"
+    },
+    {
+      "name": "民宿老板",
+      "accent": "入住、布草、点评、周边玩法、淡旺季",
+      "distractor1": "酒店经理",
+      "distractor2": "旅游策划"
+    },
+    {
+      "name": "调香师",
+      "accent": "前中后调、留香、香基、原料、配方、定香",
+      "distractor1": "化妆品研发",
+      "distractor2": "品酒师"
+    },
+    {
+      "name": "电竞选手",
+      "accent": "排位、版本、counter、训练赛、BP",
+      "distractor1": "游戏主播",
+      "distractor2": "赛事解说"
+    },
+    {
+      "name": "急诊科医生",
+      "accent": "会诊、值班、病历、用药、收住院",
+      "distractor1": "护士",
+      "distractor2": "医技人员"
+    },
+    {
+      "name": "结构工程师",
+      "accent": "受力、配筋、荷载、节点、抗震、有限元",
+      "distractor1": "土建工程师",
+      "distractor2": "岩土工程师"
+    },
+    {
+      "name": "测试工程师",
+      "accent": "用例、缺陷、回归、覆盖率、自动化、边界值",
+      "distractor1": "质量工程师",
+      "distractor2": "材料测试工程师"
+    },
+    {
+      "name": "力学仿真工程师",
+      "accent": "网格、求解、收敛、边界条件、迭代、后处理",
+      "distractor1": "力学算法工程师",
+      "distractor2": "结构工程师"
+    },
+    {
+      "name": "力学算法工程师",
+      "accent": "矩阵、迭代、收敛、数值、求解器、线性",
+      "distractor1": "力学仿真工程师",
+      "distractor2": "算法工程师"
+    },
+    {
+      "name": "技术支持",
+      "accent": "工单、排障、远程、配置、SOP、基线",
+      "distractor1": "运维工程师",
+      "distractor2": "网络安全工程师"
+    },
+    {
+      "name": "机械设计工程师",
+      "accent": "公差、受力、装配、公差带、结构强度、三维建模",
+      "distractor1": "智能制造工程师",
+      "distractor2": "生产工艺工程师"
+    },
+    {
+      "name": "智能制造工程师",
+      "accent": "产线、节拍、柔性、数字孪生、排产、车间",
+      "distractor1": "生产工艺工程师",
+      "distractor2": "自动化工程师"
+    },
+    {
+      "name": "生产工艺工程师",
+      "accent": "工序、良率、节拍、SOP、产线、工位",
+      "distractor1": "工艺工程师",
+      "distractor2": "智能制造工程师"
+    },
+    {
+      "name": "仪器仪表工程师",
+      "accent": "量程、精度、标定、传感器、信号、采样",
+      "distractor1": "传感器开发工程师",
+      "distractor2": "计量工程师"
+    },
+    {
+      "name": "传感器开发工程师",
+      "accent": "灵敏度、封装、信号、标定、量程、噪声",
+      "distractor1": "仪器仪表工程师",
+      "distractor2": "智能硬件工程师"
+    },
+    {
+      "name": "计量工程师",
+      "accent": "量值、溯源、校准、不确定度、检定、精度",
+      "distractor1": "仪器仪表工程师",
+      "distractor2": "质量工程师"
+    },
+    {
+      "name": "质量工程师",
+      "accent": "缺陷、良率、体系、审核、整改、抽检",
+      "distractor1": "计量工程师",
+      "distractor2": "质量管理工程师"
+    },
+    {
+      "name": "工艺工程师",
+      "accent": "工序、参数、良率、节拍、产线、优化",
+      "distractor1": "生产工艺工程师",
+      "distractor2": "化工工艺工程师"
+    },
+    {
+      "name": "材料测试工程师",
+      "accent": "拉伸、金相、疲劳、试样、硬度、断裂",
+      "distractor1": "测试工程师",
+      "distractor2": "材料研发工程师"
+    },
+    {
+      "name": "材料研发工程师",
+      "accent": "配方、微观、性能、合成、表征、改性",
+      "distractor1": "材料测试工程师",
+      "distractor2": "生物材料研发工程师"
+    },
+    {
+      "name": "动力系统工程师",
+      "accent": "扭矩、燃烧、热力学、效率、匹配、排放",
+      "distractor1": "热设计工程师",
+      "distractor2": "航空发动机工程师"
+    },
+    {
+      "name": "热设计工程师",
+      "accent": "散热、导热、温升、流场、热阻、仿真",
+      "distractor1": "动力系统工程师",
+      "distractor2": "制冷工程师"
+    },
+    {
+      "name": "运行维护工程师",
+      "accent": "巡检、故障、保养、台账、停机、预案",
+      "distractor1": "运维工程师",
+      "distractor2": "电力运维工程师"
+    },
+    {
+      "name": "制冷工程师",
+      "accent": "冷媒、换热、温区、压比、能效、循环",
+      "distractor1": "热设计工程师",
+      "distractor2": "暖通工程师"
+    },
+    {
+      "name": "暖通工程师",
+      "accent": "风量、焓湿图、送回风、换气次数、盘管、新风机组",
+      "distractor1": "制冷工程师",
+      "distractor2": "热设计工程师"
+    },
+    {
+      "name": "电气设计工程师",
+      "accent": "负荷、短路电流、桥架、回路、配电、接地",
+      "distractor1": "电力运维工程师",
+      "distractor2": "自动化工程师"
+    },
+    {
+      "name": "电力运维工程师",
+      "accent": "变电、巡检、倒闸、调度、绝缘、抢修",
+      "distractor1": "运行维护工程师",
+      "distractor2": "电气设计工程师"
+    },
+    {
+      "name": "自动化工程师",
+      "accent": "PLC、控制、传感、组态、联锁、回路",
+      "distractor1": "智能制造工程师",
+      "distractor2": "机器人工程师"
+    },
+    {
+      "name": "硬件工程师",
+      "accent": "原理图、PCB、信号、焊接、测试、电源",
+      "distractor1": "电子工程师",
+      "distractor2": "智能硬件工程师"
+    },
+    {
+      "name": "通信工程师",
+      "accent": "调制、频谱、天线、误码、链路、协议",
+      "distractor1": "网络工程师",
+      "distractor2": "硬件工程师"
+    },
+    {
+      "name": "网络工程师",
+      "accent": "路由、交换、拓扑、协议、带宽、防火墙",
+      "distractor1": "通信工程师",
+      "distractor2": "网络安全工程师"
+    },
+    {
+      "name": "软件工程师",
+      "accent": "需求、模块、代码、联调、版本、重构",
+      "distractor1": "软件开发工程师",
+      "distractor2": "算法工程师"
+    },
+    {
+      "name": "集成电路设计工程师",
+      "accent": "版图、工艺、时序、功耗、综合、流片",
+      "distractor1": "电子工程师",
+      "distractor2": "硬件工程师"
+    },
+    {
+      "name": "智能硬件工程师",
+      "accent": "固件、传感、嵌入式、联调、功耗、原型",
+      "distractor1": "硬件工程师",
+      "distractor2": "传感器开发工程师"
+    },
+    {
+      "name": "机器人工程师",
+      "accent": "运动学、关节、路径、控制、避障、标定",
+      "distractor1": "自动化工程师",
+      "distractor2": "水下机器人工程师"
+    },
+    {
+      "name": "算法工程师",
+      "accent": "模型、训练、特征、调参、推理、指标",
+      "distractor1": "气象算法工程师",
+      "distractor2": "机器人算法工程师"
+    },
+    {
+      "name": "前端开发工程师",
+      "accent": "组件、响应式、像素级、交互、浏览器兼容、性能优化",
+      "distractor1": "后端开发工程师",
+      "distractor2": "UI设计师"
+    },
+    {
+      "name": "后端开发工程师",
+      "accent": "接口、并发、数据库索引、缓存、微服务、请求链路",
+      "distractor1": "前端开发工程师",
+      "distractor2": "算法工程师"
+    },
+    {
+      "name": "网络安全工程师",
+      "accent": "渗透、加固、零信任、漏洞、防火墙、钓鱼",
+      "distractor1": "网络工程师",
+      "distractor2": "运维工程师"
+    },
+    {
+      "name": "运维工程师",
+      "accent": "上线、监控、扩容、故障、回滚、告警",
+      "distractor1": "运行维护工程师",
+      "distractor2": "电力运维工程师"
+    },
+    {
+      "name": "BIM工程师",
+      "accent": "建模、参数化、管线、碰撞、协同、出图",
+      "distractor1": "造价工程师",
+      "distractor2": "土建工程师"
+    },
+    {
+      "name": "土建工程师",
+      "accent": "浇筑、模板、钢筋、验收、地基、放线",
+      "distractor1": "结构工程师",
+      "distractor2": "施工管理工程师"
+    },
+    {
+      "name": "监理工程师",
+      "accent": "旁站、验收、签证、规范、整改、巡检",
+      "distractor1": "施工管理工程师",
+      "distractor2": "土建工程师"
+    },
+    {
+      "name": "水利规划工程师",
+      "accent": "径流、库容、调蓄、防洪、调度、水沙",
+      "distractor1": "智慧水利算法工程师",
+      "distractor2": "水土保持工程师"
+    },
+    {
+      "name": "智慧水利算法工程师",
+      "accent": "模型、遥感、预报、调度、数据同化、内涝",
+      "distractor1": "水利规划工程师",
+      "distractor2": "算法工程师"
+    },
+    {
+      "name": "水土保持工程师",
+      "accent": "侵蚀、梯田、植被、拦沙、径流、护坡",
+      "distractor1": "水利规划工程师",
+      "distractor2": "水保工程师"
+    },
+    {
+      "name": "施工管理工程师",
+      "accent": "进度、工期、签证、协调、安全、交底",
+      "distractor1": "土建工程师",
+      "distractor2": "监理工程师"
+    },
+    {
+      "name": "水工设计师",
+      "accent": "闸坝、防洪、渠道、护坡、水文、枢纽",
+      "distractor1": "水利规划工程师",
+      "distractor2": "水土保持工程师"
+    },
+    {
+      "name": "遥感工程师",
+      "accent": "影像、波段、解译、几何、辐射、分类",
+      "distractor1": "GIS开发工程师",
+      "distractor2": "海洋遥感工程师"
+    },
+    {
+      "name": "数据处理工程师",
+      "accent": "清洗、ETL、抽取、日志、入库、质量",
+      "distractor1": "数据分析师",
+      "distractor2": "GIS开发工程师"
+    },
+    {
+      "name": "GIS开发工程师",
+      "accent": "图层、坐标系、渲染、空间、拓扑、瓦片",
+      "distractor1": "遥感工程师",
+      "distractor2": "GIS工程师"
+    },
+    {
+      "name": "测绘技术员",
+      "accent": "坐标、控制点、RTK、高程、全站仪、地形图",
+      "distractor1": "地图制图员",
+      "distractor2": "GIS开发工程师"
+    },
+    {
+      "name": "地图制图员",
+      "accent": "坐标、图例、等高线、符号库、投影、矢量化",
+      "distractor1": "测绘技术员",
+      "distractor2": "GIS工程师"
+    },
+    {
+      "name": "化工工艺工程师",
+      "accent": "反应、收率、工艺包、放大、参数、安全",
+      "distractor1": "制药工程师",
+      "distractor2": "材料研发工程师"
+    },
+    {
+      "name": "制药工程师",
+      "accent": "工艺放大、纯度、GMP、收率、批次、无菌",
+      "distractor1": "生物制药研究员",
+      "distractor2": "化工工艺工程师"
+    },
+    {
+      "name": "化学分析员",
+      "accent": "滴定、色谱、分光、标液、前处理、检出限",
+      "distractor1": "食品检测工程师",
+      "distractor2": "质量控制与化验员"
+    },
+    {
+      "name": "QA/QC专员",
+      "accent": "抽检、标准、放行、偏差、记录、合规",
+      "distractor1": "质量控制与化验员",
+      "distractor2": "药品注册专员"
+    },
+    {
+      "name": "化工贸易业务员",
+      "accent": "询盘、报价、船期、信用证、吨桶、牌号",
+      "distractor1": "外贸经理",
+      "distractor2": "外贸单证员"
+    },
+    {
+      "name": "地质勘查工程师",
+      "accent": "钻探、岩芯、剖面、矿化、填图、成矿",
+      "distractor1": "矿产勘查工程师",
+      "distractor2": "岩土工程师"
+    },
+    {
+      "name": "矿产勘查工程师",
+      "accent": "矿体、品位、采样、探矿、储量、靶区",
+      "distractor1": "矿物加工工程师",
+      "distractor2": "岩土工程师"
+    },
+    {
+      "name": "岩土工程师",
+      "accent": "地基、承载力、桩基、边坡、土工、原位",
+      "distractor1": "地质灾害评估工程师",
+      "distractor2": "矿产勘查工程师"
+    },
+    {
+      "name": "地质研究人员",
+      "accent": "地层、钻探、剖面、岩芯、构造、年代",
+      "distractor1": "地质勘查工程师",
+      "distractor2": "地球物理工程师"
+    },
+    {
+      "name": "采矿工程师",
+      "accent": "矿体、巷道、采掘、顶板、品位、通风系统",
+      "distractor1": "矿产勘查工程师",
+      "distractor2": "冶金工程师"
+    },
+    {
+      "name": "冶金工程师",
+      "accent": "炉温、冶炼、合金、渣相、浇注、熔炼",
+      "distractor1": "选矿工程师",
+      "distractor2": "采矿工程师"
+    },
+    {
+      "name": "质量控制与化验员",
+      "accent": "检验、留样、滴定、批记录、合格证、复测",
+      "distractor1": "化学分析员",
+      "distractor2": "QA/QC专员"
+    },
+    {
+      "name": "选矿工程师",
+      "accent": "浮选、品位、尾矿、磨矿、回收率、药剂",
+      "distractor1": "矿物加工工程师",
+      "distractor2": "冶金工程师"
+    },
+    {
+      "name": "矿物加工工程师",
+      "accent": "破碎、磨矿、分级、浮选、脱水、粒度",
+      "distractor1": "选矿工程师",
+      "distractor2": "冶金工程师"
+    },
+    {
+      "name": "纺织材料研发员",
+      "accent": "纱线、织物、强力、染色、纤维、手感",
+      "distractor1": "纺织工艺工程师",
+      "distractor2": "纺织品检测工程师"
+    },
+    {
+      "name": "纺织工艺工程师",
+      "accent": "纺纱、织造、密度、纱支、染整、工艺参数",
+      "distractor1": "纺织材料研发员",
+      "distractor2": "纺织品检测工程师"
+    },
+    {
+      "name": "服装设计师",
+      "accent": "廓形、面料垂感、打版、版型、流水线、流行趋势",
+      "distractor1": "纺织品检测工程师",
+      "distractor2": "面料采购顾问"
+    },
+    {
+      "name": "纺织品检测工程师",
+      "accent": "色牢度、断裂强力、起毛、缩水率、瑕疵、标准",
+      "distractor1": "纺织工艺工程师",
+      "distractor2": "纺织材料研发员"
+    },
+    {
+      "name": "面料采购顾问",
+      "accent": "克重、色牢度、纱支、坯布、供应商、交期",
+      "distractor1": "食品采购经理",
+      "distractor2": "采购代理商"
+    },
+    {
+      "name": "印刷工艺工程师",
+      "accent": "套印、网点、油墨、纸张、晒版、印张",
+      "distractor1": "纺织工艺工程师",
+      "distractor2": "包装设计师"
+    },
+    {
+      "name": "包装设计师",
+      "accent": "结构、材质、印刷、礼盒、缓冲、陈列",
+      "distractor1": "产品设计师",
+      "distractor2": "家具设计师"
+    },
+    {
+      "name": "皮革工程师",
+      "accent": "鞣制、皮坯、涂层、手感、得革率、化工",
+      "distractor1": "纺织工艺工程师",
+      "distractor2": "化妆品研发工程师"
+    },
+    {
+      "name": "化妆品研发工程师",
+      "accent": "配方、乳化、肤感、功效、稳定性、原料",
+      "distractor1": "香料香精开发员",
+      "distractor2": "食品研发工程师"
+    },
+    {
+      "name": "香料香精开发员",
+      "accent": "前调、中调、后调、留香、香基、原料",
+      "distractor1": "调香师",
+      "distractor2": "化妆品研发工程师"
+    },
+    {
+      "name": "车辆测试工程师",
+      "accent": "工况、NVH、台架、标定、耐久、路试",
+      "distractor1": "装甲车辆工程师",
+      "distractor2": "机务维修工程师"
+    },
+    {
+      "name": "物流规划师",
+      "accent": "仓储、配送、网络、运力、路由、节点",
+      "distractor1": "供应链分析师",
+      "distractor2": "物流系统工程师"
+    },
+    {
+      "name": "供应链数据分析师",
+      "accent": "库存、需求、补货、成本、时效、看板",
+      "distractor1": "供应链分析师",
+      "distractor2": "电商数据分析师"
+    },
+    {
+      "name": "船舶设计师",
+      "accent": "型线、稳性、总布置、吃水、船模、载重线",
+      "distractor1": "船舶监造工程师",
+      "distractor2": "海洋平台工程师"
+    },
+    {
+      "name": "海洋平台工程师",
+      "accent": "导管架、海况、系泊、载荷、防腐、立管",
+      "distractor1": "海洋环境工程师",
+      "distractor2": "船舶监造工程师"
+    },
+    {
+      "name": "船舶监造工程师",
+      "accent": "船体、分段、焊接、舾装、公差、验收",
+      "distractor1": "船舶设计师",
+      "distractor2": "海洋平台工程师"
+    },
+    {
+      "name": "验船师",
+      "accent": "船体、稳性、检验、规范、坞修、证书",
+      "distractor1": "船舶监造工程师",
+      "distractor2": "船舶设计师"
+    },
+    {
+      "name": "水下机器人工程师",
+      "accent": "耐压、脐带、推进、声呐、下潜、操控",
+      "distractor1": "机器人工程师",
+      "distractor2": "海洋平台工程师"
+    },
+    {
+      "name": "飞行器设计工程师",
+      "accent": "气动、翼型、升力、结构、配平、风洞",
+      "distractor1": "航空发动机工程师",
+      "distractor2": "试飞工程师"
+    },
+    {
+      "name": "航空发动机工程师",
+      "accent": "推力、涵道比、热端部件、叶片、涡扇、振动",
+      "distractor1": "飞行器设计工程师",
+      "distractor2": "机务维修工程师"
+    },
+    {
+      "name": "机务维修工程师",
+      "accent": "排故、定检、航材、工卡、适航、放行",
+      "distractor1": "适航认证工程师",
+      "distractor2": "车辆测试工程师"
+    },
+    {
+      "name": "适航认证工程师",
+      "accent": "符合性、条款、审定、局方、取证、安全",
+      "distractor1": "试飞工程师",
+      "distractor2": "机务维修工程师"
+    },
+    {
+      "name": "试飞工程师",
+      "accent": "试飞、包线、风险、测控、科目、数据",
+      "distractor1": "飞行器设计工程师",
+      "distractor2": "适航认证工程师"
+    },
+    {
+      "name": "兵器研发工程师",
+      "accent": "弹道、毁伤、引信、火工、制导、威力",
+      "distractor1": "装甲车辆工程师",
+      "distractor2": "弹道设计工程师"
+    },
+    {
+      "name": "装甲车辆工程师",
+      "accent": "防护、机动、传动、装甲、悬挂、火力",
+      "distractor1": "兵器研发工程师",
+      "distractor2": "车辆测试工程师"
+    },
+    {
+      "name": "弹道设计工程师",
+      "accent": "内弹道、初速、膛压、外弹道、落点、射表",
+      "distractor1": "兵器研发工程师",
+      "distractor2": "信息对抗工程师"
+    },
+    {
+      "name": "信息对抗工程师",
+      "accent": "干扰、频谱、侦察、压制、链路、加密",
+      "distractor1": "网络安全工程师",
+      "distractor2": "情报安全专家"
+    },
+    {
+      "name": "智能无人系统工程师",
+      "accent": "自主、集群、感知、决策、协同、链路",
+      "distractor1": "机器人工程师",
+      "distractor2": "水下机器人工程师"
+    },
+    {
+      "name": "核安全工程师",
+      "accent": "临界、辐射、三道屏障、事故、裕度、规程",
+      "distractor1": "辐射防护工程师",
+      "distractor2": "核化工工程师"
+    },
+    {
+      "name": "辐射防护工程师",
+      "accent": "剂量、屏蔽、监测、本底、限值、个人防护",
+      "distractor1": "核安全工程师",
+      "distractor2": "核化工工程师"
+    },
+    {
+      "name": "核化工工程师",
+      "accent": "后处理、萃取、放化、临界、去污、流程",
+      "distractor1": "核安全工程师",
+      "distractor2": "辐射防护工程师"
+    },
+    {
+      "name": "农机工程师",
+      "accent": "马力、扭矩、耕种、收割、机具、田间",
+      "distractor1": "节水灌溉工程师",
+      "distractor2": "数字农业技术工程师"
+    },
+    {
+      "name": "设施农业设计师",
+      "accent": "温室、大棚、灌溉、栽培、环控、采光",
+      "distractor1": "农业规划师",
+      "distractor2": "园林景观设计师"
+    },
+    {
+      "name": "节水灌溉工程师",
+      "accent": "滴灌、水压、出流、节水、管网、均匀度",
+      "distractor1": "数字农业技术工程师",
+      "distractor2": "农机工程师"
+    },
+    {
+      "name": "数字农业技术工程师",
+      "accent": "传感、物联网、模型、遥感、决策、精准",
+      "distractor1": "节水灌溉工程师",
+      "distractor2": "智慧农业项目经理"
+    },
+    {
+      "name": "智慧农业项目经理",
+      "accent": "物联网、温室、墒情、排产、大棚、传感",
+      "distractor1": "农业咨询顾问",
+      "distractor2": "设施农业设计师"
+    },
+    {
+      "name": "家具设计师",
+      "accent": "造型、结构、榫卯、木材、人体工学、定制",
+      "distractor1": "室内设计师",
+      "distractor2": "产品设计师"
+    },
+    {
+      "name": "林业项目管理员",
+      "accent": "立项、进度、台账、验收、资金、造林",
+      "distractor1": "林业工程师",
+      "distractor2": "林业调查人员"
+    },
+    {
+      "name": "木材研发工程师",
+      "accent": "纹理、含水率、改性、胶合、强度、防腐",
+      "distractor1": "家具设计师",
+      "distractor2": "林业工程师"
+    },
+    {
+      "name": "林业调查人员",
+      "accent": "样地、胸径、蓄积、区划、GPS、林相",
+      "distractor1": "林业技术员",
+      "distractor2": "林业项目管理员"
+    },
+    {
+      "name": "环境咨询师",
+      "accent": "环评、排污、合规、监测、治理、报告",
+      "distractor1": "环境检测工程师",
+      "distractor2": "生态修复工程师"
+    },
+    {
+      "name": "环境检测工程师",
+      "accent": "采样、色谱、限值、现场、质控、报告",
+      "distractor1": "环境咨询师",
+      "distractor2": "水处理工程师"
+    },
+    {
+      "name": "水处理工程师",
+      "accent": "水质、混凝、膜、生化、回用、达标",
+      "distractor1": "环境检测工程师",
+      "distractor2": "生态修复工程师"
+    },
+    {
+      "name": "生态修复工程师",
+      "accent": "植被、土壤、退化、重建、群落、本底",
+      "distractor1": "草原生态修复工程师",
+      "distractor2": "水保工程师"
+    },
+    {
+      "name": "碳核算工程师",
+      "accent": "排放、边界、因子、核查、清单、配额",
+      "distractor1": "碳中和研究员",
+      "distractor2": "环境检测工程师"
+    },
+    {
+      "name": "医学算法工程师",
+      "accent": "建模、数据、训练、特征、预测、标注",
+      "distractor1": "医学影像工程师",
+      "distractor2": "生物信息工程师"
+    },
+    {
+      "name": "生物材料研发工程师",
+      "accent": "相容性、降解、支架、改性、力学、表征",
+      "distractor1": "材料研发工程师",
+      "distractor2": "生物制药研究员"
+    },
+    {
+      "name": "医学影像工程师",
+      "accent": "成像、序列、伪影、重建、分辨率、质控",
+      "distractor1": "医学影像医师",
+      "distractor2": "医学影像技师"
+    },
+    {
+      "name": "生物信息工程师",
+      "accent": "序列、比对、组学、注释、pipeline、建模",
+      "distractor1": "生物制药研究员",
+      "distractor2": "生物研究员"
+    },
+    {
+      "name": "临床工程师",
+      "accent": "设备、质控、计量、维护、安全、临床",
+      "distractor1": "临床医学工程师",
+      "distractor2": "医学影像工程师"
+    },
+    {
+      "name": "食品研发工程师",
+      "accent": "配方、口感、工艺、货架期、风味、稳定",
+      "distractor1": "食品检测工程师",
+      "distractor2": "餐饮研发专员"
+    },
+    {
+      "name": "食品检测工程师",
+      "accent": "农残、微生物、理化、添加剂、限量、前处理",
+      "distractor1": "食品研发工程师",
+      "distractor2": "食品卫生检验人员"
+    },
+    {
+      "name": "健康管理师",
+      "accent": "膳食、慢病、档案、随访、干预、体检",
+      "distractor1": "营养师",
+      "distractor2": "健身教练"
+    },
+    {
+      "name": "食品采购经理",
+      "accent": "溯源、索证、批次、保质期、供应商、质检",
+      "distractor1": "面料采购顾问",
+      "distractor2": "采购代理商"
+    },
+    {
+      "name": "餐饮研发专员",
+      "accent": "配方、口味、出餐、标准化、试制、成本",
+      "distractor1": "食品研发工程师",
+      "distractor2": "食品检测工程师"
+    },
+    {
+      "name": "建筑设计师",
+      "accent": "体量、动线、立面、空间、流线、方案",
+      "distractor1": "室内设计师",
+      "distractor2": "景观设计师"
+    },
+    {
+      "name": "室内设计师",
+      "accent": "硬装、软装、采光、收纳、配色、动线",
+      "distractor1": "建筑设计师",
+      "distractor2": "家具设计师"
+    },
+    {
+      "name": "景观设计师",
+      "accent": "季相、海绵城市、微地形、植物层次、铺装、水景",
+      "distractor1": "园林景观设计师",
+      "distractor2": "城乡规划师"
+    },
+    {
+      "name": "城乡规划师",
+      "accent": "用地、红线、控规、路网、容积、市政",
+      "distractor1": "交通规划师",
+      "distractor2": "农业规划师"
+    },
+    {
+      "name": "EHS工程师",
+      "accent": "环保、健康、安全、合规、风险、体系",
+      "distractor1": "安全评价师",
+      "distractor2": "安全生产管理人员"
+    },
+    {
+      "name": "安全评价师",
+      "accent": "风险、隐患、辨识、分级、预案、现场",
+      "distractor1": "安全培训师",
+      "distractor2": "安全生产管理人员"
+    },
+    {
+      "name": "安全监管人员",
+      "accent": "排查、隐患、台账、整改、巡查、闭环",
+      "distractor1": "安全生产管理人员",
+      "distractor2": "安全评价师"
+    },
+    {
+      "name": "安全培训师",
+      "accent": "授课、演练、课件、考核、规程、案例",
+      "distractor1": "安全评价师",
+      "distractor2": "企业内训师"
+    },
+    {
+      "name": "安全生产管理人员",
+      "accent": "培训、预案、演练、交底、台账、持证",
+      "distractor1": "安全监管人员",
+      "distractor2": "EHS工程师"
+    },
+    {
+      "name": "生物制药研究员",
+      "accent": "细胞、发酵、纯化、培养基、效价、批次",
+      "distractor1": "生物医药研发人员",
+      "distractor2": "药物研发人员"
+    },
+    {
+      "name": "基因编辑工程师",
+      "accent": "载体、敲除、靶标、核酸、表达、脱靶",
+      "distractor1": "微生物工程师",
+      "distractor2": "生物信息工程师"
+    },
+    {
+      "name": "微生物工程师",
+      "accent": "菌株、发酵、培养、纯化、代谢、扩培",
+      "distractor1": "发酵工艺工程师",
+      "distractor2": "基因编辑工程师"
+    },
+    {
+      "name": "发酵工艺工程师",
+      "accent": "菌种、罐、溶氧、补料、pH、周期",
+      "distractor1": "微生物工程师",
+      "distractor2": "食品研发工程师"
+    },
+    {
+      "name": "刑侦技术人员",
+      "accent": "痕检、指纹、勘查、提取、比对、物证",
+      "distractor1": "司法鉴定人员",
+      "distractor2": "法医"
+    },
+    {
+      "name": "司法鉴定人员",
+      "accent": "文书、痕迹、乙醇、比对、采样、结论",
+      "distractor1": "刑侦技术人员",
+      "distractor2": "法医"
+    },
+    {
+      "name": "网络警察",
+      "accent": "取证、溯源、暗网、舆情、线索、网安",
+      "distractor1": "治安警察",
+      "distractor2": "网络安全工程师"
+    },
+    {
+      "name": "消防工程师",
+      "accent": "防火分区、疏散宽度、烟感、喷淋、避难、验收",
+      "distractor1": "安全评价师",
+      "distractor2": "安防产品技术专家"
+    },
+    {
+      "name": "安防产品技术专家",
+      "accent": "门禁、探头、红外、布防、告警、周界",
+      "distractor1": "网络安全工程师",
+      "distractor2": "信息对抗工程师"
+    },
+    {
+      "name": "机器人算法工程师",
+      "accent": "路径、视觉、控制、SLAM、抓取、避障",
+      "distractor1": "机器人工程师",
+      "distractor2": "智能无人系统工程师"
+    },
+    {
+      "name": "碳中和研究员",
+      "accent": "核算、碳汇、配额、减排、清单、核查",
+      "distractor1": "碳核算工程师",
+      "distractor2": "ESG经理"
+    },
+    {
+      "name": "管理咨询顾问",
+      "accent": "诊断、访谈、流程、对标、方案、落地",
+      "distractor1": "财税咨询顾问",
+      "distractor2": "农业咨询顾问"
+    },
+    {
+      "name": "市场运营",
+      "accent": "拉新、留存、转化、活动、社群、ROI",
+      "distractor1": "市场营销主管",
+      "distractor2": "新媒体运营"
+    },
+    {
+      "name": "造价工程师",
+      "accent": "清单、定额、计量、组价、签证、核算",
+      "distractor1": "BIM工程师",
+      "distractor2": "土建工程师"
+    },
+    {
+      "name": "数据分析师",
+      "accent": "清洗、建模、可视化、指标、回归、报表",
+      "distractor1": "商业分析师",
+      "distractor2": "数据管理师"
+    },
+    {
+      "name": "供应链管理工程师",
+      "accent": "库存、交付周期、供应商、协同、需求预测、物流网络",
+      "distractor1": "供应链分析师",
+      "distractor2": "物流规划师"
+    },
+    {
+      "name": "市场营销主管",
+      "accent": "4P、渠道、品牌、预算、推广、转化",
+      "distractor1": "市场运营",
+      "distractor2": "电商营销策划"
+    },
+    {
+      "name": "审计",
+      "accent": "底稿、抽样、内控、凭证、合规、函证",
+      "distractor1": "会计",
+      "distractor2": "财税咨询顾问"
+    },
+    {
+      "name": "财务主管",
+      "accent": "预算、核算、报表、资金、税务、合并",
+      "distractor1": "会计",
+      "distractor2": "财税咨询顾问"
+    },
+    {
+      "name": "人力资源经理",
+      "accent": "招聘、薪酬、绩效、组织、HC、培训",
+      "distractor1": "行政主管",
+      "distractor2": "党群管理人员"
+    },
+    {
+      "name": "农产品选品员",
+      "accent": "糖度、果径、标准化、品控、产地、分级",
+      "distractor1": "农业技术推广员",
+      "distractor2": "食品采购经理"
+    },
+    {
+      "name": "农业政策研究员",
+      "accent": "农户、补贴、耕地、规划、调研、一号文",
+      "distractor1": "农业咨询顾问",
+      "distractor2": "政策研究员"
+    },
+    {
+      "name": "农业规划师",
+      "accent": "耕地、产业、园区、布局、乡土、示范",
+      "distractor1": "城乡规划师",
+      "distractor2": "农艺师"
+    },
+    {
+      "name": "农业咨询顾问",
+      "accent": "测土、良种、植保、补贴、规划、农技",
+      "distractor1": "智慧农业项目经理",
+      "distractor2": "农业技术推广员"
+    },
+    {
+      "name": "政策研究员",
+      "accent": "课题、调研、起草、内参、评估、文献",
+      "distractor1": "公务员",
+      "distractor2": "国际关系研究员"
+    },
+    {
+      "name": "公务员",
+      "accent": "公文、考核、编制、会议、公文流转、行政事务",
+      "distractor1": "党群管理人员",
+      "distractor2": "政策研究员"
+    },
+    {
+      "name": "行政主管",
+      "accent": "会务、印章、资产、接待、制度、后勤",
+      "distractor1": "人力资源经理",
+      "distractor2": "档案管理员"
+    },
+    {
+      "name": "公共事务经理",
+      "accent": "政企、舆情、公关、申报、关系、合规",
+      "distractor1": "品牌公关",
+      "distractor2": "法律顾问"
+    },
+    {
+      "name": "数据管理师",
+      "accent": "治理、标准、质量、元数据、共享、合规",
+      "distractor1": "数据分析师",
+      "distractor2": "数据治理专家"
+    },
+    {
+      "name": "档案管理员",
+      "accent": "归档、编目、借阅、密级、数字化、移交",
+      "distractor1": "图书管理员",
+      "distractor2": "行政主管"
+    },
+    {
+      "name": "图书管理员",
+      "accent": "编目、借阅、排架、典藏、检索、上架",
+      "distractor1": "档案管理员",
+      "distractor2": "图书编辑"
+    },
+    {
+      "name": "信息咨询工程师",
+      "accent": "行业研究、数据调研、方案、客户、对标、咨询",
+      "distractor1": "管理咨询顾问",
+      "distractor2": "供应链管理人员"
+    },
+    {
+      "name": "情报分析师",
+      "accent": "研判、信源、开源、态势、预警、溯源",
+      "distractor1": "情报安全专家",
+      "distractor2": "数据分析师"
+    },
+    {
+      "name": "供应链分析师",
+      "accent": "采购、履约、库存、周转、协同、降本",
+      "distractor1": "供应链数据分析师",
+      "distractor2": "物流规划师"
+    },
+    {
+      "name": "关务经理",
+      "accent": "报关、HS编码、完税、原产地、查验、清关",
+      "distractor1": "外贸经理",
+      "distractor2": "国际货运代理专员"
+    },
+    {
+      "name": "物流系统工程师",
+      "accent": "仓储、路径、调度、WMS、吞吐、节点",
+      "distractor1": "物流规划师",
+      "distractor2": "供应链分析师"
+    },
+    {
+      "name": "工业工程师",
+      "accent": "节拍、线平衡、工时、精益、标准化、流程",
+      "distractor1": "生产工艺工程师",
+      "distractor2": "生产计划工程师"
+    },
+    {
+      "name": "质量管理工程师",
+      "accent": "体系、审核、缺陷、SPC、良率、纠正",
+      "distractor1": "质量工程师",
+      "distractor2": "工艺工程师"
+    },
+    {
+      "name": "生产计划工程师",
+      "accent": "排产、产能、齐套、MRP、交期、滚动",
+      "distractor1": "生产工艺工程师",
+      "distractor2": "工业工程师"
+    },
+    {
+      "name": "流程优化专家",
+      "accent": "瓶颈、SOP、精益、价值流、节拍、改善",
+      "distractor1": "工业工程师",
+      "distractor2": "生产计划工程师"
+    },
+    {
+      "name": "跨境电商运营",
+      "accent": "选品、Listing、广告、客单、物流、转化",
+      "distractor1": "电商营销策划",
+      "distractor2": "外贸经理"
+    },
+    {
+      "name": "新媒体运营",
+      "accent": "选题、涨粉、爆款、私域、矩阵、互动",
+      "distractor1": "市场运营",
+      "distractor2": "文案策划"
+    },
+    {
+      "name": "电商数据分析师",
+      "accent": "转化、客单、流量、复购、漏斗、投放",
+      "distractor1": "数据分析师",
+      "distractor2": "跨境电商运营"
+    },
+    {
+      "name": "电商营销策划",
+      "accent": "大促、满减、种草、GMV、投放、社群",
+      "distractor1": "跨境电商运营",
+      "distractor2": "广告策划"
+    },
+    {
+      "name": "导游",
+      "accent": "集合时间、典故、行程、讲解、安全提示、特产",
+      "distractor1": "旅行社计调",
+      "distractor2": "景区运营管理"
+    },
+    {
+      "name": "旅行社计调",
+      "accent": "行程、地接、机酒、报价、团期、签证",
+      "distractor1": "导游",
+      "distractor2": "景区运营管理"
+    },
+    {
+      "name": "酒店运营管理",
+      "accent": "入住、RevPAR、房态、布草、OTA、客评",
+      "distractor1": "客房经理",
+      "distractor2": "民宿老板"
+    },
+    {
+      "name": "景区运营管理",
+      "accent": "客流、门票、动线、二销、安全、解说",
+      "distractor1": "旅行社计调",
+      "distractor2": "酒店运营管理"
+    },
+    {
+      "name": "医学研究人员",
+      "accent": "课题、样本、随访、统计、伦理、队列",
+      "distractor1": "临床数据统计师",
+      "distractor2": "生物研究员"
+    },
+    {
+      "name": "医药企业研发人员",
+      "accent": "立项、化合物、工艺、中试、专利、管线",
+      "distractor1": "药物研发人员",
+      "distractor2": "生物制药研究员"
+    },
+    {
+      "name": "临床监查员",
+      "accent": "方案、访视、核查、源数据、知情同意、SAE",
+      "distractor1": "临床数据统计师",
+      "distractor2": "临床工程师"
+    },
+    {
+      "name": "医院技术人员（非临床）",
+      "accent": "设备、校准、保养、维修、台账、机房",
+      "distractor1": "医学影像技师",
+      "distractor2": "医学检验技师"
+    },
+    {
+      "name": "医学编辑",
+      "accent": "循证、术语规范、审稿、参考文献、选题、成稿",
+      "distractor1": "科学编辑",
+      "distractor2": "图书编辑"
+    },
+    {
+      "name": "临床医生",
+      "accent": "症状、鉴别诊断、指南、查房、处方、随访",
+      "distractor1": "医学影像医师",
+      "distractor2": "社区全科医生"
+    },
+    {
+      "name": "医学影像医师",
+      "accent": "阅片、放射、CT、核磁、造影、征象",
+      "distractor1": "医学影像技师",
+      "distractor2": "医学影像工程师"
+    },
+    {
+      "name": "麻醉医师",
+      "accent": "生命体征、诱导、术中管理、镇痛、插管、复苏",
+      "distractor1": "急诊科医生",
+      "distractor2": "临床医生"
+    },
+    {
+      "name": "临床医学工程师",
+      "accent": "设备、计量、临床、质控、合规、维保",
+      "distractor1": "临床工程师",
+      "distractor2": "医学影像工程师"
+    },
+    {
+      "name": "口腔医生",
+      "accent": "咬合、牙周、根管、拔牙、正畸、义齿",
+      "distractor1": "口腔医学科研人员",
+      "distractor2": "中医科医生"
+    },
+    {
+      "name": "口腔医学科研人员",
+      "accent": "牙周、种植、龋病、模型、细胞、实验",
+      "distractor1": "口腔医生",
+      "distractor2": "医学研究人员"
+    },
+    {
+      "name": "口腔保健师",
+      "accent": "洁治、龋防、窝沟、涂氟、宣教、护理",
+      "distractor1": "口腔医生",
+      "distractor2": "口腔医学科研人员"
+    },
+    {
+      "name": "疾控中心研究员",
+      "accent": "流调、监测、样本、疫苗、病媒、报告",
+      "distractor1": "食品卫生检验人员",
+      "distractor2": "医学研究人员"
+    },
+    {
+      "name": "营养师",
+      "accent": "GI值、宏量营养素、三餐配比、膳食、代谢、体重管理",
+      "distractor1": "健康管理师",
+      "distractor2": "食品卫生检验人员"
+    },
+    {
+      "name": "临床数据统计师",
+      "accent": "试验、样本、显著性、终点、脱失、统计",
+      "distractor1": "数据分析师",
+      "distractor2": "临床监查员"
+    },
+    {
+      "name": "食品卫生检验人员",
+      "accent": "菌落、留样、快检、理化、致病菌、合格",
+      "distractor1": "食品检测工程师",
+      "distractor2": "质量控制与化验员"
+    },
+    {
+      "name": "中医科医生",
+      "accent": "辨证、气血、湿气、调理、针灸、方剂",
+      "distractor1": "针灸推拿医师",
+      "distractor2": "中西医结合科医生"
+    },
+    {
+      "name": "针灸推拿医师",
+      "accent": "针刺、艾灸、经络、穴位、手法、理疗",
+      "distractor1": "中医康复治疗师",
+      "distractor2": "康复治疗师"
+    },
+    {
+      "name": "中医康复治疗师",
+      "accent": "辨证、针灸、推拿、经络、调理、功法",
+      "distractor1": "康复治疗师",
+      "distractor2": "中医科医生"
+    },
+    {
+      "name": "中医药科研人员",
+      "accent": "方剂、药味、炮制、含量、证候、组方",
+      "distractor1": "中药栽培研究员",
+      "distractor2": "药物研发人员"
+    },
+    {
+      "name": "中西医结合科医生",
+      "accent": "辨证、西药、中药、查房、会诊、调理",
+      "distractor1": "中医科医生",
+      "distractor2": "社区全科医生"
+    },
+    {
+      "name": "社区全科医生",
+      "accent": "转诊、慢病、首诊、随访、档案、问诊",
+      "distractor1": "临床医生",
+      "distractor2": "急诊科医生"
+    },
+    {
+      "name": "药物研发人员",
+      "accent": "靶点、化合物、活性、毒性、递送、临床前",
+      "distractor1": "医药企业研发人员",
+      "distractor2": "生物制药研究员"
+    },
+    {
+      "name": "药剂师",
+      "accent": "配伍、调剂、处方、剂型、药理、发药",
+      "distractor1": "药物研发人员",
+      "distractor2": "药品注册专员"
+    },
+    {
+      "name": "药品注册专员",
+      "accent": "申报、CTD、法规、沟通、资料、批件",
+      "distractor1": "药品警戒专员",
+      "distractor2": "药物研发人员"
+    },
+    {
+      "name": "药品警戒专员",
+      "accent": "不良反应、个例、上报、信号、定期、风险",
+      "distractor1": "药品注册专员",
+      "distractor2": "药物研发人员"
+    },
+    {
+      "name": "医药代表",
+      "accent": "拜访、处方、指标、科室、学术、进院",
+      "distractor1": "医药企业研发人员",
+      "distractor2": "保险经纪人"
+    },
+    {
+      "name": "中药栽培研究员",
+      "accent": "种苗、道地、栽培、采收、含量、GAP",
+      "distractor1": "中医药科研人员",
+      "distractor2": "农业技术推广员"
+    },
+    {
+      "name": "法医",
+      "accent": "尸检、物证、毒化、损伤、鉴定、痕检",
+      "distractor1": "司法鉴定人员",
+      "distractor2": "刑侦技术人员"
+    },
+    {
+      "name": "人伤核损专家",
+      "accent": "伤残、误工、医疗费、鉴定、赔付、伤情",
+      "distractor1": "保险经纪人",
+      "distractor2": "精算师"
+    },
+    {
+      "name": "医学检验技师",
+      "accent": "标本、试剂、质控、镜检、数值、报告",
+      "distractor1": "医学影像技师",
+      "distractor2": "检测分析师"
+    },
+    {
+      "name": "医学影像技师",
+      "accent": "投照、扫描、参数、影像、摆位、质控",
+      "distractor1": "医学检验技师",
+      "distractor2": "医学影像工程师"
+    },
+    {
+      "name": "诊断试剂研发人员",
+      "accent": "抗原、抗体、标记、灵敏度、校准、质控",
+      "distractor1": "药物研发人员",
+      "distractor2": "生物制药研究员"
+    },
+    {
+      "name": "康复治疗师",
+      "accent": "评估、训练、关节、肌力、步态、作业",
+      "distractor1": "中医康复治疗师",
+      "distractor2": "运动康复师"
+    },
+    {
+      "name": "眼视光技师",
+      "accent": "验光、屈光、镜片、角膜、配镜、矫正",
+      "distractor1": "医学检验技师",
+      "distractor2": "医学影像技师"
+    },
+    {
+      "name": "临床护士",
+      "accent": "护理、输液、给药、监护、记录、宣教",
+      "distractor1": "社区护士",
+      "distractor2": "急诊护士"
+    },
+    {
+      "name": "社区护士",
+      "accent": "入户、随访、慢病、宣教、接种、建档",
+      "distractor1": "临床护士",
+      "distractor2": "急诊护士"
+    },
+    {
+      "name": "护理培训师",
+      "accent": "带教、流程、操作、考核、规范、情景",
+      "distractor1": "临床护士",
+      "distractor2": "企业内训师"
+    },
+    {
+      "name": "助产士",
+      "accent": "产程、胎心、接生、宣教、新生儿、陪护",
+      "distractor1": "临床护士",
+      "distractor2": "社区护士"
+    },
+    {
+      "name": "信贷管理员",
+      "accent": "授信、额度、放款、风控、征信、台账",
+      "distractor1": "银行客户经理",
+      "distractor2": "精算师"
+    },
+    {
+      "name": "基金经理",
+      "accent": "净值、仓位、回撤、择时、行业、配置",
+      "distractor1": "量化交易员",
+      "distractor2": "精算师"
+    },
+    {
+      "name": "商业分析师",
+      "accent": "需求、流程、建模、痛点、蓝图、方案",
+      "distractor1": "数据分析师",
+      "distractor2": "管理咨询顾问"
+    },
+    {
+      "name": "财经编辑",
+      "accent": "数据、宏观、行业研究、稿件、时效性、成稿",
+      "distractor1": "医学编辑",
+      "distractor2": "科学编辑"
+    },
+    {
+      "name": "税务师",
+      "accent": "加计扣除、汇算、税负、申报、发票、合规",
+      "distractor1": "税务律师",
+      "distractor2": "财税咨询顾问"
+    },
+    {
+      "name": "财税咨询顾问",
+      "accent": "筹划、汇算、风险、合规、洼地、申报",
+      "distractor1": "审计",
+      "distractor2": "税务师"
+    },
+    {
+      "name": "会计",
+      "accent": "凭证、记账、结账、报表、税务、对账",
+      "distractor1": "审计",
+      "distractor2": "财务主管"
+    },
+    {
+      "name": "税务律师",
+      "accent": "税务、合规、筹划、争议、稽查、法条",
+      "distractor1": "律师",
+      "distractor2": "税务师"
+    },
+    {
+      "name": "量化交易员",
+      "accent": "因子、回测、信号、杠杆、对冲、夏普",
+      "distractor1": "量化分析师",
+      "distractor2": "基金经理"
+    },
+    {
+      "name": "保险经纪人",
+      "accent": "险种、保单、核保、理赔、保全、佣金",
+      "distractor1": "银行客户经理",
+      "distractor2": "精算师"
+    },
+    {
+      "name": "银行客户经理",
+      "accent": "揽储、授信、理财、对公、风控、KPI",
+      "distractor1": "保险经纪人",
+      "distractor2": "信贷管理员"
+    },
+    {
+      "name": "外贸经理",
+      "accent": "询盘、信用证、履约、报关、汇率、客户",
+      "distractor1": "关务经理",
+      "distractor2": "跨境电商运营"
+    },
+    {
+      "name": "外贸单证员",
+      "accent": "提单、发票、报关、信用证、原产地、结汇",
+      "distractor1": "外贸经理",
+      "distractor2": "化工贸易业务员"
+    },
+    {
+      "name": "供应链管理人员",
+      "accent": "计划、库存、交付、协同、物流、周转",
+      "distractor1": "供应链数据分析师",
+      "distractor2": "供应链管理工程师"
+    },
+    {
+      "name": "国际货运代理专员",
+      "accent": "订舱、报关、提单、运价、拼箱、清关",
+      "distractor1": "国际商务专员",
+      "distractor2": "外贸单证员"
+    },
+    {
+      "name": "国际商务专员",
+      "accent": "谈判、报价、客户、合同、展会、结算",
+      "distractor1": "外贸经理",
+      "distractor2": "化工贸易业务员"
+    },
+    {
+      "name": "教师",
+      "accent": "备课、学情、板书、作业、课堂、答疑",
+      "distractor1": "培训机构讲师",
+      "distractor2": "思政讲师"
+    },
+    {
+      "name": "辅导员",
+      "accent": "谈心、班级、奖助、党团、就业、心理",
+      "distractor1": "教师",
+      "distractor2": "党群管理人员"
+    },
+    {
+      "name": "培训机构讲师",
+      "accent": "授课、讲义、续费、招生、排课、试听",
+      "distractor1": "教师",
+      "distractor2": "思政讲师"
+    },
+    {
+      "name": "课程设计师",
+      "accent": "大纲、学情、目标、活动、评估、模块",
+      "distractor1": "教师",
+      "distractor2": "自然教育师"
+    },
+    {
+      "name": "企业内训师",
+      "accent": "课程、讲授、复盘、案例、互动、评估",
+      "distractor1": "安全培训师",
+      "distractor2": "培训机构讲师"
+    },
+    {
+      "name": "体育教师",
+      "accent": "跑跳、队列、体能、训练、裁判、操场",
+      "distractor1": "体育裁判员",
+      "distractor2": "教师"
+    },
+    {
+      "name": "职业教练员",
+      "accent": "训练、体能、战术、梯队、复盘、选材",
+      "distractor1": "体育教师",
+      "distractor2": "体育裁判员"
+    },
+    {
+      "name": "体育裁判员",
+      "accent": "判罚、规则、哨声、越位、手势、尺度",
+      "distractor1": "体育教师",
+      "distractor2": "职业教练员"
+    },
+    {
+      "name": "运动康复师",
+      "accent": "拉伸、肌力、损伤、评估、功能、恢复",
+      "distractor1": "康复治疗师",
+      "distractor2": "健身教练"
+    },
+    {
+      "name": "软件开发工程师",
+      "accent": "需求、迭代、代码、测试、架构、版本",
+      "distractor1": "软件工程师",
+      "distractor2": "前端开发工程师"
+    },
+    {
+      "name": "物理科研人员",
+      "accent": "粒子、光谱、凝聚态、量子、低温、实验装置",
+      "distractor1": "化学科研人员",
+      "distractor2": "天文研究人员"
+    },
+    {
+      "name": "电子工程师",
+      "accent": "电路、原理图、信号、EMC、焊接、器件",
+      "distractor1": "硬件工程师",
+      "distractor2": "电气设计工程师"
+    },
+    {
+      "name": "光学工程师",
+      "accent": "透镜、光路、像差、镀膜、标定、波长",
+      "distractor1": "电子工程师",
+      "distractor2": "机械设计工程师"
+    },
+    {
+      "name": "量子计算工程师",
+      "accent": "量子比特、纠缠、门电路、相干、纠错、低温",
+      "distractor1": "算法工程师",
+      "distractor2": "集成电路设计工程师"
+    },
+    {
+      "name": "化学科研人员",
+      "accent": "反应、滴定、合成、色谱、分子、催化",
+      "distractor1": "物理科研人员",
+      "distractor2": "生物研究员"
+    },
+    {
+      "name": "检测分析师",
+      "accent": "采样、前处理、色谱、定量、合格、复检",
+      "distractor1": "医学检验技师",
+      "distractor2": "环境检测工程师"
+    },
+    {
+      "name": "天文研究人员",
+      "accent": "星系、观测、射电、轨道、星表、望远镜",
+      "distractor1": "物理科研人员",
+      "distractor2": "天文馆讲解员"
+    },
+    {
+      "name": "天文馆讲解员",
+      "accent": "星空、讲解、演示、科普、展板、望远镜",
+      "distractor1": "天文研究人员",
+      "distractor2": "科学编辑"
+    },
+    {
+      "name": "科学编辑",
+      "accent": "术语、严谨、同行评审、科普、选题、成稿",
+      "distractor1": "医学编辑",
+      "distractor2": "财经编辑"
+    },
+    {
+      "name": "GIS工程师",
+      "accent": "图层、坐标、栅格、矢量、拓扑、投影",
+      "distractor1": "GIS开发工程师",
+      "distractor2": "遥感工程师"
+    },
+    {
+      "name": "地图编辑",
+      "accent": "底图、符号、比例尺、勘误、成图、注记",
+      "distractor1": "地图制图员",
+      "distractor2": "图书编辑"
+    },
+    {
+      "name": "气象算法工程师",
+      "accent": "数值预报、同化、网格、降水、回波、模型",
+      "distractor1": "气象分析师",
+      "distractor2": "算法工程师"
+    },
+    {
+      "name": "气象预报员",
+      "accent": "数值、云图、气压、降水、预警、风速",
+      "distractor1": "气象分析师",
+      "distractor2": "气象算法工程师"
+    },
+    {
+      "name": "气象分析师",
+      "accent": "预报、数值、模式、雷达、环流、预警",
+      "distractor1": "气象预报员",
+      "distractor2": "气象算法工程师"
+    },
+    {
+      "name": "风资源工程师",
+      "accent": "风速、湍流、机位、图谱、发电、测风",
+      "distractor1": "地热工程师",
+      "distractor2": "海洋环境工程师"
+    },
+    {
+      "name": "海洋科考人员",
+      "accent": "采样、航次、断面、盐度、浮标、深潜",
+      "distractor1": "海洋环评技术人员",
+      "distractor2": "水生生物研究员"
+    },
+    {
+      "name": "海洋环境工程师",
+      "accent": "水质、监测、生态、排放、基线、评估",
+      "distractor1": "海洋水文工程师",
+      "distractor2": "海洋环评技术人员"
+    },
+    {
+      "name": "海洋遥感工程师",
+      "accent": "反演、影像、波段、海温、盐度、解译",
+      "distractor1": "遥感工程师",
+      "distractor2": "海洋水文工程师"
+    },
+    {
+      "name": "海洋水文工程师",
+      "accent": "潮汐、流速、温盐、剖面、观测、循环",
+      "distractor1": "海洋环境工程师",
+      "distractor2": "地球物理工程师"
+    },
+    {
+      "name": "海洋环评技术人员",
+      "accent": "水质、环评、监测、沉积物、生态、报告",
+      "distractor1": "海洋科考人员",
+      "distractor2": "海洋环境工程师"
+    },
+    {
+      "name": "地球物理工程师",
+      "accent": "重力、磁法、剖面、反演、震波、异常",
+      "distractor1": "物探工程师",
+      "distractor2": "地震勘探工程师"
+    },
+    {
+      "name": "物探工程师",
+      "accent": "激发、接收、波形、偏移、剖面、速度",
+      "distractor1": "地震勘探工程师",
+      "distractor2": "地质勘查工程师"
+    },
+    {
+      "name": "地震勘探工程师",
+      "accent": "震源、检波、叠加、偏移、层位、信噪比",
+      "distractor1": "物探工程师",
+      "distractor2": "地球物理工程师"
+    },
+    {
+      "name": "地热工程师",
+      "accent": "储层、井温、回灌、梯度、热储、钻探",
+      "distractor1": "风资源工程师",
+      "distractor2": "地质勘查工程师"
+    },
+    {
+      "name": "地质灾害评估工程师",
+      "accent": "滑坡、泥石流、稳定性、监测、风险、分级",
+      "distractor1": "岩土工程师",
+      "distractor2": "地质勘查工程师"
+    },
+    {
+      "name": "生物医药研发人员",
+      "accent": "靶点、细胞、制剂、临床前、活性、管线",
+      "distractor1": "生物制药研究员",
+      "distractor2": "药物研发人员"
+    },
+    {
+      "name": "生物研究员",
+      "accent": "样本、培养、测序、基因、蛋白、模型",
+      "distractor1": "生物制药研究员",
+      "distractor2": "水生生物研究员"
+    },
+    {
+      "name": "用户研究员",
+      "accent": "访谈、问卷、画像、痛点、场景、可用性",
+      "distractor1": "用户体验测评师",
+      "distractor2": "市场运营"
+    },
+    {
+      "name": "心理咨询师",
+      "accent": "共情、防御机制、阻抗、个案、倾听",
+      "distractor1": "社工",
+      "distractor2": "生涯规划师"
+    },
+    {
+      "name": "心理测评师",
+      "accent": "量表、信效、施测、常模、筛查、访谈",
+      "distractor1": "心理咨询师",
+      "distractor2": "心理健康教师"
+    },
+    {
+      "name": "心理健康教师",
+      "accent": "疏导、情绪、咨询、测评、危机、共情",
+      "distractor1": "心理咨询师",
+      "distractor2": "教师"
+    },
+    {
+      "name": "量化分析师",
+      "accent": "因子、回测、策略、alpha、风险、建模",
+      "distractor1": "量化交易员",
+      "distractor2": "数据分析师"
+    },
+    {
+      "name": "数据治理专家",
+      "accent": "元数据、主数据、数据标准、血缘、质量、分级",
+      "distractor1": "数据管理师",
+      "distractor2": "数据分析师"
+    },
+    {
+      "name": "律师",
+      "accent": "请求权基础、举证、风险告知、合同、诉讼、尽调",
+      "distractor1": "企业法务",
+      "distractor2": "法律顾问"
+    },
+    {
+      "name": "企业法务",
+      "accent": "合同、合规、尽调、纠纷、商标、审查",
+      "distractor1": "法律顾问",
+      "distractor2": "律师"
+    },
+    {
+      "name": "法律顾问",
+      "accent": "合规、合同、诉讼、风险、审查、培训",
+      "distractor1": "企业法务",
+      "distractor2": "税务律师"
+    },
+    {
+      "name": "公证员",
+      "accent": "文书、认证、遗嘱、公证、核实、盖章",
+      "distractor1": "律师",
+      "distractor2": "法律顾问"
+    },
+    {
+      "name": "国际关系研究员",
+      "accent": "外交、智库、区域、条约、舆情、研判",
+      "distractor1": "外交官",
+      "distractor2": "政策研究员"
+    },
+    {
+      "name": "外交官",
+      "accent": "外事、谈判、使馆、礼宾、照会、出访",
+      "distractor1": "国际关系研究员",
+      "distractor2": "国际商务专员"
+    },
+    {
+      "name": "党群管理人员",
+      "accent": "党务、组织、思想政治、群团、纪检、统战",
+      "distractor1": "公务员",
+      "distractor2": "政策研究员"
+    },
+    {
+      "name": "社会工作者",
+      "accent": "个案、家访、低保、帮扶、社区、困境儿童",
+      "distractor1": "心理咨询师",
+      "distractor2": "社区护士"
+    },
+    {
+      "name": "民族学研究人员",
+      "accent": "田野、族群、民俗、访谈、口述、谱系",
+      "distractor1": "历史文献研究员",
+      "distractor2": "考古人员"
+    },
+    {
+      "name": "思政讲师",
+      "accent": "理论、时政、党课、价值观、宣讲、德育",
+      "distractor1": "教师",
+      "distractor2": "培训机构讲师"
+    },
+    {
+      "name": "治安警察",
+      "accent": "巡逻、接处、户籍、治安、盘查、办案",
+      "distractor1": "边防警察",
+      "distractor2": "特警"
+    },
+    {
+      "name": "边防警察",
+      "accent": "边检、口岸、巡逻、查缉、证件、管控",
+      "distractor1": "治安警察",
+      "distractor2": "网络警察"
+    },
+    {
+      "name": "特警",
+      "accent": "处突、抓捕、战术、排爆、训练、警戒",
+      "distractor1": "治安警察",
+      "distractor2": "边防警察"
+    },
+    {
+      "name": "情报安全专家",
+      "accent": "窃密、反侦察、保密、舆情、溯源、泄密",
+      "distractor1": "情报分析师",
+      "distractor2": "网络安全工程师"
+    },
+    {
+      "name": "文案策划",
+      "accent": "选题、文案、创意、brief、调性、转化",
+      "distractor1": "新媒体运营",
+      "distractor2": "广告策划"
+    },
+    {
+      "name": "图书编辑",
+      "accent": "书稿、选题、校样、三审三校、版式、成稿",
+      "distractor1": "医学编辑",
+      "distractor2": "科学编辑"
+    },
+    {
+      "name": "品牌宣传员",
+      "accent": "稿件、口径、媒体、海报、舆情、活动",
+      "distractor1": "品牌专员",
+      "distractor2": "品牌公关"
+    },
+    {
+      "name": "记者",
+      "accent": "信源、交叉验证、时效性、采访、选题、成稿",
+      "distractor1": "新闻记者",
+      "distractor2": "新媒体运营"
+    },
+    {
+      "name": "翻译",
+      "accent": "笔译、口译、术语、母语、润色、校对",
+      "distractor1": "外语编辑",
+      "distractor2": "同声传译"
+    },
+    {
+      "name": "同声传译",
+      "accent": "速记、耳语、切换、术语、延迟、临场",
+      "distractor1": "翻译",
+      "distractor2": "外语编辑"
+    },
+    {
+      "name": "海外市场推广人员",
+      "accent": "投放、社媒、展会、渠道、转化、本地化",
+      "distractor1": "品牌专员",
+      "distractor2": "跨境电商运营"
+    },
+    {
+      "name": "外语编辑",
+      "accent": "译文、语言、审校、本地化、术语库、成稿",
+      "distractor1": "翻译",
+      "distractor2": "同声传译"
+    },
+    {
+      "name": "新闻记者",
+      "accent": "信源、现场、采访、成稿、时效、选题",
+      "distractor1": "主持人",
+      "distractor2": "编导"
+    },
+    {
+      "name": "广告策划",
+      "accent": "创意、brief、媒介、提案、投放、受众",
+      "distractor1": "文案策划",
+      "distractor2": "电商营销策划"
+    },
+    {
+      "name": "品牌公关",
+      "accent": "媒介、声量、舆情、品牌调性、危机应对、PR稿",
+      "distractor1": "品牌专员",
+      "distractor2": "品牌宣传员"
+    },
+    {
+      "name": "艺术策展人",
+      "accent": "展览、策展、布展、艺术家、空间叙事、展陈",
+      "distractor1": "艺术经纪人",
+      "distractor2": "艺术评论员"
+    },
+    {
+      "name": "拍卖师",
+      "accent": "落槌、竞价、图录、估价、节奏、委托",
+      "distractor1": "艺术经纪人",
+      "distractor2": "房地产估价师"
+    },
+    {
+      "name": "品牌专员",
+      "accent": "视觉、物料、活动、舆情、传播、slogan",
+      "distractor1": "品牌宣传员",
+      "distractor2": "市场运营"
+    },
+    {
+      "name": "艺术经纪人",
+      "accent": "签约、代理、画廊、拍卖、艺术家、商务谈判",
+      "distractor1": "艺术策展人",
+      "distractor2": "房地产经纪人"
+    },
+    {
+      "name": "艺术评论员",
+      "accent": "展评、流派、批评、策展、语境、稿约",
+      "distractor1": "艺术策展人",
+      "distractor2": "艺术经纪人"
+    },
+    {
+      "name": "歌手",
+      "accent": "录音、音域、现场、唱片、声乐、舞台",
+      "distractor1": "独立音乐人",
+      "distractor2": "演员"
+    },
+    {
+      "name": "舞蹈演员",
+      "accent": "排练、剧目、基训、舞台、肢体、编舞",
+      "distractor1": "舞蹈编导",
+      "distractor2": "演员"
+    },
+    {
+      "name": "舞蹈编导",
+      "accent": "编舞、肢体、节奏、舞段、排练、舞台调度",
+      "distractor1": "舞蹈演员",
+      "distractor2": "芭蕾舞者"
+    },
+    {
+      "name": "独立音乐人",
+      "accent": "创作、编曲、demo、巡演、版权、录音",
+      "distractor1": "歌手",
+      "distractor2": "主播"
+    },
+    {
+      "name": "民航乘务员",
+      "accent": "客舱、广播、安检、服务、应急、餐食",
+      "distractor1": "铁路列车长",
+      "distractor2": "礼宾服务"
+    },
+    {
+      "name": "演员",
+      "accent": "台词、试镜、角色、片场、表演、走位",
+      "distractor1": "舞蹈演员",
+      "distractor2": "主持人"
+    },
+    {
+      "name": "编导",
+      "accent": "脚本、分镜、选题、拍摄、节目、叙事",
+      "distractor1": "影视制片人",
+      "distractor2": "纪录片导演"
+    },
+    {
+      "name": "游戏剧情策划",
+      "accent": "世界观、剧情、任务线、角色、叙事、玩家",
+      "distractor1": "剧本杀编剧",
+      "distractor2": "编导"
+    },
+    {
+      "name": "影视制片人",
+      "accent": "筹拍、预算、剧组、发行、版权、档期",
+      "distractor1": "编导",
+      "distractor2": "纪录片导演"
+    },
+    {
+      "name": "主持人",
+      "accent": "串场、提词、控场、访谈、台本、直播",
+      "distractor1": "主播",
+      "distractor2": "同声传译"
+    },
+    {
+      "name": "美术指导",
+      "accent": "视觉、色调、置景、分镜、画面、美术",
+      "distractor1": "创意总监",
+      "distractor2": "视觉设计师"
+    },
+    {
+      "name": "UI设计师",
+      "accent": "界面、交互、组件、配色、栅格、原型",
+      "distractor1": "UI/UX设计师",
+      "distractor2": "视觉设计师"
+    },
+    {
+      "name": "动画师",
+      "accent": "分镜、原画、绑定、帧、渲染、镜头",
+      "distractor1": "自由插画师",
+      "distractor2": "美术指导"
+    },
+    {
+      "name": "画家",
+      "accent": "笔触、构图、色彩、肌理、写生、写意",
+      "distractor1": "自由插画师",
+      "distractor2": "美术指导"
+    },
+    {
+      "name": "视觉设计师",
+      "accent": "排版、配色、字体、品牌、图形、画面",
+      "distractor1": "UI设计师",
+      "distractor2": "美术指导"
+    },
+    {
+      "name": "产品设计师",
+      "accent": "需求、原型、用户、迭代、流程、功能",
+      "distractor1": "UI/UX设计师",
+      "distractor2": "家具设计师"
+    },
+    {
+      "name": "UI/UX设计师",
+      "accent": "交互、体验、原型、用研、流程、界面",
+      "distractor1": "UI设计师",
+      "distractor2": "用户体验测评师"
+    },
+    {
+      "name": "创意总监",
+      "accent": "概念、提案、品牌、视觉、策略、把控",
+      "distractor1": "美术指导",
+      "distractor2": "广告策划"
+    },
+    {
+      "name": "植物遗传育种研究员",
+      "accent": "杂交、性状、基因、选育、种质、遗传",
+      "distractor1": "农艺师",
+      "distractor2": "生物研究员"
+    },
+    {
+      "name": "农艺师",
+      "accent": "栽培、肥水、育种、病虫、土壤、增产",
+      "distractor1": "农业规划师",
+      "distractor2": "园林绿化工程师"
+    },
+    {
+      "name": "农药制剂研发员",
+      "accent": "配方、剂型、毒理、残留、田间、助剂",
+      "distractor1": "兽药研发人员",
+      "distractor2": "药物研发人员"
+    },
+    {
+      "name": "茶叶开发工程师",
+      "accent": "品种、工艺、香气、发酵、拼配、风味",
+      "distractor1": "食品研发工程师",
+      "distractor2": "香料香精开发员"
+    },
+    {
+      "name": "农业技术推广员",
+      "accent": "示范、培训、田间、指导、良种、农户",
+      "distractor1": "农业咨询顾问",
+      "distractor2": "农艺师"
+    },
+    {
+      "name": "自然保护区管理员",
+      "accent": "巡护、监测、物种、界碑、宣教、巡线",
+      "distractor1": "野生动物调查员",
+      "distractor2": "林业技术员"
+    },
+    {
+      "name": "自然教育师",
+      "accent": "自然、解说、体验、营地、观察、课程",
+      "distractor1": "农业技术推广员",
+      "distractor2": "导游"
+    },
+    {
+      "name": "水保工程师",
+      "accent": "流失、梯田、拦沙、植被、径流、沉沙",
+      "distractor1": "水土保持工程师",
+      "distractor2": "生态修复工程师"
+    },
+    {
+      "name": "野生动物调查员",
+      "accent": "样线、红外、足迹、种群、栖息地、标记",
+      "distractor1": "自然保护区管理员",
+      "distractor2": "水生生物研究员"
+    },
+    {
+      "name": "动物遗传育种研究员",
+      "accent": "品种、配种、基因、选育、系谱、性状",
+      "distractor1": "动物营养师",
+      "distractor2": "畜牧分析师"
+    },
+    {
+      "name": "动物营养师",
+      "accent": "配方、饲养、能量、蛋白、阶段、代谢",
+      "distractor1": "畜牧分析师",
+      "distractor2": "兽药研发人员"
+    },
+    {
+      "name": "饲料研发工程师",
+      "accent": "配方、营养、氨基酸、适口、批次、检测",
+      "distractor1": "食品研发工程师",
+      "distractor2": "兽药研发人员"
+    },
+    {
+      "name": "养殖技术员",
+      "accent": "饲喂、圈舍、防疫、成活、密度、环境",
+      "distractor1": "水产养殖技术员",
+      "distractor2": "动物疫病防控人员"
+    },
+    {
+      "name": "畜牧分析师",
+      "accent": "存栏、产能、行情、饲料、周期、报表",
+      "distractor1": "动物营养师",
+      "distractor2": "农业咨询顾问"
+    },
+    {
+      "name": "动物医生",
+      "accent": "主诉、保定、驱虫、疫苗、体检、处方粮",
+      "distractor1": "兽药研发人员",
+      "distractor2": "动物营养师"
+    },
+    {
+      "name": "兽药研发人员",
+      "accent": "药理、制剂、毒理、试验、批件、活性",
+      "distractor1": "药物研发人员",
+      "distractor2": "生物制药研究员"
+    },
+    {
+      "name": "动物疫病防控人员",
+      "accent": "检疫、免疫、扑杀、监测、疫情、消毒",
+      "distractor1": "动物医生",
+      "distractor2": "兽药研发人员"
+    },
+    {
+      "name": "森林认证审核师",
+      "accent": "林分、认证、审核、可持续、台账、核查",
+      "distractor1": "林业工程师",
+      "distractor2": "环境咨询师"
+    },
+    {
+      "name": "园林景观设计师",
+      "accent": "地形、植栽、铺装、水景、空间、韵律",
+      "distractor1": "景观设计师",
+      "distractor2": "园林绿化工程师"
+    },
+    {
+      "name": "林业工程师",
+      "accent": "造林、抚育、蓄积、采伐、林分、种质",
+      "distractor1": "园林绿化工程师",
+      "distractor2": "林业技术员"
+    },
+    {
+      "name": "林业技术员",
+      "accent": "造林、抚育、样地、采伐、病虫害、调查",
+      "distractor1": "林业工程师",
+      "distractor2": "自然保护区管理员"
+    },
+    {
+      "name": "园林绿化工程师",
+      "accent": "苗木、造景、铺装、养护、群落、微地形",
+      "distractor1": "园林景观设计师",
+      "distractor2": "林业工程师"
+    },
+    {
+      "name": "水生生物研究员",
+      "accent": "采样、藻类、浮游、鱼卵、水体、监测",
+      "distractor1": "海洋科考人员",
+      "distractor2": "水产养殖技术员"
+    },
+    {
+      "name": "水产养殖技术员",
+      "accent": "投饵、水质、苗种、病害、增氧、轮捕",
+      "distractor1": "养殖技术员",
+      "distractor2": "水生生物研究员"
+    },
+    {
+      "name": "水产生产工艺师",
+      "accent": "养殖、投喂、水质、种苗、病害、循环",
+      "distractor1": "水产养殖技术员",
+      "distractor2": "畜牧分析师"
+    },
+    {
+      "name": "水族馆管理员",
+      "accent": "水温、饵料、过滤、展缸、治疗、巡缸",
+      "distractor1": "自然保护区管理员",
+      "distractor2": "水生生物研究员"
+    },
+    {
+      "name": "牧草育种研究人员",
+      "accent": "杂交、产草、抗逆、选育、种质、密度",
+      "distractor1": "植物遗传育种研究员",
+      "distractor2": "农艺师"
+    },
+    {
+      "name": "草原生态修复工程师",
+      "accent": "退化、补播、草种、载畜、演替、封育",
+      "distractor1": "生态修复工程师",
+      "distractor2": "水土保持工程师"
+    },
+    {
+      "name": "草坪建植主管",
+      "accent": "草种、坪床、养护、灌溉、修剪、绿化",
+      "distractor1": "园林绿化工程师",
+      "distractor2": "园林景观设计师"
+    },
+    {
+      "name": "历史文献研究员",
+      "accent": "古籍、考据、档案、版本、校勘、辑佚",
+      "distractor1": "考古人员",
+      "distractor2": "档案管理员"
+    },
+    {
+      "name": "文物修复师",
+      "accent": "包浆、随色、可逆性、清洗、加固、做旧",
+      "distractor1": "考古人员",
+      "distractor2": "历史文献研究员"
+    },
+    {
+      "name": "考古人员",
+      "accent": "探方、出土、器物、地层、碳十四、修复",
+      "distractor1": "历史文献研究员",
+      "distractor2": "文物修复师"
+    },
+    {
+      "name": "哲学研究人员",
+      "accent": "文本、思辨、范畴、论域、演绎、学派",
+      "distractor1": "哲学咨询师",
+      "distractor2": "历史文献研究员"
+    },
+    {
+      "name": "哲学咨询师",
+      "accent": "对话、反思、价值、意义、困惑、倾听",
+      "distractor1": "心理咨询师",
+      "distractor2": "哲学研究人员"
+    },
+    {
+      "name": "交通规划师",
+      "accent": "路网、流量、换乘、枢纽、通勤、模型",
+      "distractor1": "城乡规划师",
+      "distractor2": "物流规划师"
+    },
+    {
+      "name": "灯光技术员",
+      "accent": "灯具、调光台、光束、色温、舞台布光、追光",
+      "distractor1": "音响工程技术员",
+      "distractor2": "美术指导"
+    },
+    {
+      "name": "礼宾服务",
+      "accent": "接待、指引、礼遇、前台、宾客、礼仪",
+      "distractor1": "客房经理",
+      "distractor2": "民航乘务员"
+    },
+    {
+      "name": "婚礼策划师",
+      "accent": "流程、统筹、搭场、供应商、预算、动线",
+      "distractor1": "会展经理",
+      "distractor2": "文案策划"
+    },
+    {
+      "name": "房地产经纪人",
+      "accent": "带看、房源、成交、过户、佣金、客源",
+      "distractor1": "房产中介",
+      "distractor2": "房地产估价师"
+    },
+    {
+      "name": "施工特种设备操作员",
+      "accent": "起重机、吊装、塔吊、焊割、特种作业证、限位",
+      "distractor1": "施工管理工程师",
+      "distractor2": "监理工程师"
+    },
+    {
+      "name": "木匠",
+      "accent": "榫卯、含水率、找平、打磨、木工胶、尺寸",
+      "distractor1": "工程机械维修师",
+      "distractor2": "家具设计师"
+    },
+    {
+      "name": "电工",
+      "accent": "接线、负荷、布线、绝缘、配电箱、万用表",
+      "distractor1": "电气设计工程师",
+      "distractor2": "电力运维工程师"
+    },
+    {
+      "name": "工程机械维修师",
+      "accent": "液压、故障码、拆检、总成、保养、探伤",
+      "distractor1": "机务维修工程师",
+      "distractor2": "汽车维修商"
+    },
+    {
+      "name": "铁路列车长",
+      "accent": "乘务、站台、检票、调度、客运、安全",
+      "distractor1": "民航乘务员",
+      "distractor2": "机车调度员"
+    },
+    {
+      "name": "机车调度员",
+      "accent": "列车、运行图、调度指令、编组、信号机、时刻表",
+      "distractor1": "铁路列车长",
+      "distractor2": "物流系统工程师"
+    },
+    {
+      "name": "汽车维修商",
+      "accent": "故障、配件、保养、诊断、钣金、机修",
+      "distractor1": "工程机械维修师",
+      "distractor2": "机务维修工程师"
+    },
+    {
+      "name": "采购代理商",
+      "accent": "寻源、比价、议价、供应链、订货、交付",
+      "distractor1": "面料采购顾问",
+      "distractor2": "食品采购经理"
+    },
+    {
+      "name": "仓库管理员",
+      "accent": "入库、盘点、货架、库存、拣货、WMS",
+      "distractor1": "供应链管理人员",
+      "distractor2": "国际货运代理专员"
+    },
+    {
+      "name": "音响工程技术员",
+      "accent": "调音台、声压、啸叫、分频、扩声、声场",
+      "distractor1": "灯光技术员",
+      "distractor2": "美术指导"
+    },
+    {
+      "name": "茶艺师",
+      "accent": "水温、出汤、岩韵、茶具、醒茶、茶汤",
+      "distractor1": "咖啡师",
+      "distractor2": "餐饮研发专员"
+    },
+    {
+      "name": "外卖员",
+      "accent": "接单、配送、导航、保温箱、准时率、路线",
+      "distractor1": "网约车司机",
+      "distractor2": "物流系统工程师"
+    },
+    {
+      "name": "客房经理",
+      "accent": "房态、布草、查房、客诉、排班、清洁",
+      "distractor1": "酒店运营管理",
+      "distractor2": "礼宾服务"
+    },
+    {
+      "name": "会展经理",
+      "accent": "招展、搭建、观众、档期、展位、统筹",
+      "distractor1": "酒店运营管理",
+      "distractor2": "婚礼策划师"
+    },
+    {
+      "name": "精算师",
+      "accent": "死亡率、费率、准备金、贴现、风险、建模",
+      "distractor1": "保险经纪人",
+      "distractor2": "基金经理"
+    },
+    {
+      "name": "房地产估价师",
+      "accent": "楼面、地段、比准、收益、折旧、容积率",
+      "distractor1": "房地产经纪人",
+      "distractor2": "造价工程师"
+    },
+    {
+      "name": "ESG经理",
+      "accent": "碳排、披露、可持续、评级、治理、报告",
+      "distractor1": "环境咨询师",
+      "distractor2": "碳核算工程师"
+    },
+    {
+      "name": "用户体验测评师",
+      "accent": "可用性、痛点、问卷、访谈、转化、埋点",
+      "distractor1": "用户研究员",
+      "distractor2": "数据分析师"
+    }
+  ]
+}
