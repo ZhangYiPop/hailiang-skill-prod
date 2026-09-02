@@ -70,10 +70,13 @@ export type SseV2State = {
   ts: string;
   elapsed_ms: number;
   message_id: string | null;
-  profile_id: string;
-  profile_name: string;
+  profile_id: string | null;
+  profile_name: string | null;
+  context_scope: "profile" | "unbound";
+  context_label: string;
+  context_switched: boolean;
   branch_version: number;
-  profile_context_status: "matched" | "mismatched";
+  profile_context_status: "matched" | "mismatched" | "unbound";
   session_created: boolean;
   profile_switched: boolean;
   status: "streaming" | "completed" | "stopped" | "superseded" | "blocked" | "failed";

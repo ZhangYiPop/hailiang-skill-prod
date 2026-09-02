@@ -8,6 +8,7 @@ import {
   MessagesSquare,
   MoonStar,
   SunMedium,
+  Wrench,
 } from "lucide-react";
 
 import { ChatMessageList } from "@/components/ChatMessageList";
@@ -50,6 +51,7 @@ export default function Home() {
     expertTeamCatalog,
     activeExpertId,
     pendingExpertId,
+    pendingExpertTeamId,
     activeExpertTeam,
     messages,
     candidatePaths,
@@ -219,7 +221,7 @@ export default function Home() {
             onClick={() => {
               void handleCreateSession();
             }}
-            disabled={isCreatingSession || !activeProfileId}
+            disabled={isCreatingSession || !userId}
             className="w-full rounded-2xl border border-cyan-300/40 bg-cyan-300/15 px-5 py-3 text-sm font-medium text-cyan-50 transition hover:bg-cyan-300/25 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isCreatingSession ? "创建中..." : "为当前孩子新建会话"}
@@ -236,7 +238,7 @@ export default function Home() {
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <StatusPill label={sessionId ? `会话 ${sessionId}` : "未创建会话"} />
         <StatusPill label={userId ? `用户 ${userId}` : "未登录"} />
-        <StatusPill label={activeProfileName ? `孩子 ${activeProfileName}` : "未选择孩子"} />
+        <StatusPill label={activeProfileName ? `孩子 ${activeProfileName}` : "未绑定孩子"} />
         <StatusPill
           label={activeExpertTeam ? `专家团 ${activeExpertTeam.name} · ${activeExpertTeam.active_mention_name}` : activeExpert ? `专家 ${activeExpert.name}` : "未选择专家"}
           tone={activeExpertTeam || activeExpert ? "info" : "default"}
@@ -276,7 +278,7 @@ export default function Home() {
     </div>
   );
 
-  const factsCard = (
+  const factsCard = activeProfileId ? (
     <FactsManagerPanel
       apiBaseUrl={apiBaseUrl}
       userId={userId}
@@ -289,6 +291,10 @@ export default function Home() {
       onSaved={handleRefreshEvents}
       onCleared={handleClearUserFactsBySource}
     />
+  ) : (
+    <section className="rounded-[28px] border border-dashed border-white/10 bg-white/[0.03] p-5 text-sm leading-6 text-slate-400">
+      当前为未绑定孩子对话。系统只保存本会话上下文，不读取或写入孩子档案与 Facts。
+    </section>
   );
 
   const conversationCard = (
@@ -303,7 +309,7 @@ export default function Home() {
           onScroll={handleConversationScroll}
           className="max-h-[620px] overflow-y-auto pr-2"
         >
-          <ChatMessageList messages={messages} activeSkill={activeSkill} showCitations={!isChatMode} />
+          <ChatMessageList messages={messages} activeSkill={activeSkill} activeProfileId={activeProfileId} showCitations={!isChatMode} />
         </div>
         <Composer
           disabled={!sessionId}
@@ -313,6 +319,7 @@ export default function Home() {
           expertTeamCatalog={expertTeamCatalog}
           activeExpertId={activeExpertId}
           pendingExpertId={pendingExpertId}
+          pendingExpertTeamId={pendingExpertTeamId}
           activeExpertTeam={activeExpertTeam}
           onSelectExpert={handleSelectExpert}
           onExitExpert={handleExitExpert}
@@ -441,6 +448,11 @@ export default function Home() {
               </div>
 
               <div className="w-full max-w-[560px] space-y-3">
+                <div className="flex justify-end">
+                  <a href="/workbench" className="inline-flex items-center gap-2 rounded-full border border-cyan-300/25 bg-cyan-300/10 px-4 py-2 text-sm text-cyan-100 transition hover:bg-cyan-300/20">
+                    <Wrench size={15} />进入业务调试台
+                  </a>
+                </div>
                 {headerControlsCard}
                 {!isChatMode ? (
                   <div className="grid gap-3 sm:grid-cols-4">

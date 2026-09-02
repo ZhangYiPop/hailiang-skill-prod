@@ -11,9 +11,11 @@ from fastapi.encoders import jsonable_encoder
 from hailiang_skills.api.routes.admin_assets import build_admin_assets_router
 from hailiang_skills.api.routes.security_quarantine import build_security_quarantine_router
 from hailiang_skills.api.routes.skill_analytics import build_skill_analytics_router
+from hailiang_skills.api.routes.workbench import build_deployment_router, build_workbench_router
 from hailiang_skills.api.routes.chat import build_chat_router
 from hailiang_skills.api.routes.chat_stream import build_chat_stream_router
 from hailiang_skills.api.routes.external_chat import build_external_chat_router
+from hailiang_skills.api.routes.token_usage import build_token_usage_router
 from hailiang_skills.api.routes.facts import build_facts_router
 from hailiang_skills.api.routes.profiles import build_profiles_router
 from hailiang_skills.core.fact_service import FactService
@@ -59,7 +61,7 @@ from hailiang_skills.core.rate_limit import get_llm_rate_limiter
 from hailiang_skills.core.deployment import deployment_environment, node_name, release_version, state_root
 from hailiang_skills.storage.event_store import configure_event_store
 from hailiang_skills.storage.repositories.postgres_repo import SessionVersionConflict
-from hailiang_skills.runtime_bridge.default_expert_team import require_default_expert_team
+from hailiang_skills.workbench.factory import build_workbench_service
 from pathlib import Path
 import os
 import json
@@ -270,7 +272,11 @@ def create_app() -> FastAPI:
     )
     app.state.moderation_service = moderation_service
     orchestrator = MainPlannerOrchestrator(registry, llm_config, moderation_service=moderation_service)
-    require_default_expert_team(orchestrator)
+    workbench_service = build_workbench_service(storage, orchestrator=orchestrator)
+    app.state.workbench_service = workbench_service
+    if os.getenv("HAILIANG_WORKBENCH_BOOTSTRAP", "true").lower() in {"1", "true", "yes", "on"}:
+        workbench_service.bootstrap_from_runtime()
+    workbench_service.install_runtime_catalog()
     configured_origins = [item.strip() for item in os.getenv("HAILIANG_CORS_ORIGINS", "").split(",") if item.strip()]
     cors_origins = configured_origins or [
         "http://127.0.0.1:4174",
@@ -426,6 +432,10 @@ def create_app() -> FastAPI:
             },
             "storage": {"backend": storage.backend, "ready": storage.ready()},
             "deployment": {"environment": deployment_environment(), "version": release_version(), "node": node_name()},
+            "workbench": {
+                "kernel_fingerprint": workbench_service.kernel_fingerprint,
+                "object_count": len(workbench_service.list_objects(include_archived=True)),
+            },
         }
 
     @app.get("/health/live")
@@ -466,7 +476,16 @@ def create_app() -> FastAPI:
 
     app.include_router(build_chat_router(repository, orchestrator, fact_service, storage.user_metadata_repository), prefix="/api/v1")
     app.include_router(
-        build_chat_stream_router(repository, fact_service, orchestrator, app.state.turn_coordinator, app.state.llm_rate_limiter), prefix="/api/v2"
+        build_chat_stream_router(
+            repository,
+            fact_service,
+            orchestrator,
+            app.state.turn_coordinator,
+            app.state.llm_rate_limiter,
+            configuration_snapshot_resolver=lambda: workbench_service.active_deployment_snapshot(deployment_environment()),
+            debug_configuration_snapshot_resolver=workbench_service.debug_configuration_snapshot,
+        ),
+        prefix="/api/v2",
     )
     app.include_router(
         build_external_chat_router(repository, fact_service, orchestrator, app.state.turn_coordinator, app.state.llm_rate_limiter),
@@ -476,6 +495,9 @@ def create_app() -> FastAPI:
     app.include_router(build_profiles_router(fact_service, storage.user_metadata_repository), prefix="/api/v1")
     app.include_router(build_admin_assets_router(), prefix="/api/v1")
     app.include_router(build_skill_analytics_router(orchestrator), prefix="/api/v1")
+    app.include_router(build_workbench_router(workbench_service), prefix="/workbench/v1")
+    app.include_router(build_deployment_router(workbench_service), prefix="/deployment/v1")
+    app.include_router(build_token_usage_router(storage.engine), prefix="/deployment/v1")
     app.include_router(
         build_security_quarantine_router(quarantine_store),
         prefix="/api/v1",

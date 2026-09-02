@@ -1,0 +1,360 @@
+from __future__ import annotations
+
+import json
+from queue import Queue
+from threading import Thread
+from typing import Any, Literal
+
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+from hailiang_skills.workbench import WorkbenchConflict, WorkbenchError, WorkbenchService
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ActorInput(StrictModel):
+    display_name: str = Field(min_length=2, max_length=80)
+    device_token: str | None = None
+
+
+class ObjectInput(StrictModel):
+    object_type: Literal["skill", "expert", "expert_team"]
+    object_key: str = Field(min_length=1, max_length=160)
+    name: str = Field(min_length=1, max_length=256)
+    description: str = ""
+    actor_id: str = Field(min_length=1)
+
+
+class RevisionInput(StrictModel):
+    base_revision_id: str | None = None
+    payload: dict[str, Any]
+    dependency_locks: list[dict[str, Any]] = Field(default_factory=list)
+    assets: list[dict[str, Any]] = Field(default_factory=list)
+    actor_id: str = Field(min_length=1)
+
+
+class ReleaseInput(StrictModel):
+    revision_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+    manual_confirmation: bool
+    confirmation_notes: str = ""
+    actor_id: str = Field(min_length=1)
+
+
+class ActorAction(StrictModel):
+    actor_id: str = Field(min_length=1)
+
+
+class DeleteObjectInput(StrictModel):
+    confirmation_name: str = Field(min_length=1, max_length=256)
+    actor_id: str = Field(min_length=1)
+
+
+class DebugSessionInput(StrictModel):
+    revision_id: str = Field(min_length=1)
+    baseline_release_id: str | None = None
+    actor_id: str = Field(min_length=1)
+
+
+class RevisionTestSessionInput(StrictModel):
+    revision_id: str = Field(min_length=1)
+    soul_revision_id: str | None = None
+    actor_id: str = Field(min_length=1)
+
+
+class RevisionTestTurnInput(StrictModel):
+    user_message: str = ""
+    form_submission: dict[str, Any] | None = None
+    team_handoff_selection: dict[str, Any] | None = None
+    expert_selection: dict[str, Any] | None = None
+    actor_id: str = Field(min_length=1)
+
+
+class FormalChatSessionInput(StrictModel):
+    object_id: str = Field(min_length=1)
+    revision_id: str = Field(min_length=1)
+    release_id: str = Field(min_length=1)
+    soul_revision_id: str | None = None
+    actor_id: str = Field(min_length=1)
+
+
+class DebugTurnInput(StrictModel):
+    user_message: str
+    assistant_message: str
+    trace: list[dict[str, Any]] = Field(default_factory=list)
+    actor_id: str = Field(min_length=1)
+
+
+class DebugCompleteInput(StrictModel):
+    conclusion: str = ""
+    actor_id: str = Field(min_length=1)
+
+
+class EvaluationSuiteInput(StrictModel):
+    object_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    cases: list[dict[str, Any]] = Field(min_length=1)
+    actor_id: str = Field(min_length=1)
+
+
+class EvaluationRunInput(StrictModel):
+    suite_id: str = Field(min_length=1)
+    revision_id: str = Field(min_length=1)
+    baseline_release_id: str | None = None
+    soul_revision_id: str | None = None
+    results: list[dict[str, Any]] | None = None
+    actor_id: str = Field(min_length=1)
+
+
+class EvaluationCompleteInput(StrictModel):
+    results: list[dict[str, Any]]
+    manual_result: Literal["accepted", "rejected"]
+    manual_notes: str = ""
+    actor_id: str = Field(min_length=1)
+
+
+class ExportInput(StrictModel):
+    release_id: str = Field(min_length=1)
+    actor_id: str = Field(min_length=1)
+
+
+class SoulRevisionInput(StrictModel):
+    content: str = Field(min_length=1)
+    actor_id: str = Field(min_length=1)
+
+
+class ConversionCommitInput(StrictModel):
+    draft: dict[str, Any]
+    target_object_id: str | None = None
+    actor_id: str = Field(min_length=1)
+
+
+def _call(callback):
+    try:
+        return callback()
+    except WorkbenchConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc), "details": exc.details},
+        ) from exc
+    except WorkbenchError as exc:
+        status = 404 if exc.code.endswith("NOT_FOUND") else 422
+        raise HTTPException(
+            status_code=status,
+            detail={"code": exc.code, "message": str(exc), "details": exc.details},
+        ) from exc
+
+
+def build_workbench_router(service: WorkbenchService) -> APIRouter:
+    router = APIRouter(tags=["workbench"])
+
+    @router.get("/kernel")
+    def kernel_info():
+        return service.kernel_info()
+
+    @router.post("/actors")
+    def register_actor(body: ActorInput):
+        return _call(lambda: service.register_actor(body.display_name, body.device_token))
+
+    @router.get("/objects")
+    def list_objects(object_type: str | None = None, include_archived: bool = False):
+        return {"objects": _call(lambda: service.list_objects(object_type=object_type, include_archived=include_archived))}
+
+    @router.post("/objects", status_code=201)
+    def create_object(body: ObjectInput):
+        return _call(lambda: service.create_object(**body.model_dump()))
+
+    @router.get("/objects/{object_id}")
+    def get_object(object_id: str):
+        return _call(lambda: service.get_object(object_id))
+
+    @router.post("/objects/{object_id}/archive")
+    def archive_object(object_id: str, body: ActorAction):
+        return _call(lambda: service.archive_object(object_id, actor_id=body.actor_id))
+
+    @router.delete("/objects/{object_id}")
+    def delete_object(object_id: str, body: DeleteObjectInput):
+        return _call(lambda: service.delete_object(object_id, **body.model_dump()))
+
+    @router.post("/objects/{object_id}/revisions", status_code=201)
+    def save_revision(object_id: str, body: RevisionInput):
+        return _call(lambda: service.save_revision(object_id, **body.model_dump()))
+
+    @router.get("/revisions/compare")
+    def compare_revisions(left_revision_id: str, right_revision_id: str):
+        return _call(lambda: service.compare_revisions(left_revision_id, right_revision_id))
+
+    @router.get("/revisions/{revision_id}/assets")
+    def list_revision_assets(revision_id: str):
+        return {"assets": _call(lambda: service.list_revision_assets(revision_id))}
+
+    @router.get("/releases")
+    def list_releases(object_type: str | None = None, include_archived: bool = False):
+        return {"releases": _call(lambda: service.list_releases(object_type=object_type, include_archived=include_archived))}
+
+    @router.post("/releases", status_code=201)
+    def publish_revision(body: ReleaseInput):
+        return _call(lambda: service.publish_revision(**body.model_dump()))
+
+    @router.post("/releases/{release_id}/archive")
+    def archive_release(release_id: str, body: ActorAction):
+        return _call(lambda: service.archive_release(release_id, actor_id=body.actor_id))
+
+    @router.post("/debug-sessions", status_code=201)
+    def create_debug_session(body: DebugSessionInput):
+        return _call(lambda: service.create_debug_session(**body.model_dump()))
+
+    @router.post("/revision-tests", status_code=201)
+    def create_revision_test_session(body: RevisionTestSessionInput):
+        return _call(lambda: service.create_revision_test_session(**body.model_dump()))
+
+    @router.post("/standard-skill-conversions/preview")
+    async def preview_standard_skill_conversion(request: Request, actor_id: str = Query(min_length=1)):
+        package_bytes = await request.body()
+        return _call(lambda: service.preview_standard_skill_package(package_bytes, actor_id=actor_id))
+
+    @router.post("/standard-skill-conversions/commit", status_code=201)
+    def commit_standard_skill_conversion(body: ConversionCommitInput):
+        return _call(lambda: service.commit_standard_skill_conversion(**body.model_dump()))
+
+    @router.get("/soul-revisions")
+    def list_soul_revisions():
+        return {"revisions": _call(service.list_soul_revisions)}
+
+    @router.post("/soul-revisions", status_code=201)
+    def save_soul_revision(body: SoulRevisionInput):
+        return _call(lambda: service.save_soul_revision(**body.model_dump()))
+
+    @router.post("/revision-tests/{debug_session_id}/turns")
+    def run_revision_test_turn(debug_session_id: str, body: RevisionTestTurnInput):
+        return _call(lambda: service.run_revision_test_turn(debug_session_id, **body.model_dump()))
+
+    @router.post("/revision-tests/{debug_session_id}/turns/stream")
+    def stream_revision_test_turn(debug_session_id: str, body: RevisionTestTurnInput):
+        def stream():
+            queue: Queue[tuple[str, dict[str, Any]]] = Queue()
+            def emit(event: str, payload: dict[str, Any]):
+                queue.put((event, payload))
+            def worker():
+                try:
+                    emit("done", service.run_revision_test_turn(debug_session_id, **body.model_dump(), on_event=emit))
+                except WorkbenchError as exc:
+                    emit("error", {"code": exc.code, "message": str(exc), "details": exc.details})
+                except Exception as exc:
+                    emit("error", {"code": "REVISION_TEST_FAILED", "message": str(exc)})
+            Thread(target=worker, daemon=True).start()
+            yield "event: started\ndata: {}\n\n"
+            while True:
+                event, payload = queue.get()
+                yield f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                if event in {"done", "error"}:
+                    return
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @router.post("/formal-team-chat-sessions", status_code=201)
+    def create_formal_team_chat_session(body: RevisionTestSessionInput):
+        return _call(lambda: service.create_formal_team_chat_session(**body.model_dump()))
+
+    @router.post("/formal-chat-sessions", status_code=201)
+    def create_formal_chat_session(body: FormalChatSessionInput):
+        return _call(lambda: service.create_formal_chat_session(**body.model_dump()))
+
+    @router.post("/debug-sessions/{debug_session_id}/turns")
+    def append_debug_turn(debug_session_id: str, body: DebugTurnInput):
+        return _call(lambda: service.append_debug_turn(debug_session_id, **body.model_dump()))
+
+    @router.post("/debug-sessions/{debug_session_id}/complete")
+    def complete_debug_session(debug_session_id: str, body: DebugCompleteInput):
+        return _call(lambda: service.complete_debug_session(debug_session_id, **body.model_dump()))
+
+    @router.get("/debug-sessions")
+    def list_debug_sessions(
+        object_id: str | None = None,
+        revision_id: str | None = None,
+        status: str | None = None,
+        limit: int = Query(default=50, ge=1, le=200),
+    ):
+        return {"sessions": _call(lambda: service.list_debug_sessions(object_id=object_id, revision_id=revision_id, status=status, limit=limit))}
+
+    @router.get("/evaluation-suites")
+    def list_evaluation_suites(object_id: str | None = None):
+        return {"suites": service.list_evaluation_suites(object_id)}
+
+    @router.post("/evaluation-suites", status_code=201)
+    def create_evaluation_suite(body: EvaluationSuiteInput):
+        return _call(lambda: service.create_evaluation_suite(**body.model_dump()))
+
+    @router.post("/evaluation-runs", status_code=201)
+    def create_evaluation_run(body: EvaluationRunInput):
+        return _call(lambda: service.create_evaluation_run(**body.model_dump()))
+
+    @router.post("/evaluation-runs/{run_id}/complete")
+    def complete_evaluation_run(run_id: str, body: EvaluationCompleteInput):
+        return _call(lambda: service.complete_evaluation_run(run_id, **body.model_dump()))
+
+    @router.get("/evaluation-runs")
+    def list_evaluation_runs(
+        object_id: str | None = None,
+        revision_id: str | None = None,
+        status: str | None = None,
+        limit: int = Query(default=50, ge=1, le=200),
+    ):
+        return {"runs": _call(lambda: service.list_evaluation_runs(object_id=object_id, revision_id=revision_id, status=status, limit=limit))}
+
+    @router.post("/exports")
+    def export_release(body: ExportInput):
+        archive, manifest = _call(lambda: service.export_release(body.release_id, actor_id=body.actor_id))
+        filename = f"{manifest['root']['object_key']}-v{manifest['root']['release_no']}.zip"
+        return Response(
+            archive,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Package-Id": manifest["package_id"],
+            },
+        )
+
+    @router.get("/audit")
+    def audit(limit: int = Query(default=50, ge=1, le=200)):
+        return {"events": service.list_audit_events(limit)}
+
+    return router
+
+
+def build_deployment_router(service: WorkbenchService) -> APIRouter:
+    router = APIRouter(tags=["deployment"])
+
+    @router.post("/imports", status_code=201)
+    async def import_package(
+        request: Request,
+        environment: str = Query(default="prod"),
+        actor_id: str = Query(min_length=1),
+    ):
+        package_bytes = await request.body()
+        return _call(lambda: service.import_package(package_bytes, environment=environment, actor_id=actor_id))
+
+    @router.get("/deployments")
+    def list_deployments(environment: str = "prod"):
+        return {"deployments": service.list_deployments(environment)}
+
+    @router.get("/deployments/{deployment_id}/preview")
+    def preview_deployment(deployment_id: str, environment: str = "prod"):
+        deployments = service.list_deployments(environment)
+        target = next((item for item in deployments if item["deployment_id"] == deployment_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail={"code": "DEPLOYMENT_NOT_FOUND", "message": "部署记录不存在"})
+        return {"deployment": target, "validation": {"valid": True, "kernel_compatible": True, "dependency_complete": True}}
+
+    @router.post("/deployments/{deployment_id}/activate")
+    def activate_deployment(deployment_id: str, body: ActorAction):
+        return _call(lambda: service.activate_deployment(deployment_id, actor_id=body.actor_id))
+
+    @router.post("/deployments/{deployment_id}/rollback")
+    def rollback_deployment(deployment_id: str, body: ActorAction):
+        return _call(lambda: service.rollback_deployment(deployment_id, actor_id=body.actor_id))
+
+    return router

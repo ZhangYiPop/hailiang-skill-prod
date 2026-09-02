@@ -16,6 +16,11 @@ from hailiang_skills.core.message_interactions import backfill_interactions, exp
 from hailiang_skills.core.logging import make_event
 
 
+# This is a storage-only branch key.  It is never exposed as a child profile
+# identifier through the public API, SSE protocol, logs, or UI.
+UNBOUND_CONTEXT_BRANCH_ID = "__unbound__"
+
+
 @dataclass
 class SessionContext:
     session_id: str = field(default_factory=lambda: f"sess_{uuid4().hex[:12]}")
@@ -37,9 +42,9 @@ class SessionContext:
     session_meta: dict[str, Any] = field(default_factory=dict)
     last_fact_changes: list[dict[str, Any]] = field(default_factory=list)
     # ``messages`` and the runtime fields above always describe the currently
-    # active child branch.  Inactive branches are serialized here so the
-    # runtime can keep using the existing SessionContext contract without ever
-    # receiving another child's prompt history.
+    # active context branch.  A branch can be a child profile or the internal
+    # unbound branch; inactive branches are serialized so the runtime never
+    # receives another child's prompt history.
     profile_branches: dict[str, dict[str, Any]] = field(default_factory=dict)
     # The user-facing conversation is one append-only timeline.  Message items
     # are tagged with their immutable profile_id while profile_switch items are
@@ -76,6 +81,7 @@ class SessionContext:
             "_profile_switched",
             "_profile_branch_created",
             "_sse_profile_context",
+            "configuration_snapshot",
         }
 
     def _global_session_meta(self) -> dict[str, Any]:
@@ -112,20 +118,33 @@ class SessionContext:
                 "created_at": message.get("created_at") or datetime.now(timezone.utc).isoformat(),
             })
 
+    @property
+    def context_scope(self) -> str:
+        """Return the public scope of the active branch."""
+        return "profile" if str(self.profile_id or "").strip() else "unbound"
+
+    @property
+    def context_label(self) -> str:
+        if self.context_scope == "profile":
+            return self.profile_name or "未命名孩子"
+        return "未绑定孩子"
+
+    def _active_branch_key(self) -> str:
+        return str(self.profile_id or "").strip() or UNBOUND_CONTEXT_BRANCH_ID
+
     def sync_active_branch(self) -> None:
-        """Persist the active runtime view into its isolated child branch."""
-        profile_id = str(self.profile_id or "").strip()
-        if not profile_id:
-            return
-        previous = self.profile_branches.get(profile_id) or {}
+        """Persist the active runtime view into its isolated context branch."""
+        branch_key = self._active_branch_key()
+        previous = self.profile_branches.get(branch_key) or {}
         branch_version = int(
             self.session_meta.get("_active_branch_version")
             or previous.get("branch_version")
             or 1
         )
-        self.profile_branches[profile_id] = {
-            "profile_id": profile_id,
+        self.profile_branches[branch_key] = {
+            "profile_id": self.profile_id,
             "profile_name": self.profile_name,
+            "context_scope": self.context_scope,
             "messages": self.messages,
             "session_facts": self._facts_payload(self.session_facts),
             "skill_states": self.skill_states,
@@ -182,12 +201,51 @@ class SessionContext:
             if profile_name:
                 self.profile_name = profile_name
             return False
-        if current:
-            self.sync_active_branch()
+        # The active branch may be the unbound branch (whose public profile
+        # id is ``None``), so it must be persisted before entering a child as
+        # well.
+        self.sync_active_branch()
         global_meta = self._global_session_meta()
         branch = self.profile_branches.get(target)
         self.profile_id = target
         self.profile_name = profile_name or (str(branch.get("profile_name") or "") if branch else None)
+        if branch is None:
+            self.messages = []
+            self.session_facts = KnownFacts()
+            self.skill_states = {}
+            self.candidate_paths = []
+            self.interaction_state = {}
+            self.risk_signals = []
+            self.event_trace = []
+            self.last_fact_changes = []
+            self.session_meta = global_meta
+            self.session_meta["_active_branch_version"] = 1
+            return True
+        self.messages = list(branch.get("messages") or [])
+        self.session_facts = self._facts_from_payload(branch.get("session_facts"))
+        self.skill_states = dict(branch.get("skill_states") or {})
+        self.candidate_paths = list(branch.get("candidate_paths") or [])
+        self.interaction_state = dict(branch.get("interaction_state") or {})
+        self.risk_signals = list(branch.get("risk_signals") or [])
+        self.event_trace = list(branch.get("event_trace") or [])
+        self.last_fact_changes = list(branch.get("last_fact_changes") or [])
+        self.session_meta = {**global_meta, **dict(branch.get("session_meta") or {})}
+        self.session_meta["_active_branch_version"] = int(branch.get("branch_version") or 1) + 1
+        if mark_resume and self.messages:
+            self.session_meta["resume_recap_pending"] = True
+        self._ensure_message_ids()
+        return False
+
+    def activate_unbound_branch(self, *, mark_resume: bool = True) -> bool:
+        """Activate the session-local branch that has no child profile."""
+        if self.context_scope == "unbound":
+            return False
+        if self.profile_id:
+            self.sync_active_branch()
+        global_meta = self._global_session_meta()
+        branch = self.profile_branches.get(UNBOUND_CONTEXT_BRANCH_ID)
+        self.profile_id = None
+        self.profile_name = None
         if branch is None:
             self.messages = []
             self.session_facts = KnownFacts()
@@ -225,6 +283,29 @@ class SessionContext:
             "from_profile_name": from_profile_name,
             "to_profile_id": self.profile_id,
             "to_profile_name": self.profile_name,
+            "model_visible": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def append_context_switch(
+        self,
+        *,
+        from_profile_id: str | None,
+        from_profile_name: str | None = None,
+    ) -> None:
+        """Append a display-only scope transition without exposing branch keys."""
+        self.timeline_items.append({
+            "item_id": f"switch_{uuid4().hex[:16]}",
+            "item_type": "profile_switch",
+            "profile_id": self.profile_id,
+            "profile_name": self.profile_name,
+            "context_scope": self.context_scope,
+            "from_profile_id": from_profile_id,
+            "from_profile_name": from_profile_name,
+            "from_context_scope": "profile" if from_profile_id else "unbound",
+            "to_profile_id": self.profile_id,
+            "to_profile_name": self.profile_name,
+            "to_context_scope": self.context_scope,
             "model_visible": False,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -314,6 +395,11 @@ class SessionContext:
         provenance: Provenance | None = None,
     ) -> FactRecord:
         fact_scope = resolve_fact_scope(key, scope)
+        # Unbound conversations may collect information, but it must stay in
+        # this session branch even when a reusable Skill declares a profile or
+        # shared Fact field.
+        if self.context_scope == "unbound":
+            fact_scope = "session"
         if fact_scope == FACT_SCOPE_SHARED:
             target = self.shared_facts
         elif fact_scope == FACT_SCOPE_PROFILE:

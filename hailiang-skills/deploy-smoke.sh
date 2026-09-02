@@ -5,18 +5,19 @@
 # PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
 # INSTALL_MS_AGENT_RUNTIME=auto \
 # ./deploy-smoke.sh \
-#   --env ./env.8015.sh \
+#   --env ./env.8010.sh \
 #   --replace-port \
 #   --with-frontend
 
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ENV_FILE="$PROJECT_DIR/env.8015.sh"
+ENV_FILE="$PROJECT_DIR/env.8010.sh"
 REPLACE_PORT=0
 SKIP_INSTALL=0
 SKIP_MIGRATIONS=0
 WITH_FRONTEND=0
+RESET_DATABASE=0
 
 usage() {
   cat <<'EOF'
@@ -27,12 +28,14 @@ old-Linux-compatible Python wheels from the Tsinghua mirror, migrates only the
 configured isolated database, and verifies /health/ready.
 
 Options:
-  --env PATH          Private environment file (default: ./env.8015.sh)
+  --env PATH          Private environment file (default: ./env.8010.sh)
   --replace-port      Gracefully stop an existing Hailiang Uvicorn instance on
                       BACKEND_PORT before starting this one.
   --with-frontend     Build and serve the internal frontend using FRONTEND_PORT.
   --skip-install      Reuse the existing smoke virtual environment.
   --skip-migrations   Do not run Alembic (only for an already migrated DB).
+  --reset-database    Drop and recreate the configured smoke database before
+                      migrating. Only valid for the dedicated smoke database.
   -h, --help          Show this help.
 
 This script never starts, recreates, or removes PostgreSQL/Redis containers.
@@ -48,6 +51,7 @@ while [ "$#" -gt 0 ]; do
     --with-frontend) WITH_FRONTEND=1 ;;
     --skip-install) SKIP_INSTALL=1 ;;
     --skip-migrations) SKIP_MIGRATIONS=1 ;;
+    --reset-database) RESET_DATABASE=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -109,6 +113,39 @@ require_value HAILIANG_SECURITY_QUARANTINE_KEY
 require_value DASHSCOPE_API_KEY
 require_value AGENT_SKILL_RUNTIME_CORE_PATH
 
+validate_base64_aes256_key() {
+  local setting_name="$1"
+  "$PYTHON_BIN" - "$setting_name" <<'PY'
+import base64
+import os
+import sys
+
+name = sys.argv[1]
+value = os.environ[name].strip()
+try:
+    decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+except Exception:
+    decoded = b""
+if len(decoded) != 32:
+    if name == "HAILIANG_SECURITY_QUARANTINE_KEY":
+        try:
+            decoded = bytes.fromhex(value)
+        except ValueError:
+            decoded = b""
+    if len(decoded) == 32:
+        raise SystemExit(0)
+    raise SystemExit(
+        f"{name} 必须是 URL-safe Base64 格式的 32 字节 AES-256 密钥"
+        "（隔离库密钥也可使用 64 位十六进制值）；请重新生成密钥。"
+    )
+PY
+}
+
+PYTHON_BIN="$(command -v python3.11 || command -v python3 || true)"
+[ -n "$PYTHON_BIN" ] || { echo "python3.11 is required" >&2; exit 2; }
+validate_base64_aes256_key HAILIANG_AUDIT_ENCRYPTION_KEY
+validate_base64_aes256_key HAILIANG_SECURITY_QUARANTINE_KEY
+
 [ "$HAILIANG_DEPLOY_ENV" = "test" ] || {
   echo "Smoke deployment requires HAILIANG_DEPLOY_ENV=test" >&2
   exit 2
@@ -120,8 +157,8 @@ require_value AGENT_SKILL_RUNTIME_CORE_PATH
 # The normal test database and Redis namespace belong to the legacy test
 # service.  Requiring a distinct name prevents a smoke migration from changing it.
 case "$HAILIANG_DATABASE_URL" in
-  *hailiang_skills_test_multi_profile_v1_smoke_*) ;;
-  *) echo "Smoke database must use a distinct name such as hailiang_skills_test_multi_profile_v1_smoke_411" >&2; exit 2 ;;
+  *"/hailiang_skills_test_multi_profile_v1_smoke"|*"/hailiang_skills_test_multi_profile_v1_smoke?"*) ;;
+  *) echo "Smoke database must be the dedicated hailiang_skills_test_multi_profile_v1_smoke database" >&2; exit 2 ;;
 esac
 case "$HAILIANG_REDIS_KEY_PREFIX" in
   hailiang:smoke*) ;;
@@ -245,6 +282,74 @@ if [ "$SKIP_INSTALL" = "0" ]; then
   install_backend_project
 fi
 
+# A smoke database is deliberately a disposable, single-purpose database. It
+# is created only when absent, so normal redeployments retain their test data.
+# Creating/dropping a PostgreSQL database requires an admin URL in deployments
+# where the application role does not have CREATEDB privileges.
+HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" \
+HAILIANG_DATABASE_ADMIN_URL="${HAILIANG_DATABASE_ADMIN_URL:-}" \
+HAILIANG_SMOKE_RESET_DATABASE="$RESET_DATABASE" \
+  "$VENV_DIR/bin/python" - <<'PY'
+import os
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.pool import NullPool
+
+target = make_url(os.environ["HAILIANG_DATABASE_URL"])
+expected = "hailiang_skills_test_multi_profile_v1_smoke"
+if target.database != expected:
+    raise SystemExit(f"Smoke database must be {expected}, got {target.database!r}")
+
+admin_raw = os.environ.get("HAILIANG_DATABASE_ADMIN_URL") or os.environ["HAILIANG_DATABASE_URL"]
+admin = make_url(admin_raw).set(database="postgres")
+reset = os.environ.get("HAILIANG_SMOKE_RESET_DATABASE") == "1"
+engine = create_engine(admin, poolclass=NullPool, isolation_level="AUTOCOMMIT")
+try:
+    with engine.connect() as connection:
+        exists = bool(connection.execute(
+            text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": expected}
+        ).scalar())
+        quoted_name = connection.dialect.identifier_preparer.quote(expected)
+        owner = str(target.username or "").strip()
+        if not owner:
+            raise SystemExit("HAILIANG_DATABASE_URL must include the application database user")
+        quoted_owner = connection.dialect.identifier_preparer.quote(owner)
+        if exists and reset:
+            connection.execute(text(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = :name AND pid <> pg_backend_pid()"
+            ), {"name": expected})
+            connection.exec_driver_sql(f"DROP DATABASE {quoted_name}")
+            exists = False
+            print(f"⚠️  已清空 smoke 数据库：{expected}")
+        if not exists:
+            connection.exec_driver_sql(f"CREATE DATABASE {quoted_name} OWNER {quoted_owner}")
+            print(f"ℹ️  已创建 smoke 数据库：{expected}")
+        else:
+            print(f"ℹ️  复用已有 smoke 数据库：{expected}")
+except Exception as exc:
+    raise SystemExit(
+        f"无法创建或访问 smoke 数据库：{exc}. "
+        "请在私有环境文件中设置 HAILIANG_DATABASE_ADMIN_URL（连接 postgres 库的管理员账号）。"
+    ) from exc
+finally:
+    engine.dispose()
+PY
+
+# The database was created above when absent. Strict mode now rejects an
+# accidentally reused legacy schema instead of silently selecting another DB.
+HAILIANG_DATABASE_URL="$(
+  HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" \
+    "$VENV_DIR/bin/python" scripts/prepare_database_baseline.py --mode strict
+)"
+export HAILIANG_DATABASE_URL
+if [ "$SKIP_MIGRATIONS" = "0" ]; then
+  PYTHONPATH=src "$VENV_DIR/bin/alembic" upgrade head
+fi
+
+# Import the application only after the database has been provisioned and
+# migrated. Importing api.main creates the application and may query workbench
+# tables during bootstrap.
 IMPORT_MODULES=("hailiang_skills.api.main" "agent_skill_runtime_core")
 [ "$MS_AGENT_RUNTIME_READY" = "1" ] && IMPORT_MODULES+=("ms_agent" "loguru")
 PYTHONPATH="$PYTHONPATH" "$VENV_DIR/bin/python" - "${IMPORT_MODULES[@]}" <<'PY'
@@ -255,15 +360,6 @@ for module in sys.argv[1:]:
     importlib.import_module(module)
 print("dependency imports passed")
 PY
-
-HAILIANG_DATABASE_URL="$(
-  HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" \
-    "$VENV_DIR/bin/python" scripts/prepare_database_baseline.py --mode strict
-)"
-export HAILIANG_DATABASE_URL
-if [ "$SKIP_MIGRATIONS" = "0" ]; then
-  PYTHONPATH=src "$VENV_DIR/bin/alembic" upgrade head
-fi
 
 "$VENV_DIR/bin/python" - <<'PY'
 from hailiang_skills.core.rate_limit import get_llm_rate_limiter
@@ -354,6 +450,7 @@ import os
 
 print("window.__HAILIANG_RUNTIME_CONFIG__ = " + json.dumps({
     "apiBaseUrl": os.environ["HAILIANG_PUBLIC_API_BASE_URL"],
+    "workbenchApiBaseUrl": os.getenv("HAILIANG_PUBLIC_WORKBENCH_API_BASE_URL", os.environ["HAILIANG_PUBLIC_API_BASE_URL"]),
     "backendPort": int(os.environ["BACKEND_PORT"]),
     "userId": os.getenv("DEFAULT_USER_ID", "debug-user"),
 }, ensure_ascii=False) + ";")

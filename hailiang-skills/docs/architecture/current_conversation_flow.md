@@ -35,7 +35,7 @@ RouterSkill -> FactsExtractorSkill -> PlannerSkill -> 业务 Skill
 
 ### 2.1 HTTP 层
 
-对外聊天入口只有 `POST /api/v1/sessions/chat/stream`。请求以 `input.action` 区分
+对外聊天入口只有 `POST /api/v2/sessions/chat/stream`。请求以 `input.action` 区分
 普通聊天、进入/退出 Skill 和停止；响应以 `hailiang.sse.v2` 的 `event: state` 完整快照组成，
 最后追加 `event: done` 表示本次 SSE 数据已全部发送完成。
 内部仍由 `orchestrator.handle_message()` 执行模型编排。

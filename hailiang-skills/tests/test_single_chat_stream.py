@@ -199,6 +199,12 @@ def test_context_data_requires_only_identity_and_allows_extensions() -> None:
     assert data.model_extra == {"guardian_phone": "masked-value"}
 
 
+def test_context_data_allows_unbound_identity_with_only_user_id() -> None:
+    data = ContextData.model_validate({"user_id": "u1"})
+    assert data.profile_id is None
+    assert data.student_name is None
+
+
 def test_new_session_without_optional_school_context_does_not_seed_school_facts() -> None:
     repository = InMemorySessionRepository()
     facts = _FactService()
@@ -373,6 +379,30 @@ def test_input_contract_and_external_run_id() -> None:
     coordinator.release(lease)
 
 
+def test_chat_stream_api_accepts_unbound_context_and_rejects_profile_data(api_client) -> None:
+    client, repository = api_client
+    response = client.post("/api/v2/sessions/chat/stream", json={
+        "session_id": "sess_unbound_api",
+        "run_id": "run_unbound_api",
+        "input": '{"action":"chat","context_scope":"unbound","content":"你好","source":"chat"}',
+        "context_data": {"user_id": "u1"},
+    })
+    assert response.status_code == 200
+    frames = _state_frames(response.text)
+    assert frames[-1]["context_scope"] == "unbound"
+    assert frames[-1]["profile_id"] is None
+    assert repository.get("sess_unbound_api").profile_id is None
+
+    invalid = client.post("/api/v2/sessions/chat/stream", json={
+        "session_id": "sess_invalid_unbound",
+        "run_id": "run_invalid_unbound",
+        "input": '{"action":"chat","context_scope":"unbound","profile_id":"p1","content":"你好","source":"chat"}',
+        "context_data": {"user_id": "u1"},
+    })
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"] == "UNBOUND_CONTEXT_MUST_NOT_INCLUDE_PROFILE_ID"
+
+
 def test_chat_stream_api_creates_session_and_uses_external_run_id(api_client) -> None:
     client, repository = api_client
 
@@ -402,7 +432,116 @@ def test_chat_stream_api_rejects_duplicate_external_run_id(api_client) -> None:
     assert repository.get("sess_1").session_meta["external_run_ids"] == ["same_run"]
 
 
-def test_mismatch_routes_to_input_profile_without_seeding_forwarded_child(api_client) -> None:
+def test_team_interaction_commit_retries_from_a_fresh_session_snapshot() -> None:
+    """A card confirmation must not expose an internal optimistic-lock retry."""
+
+    class ConflictOnceRepository:
+        def __init__(self, context: SessionContext) -> None:
+            self._stored = deepcopy(context)
+            self.save_attempts = 0
+            self.recorded_runs: list[tuple[str, str]] = []
+
+        def get(self, session_id: str) -> SessionContext:
+            assert session_id == self._stored.session_id
+            return deepcopy(self._stored)
+
+        def save(self, context: SessionContext) -> SessionContext:
+            self.save_attempts += 1
+            if self.save_attempts == 1:
+                # Model an unrelated committed update between read and save.
+                self._stored.session_meta["competing_update"] = True
+                raise chat_stream.SessionVersionConflict("session changed")
+            self._stored = deepcopy(context)
+            return context
+
+        def record_run(self, context: SessionContext, run_id: str, action: str) -> None:
+            self.recorded_runs.append((run_id, action))
+
+    initial = SessionContext(session_id="sess_handoff_retry", user_id="u1", profile_id="p1")
+    repository = ConflictOnceRepository(initial)
+    applied_to: list[SessionContext] = []
+
+    def apply(context: SessionContext) -> dict:
+        applied_to.append(context)
+        context.session_meta["active_expert_id"] = "family_education_expert"
+        context.session_meta["handoff_card_status"] = "selected"
+        return {"target_expert_id": "family_education_expert"}
+
+    context, result = chat_stream._commit_run_action(
+        repository,
+        repository.get("sess_handoff_retry"),
+        "run_handoff_retry",
+        action="confirm_team_handoff",
+        apply=apply,
+    )
+
+    assert result == {"target_expert_id": "family_education_expert"}
+    assert len(applied_to) == 2
+    assert repository.save_attempts == 2
+    assert context.session_meta["competing_update"] is True
+    assert context.session_meta["active_expert_id"] == "family_education_expert"
+    assert context.session_meta["external_run_ids"] == ["run_handoff_retry"]
+    assert context.session_meta["run_ledger"]["run_handoff_retry"] == {
+        "status": "running",
+        "action": "confirm_team_handoff",
+    }
+    assert repository.recorded_runs == [("run_handoff_retry", "confirm_team_handoff")]
+
+
+def test_free_form_follow_up_expires_team_handoff_without_forcing_a_click(api_client, monkeypatch) -> None:
+    """A coordinator recommendation is optional, not a blocking form."""
+    client, repository = api_client
+    commit_calls: list[str] = []
+    original_commit = chat_stream._commit_run_action
+
+    def tracked_commit(*args, **kwargs):
+        commit_calls.append(str(kwargs.get("action") or ""))
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(chat_stream, "_commit_run_action", tracked_commit)
+    facts = _FactService()
+    context, _ = open_or_resume_session(
+        repository,
+        facts,
+        session_id="sess_optional_handoff",
+        data=_context_data(),
+    )
+    context.session_meta.update({
+        "expert_team_id": "student_growth_expert_team",
+        "expert_id": "career_plan_expert",
+        "active_expert_id": "career_plan_expert",
+        "expert_selection_source": "manual_team",
+        "pending_team_handoff": {"team_id": "student_growth_expert_team"},
+    })
+    context.messages.append({
+        "message_id": "msg_handoff",
+        "role": "assistant",
+        "content": "建议由家庭教育专家接管。",
+        "team_handoff": {
+            "team_id": "student_growth_expert_team",
+            "candidates": [{"expert_id": "family_education_expert", "mention_name": "家庭教育专家"}],
+        },
+    })
+    repository.save(context)
+
+    response = client.post(
+        "/api/v2/sessions/chat/stream",
+        json=_api_payload(
+            session_id="sess_optional_handoff",
+            run_id="run_follow_up",
+            input_payload={"action": "chat", "profile_id": "p1", "content": "我再补充一点情况", "source": "chat"},
+        ),
+    )
+
+    assert response.status_code == 200
+    saved = repository.get("sess_optional_handoff")
+    assert saved.session_meta["active_expert_id"] == "career_plan_expert"
+    assert "pending_team_handoff" not in saved.session_meta
+    assert saved.messages[-1]["interaction_states"]["team_handoff"]["status"] == "expired"
+    assert commit_calls == ["chat"]
+
+
+def test_chat_stream_rejects_mismatched_legacy_input_profile_id(api_client) -> None:
     client, repository = api_client
     payload = _api_payload(
         session_id="sess_mismatch_api",
@@ -413,18 +552,27 @@ def test_mismatch_routes_to_input_profile_without_seeding_forwarded_child(api_cl
 
     response = client.post("/api/v2/sessions/chat/stream", json=payload)
 
+    assert response.status_code == 409
+    assert response.json()["detail"] == "PROFILE_CONTEXT_MISMATCH"
+    with pytest.raises(KeyError):
+        repository.get("sess_mismatch_api")
+
+
+def test_chat_stream_uses_context_data_profile_without_legacy_input_profile_id(api_client) -> None:
+    client, repository = api_client
+    payload = {
+        "session_id": "sess_context_selected_profile",
+        "run_id": "run_context_selected_profile",
+        "input": '{"action":"chat","content":"聊孩子","source":"chat"}',
+        "context_data": _context_data().model_dump(),
+    }
+
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+
     assert response.status_code == 200
     frames = _state_frames(response.text)
-    assert all(frame["profile_id"] == "p2" for frame in frames)
-    assert all(frame["profile_context_status"] == "mismatched" for frame in frames)
-    context = repository.get("sess_mismatch_api")
-    assert context.profile_id == "p2"
-    assert context.profile_name is None
-    assert "expert_id" not in context.session_meta
-    mismatch = [item for item in context.event_trace if item["event_type"] == "profile_context_mismatch"]
-    assert mismatch[-1]["payload"]["input_profile_id"]["sha256"]
-    assert mismatch[-1]["payload"]["context_profile_id"]["sha256"]
-    assert "student_name" not in mismatch[-1]["payload"]
+    assert all(frame["profile_id"] == "p1" for frame in frames)
+    assert repository.get("sess_context_selected_profile").profile_id == "p1"
 
 
 def test_manual_expert_is_bound_to_chat_and_persists_on_profile_branch(monkeypatch) -> None:
@@ -472,6 +620,22 @@ def test_manual_expert_is_bound_to_chat_and_persists_on_profile_branch(monkeypat
     )
     assert client.post("/api/v2/sessions/chat/stream", json=follow_up).status_code == 200
     assert repository.get(session_id).session_meta["active_expert_id"] == "family_education_expert"
+
+
+def test_plain_chat_does_not_implicitly_activate_an_expert_or_team(api_client) -> None:
+    client, repository = api_client
+
+    response = client.post(
+        "/api/v2/sessions/chat/stream",
+        json=_api_payload(session_id="sess_plain_chat", run_id="plain_chat_1"),
+    )
+
+    assert response.status_code == 200
+    context = repository.get("sess_plain_chat")
+    assert "expert_team_id" not in context.session_meta
+    assert "expert_id" not in context.session_meta
+    assert "active_expert_id" not in context.session_meta
+    assert context.interaction_state["active_skill"] == "general_chat"
 
 
 def test_chat_stream_api_validates_input_contract(api_client) -> None:

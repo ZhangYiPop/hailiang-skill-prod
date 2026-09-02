@@ -50,6 +50,16 @@ import type {
   SseV2State,
 } from "@/types/streamEvents";
 
+function workbenchDebugSessionId(): string | undefined {
+  const value = new URLSearchParams(window.location.search).get("workbench_debug_session_id")?.trim();
+  return value || undefined;
+}
+
+function workbenchChatSessionId(fallback: string): string {
+  const debugSessionId = workbenchDebugSessionId();
+  return debugSessionId ? `workbench_${debugSessionId}` : fallback;
+}
+
 const supersededStreamControllers = new WeakSet<AbortController>();
 
 function makeMessageId(role: "user" | "assistant" | "session" | "run" | "profile"): string {
@@ -336,11 +346,14 @@ type ApplyDebugIdentityOptions = {
   refreshProfileWorkspace?: boolean;
 };
 
-function buildContextData(identity: DebugIdentity): Record<string, string> {
+function buildContextData(identity: DebugIdentity, profileId: string): Record<string, string> {
+  if (!profileId) {
+    return { user_id: identity.user_id };
+  }
   return {
     student_name: identity.display_name,
     user_id: identity.user_id,
-    profile_id: identity.profile_id,
+    profile_id: profileId,
     ...(identity.school_year ? { school_year: identity.school_year } : {}),
     ...(identity.grade ? { grade: identity.grade } : {}),
   };
@@ -374,9 +387,10 @@ export function useChatActions() {
       await postSseStream({
         url: `${state.apiBaseUrl}/api/v2/sessions/chat/stream`,
         body: {
-          session_id: state.sessionId,
+          session_id: workbenchChatSessionId(state.sessionId),
           run_id: runId,
           input: JSON.stringify({ action: "stop", source: "composer" }),
+          debug_session_id: workbenchDebugSessionId(),
         },
         onEvent: (event) => {
           if (event.event !== "state") {
@@ -807,10 +821,25 @@ export function useChatActions() {
 
   const selectProfile = useCallback(
     async (profileId: string) => {
+      const state = useChatStore.getState();
       if (!profileId) {
+        // The absence of a child is an explicit context selection, not an
+        // incomplete profile selection.  Never leave the previous child as
+        // a fallback for the next send.
+        store.setSelectedProfileId("");
+        store.setActiveProfileId("");
+        store.setActiveProfileName("");
+        const identity = state.debugIdentity;
+        if (identity) {
+          store.setDebugIdentity({
+            ...identity,
+            profile_id: "",
+            school_year: "",
+            grade: "",
+          });
+        }
         return;
       }
-      const state = useChatStore.getState();
       const profile = state.profiles.find((item) => item.profile_id === profileId);
       // Selection is a browser-side intent. The session changes only when the
       // next profile-bound SSE action is accepted by the server.
@@ -897,8 +926,8 @@ export function useChatActions() {
 
   const handleCreateSession = useCallback(async () => {
     const state = useChatStore.getState();
-    if (!state.userId || !(state.selectedProfileId || state.activeProfileId)) {
-      throw new Error("请先选择孩子档案");
+    if (!state.userId) {
+      throw new Error("请先设置测试用户");
     }
     store.setCreatingSession(true);
     store.setErrorMessage("");
@@ -937,11 +966,11 @@ export function useChatActions() {
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
       const state = useChatStore.getState();
-      if (!state.userId || !state.activeProfileId) {
-        throw new Error("请先选择孩子档案");
+      if (!state.userId) {
+        throw new Error("请先设置测试用户");
       }
       try {
-        await deleteSession(store.apiBaseUrl, sessionId, state.userId, state.activeProfileId);
+        await deleteSession(store.apiBaseUrl, sessionId, state.userId, state.activeProfileId || undefined);
         const remaining = useChatStore.getState().sessionList.filter((item) => item.session_id !== sessionId);
         store.setSessionList(remaining);
         if (useChatStore.getState().sessionId !== sessionId) {
@@ -992,10 +1021,9 @@ export function useChatActions() {
 
       const requestState = useChatStore.getState();
       const targetProfileId = requestState.selectedProfileId || requestState.activeProfileId;
-      if (!targetProfileId) {
-        throw new Error("请先选择孩子档案");
-      }
+      const contextScope = targetProfileId ? "profile" : "unbound";
       const requestedExpertId = requestState.pendingExpertId.trim();
+      const requestedExpertTeamId = requestState.pendingExpertTeamId.trim();
 
       const trimmed = content.trim();
       if (!trimmed) {
@@ -1099,8 +1127,7 @@ export function useChatActions() {
             : trimmed;
           const targetProfile = useChatStore.getState().profiles.find((item) => item.profile_id === targetProfileId);
           store.appendMessage(makeMessage("user", visibleUserContent, [], {
-            profileId: targetProfileId,
-            profileName: targetProfile?.name,
+            ...(targetProfileId ? { profileId: targetProfileId, profileName: targetProfile?.name } : {}),
           }));
           assistantMessageId = store.createAssistantPlaceholder();
           store.setComposerValue("");
@@ -1146,10 +1173,14 @@ export function useChatActions() {
         if (!identity) {
           throw new Error("缺少本地调试身份");
         }
+        const contextInput = {
+          context_scope: contextScope,
+          ...(targetProfileId ? { profile_id: targetProfileId } : {}),
+        };
         const input = options.transition
           ? {
               action: options.transition.action === "enter" ? "enter_skill" : "quit_skill",
-              profile_id: targetProfileId,
+              ...contextInput,
               target_skill_id: options.transition.targetSkillId ?? useChatStore.getState().activeSkill ?? "career_plan_entity",
               source: options.transition.source,
               source_message_id: options.transition.sourceMessageId,
@@ -1160,7 +1191,7 @@ export function useChatActions() {
           : options.teamHandoff
             ? {
                 action: "confirm_team_handoff",
-                profile_id: targetProfileId,
+                ...contextInput,
                 source_message_id: options.teamHandoff.sourceMessageId,
                 target_expert_id: options.teamHandoff.targetExpertId,
                 source: "team_handoff",
@@ -1170,7 +1201,7 @@ export function useChatActions() {
             : options.teamMemberSwitch
               ? {
                   action: "switch_team_member",
-                  profile_id: targetProfileId,
+                  ...contextInput,
                   source: "toolbar",
                   target_expert_id: options.teamMemberSwitch.targetExpertId,
                   content: trimmed,
@@ -1179,8 +1210,12 @@ export function useChatActions() {
                 }
             : {
                 action: "chat",
-                profile_id: targetProfileId,
-                ...(requestedExpertId ? { expert_id: requestedExpertId } : {}),
+                ...contextInput,
+                ...(requestedExpertTeamId
+                  ? { expert_team_id: requestedExpertTeamId }
+                  : requestedExpertId
+                    ? { expert_id: requestedExpertId }
+                    : {}),
                 content: trimmed,
                 source: "chat",
                 enable_thinking: thinkingEnabledForTurn,
@@ -1191,16 +1226,11 @@ export function useChatActions() {
         await postSseStream({
             url: `${store.apiBaseUrl}/api/v2/sessions/chat/stream`,
             body: {
-              session_id: store.sessionId,
+              session_id: workbenchChatSessionId(store.sessionId),
               run_id: runId,
               input: JSON.stringify(input),
-              context_data: buildContextData({
-                ...identity,
-                profile_id: targetProfileId,
-                display_name:
-                  useChatStore.getState().profiles.find((item) => item.profile_id === targetProfileId)?.name
-                  ?? identity.display_name,
-              }),
+              debug_session_id: workbenchDebugSessionId(),
+              context_data: buildContextData(identity, targetProfileId),
             },
             signal: abortController.signal,
             onEvent: (event: StreamEvent) => {
@@ -1209,30 +1239,30 @@ export function useChatActions() {
                 if (state.run_id !== runId || state.seq <= latestStateSeq) {
                   return;
                 }
-                if (state.profile_id && state.profile_id !== targetProfileId) {
+                if (state.context_scope !== contextScope || (state.profile_id ?? "") !== targetProfileId) {
                   return;
                 }
-                const knownBranchVersion = state.profile_id
-                  ? useChatStore.getState().profileBranches[state.profile_id]?.branchVersion ?? 0
-                  : 0;
+                const branchKey = state.profile_id || "__unbound__";
+                const knownBranchVersion = useChatStore.getState().profileBranches[branchKey]?.branchVersion ?? 0;
                 if (state.branch_version && state.branch_version < knownBranchVersion) {
                   return;
                 }
                 latestStateSeq = state.seq;
                 store.setCurrentRunId(state.run_id);
-                profileSwitchedDuringRun ||= state.profile_switched;
-                if (state.profile_id) {
-                  store.setActiveProfileId(state.profile_id);
-                  store.setSelectedProfileId(state.profile_id);
-                  store.setActiveProfileName(state.profile_name ?? "");
-                  store.setProfileBranch(state.profile_id, {
-                    activeExpertId: state.expert.active.expert_id ?? "",
-                    activeSkill: state.session.active_skill.skill_id ?? "",
-                    branchVersion: state.branch_version,
-                  });
-                  if (requestedExpertId) {
-                    store.setPendingExpertId("");
-                  }
+                profileSwitchedDuringRun ||= state.context_switched || state.profile_switched;
+                store.setActiveProfileId(state.profile_id ?? "");
+                store.setSelectedProfileId(state.profile_id ?? "");
+                store.setActiveProfileName(state.profile_name ?? "");
+                store.setProfileBranch(branchKey, {
+                  activeExpertId: state.expert.active.expert_id ?? "",
+                  activeSkill: state.session.active_skill.skill_id ?? "",
+                  branchVersion: state.branch_version,
+                });
+                if (requestedExpertId) {
+                  store.setPendingExpertId("");
+                }
+                if (requestedExpertTeamId) {
+                  store.setPendingExpertTeamId("");
                 }
                 if (pendingStopStreamRef.current === abortController && abortController) {
                   void cancelStreamRun(abortController, state.run_id);
@@ -1280,6 +1310,8 @@ export function useChatActions() {
                 store.updateMessage(assistantMessageId, (message) => ({
                   ...message,
                   messageId: state.message_id ?? message.messageId,
+                  profileId: state.profile_id ?? undefined,
+                  profileName: state.profile_name ?? undefined,
                   content: state.assistant.content,
                   presentation: presentationFromState(state),
                   teamHandoff:
@@ -1730,6 +1762,7 @@ export function useChatActions() {
       }
       // Selection is only a client-side intent. The next chat request carries
       // input.expert_id and atomically activates the expert with that message.
+      store.setPendingExpertTeamId("");
       store.setPendingExpertId(normalizedExpertId);
     },
     [store],
@@ -1751,9 +1784,11 @@ export function useChatActions() {
       if (normalizedTeamId && !team) {
         throw new Error("专家团不存在或当前不可用");
       }
-      // The configured default team is branch state. Selecting it merely
-      // chooses its coordinator for the next chat; no hidden mutation API.
-      store.setPendingExpertId(team?.coordinator_expert_id ?? "");
+      // Team selection must be sent as ``expert_team_id``. Sending just the
+      // coordinator id would silently start a direct-expert conversation and
+      // prevent the runtime from offering team-member handoff cards.
+      store.setPendingExpertId("");
+      store.setPendingExpertTeamId(team?.team_id ?? "");
     },
     [store],
   );

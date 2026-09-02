@@ -26,9 +26,9 @@ class ContextData(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow")
-    student_name: str = Field(min_length=1)
+    student_name: str | None = Field(default=None, min_length=1)
     user_id: str = Field(min_length=1)
-    profile_id: str = Field(min_length=1)
+    profile_id: str | None = Field(default=None, min_length=1)
     school_year: str | None = Field(default=None, min_length=1)
     grade: str | None = Field(default=None, min_length=1)
     facts: dict[str, object] = Field(default_factory=dict)
@@ -65,7 +65,7 @@ def _seed_profile(
             profile = fact_service.profile_repo.create_profile(
                 data.user_id,
                 profile_id=target_profile_id,
-                name=data.student_name if allow_context_seed else "",
+                name=str(data.student_name or "") if allow_context_seed else "",
                 shared_facts_initialized=False,
             )
             profile_created = True
@@ -79,12 +79,12 @@ def _seed_profile(
             except KeyError as conflict:
                 raise HTTPException(status_code=409, detail="PROFILE_ID_CONFLICT") from conflict
 
-    if allow_context_seed and str(profile.get("name") or "") != data.student_name:
+    if allow_context_seed and str(profile.get("name") or "") != str(data.student_name or ""):
         try:
             profile = fact_service.profile_repo.update_profile(
                 data.user_id,
                 target_profile_id,
-                name=data.student_name,
+                name=str(data.student_name or ""),
             )
         except KeyError:
             # Shared profiles can be owned by another guardian. The trusted
@@ -106,7 +106,7 @@ def _seed_profile(
     fact_service.profile_repo.save_profile_facts(data.user_id, target_profile_id, profile_facts)
     if not allow_context_seed and profile_created:
         return None
-    return str(profile.get("name") or (data.student_name if allow_context_seed else "")) or None
+    return str(profile.get("name") or (str(data.student_name or "") if allow_context_seed else "")) or None
 
 
 def _context_fact_values(data: ContextData) -> dict[str, object]:
@@ -153,6 +153,7 @@ def open_or_resume_session(
     data: ContextData,
     target_profile_id: str | None = None,
     allow_context_seed: bool = True,
+    context_scope: str = "profile",
 ) -> tuple[SessionContext, bool]:
     """Return ``(context, created)`` without generating an opening message."""
     try:
@@ -160,7 +161,11 @@ def open_or_resume_session(
     except KeyError:
         context = None
 
-    target_profile_id = str(target_profile_id or data.profile_id).strip()
+    if context_scope not in {"profile", "unbound"}:
+        raise HTTPException(status_code=422, detail="INVALID_CONTEXT_SCOPE")
+    target_profile_id = str(target_profile_id or data.profile_id or "").strip()
+    if context_scope == "profile" and not target_profile_id:
+        raise HTTPException(status_code=422, detail="PROFILE_ID_REQUIRED")
     if context is not None:
         if context.user_id != data.user_id:
             raise HTTPException(status_code=409, detail="SESSION_ID_CONFLICT")
@@ -169,19 +174,29 @@ def open_or_resume_session(
         context.session_meta["_profile_branch_created"] = False
         previous_profile_id = str(context.profile_id or "")
         previous_profile_name = context.profile_name
-        profile_name = _seed_profile(
-            fact_service,
-            data,
-            profile_id=target_profile_id,
-            allow_context_seed=allow_context_seed,
-        )
+        profile_name = None
+        if context_scope == "profile":
+            profile_name = _seed_profile(
+                fact_service,
+                data,
+                profile_id=target_profile_id,
+                allow_context_seed=allow_context_seed,
+            )
         branch_created = False
-        if previous_profile_id != target_profile_id:
+        if context_scope == "unbound":
+            if previous_profile_id:
+                branch_created = context.activate_unbound_branch()
+                context.append_context_switch(
+                    from_profile_id=previous_profile_id,
+                    from_profile_name=previous_profile_name,
+                )
+                context.session_meta["_profile_switched"] = True
+        elif previous_profile_id != target_profile_id:
             branch_created = context.activate_profile_branch(
                 target_profile_id,
                 profile_name=profile_name,
             )
-            context.append_profile_switch(
+            context.append_context_switch(
                 from_profile_id=previous_profile_id,
                 from_profile_name=previous_profile_name,
             )
@@ -191,7 +206,7 @@ def open_or_resume_session(
         fact_service.hydrate_context(context)
         # Matched forwarding data is the application-side base projection and
         # refreshes on every request. A mismatch never reaches this writer.
-        if allow_context_seed:
+        if context_scope == "profile" and allow_context_seed:
             _seed_context_facts(fact_service, context, data)
         if branch_created:
             _initialize_general_chat_state(context)
@@ -201,16 +216,18 @@ def open_or_resume_session(
             repository.save(context)
         return context, False
 
-    profile_name = _seed_profile(
-        fact_service,
-        data,
-        profile_id=target_profile_id,
-        allow_context_seed=allow_context_seed,
-    )
+    profile_name = None
+    if context_scope == "profile":
+        profile_name = _seed_profile(
+            fact_service,
+            data,
+            profile_id=target_profile_id,
+            allow_context_seed=allow_context_seed,
+        )
     context = SessionContext(
         session_id=session_id,
         user_id=data.user_id,
-        profile_id=target_profile_id,
+        profile_id=target_profile_id or None,
         profile_name=profile_name,
     )
     fact_service.hydrate_context(context)

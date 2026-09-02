@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from hailiang_skills.core.context import SessionContext
+from hailiang_skills.core.context import SessionContext, UNBOUND_CONTEXT_BRANCH_ID
 from hailiang_skills.core.fact_service import FactService, serialize_known_facts
 from hailiang_skills.core.fact_prompt_builder import build_missing_fact_form_block
 from hailiang_skills.core.skill_display import build_skill_display
@@ -113,7 +113,7 @@ class CreateSessionResponse(BaseModel):
     session_id: str
     user_id: str
     user_display_name: str = ""
-    profile_id: str
+    profile_id: str | None
     title: str | None = None
     # Kept as a nullable compatibility field. Opening copy is now owned by
     # the frontend and is never generated or persisted by this service.
@@ -181,34 +181,42 @@ def build_chat_router(
         return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
     def public_messages(context: SessionContext) -> list[dict[str, Any]]:
-        """Expose the active child's history in the v2 presentation shape.
-
-        ``timeline_items`` is deliberately cross-profile and append-only for
-        audit/navigation.  It must not be used as a chat branch's visible
-        history: doing so makes messages from another child appear after a
-        branch switch.  ``context.messages`` is restored by
-        ``activate_profile_branch`` and is therefore the authoritative,
-        profile-isolated history for this endpoint.
-        """
-        timeline = [
-            {
-                "item_type": "message",
-                "profile_id": context.profile_id,
-                "profile_name": context.profile_name,
-                "message": message,
-            }
-            for message in context.messages
-        ]
+        """Return the complete display timeline; runtime history stays branch-local."""
+        timeline = [dict(item) for item in context.timeline_items if isinstance(item, dict)]
         latest_assistant_id = next(
             (
                 str((item.get("message") or {}).get("message_id") or "")
                 for item in reversed(timeline)
                 if item.get("item_type") == "message" and (item.get("message") or {}).get("role") == "assistant"
+                and (item.get("profile_id") or None) == context.profile_id
             ),
             "",
         )
         items: list[dict[str, Any]] = []
         for item in timeline:
+            if item.get("item_type") == "profile_switch":
+                from_name = str(item.get("from_profile_name") or "未绑定孩子")
+                to_name = str(item.get("to_profile_name") or "未绑定孩子")
+                items.append({
+                    "message_id": str(item.get("item_id") or ""),
+                    "role": "assistant",
+                    "content": f"已从 {from_name} 切换到 {to_name}",
+                    "created_at": item.get("created_at"),
+                    "message_type": "profile_switch",
+                    "metadata": {
+                        "message_id": str(item.get("item_id") or ""),
+                        "profile_id": item.get("profile_id"),
+                        "profile_name": item.get("profile_name"),
+                        "context_scope": item.get("context_scope") or ("profile" if item.get("profile_id") else "unbound"),
+                        "from_profile_id": item.get("from_profile_id"),
+                        "from_profile_name": item.get("from_profile_name"),
+                        "to_profile_id": item.get("to_profile_id"),
+                        "to_profile_name": item.get("to_profile_name"),
+                    },
+                })
+                continue
+            if item.get("item_type") != "message":
+                continue
             message = item.get("message") if isinstance(item.get("message"), dict) else None
             if message is None:
                 continue
@@ -216,6 +224,7 @@ def build_chat_router(
             metadata = dict(copy.get("metadata") or {})
             metadata.setdefault("profile_id", item.get("profile_id"))
             metadata.setdefault("profile_name", item.get("profile_name"))
+            metadata.setdefault("context_scope", "profile" if item.get("profile_id") else "unbound")
             copy["metadata"] = metadata
             if copy.get("role") == "assistant":
                 copy["presentation"] = presentation_from_message(
@@ -235,7 +244,8 @@ def build_chat_router(
                     "user_id": context.user_id,
                     "profile_id": context.profile_id,
                     "profile_name": context.profile_name,
-                    "participant_profile_ids": sorted(context.profile_branches),
+                    "participant_profile_ids": sorted(key for key in context.profile_branches if key != UNBOUND_CONTEXT_BRANCH_ID),
+                    "has_unbound_context": UNBOUND_CONTEXT_BRANCH_ID in context.profile_branches,
                     "title": context.title,
                     "message_count": sum(
                         1 for item in context.timeline_items if item.get("item_type") == "message"
@@ -275,7 +285,7 @@ def build_chat_router(
             session_id=context.session_id,
             user_id=context.user_id,
             user_display_name=str(user_metadata.get("display_name") or ""),
-            profile_id=str(context.profile_id or ""),
+            profile_id=context.profile_id,
             title=context.title,
             recent_session_summary=recent_session_summary,
             message_id=_latest_assistant_message_id(context),
@@ -553,6 +563,8 @@ def build_chat_router(
             "effective_facts": serialize_known_facts(context.known_facts),
             "profile_id": context.profile_id,
             "profile_name": context.profile_name,
+            "context_scope": context.context_scope,
+            "context_label": context.context_label,
             "router_state": context.skill_states.get("router", {}),
             "facts_extractor_state": context.skill_states.get("facts_extractor", {}),
             "planner_state": context.skill_states.get("planner", {}),
@@ -576,6 +588,8 @@ def build_chat_router(
             "user_display_name": str((user_metadata_repository.get(context.user_id) if user_metadata_repository else {}).get("display_name") or ""),
             "profile_id": context.profile_id,
             "profile_name": context.profile_name,
+            "context_scope": context.context_scope,
+            "context_label": context.context_label,
             "title": context.title,
             "session_log_dir": str(get_session_log_dir(context.session_id)),
             "facts": {key: record.model_dump() for key, record in context.known_facts.facts.items()},
@@ -587,7 +601,8 @@ def build_chat_router(
             "candidate_paths": context.candidate_paths,
             "message_count": len(context.messages),
             "timeline_message_count": sum(1 for item in context.timeline_items if item.get("item_type") == "message"),
-            "participant_profile_ids": sorted(context.profile_branches),
+            "participant_profile_ids": sorted(key for key in context.profile_branches if key != UNBOUND_CONTEXT_BRANCH_ID),
+            "has_unbound_context": UNBOUND_CONTEXT_BRANCH_ID in context.profile_branches,
             "conversation_state": get_conversation_state(context),
             "profile_school_facts": profile_school_facts(context),
             "skill_states": context.skill_states,
@@ -719,10 +734,13 @@ def build_chat_router(
             "user_display_name": str((user_metadata_repository.get(context.user_id) if user_metadata_repository else {}).get("display_name") or ""),
             "profile_id": context.profile_id,
             "profile_name": context.profile_name,
+            "context_scope": context.context_scope,
+            "context_label": context.context_label,
             "title": context.title,
             "messages": public_messages(context),
             "timeline_items": context.timeline_items,
-            "participant_profile_ids": sorted(context.profile_branches),
+            "participant_profile_ids": sorted(key for key in context.profile_branches if key != UNBOUND_CONTEXT_BRANCH_ID),
+            "has_unbound_context": UNBOUND_CONTEXT_BRANCH_ID in context.profile_branches,
             "user_facts": serialize_known_facts(context.user_facts),
             "shared_facts": serialize_known_facts(context.shared_facts),
             "profile_facts": serialize_known_facts(context.profile_facts),
@@ -772,7 +790,7 @@ def build_chat_router(
         }
 
     @router.delete("/sessions/{session_id}")
-    def delete_session(session_id: str, user_id: str = Query(min_length=1), profile_id: str = Query(min_length=1)) -> dict:
+    def delete_session(session_id: str, user_id: str = Query(min_length=1), profile_id: str | None = Query(default=None)) -> dict:
         try:
             repository.delete(session_id, user_id=user_id, profile_id=profile_id)
         except KeyError as exc:

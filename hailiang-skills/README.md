@@ -9,10 +9,13 @@
 - [Skill Runtime 融合架构与新增场景接入手册](docs/architecture/skill_runtime_integration.md)
 - [Skill 标准与渐进式 Prompt 约定](docs/architecture/skill_standard.md)
 - [对话 SSE 完整数据流](docs/architecture/conversation_sse_dataflow.md)
+- [SSE v2 前端与转发后端联调指南](guides/SSE_V2_INTEGRATION_GUIDE.md)
+- [SSE v2 专家团对话接入说明](guides/SSE_V2_EXPERT_TEAM_INTEGRATION_GUIDE.md)
 - [API 文档](guides/API_DOCUMENTATION.md)
 - [前端交互与渲染清单](guides/FRONTEND_INTERACTION_CHECKLIST.md)
 - [SSE 前端联调示例](guides/SSE_FRONTEND_MOCK_EXAMPLES.md)
 - [算法后端整体架构](docs/architecture/ALGORITHM_BACKEND_ARCHITECTURE.md)
+- [AI 业务调试台架构与运行手册](docs/architecture/business_workbench.md)
 
 其中对话链路、SSE 协议、事件顺序、表单/按钮/转场/取消/风控等完整说明，统一以 `docs/architecture/conversation_sse_dataflow.md` 为准。
 前端如果需要直接做 parser、状态机和 UI mock，优先参考 `guides/SSE_FRONTEND_MOCK_EXAMPLES.md`。
@@ -23,7 +26,8 @@
 - [SSE 前端联调示例](guides/SSE_FRONTEND_MOCK_EXAMPLES.md)
 - [SSE v2 前端对齐协议](guides/SSE_RESPONSE_CONTRACT.md)
 
-前端或 BFF 做接口联调时，建议优先看这三份文档，而不是只看单个 mock 片段。
+前端或 BFF 做接口联调时，优先从 [SSE v2 前端与转发后端联调指南](guides/SSE_V2_INTEGRATION_GUIDE.md)
+开始，再按需要查字段协议、API 文档和 Mock 示例。
 
 如果前端需要基于后端真实出流做联调，可以在 `config/runtime.yml` 中打开：
 
@@ -180,7 +184,7 @@ routing:
 
 ```text
 用户消息
-  -> FastAPI /api/v1/sessions/chat/stream（单一会话流入口）
+  -> FastAPI /api/v2/sessions/chat/stream（SSE v2 单一会话流入口）
   -> MainPlannerOrchestrator
   -> 恢复 / 构造 skill-runtime SessionState
   -> 同步 hailiang effective_facts 到 runtime global_facts

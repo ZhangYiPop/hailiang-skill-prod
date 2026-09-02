@@ -115,3 +115,26 @@ def test_internal_model_question_is_refused_without_calling_model(client, monkey
     payload = response.json()
     assert payload["content"] == external_chat.INTERNAL_INFO_REFUSAL
     assert payload["status"] == "success"
+
+
+def test_external_blocked_stream_is_business_success_with_clear_reason():
+    raw = list(
+        external_chat._external_events(
+            iter(
+                [
+                    'event: state\ndata: '
+                    + json.dumps({"assistant": {"content": ""}, "status": "blocked"})
+                    + "\n\n",
+                    'event: state\ndata: '
+                    + json.dumps({"status": "blocked"})
+                    + "\n\n",
+                ]
+            ),
+            session_id="sess_external_test",
+            request_id="req_test",
+        )
+    )
+    payload = json.loads(raw[-1].removeprefix("data: ").strip())
+    assert payload["status"] == "success"
+    assert payload["reason"] == external_chat.CONTENT_BLOCKED_REASON
+    assert payload["content"] == ""

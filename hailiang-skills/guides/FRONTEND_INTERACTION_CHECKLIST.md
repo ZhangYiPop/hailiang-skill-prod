@@ -1,13 +1,14 @@
 # 前端 SSE v2 交互清单
 
-前端聊天、进入/退出 Skill 和停止都只请求 `POST /api/v1/sessions/chat/stream`。
+前端聊天、进入/退出 Skill 和停止都只请求 `POST /api/v2/sessions/chat/stream`。
 本地调试身份与项目后端转发端使用同一请求契约；生产环境由 BFF 注入真实学生身份。
 
-字段定义、空结构、生命周期、表单和错误码以 [SSE_RESPONSE_CONTRACT.md](SSE_RESPONSE_CONTRACT.md)
+完整联调顺序见 [SSE_V2_INTEGRATION_GUIDE.md](SSE_V2_INTEGRATION_GUIDE.md)；字段定义、空结构、生命周期、表单和错误码以 [SSE_RESPONSE_CONTRACT.md](SSE_RESPONSE_CONTRACT.md)
 为唯一权威；本清单只保留接入与验收动作。
 
 ## 请求
 
+- 所有非停止动作：必须携带 `input.profile_id`，正常情况下与 `context_data.profile_id` 一致
 - 普通消息：`input.action=chat`、`source=chat`
 - 工具栏进入：`enter_skill`、`source=toolbar`
 - 推荐卡片进入：`enter_skill`、`source=route_suggestion`，带推荐卡片的 `source_message_id` 与 `source_interaction_id`

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, SecretStr
 
-from hailiang_skills.runtime_bridge.expert_bundle import ExpertDefinition, ExpertRegistry
-from hailiang_skills.runtime_bridge.expert_team_bundle import ExpertTeamDefinition, ExpertTeamRegistry
+from hailiang_skills.runtime_bridge.expert_bundle import ExpertDefinition, ExpertRegistry, LockedSkill
+from hailiang_skills.runtime_bridge.expert_team_bundle import ExpertTeamDefinition, ExpertTeamMember, ExpertTeamRegistry
 from hailiang_skills.runtime_bridge.expert_models import ExpertMember, SkillObservation
 from hailiang_skills.runtime_bridge.native_skill_executor import NativeSkillExecutor
 
@@ -83,7 +84,7 @@ class AgentScopeExpertRuntime:
         # absence of a selection we retain the existing career expert as the
         # compatible default.  The registry is still the authority here: an
         # arbitrary ID cannot manufacture a new expert or expand its skills.
-        team = self._current_team(context)
+        team = self._configured_team(context, self._current_team(context))
         user_message = self._apply_structured_team_switch(context, team, user_message)
         requested_expert_id = str(
             getattr(context, "session_meta", {}).get("active_expert_id")
@@ -94,7 +95,10 @@ class AgentScopeExpertRuntime:
             requested_expert_id = team.coordinator_expert_id
             context.session_meta["active_expert_id"] = requested_expert_id
             context.session_meta["expert_id"] = requested_expert_id
-        definition = self.expert_registry.require(requested_expert_id)
+        base_definition = self.expert_registry.get(requested_expert_id) or self._expert_from_snapshot(context, requested_expert_id)
+        if base_definition is None:
+            raise ValueError(f"专家不存在: {requested_expert_id}")
+        definition = self._configured_expert(context, base_definition)
         if not self._available:
             # The legacy planner is deliberately not an automatic fallback for
             # a missing AgentScope dependency. Readiness is false as well, so
@@ -125,7 +129,15 @@ class AgentScopeExpertRuntime:
         client = self.client_factory(context) if self.client_factory else None
         if self._is_supported_client(client) and self._available:
             try:
-                self._run_agent(definition, user_message, context, client, state, team=team)
+                self._run_agent(
+                    definition,
+                    user_message,
+                    context,
+                    client,
+                    state,
+                    team=team,
+                    routing_instruction=self._active_skill_routing_instruction(context, definition),
+                )
             except Exception as exc:
                 # Do not silently use the old orchestrator as the operational
                 # fallback. Keep the existing native route as the controlled
@@ -188,7 +200,188 @@ class AgentScopeExpertRuntime:
         self._event(context, "expert_completed", {"expert_id": definition.agent_id, "active_skill_id": state["last_result"]["active_skill_id"]})
         return result
 
-    def _run_agent(self, definition: ExpertDefinition, user_message: str, context, client, state: dict[str, Any], *, team: ExpertTeamDefinition | None = None) -> None:
+    def select_candidate_skill_switch(self, user_message: str, context, *, current_skill_id: str) -> str | None:
+        """Ask the active Expert whether a candidate conversation changed task.
+
+        This is deliberately a routing-only pass: it exposes only the
+        Expert's already-authorized ``execute_skill`` tool and discards any
+        natural-language answer.  Returning ``None`` means the current Skill
+        continues untouched.  It is used by the workbench candidate runtime,
+        where a direct Skill continuation would otherwise hide a semantic
+        change from the Expert indefinitely.
+        """
+        team = self._configured_team(context, self._current_team(context))
+        expert_id = str(
+            getattr(context, "session_meta", {}).get("active_expert_id")
+            or getattr(context, "session_meta", {}).get("expert_id")
+            or (team.coordinator_expert_id if team else self.default_expert_id)
+        ).strip()
+        if team is not None and expert_id not in team.member_expert_ids:
+            expert_id = team.coordinator_expert_id
+        base_definition = self.expert_registry.get(expert_id) or self._expert_from_snapshot(context, expert_id)
+        if base_definition is None or not self._available:
+            return None
+        definition = self._configured_expert(context, base_definition)
+        client = self.client_factory(context) if self.client_factory else None
+        if not self._is_supported_client(client):
+            return None
+        state = {
+            "turn_id": f"candidate_route_probe_{uuid4().hex[:12]}",
+            "budget": {
+                "max_iters": min(definition.max_iters, 3),
+                "max_skill_calls": 1,
+                "skill_calls": 0,
+            },
+            "pending_form": None,
+            "call_trace": [],
+            "handoff_summary": "",
+        }
+        context.session_meta.pop("expert_requested_skill_id", None)
+        instruction = (
+            "\n# 候选测试中的续聊路由判断\n"
+            f"当前正在执行 Skill：{current_skill_id}。本轮只判断用户是否已切换到另一个业务任务。"
+            "只有当新任务明显不属于当前 Skill、且另一个授权 Skill 更匹配时，才调用 execute_skill。"
+            "若仍在当前任务内（包括题目答案、追问、补充信息），不要调用任何工具，也不要给用户回答。"
+        )
+        try:
+            self._run_agent(definition, user_message, context, client, state, team=team, routing_instruction=instruction)
+        except Exception as exc:
+            self._event(context, "candidate_skill_redispatch_deferred", {"expert_id": definition.agent_id, "error": str(exc)})
+            return None
+        selected = str(context.session_meta.pop("expert_requested_skill_id", "") or "")
+        if selected and selected != current_skill_id and selected in definition.authorized_skill_ids:
+            self._event(
+                context,
+                "candidate_skill_semantic_redispatch_selected",
+                {"expert_id": definition.agent_id, "from_skill_id": current_skill_id, "to_skill_id": selected},
+            )
+            return selected
+        return None
+
+    @staticmethod
+    def _active_skill_id(context) -> str:
+        interaction = getattr(context, "interaction_state", {}) or {}
+        active = str(interaction.get("active_skill") or "") if isinstance(interaction, dict) else ""
+        if active:
+            return active
+        runtime = getattr(context, "skill_states", {}).get("skill_runtime", {})
+        return str(runtime.get("active_skill_id") or "") if isinstance(runtime, dict) else ""
+
+    def _active_skill_routing_instruction(self, context, definition: ExpertDefinition) -> str:
+        """Shared production/candidate policy for an Expert's Skill handoff."""
+        active_skill_id = self._active_skill_id(context)
+        if not active_skill_id or active_skill_id not in definition.authorized_skill_ids:
+            return ""
+        return (
+            "\n# 当前会话的 Skill 路由规则\n"
+            f"当前正在执行的已授权 Skill 是：{active_skill_id}。先判断用户本轮消息的业务意图。"
+            "如果仍是当前任务的答题、追问或补充信息，调用 execute_skill 并传入当前 Skill。"
+            "如果用户的新任务明显更匹配另一个授权 Skill，调用 execute_skill 并传入那个 Skill，"
+            "以便系统自动切换后由目标 Skill 作答。不得要求用户点击按钮，也不得自行用通用文本替代目标 Skill。"
+            "只能从上方授权 Skill 目录中选择；若没有匹配的授权 Skill，说明边界并请用户调整问题。"
+        )
+
+    @staticmethod
+    def _snapshot_entry(context, object_type: str, object_key: str) -> dict[str, Any] | None:
+        snapshot = (getattr(context, "session_meta", {}) or {}).get("configuration_snapshot")
+        entries = snapshot.get("entries", []) if isinstance(snapshot, dict) else []
+        return next(
+            (
+                item for item in entries
+                if isinstance(item, dict)
+                and item.get("object_type") == object_type
+                and str(item.get("object_key") or "") == object_key
+                and isinstance(item.get("payload"), dict)
+            ),
+            None,
+        )
+
+    def _configured_expert(self, context, definition: ExpertDefinition) -> ExpertDefinition:
+        entry = self._snapshot_entry(context, "expert", definition.agent_id)
+        if entry is None:
+            return definition
+        payload = entry["payload"]
+        locks = tuple(
+            LockedSkill(str(item.get("object_key") or ""), f"v{int(item.get('release_no') or 0)}")
+            for item in entry.get("dependency_locks", [])
+            if str(item.get("object_key") or "")
+        )
+        budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
+        capabilities = tuple(str(item) for item in payload.get("capabilities", []) if str(item))
+        return replace(
+            definition,
+            rules_markdown=str(payload.get("rules_markdown") or definition.rules_markdown),
+            skills=locks or definition.skills,
+            max_iters=max(1, min(int(budget.get("max_iters", definition.max_iters)), 4)),
+            max_skill_calls=max(1, min(int(budget.get("max_skill_calls", definition.max_skill_calls)), 3)),
+            capabilities=capabilities or definition.capabilities,
+        )
+
+    def _expert_from_snapshot(self, context, expert_id: str) -> ExpertDefinition | None:
+        entry = self._snapshot_entry(context, "expert", expert_id)
+        if entry is None:
+            return None
+        payload = entry["payload"]
+        budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
+        locks = tuple(
+            LockedSkill(str(item.get("object_key") or ""), f"v{int(item.get('release_no') or 0)}")
+            for item in entry.get("dependency_locks", [])
+            if str(item.get("object_key") or "")
+        )
+        return ExpertDefinition(
+            agent_id=expert_id,
+            name=str(entry.get("name") or expert_id),
+            rules_markdown=str(payload.get("rules_markdown") or ""),
+            skills=locks,
+            max_iters=max(1, min(int(budget.get("max_iters", 4)), 4)),
+            max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 3)),
+            capabilities=tuple(str(item) for item in payload.get("capabilities", []) if str(item)) or (
+                "execute_skill", "request_declared_form", "read_effective_facts",
+            ),
+        )
+
+    def _configured_team(self, context, team: ExpertTeamDefinition | None) -> ExpertTeamDefinition | None:
+        if team is None:
+            return None
+        entry = self._snapshot_entry(context, "expert_team", team.team_id)
+        if entry is None:
+            return team
+        payload = entry["payload"]
+        locks = entry.get("dependency_locks", [])
+        coordinator_object_id = str(payload.get("coordinator_expert_id") or "")
+        coordinator_expert_id = next(
+            (str(item.get("object_key") or "") for item in locks if str(item.get("object_id") or "") == coordinator_object_id),
+            team.coordinator_expert_id,
+        )
+        member_payloads = payload.get("members") if isinstance(payload.get("members"), list) else []
+        by_expert = {str(item.get("expert_id") or ""): item for item in member_payloads if isinstance(item, dict)}
+        members = tuple(
+            ExpertTeamMember(
+                expert_id=str(item.get("object_key") or ""),
+                mention_name=str((by_expert.get(str(item.get("object_key") or "")) or {}).get("mention_name") or item.get("object_key") or ""),
+                routing_brief=str((by_expert.get(str(item.get("object_key") or "")) or {}).get("routing_brief") or ""),
+            )
+            for item in locks
+            if str(item.get("object_key") or "")
+        )
+        return replace(
+            team,
+            rules_markdown=str(payload.get("rules_markdown") or team.rules_markdown),
+            coordinator_expert_id=coordinator_expert_id,
+            members=members or team.members,
+        )
+
+    def _run_agent(
+        self,
+        definition: ExpertDefinition,
+        user_message: str,
+        context,
+        client,
+        state: dict[str, Any],
+        *,
+        team: ExpertTeamDefinition | None = None,
+        routing_instruction: str = "",
+    ) -> None:
         from agentscope.agent import Agent, ReActConfig
         from agentscope.message import UserMsg
         from agentscope.permission import PermissionBehavior, PermissionDecision
@@ -268,7 +461,7 @@ class AgentScopeExpertRuntime:
             "不得重复询问下方已经有明确值的资料（例如年级、学年）；只有资料缺失或存在冲突时才追问。\n"
             f"\n# 当前孩子的有效事实（本轮可信上下文）\n{effective_facts}\n"
             "每次 execute_skill 必须传已选 Skill ID 和用户任务，且不得超过预算。\n\n"
-            f"# 专家规则\n{definition.rules_markdown}\n\n# 授权 Skill 目录\n{catalog}{team_prompt}"
+            f"# 专家规则\n{definition.rules_markdown}\n\n# 授权 Skill 目录\n{catalog}{team_prompt}{routing_instruction}"
         )
         async def run_agent():
             await toolkit.add_tool([tool for name, tool in all_tools.items() if name in enabled_capabilities])
@@ -417,7 +610,38 @@ class AgentScopeExpertRuntime:
 
     def _current_team(self, context) -> ExpertTeamDefinition | None:
         team_id = str(getattr(context, "session_meta", {}).get("expert_team_id") or "").strip()
-        return self.team_registry.require(team_id) if team_id else None
+        if not team_id:
+            return None
+        registered = self.team_registry.get(team_id)
+        if registered is not None:
+            return registered
+        entry = self._snapshot_entry(context, "expert_team", team_id)
+        if entry is None:
+            raise ValueError(f"专家团不存在: {team_id}")
+        payload = entry["payload"]
+        locks = entry.get("dependency_locks", [])
+        coordinator_object_id = str(payload.get("coordinator_expert_id") or "")
+        coordinator = next(
+            (str(item.get("object_key") or "") for item in locks if str(item.get("object_id") or "") == coordinator_object_id),
+            "",
+        )
+        member_payloads = payload.get("members") if isinstance(payload.get("members"), list) else []
+        by_key = {str(item.get("expert_id") or ""): item for item in member_payloads if isinstance(item, dict)}
+        members = tuple(
+            ExpertTeamMember(
+                expert_id=str(item.get("object_key") or ""),
+                mention_name=str((by_key.get(str(item.get("object_key") or "")) or {}).get("mention_name") or item.get("object_key") or ""),
+                routing_brief=str((by_key.get(str(item.get("object_key") or "")) or {}).get("routing_brief") or ""),
+            )
+            for item in locks if str(item.get("object_key") or "")
+        )
+        return ExpertTeamDefinition(
+            team_id=team_id,
+            name=str(entry.get("name") or team_id),
+            rules_markdown=str(payload.get("rules_markdown") or ""),
+            coordinator_expert_id=coordinator,
+            members=members,
+        )
 
     def _apply_structured_team_switch(self, context, team: ExpertTeamDefinition | None, user_message: str) -> str:
         switch = context.session_meta.pop("team_member_switch", None)

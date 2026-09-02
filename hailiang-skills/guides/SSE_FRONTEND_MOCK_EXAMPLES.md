@@ -1,10 +1,12 @@
 # SSE v2 前端 Mock 示例
 
-> 完整字段定义与渲染规则以 [SSE_RESPONSE_CONTRACT.md](SSE_RESPONSE_CONTRACT.md) 为准；本文件只提供 Mock 片段。
+> 完整接入流程见 [SSE_V2_INTEGRATION_GUIDE.md](SSE_V2_INTEGRATION_GUIDE.md)，字段定义与渲染规则以
+> [SSE_RESPONSE_CONTRACT.md](SSE_RESPONSE_CONTRACT.md) 为准；本文件只提供 Mock 片段。
 
-聊天接口只使用 `POST /api/v1/sessions/chat/stream`。业务帧为 `event: state`，以下每一帧都应被
-前端作为**完整状态**替换当前 run 的消息，而非按事件类型拼装。最后一个状态帧之后固定追加
-一帧 `event: done`，表示本次 SSE 的全部数据已经发送完成。
+聊天接口只使用 `POST /api/v2/sessions/chat/stream`。业务帧为 `event: state`；真实响应中的每一帧
+都是固定字段齐全的完整状态，前端应整体替换当前 run 的消息，而非按事件类型拼装。为了让 Mock
+易读，下文省略部分未变化的空字段；完整骨架以协议文档为准。最后一个状态帧之后固定追加一帧
+`event: done`，表示本次 SSE 的全部数据已经发送完成。
 
 ## 普通聊天
 
@@ -59,13 +61,13 @@ data: {"protocol":"hailiang.sse.v2","session_id":"sess_001","run_id":"run_001","
 
 ### 推荐卡片点击后的请求
 
-`skill_rooms` 不会直接切换页面状态；前端点击后仍然调用同一个 `POST /api/v1/sessions/chat/stream`，但请求体必须使用：
+`skill_rooms` 不会直接切换页面状态；前端点击后仍然调用同一个 `POST /api/v2/sessions/chat/stream`，但请求体必须使用：
 
 ```json
 {
   "session_id": "sess_001",
   "run_id": "run_enter_001",
-  "input": "{\"action\":\"enter_skill\",\"target_skill_id\":\"interest_explore\",\"source\":\"route_suggestion\",\"source_message_id\":\"msg_001\",\"source_interaction_id\":\"route_suggestions\"}",
+  "input": "{\"action\":\"enter_skill\",\"profile_id\":\"pro-0723-1\",\"target_skill_id\":\"interest_explore\",\"source\":\"route_suggestion\",\"source_message_id\":\"msg_001\",\"source_interaction_id\":\"route_suggestions\"}",
   "context_data": {
     "student_name": "zz",
     "user_id": "test-0723-1",
@@ -101,7 +103,7 @@ Content-Type: application/json
 {
   "session_id": "sess_001",
   "run_id": "run_form_002",
-  "input": "{\"action\":\"chat\",\"content\":\"孩子目前年级：高一；高考省份：浙江\",\"source\":\"chat\"}",
+  "input": "{\"action\":\"chat\",\"profile_id\":\"pro-0723-1\",\"content\":\"孩子目前年级：高一；高考省份：浙江\",\"source\":\"chat\"}",
   "context_data": {
     "student_name": "zz",
     "user_id": "test-0723-1",
@@ -130,13 +132,13 @@ Content-Type: application/json
 
 ### 退出 Skill 的请求
 
-退出按钮点击后，仍调用 `POST /api/v1/sessions/chat/stream`：
+退出按钮点击后，仍调用 `POST /api/v2/sessions/chat/stream`：
 
 ```json
 {
   "session_id": "sess_001",
   "run_id": "run_exit_001",
-  "input": "{\"action\":\"quit_skill\",\"target_skill_id\":\"interest_explore\",\"source\":\"exit_button\"}",
+  "input": "{\"action\":\"quit_skill\",\"profile_id\":\"pro-0723-1\",\"target_skill_id\":\"interest_explore\",\"source\":\"exit_button\"}",
   "context_data": {
     "student_name": "zz",
     "user_id": "test-0723-1",

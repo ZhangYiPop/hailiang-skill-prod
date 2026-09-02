@@ -11,6 +11,7 @@ type ComposerProps = {
   expertTeamCatalog?: ExpertTeamCatalogItem[];
   activeExpertId?: string;
   pendingExpertId?: string;
+  pendingExpertTeamId?: string;
   activeExpertTeam?: SelectedExpertTeam | null;
   onSelectExpert?: (expertId: string) => Promise<void>;
   onExitExpert?: () => Promise<void>;
@@ -27,7 +28,7 @@ const quickPrompts = [
   "强基计划详细讲讲，我现在适合吗",
 ];
 
-export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertCatalog = [], expertTeamCatalog = [], activeExpertId = "", pendingExpertId = "", activeExpertTeam = null, onSelectExpert, onExitExpert, onSelectExpertTeam, onExitExpertTeam, isGenerating = false, isCancelling = false, onStopGeneration }: ComposerProps) {
+export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertCatalog = [], expertTeamCatalog = [], activeExpertId = "", pendingExpertId = "", pendingExpertTeamId = "", activeExpertTeam = null, onSelectExpert, onExitExpert, onSelectExpertTeam, onExitExpertTeam, isGenerating = false, isCancelling = false, onStopGeneration }: ComposerProps) {
   const { composerValue, setComposerValue } = useChatStore();
   const [toolbarTargetExpertId, setToolbarTargetExpertId] = useState("");
   const toolbarTarget = activeExpertTeam?.members.find((member) => member.expert_id === toolbarTargetExpertId);
@@ -116,7 +117,7 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
       ) : (
       expertCatalog.length || expertTeamCatalog.length || (activeExpertId && onExitExpert) ? (
         <div className="space-y-2">
-          <p className="px-1 text-xs text-slate-500">选择专家或专家团</p>
+          <p className="px-1 text-xs text-slate-500">{expertTeamCatalog.length ? "选择专家团" : "选择专家"}</p>
           <div className="flex flex-wrap gap-2">
             {activeExpertId && onExitExpert ? (
               <button
@@ -128,19 +129,27 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
                 退出专家模式
               </button>
             ) : null}
-            {expertTeamCatalog.map((team) => (
-              <button
-                key={team.team_id}
-                type="button"
-                disabled={disabled || !onSelectExpertTeam}
-                title={team.description}
-                onClick={() => void onSelectExpertTeam?.(team.team_id)}
-                className="rounded-full border border-violet-300/25 bg-violet-300/10 px-3 py-2 text-xs text-violet-100 transition hover:bg-violet-300/20 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                专家团：{team.name}
-              </button>
-            ))}
-            {expertCatalog.map((expert) => {
+            {expertTeamCatalog.map((team) => {
+              const selected = pendingExpertTeamId === team.team_id;
+              return (
+                <button
+                  key={team.team_id}
+                  type="button"
+                  disabled={disabled || selected || !onSelectExpertTeam}
+                  title={team.description}
+                  onClick={() => void onSelectExpertTeam?.(team.team_id)}
+                  className={[
+                    "rounded-full border px-3 py-2 text-xs transition disabled:cursor-not-allowed disabled:opacity-40",
+                    selected
+                      ? "border-violet-200/60 bg-violet-200/15 text-violet-100"
+                      : "border-violet-300/25 bg-violet-300/10 text-violet-100 hover:bg-violet-300/20",
+                  ].join(" ")}
+                >
+                  专家团：{team.name}{selected ? "（待下次发送）" : ""}
+                </button>
+              );
+            })}
+            {expertTeamCatalog.length === 0 && expertCatalog.map((expert) => {
               const selected = (pendingExpertId || activeExpertId) === expert.expert_id;
               const skillLabels = expert.skills.map((skill) => skill.label).join("、");
               return (

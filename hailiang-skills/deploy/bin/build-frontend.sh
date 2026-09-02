@@ -10,6 +10,7 @@ api_base_url="${HAILIANG_PUBLIC_API_BASE_URL:-http://${HAILIANG_BIND_HOST:?}:${B
 cat > dist/runtime-config.js <<EOF
 window.__HAILIANG_RUNTIME_CONFIG__ = {
   apiBaseUrl: "${api_base_url}",
+  workbenchApiBaseUrl: "${HAILIANG_PUBLIC_WORKBENCH_API_BASE_URL:-${api_base_url}}",
   backendPort: ${BACKEND_PORT},
   userId: "${DEFAULT_USER_ID:-debug-user}"
 };

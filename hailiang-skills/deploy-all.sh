@@ -682,6 +682,7 @@ mkdir -p public
 cat > public/runtime-config.js <<EOF
 window.__HAILIANG_RUNTIME_CONFIG__ = {
   apiBaseUrl: "${PUBLIC_API_BASE_URL}",
+  workbenchApiBaseUrl: "${HAILIANG_PUBLIC_WORKBENCH_API_BASE_URL:-${PUBLIC_API_BASE_URL}}",
   backendPort: ${BACKEND_PORT},
   userId: "${DEFAULT_USER_ID}"
 };

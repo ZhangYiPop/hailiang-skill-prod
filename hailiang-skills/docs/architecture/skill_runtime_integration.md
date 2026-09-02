@@ -494,7 +494,7 @@ config/scenarios.yml
    - runtime asset lookup 需要更新 `assets/generated/asset_registry.json`
 
 5. 前端与流式是否统一：
-   - `/api/v1/sessions/chat/stream` 返回递增的 `event: state` 快照，最后追加 `event: done`
+   - `/api/v2/sessions/chat/stream` 返回递增的 `event: state` 快照，最后追加 `event: done`
    - runtime 状态会累加为 `intent.steps`，正文累加为 `assistant.content`
    - `session.active_skill` 与 `skill_transition` 能看到 runtime 路由目标
    - hailiang bridge Skill 的 `active_skill` 仍是实际业务 Skill，例如 `admission` / `convergence`

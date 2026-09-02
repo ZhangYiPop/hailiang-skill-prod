@@ -69,7 +69,9 @@ export START_INFRA="1"
 
 # 仅服务器部署时通常需要覆盖。
 export BACKEND_PORT="8010"
+export WORKBENCH_PORT="8020"
 export FRONTEND_PORT="4175"
 export PUBLIC_API_BASE_URL=""
+export HAILIANG_PUBLIC_WORKBENCH_API_BASE_URL=""
 export DEFAULT_USER_ID="debug-user"
 export HAILIANG_CORS_ORIGINS="http://127.0.0.1:4175,http://localhost:4175"

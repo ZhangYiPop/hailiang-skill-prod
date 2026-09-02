@@ -12,6 +12,9 @@ venv/
 .env
 .env.*
 env.local.sh
+# Numbered deployment files are private machine-specific configuration, not
+# versioned templates. Keep only deploy/env/*.example under source control.
+env.[0-9]*.sh
 # Private configuration for an isolated server smoke deployment.
 env.8015.sh
 env.7000.sh
@@ -19,6 +22,7 @@ env.7000.sh
 runtime-smoke-*/
 logs-smoke-*/
 smoke-*.log
+deploy-smoke.sh.bak
 # Only committed deployment environment templates belong under deploy/env/.
 deploy/env/*
 !deploy/env/*.example

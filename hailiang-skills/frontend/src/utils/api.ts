@@ -382,6 +382,8 @@ export type SessionResponse = {
   user_display_name?: string;
   profile_id?: string | null;
   profile_name?: string | null;
+  context_scope?: "profile" | "unbound";
+  context_label?: string;
   title?: string | null;
   recent_session_summary?: string | null;
   session_log_dir?: string;
@@ -444,8 +446,9 @@ export type SessionContextMessage = {
     interaction_states?: Record<string, MessageInteractionState>;
     skill_transition?: SkillTransition;
     generation_status?: string;
-    profile_id?: string;
-    profile_name?: string;
+    profile_id?: string | null;
+    profile_name?: string | null;
+    context_scope?: "profile" | "unbound";
     from_profile_id?: string;
     from_profile_name?: string;
     to_profile_id?: string;
@@ -481,6 +484,8 @@ export type SessionContextResponse = {
   user_display_name?: string;
   profile_id?: string | null;
   profile_name?: string | null;
+  context_scope?: "profile" | "unbound";
+  context_label?: string;
   title?: string | null;
   messages: SessionContextMessage[];
   user_facts: FactMap;
@@ -563,7 +568,7 @@ export type UserFactsResponse = {
 
 export type ProfileFactsResponse = {
   user_id: string;
-  profile_id: string;
+  profile_id: string | null;
   facts: FactMap;
   sources?: FactSourceSummary[];
   shared_facts?: FactMap;
@@ -603,7 +608,7 @@ export type CreateSessionResponse = {
   session_id: string;
   user_id: string;
   user_display_name?: string;
-  profile_id: string;
+  profile_id: string | null;
   title?: string | null;
   opening_message?: null;
   recent_session_summary?: string | null;
@@ -1087,9 +1092,10 @@ export async function deleteSession(
   baseUrl: string,
   sessionId: string,
   userId: string,
-  profileId: string,
+  profileId?: string,
 ): Promise<{ session_id: string; deleted: boolean }> {
-  const params = new URLSearchParams({ user_id: userId, profile_id: profileId });
+  const params = new URLSearchParams({ user_id: userId });
+  if (profileId) params.set("profile_id", profileId);
   const response = await fetchWithRetry(`${baseUrl}/api/v1/sessions/${sessionId}?${params}`, {
     method: "DELETE",
   });

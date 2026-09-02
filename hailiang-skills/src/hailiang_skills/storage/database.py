@@ -170,6 +170,164 @@ class AuditPayloadRow(Base):
     access_log: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class WorkbenchActorRow(Base):
+    __tablename__ = "workbench_actors"
+
+    actor_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(160), index=True)
+    device_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class WorkbenchObjectRow(Base):
+    __tablename__ = "workbench_objects"
+    __table_args__ = (UniqueConstraint("object_type", "object_key", name="uq_workbench_object_type_key"),)
+
+    object_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    object_type: Mapped[str] = mapped_column(String(32), index=True)
+    object_key: Mapped[str] = mapped_column(String(160), index=True)
+    name: Mapped[str] = mapped_column(String(256))
+    description: Mapped[str] = mapped_column(Text, default="")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class WorkbenchRevisionRow(Base):
+    __tablename__ = "workbench_revisions"
+    __table_args__ = (UniqueConstraint("object_id", "revision_no", name="uq_workbench_revision_no"),)
+
+    revision_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    object_id: Mapped[str] = mapped_column(ForeignKey("workbench_objects.object_id"), index=True)
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_revision_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    dependency_locks: Mapped[list[Any]] = mapped_column(_json_type(), default=list)
+    validation: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class WorkbenchAssetRow(Base):
+    __tablename__ = "workbench_revision_assets"
+    __table_args__ = (UniqueConstraint("revision_id", "relative_path", name="uq_workbench_revision_asset_path"),)
+
+    asset_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("workbench_revisions.revision_id"), index=True)
+    relative_path: Mapped[str] = mapped_column(String(512))
+    media_type: Mapped[str] = mapped_column(String(160), default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+
+
+class WorkbenchReleaseRow(Base):
+    __tablename__ = "workbench_releases"
+    __table_args__ = (UniqueConstraint("object_id", "release_no", name="uq_workbench_release_no"),)
+
+    release_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    object_id: Mapped[str] = mapped_column(ForeignKey("workbench_objects.object_id"), index=True)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("workbench_revisions.revision_id"), unique=True, index=True)
+    release_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    dependency_locks: Mapped[list[Any]] = mapped_column(_json_type(), default=list)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    verification: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    published_by: Mapped[str] = mapped_column(String(80), default="system")
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class WorkbenchSoulRevisionRow(Base):
+    __tablename__ = "workbench_soul_revisions"
+    __table_args__ = (UniqueConstraint("revision_no", name="uq_workbench_soul_revision_no"),)
+
+    soul_revision_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, default="")
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class WorkbenchDebugSessionRow(Base):
+    __tablename__ = "workbench_debug_sessions"
+
+    debug_session_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("workbench_revisions.revision_id"), index=True)
+    baseline_release_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    runtime_context: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    transcript: Mapped[list[Any]] = mapped_column(_json_type(), default=list)
+    trace: Mapped[list[Any]] = mapped_column(_json_type(), default=list)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    conclusion: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkbenchEvaluationSuiteRow(Base):
+    __tablename__ = "workbench_evaluation_suites"
+
+    suite_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    object_id: Mapped[str] = mapped_column(ForeignKey("workbench_objects.object_id"), index=True)
+    name: Mapped[str] = mapped_column(String(256))
+    cases: Mapped[list[Any]] = mapped_column(_json_type(), default=list)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class WorkbenchEvaluationRunRow(Base):
+    __tablename__ = "workbench_evaluation_runs"
+
+    run_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    suite_id: Mapped[str] = mapped_column(ForeignKey("workbench_evaluation_suites.suite_id"), index=True)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("workbench_revisions.revision_id"), index=True)
+    baseline_release_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    results: Mapped[list[Any]] = mapped_column(_json_type(), default=list)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    manual_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    manual_notes: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkbenchDeploymentRow(Base):
+    __tablename__ = "workbench_deployments"
+
+    deployment_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    environment: Mapped[str] = mapped_column(String(32), default="prod", index=True)
+    root_release_id: Mapped[str] = mapped_column(String(80), index=True)
+    package_hash: Mapped[str] = mapped_column(String(64), index=True)
+    manifest: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    package_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="staged", index=True)
+    previous_deployment_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    imported_by: Mapped[str] = mapped_column(String(80), default="system")
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    activated_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkbenchAuditRow(Base):
+    __tablename__ = "workbench_audit_events"
+
+    event_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    actor_id: Mapped[str] = mapped_column(String(80), default="system", index=True)
+    action: Mapped[str] = mapped_column(String(120), index=True)
+    target_type: Mapped[str] = mapped_column(String(64), default="")
+    target_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
 def database_url_from_env() -> str:
     return os.getenv("HAILIANG_DATABASE_URL", "postgresql+psycopg://hailiang:hailiang@postgres:5432/hailiang_skills")
 

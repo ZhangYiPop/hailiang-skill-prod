@@ -6,6 +6,7 @@ import { MarkdownContent } from "@/components/MarkdownContent";
 import { MessageBlocksRenderer } from "@/components/message-blocks/MessageBlocksRenderer";
 import { StatusTimelineBlock } from "@/components/message-blocks/StatusTimelineBlock";
 import { PathOptionsBlock } from "@/components/message-blocks/PathOptionsBlock";
+import { TeamHandoffCard } from "@/components/message-blocks/TeamHandoffCard";
 import { useChatActions } from "@/hooks/useChatActions";
 import { isCitationsBlock, isStatusTimelineBlock } from "@/types/messageBlocks";
 import type { SseV2PathOptions } from "@/types/streamEvents";
@@ -14,6 +15,7 @@ type ChatMessageListProps = {
   messages: ChatMessage[];
   showCitations?: boolean;
   activeSkill?: string;
+  activeProfileId?: string;
 };
 
 type MessageSection = {
@@ -108,7 +110,7 @@ function buildMessageSections(messages: ChatMessage[]): MessageSection[] {
   return sections;
 }
 
-export function ChatMessageList({ messages, showCitations = false, activeSkill = "" }: ChatMessageListProps) {
+export function ChatMessageList({ messages, showCitations = false, activeSkill = "", activeProfileId = "" }: ChatMessageListProps) {
   const showUpstreamDetail = import.meta.env.DEV;
   const {
     handlePathAction,
@@ -144,6 +146,7 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
           {section.topicLabel ? <PlanningTopicBadge label={section.topicLabel} /> : null}
           {section.messages.map((message) => {
         const isUser = message.role === "user";
+        const isActiveContext = (message.profileId || "") === activeProfileId;
         const presentation = message.presentation;
         // Historical transition cards carry a full `presentation` snapshot.
         // They must still render as system cards; otherwise their empty
@@ -168,7 +171,7 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
         const otherBlocks = presentation && "form_id" in presentation.form
           ? [{ type: "fact_form" as const, payload: presentation.form }]
           : message.blocks.filter((block) => !isCitationsBlock(block) && !isStatusTimelineBlock(block));
-        const teamHandoff = !isUser ? message.teamHandoff : undefined;
+        const teamHandoff = !isUser && isActiveContext ? message.teamHandoff : undefined;
         const teamHandoffInteraction = message.interactionStates?.team_handoff;
         const showTeamHandoff = Boolean(
           teamHandoff?.candidates.length
@@ -184,6 +187,14 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
         const routeInteraction = message.interactionStates?.route_suggestions;
         const routeExpired = routeInteraction?.status === "expired";
         const routeSelected = routeInteraction?.status === "selected";
+        const interactionStates = isActiveContext
+          ? message.interactionStates
+          : Object.fromEntries(
+              Object.entries(message.interactionStates ?? {}).map(([key, value]) => [
+                key,
+                value.status === "active" ? { ...value, status: "expired" } : value,
+              ]),
+            );
         if (isProfileSwitch) {
           return (
             <div key={message.id} className="flex items-center gap-3 py-1 text-xs text-slate-500">
@@ -229,7 +240,7 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
                 >
                   <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-slate-400">
                     <span>{isUser ? "你" : "助手"}</span>
-                    {message.profileName ? <span>· {message.profileName}</span> : null}
+                    <span>· {message.profileName || "未绑定孩子"}</span>
                     <span>{formatTime(message.createdAt)}</span>
                     {!isUser && message.streamingStatus === "streaming" ? <span>推理中</span> : null}
                     {!isUser && message.generationStatus === "cancelled" ? <span>已停止</span> : null}
@@ -253,7 +264,7 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
                         blocks={citationBlocks}
                         onPathAction={handlePathAction}
                         onSubmitFactForm={handleSubmitFactForm}
-                        interactionStates={message.interactionStates}
+                        interactionStates={interactionStates}
                       />
                       {message.content ? (
                         <MarkdownContent content={message.content} className="text-slate-100" />
@@ -269,7 +280,7 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
                         blocks={otherBlocks}
                         onPathAction={handlePathAction}
                         onSubmitFactForm={handleSubmitFactForm}
-                        interactionStates={message.interactionStates}
+                        interactionStates={interactionStates}
                       />
                       {message.errorMessage ? (
                         <div className="flex flex-col gap-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-xs text-amber-100 sm:flex-row sm:items-center sm:justify-between">
@@ -334,37 +345,12 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
                           </div>
                         </div>
                       ) : showTeamHandoff && teamHandoff ? (
-                        <div className="rounded-2xl border border-violet-300/20 bg-violet-300/[0.07] px-5 py-4">
-                          <p className="text-center text-xs uppercase tracking-[0.2em] text-violet-100">建议由以下专家接管</p>
-                          {teamHandoff.reason ? <p className="mt-2 text-center text-xs leading-relaxed text-slate-300">{teamHandoff.reason}</p> : null}
-                          <div className="mt-4 flex flex-wrap justify-center gap-3">
-                            {teamHandoff.candidates.map((candidate) => {
-                              const selected = teamHandoffInteraction?.status === "selected" && teamHandoffInteraction.selected_target_skill_id === candidate.expert_id;
-                              const locked =
-                                !message.messageId ||
-                                teamHandoffInteraction?.status === "selected" ||
-                                teamHandoffInteraction?.status === "expired";
-                              return (
-                                <div key={candidate.expert_id} className="flex min-w-[160px] flex-col items-center gap-1">
-                                  <button
-                                    type="button"
-                                    disabled={Boolean(locked)}
-                                    onClick={() => void handleConfirmTeamHandoff(message.id, candidate.expert_id, candidate.mention_name)}
-                                    className={[
-                                      "w-full rounded-full border px-5 py-2.5 text-sm font-medium transition",
-                                      selected ? "border-violet-200/70 bg-violet-200/20 text-violet-50" : "border-white/10 bg-white/[0.06] text-slate-200 hover:border-violet-300/40 hover:bg-violet-300/10 hover:text-violet-50",
-                                      locked ? "cursor-not-allowed opacity-40" : "",
-                                    ].join(" ")}
-                                  >
-                                    {selected ? "已转交：" : "@"}{candidate.mention_name}
-                                  </button>
-                                  {candidate.brief ? <span className="text-center text-[11px] leading-relaxed text-slate-400">{candidate.brief}</span> : null}
-                                </div>
-                              );
-                            })}
-                          </div>
-                          {teamHandoffInteraction?.status === "expired" ? <p className="mt-3 text-center text-xs text-slate-400">该转交建议已失效，请以最新对话为准。</p> : null}
-                        </div>
+                        <TeamHandoffCard
+                          handoff={teamHandoff}
+                          interactionState={teamHandoffInteraction}
+                          disabled={!message.messageId}
+                          onConfirm={(candidate) => void handleConfirmTeamHandoff(message.id, candidate.expert_id, candidate.mention_name)}
+                        />
                       ) : routeSuggestions.length ? (
                         <div className="rounded-2xl border border-cyan-300/15 bg-cyan-300/[0.06] px-5 py-4">
                           <p className="text-center text-xs uppercase tracking-[0.2em] text-cyan-100">

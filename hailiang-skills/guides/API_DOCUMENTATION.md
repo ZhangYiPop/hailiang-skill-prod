@@ -1,6 +1,8 @@
 # 算法服务 BFF 转发接口文档
 
-> 基础地址示例：`http://10.30.6.45:8015`。以下路径均以 `/api/v1` 开头。
+> 基础地址示例：`http://10.30.6.45:8015`。普通 JSON 接口使用 `/api/v1`；SSE v2 聊天入口使用
+> `/api/v2/sessions/chat/stream`。SSE 的前端与转发后端联调流程见
+> [SSE_V2_INTEGRATION_GUIDE.md](SSE_V2_INTEGRATION_GUIDE.md)。
 
 ## 目录
 
@@ -27,7 +29,7 @@
 | 模块 | 方法 | 算法服务路径 | 业务前端可用 | 说明 |
 | --- | --- | --- | --- | --- |
 | Skill | GET | `/skills` | 是 | 工具栏 Skill 列表；当前不按学生年级或学段过滤。 |
-| 聊天 | POST | `/sessions/chat/stream` | 是 | 唯一聊天、进出 Skill、停止生成入口。 |
+| 聊天 | POST | `/api/v2/sessions/chat/stream` | 是 | 唯一聊天、进出 Skill、停止生成入口。 |
 | 档案 | GET / POST | `/users/{user_id}/profiles` | 是 | 列表、创建。 |
 | 档案 | GET / PATCH | `/users/{user_id}/profiles/{profile_id}` | 是 | 查询、更新。 |
 | 会话 | GET | `/users/{user_id}/profiles/{profile_id}/sessions` | 是 | 当前档案的历史会话。 |
@@ -199,7 +201,7 @@ curl "$ALGORITHM_BASE/api/v1/skills" \
 ### 2. 聊天流入口
 
 ```bash
-curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
+curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   -H 'Accept: text/event-stream' \
   -H 'Content-Type: application/json' \
   -H 'X-SSE-Protocol: hailiang.sse.v2' \
@@ -207,7 +209,7 @@ curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
   --data-raw '{
     "session_id":"session-d7c62cd1-cc1b-457f-9349-fb926a6f48f",
     "run_id":"run-1ebfd8d7-76eb-4b0a-9ff5-f5e1f56e388",
-    "input":"{\"action\":\"chat\",\"content\":\"给孩子做一份生涯规划\",\"source\":\"chat\",\"enable_thinking\":false,\"return_reasoning\":false}",
+    "input":"{\"action\":\"chat\",\"context_scope\":\"profile\",\"profile_id\":\"pro-0723-1\",\"content\":\"给孩子做一份生涯规划\",\"source\":\"chat\",\"enable_thinking\":false,\"return_reasoning\":false}",
     "context_data":{
       "student_name":"zz",
       "user_id":"test-0723-1",
@@ -226,8 +228,8 @@ curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
 | --- | --- | --- | --- |
 | `session_id` | 非空字符串 | 是 | 首次请求可由 BFF 生成，后续复用。不能更换既有会话的用户或档案。 |
 | `run_id` | 非空字符串 | 是 | 单次执行 ID。普通动作必须全局唯一且不能重用；停止时例外，必须复用活动 run ID。 |
-| `input` | JSON 字符串 | 是 | 字符串内容必须是合法的 JSON 对象，见下表。 |
-| `context_data` | JSON 对象 | 是 | 会话身份与首次建档信息，见下表。 |
+| `input` | JSON 字符串 | 是 | 字符串内容必须是合法的 JSON 对象；除 `stop` 外必须明确选择 `context_scope`，见下表。 |
+| `context_data` | JSON 对象 | 非停止动作是 | 会话身份与首次建档信息；`stop` 可不传，见下表。 |
 
 顶层未知字段、类型不正确或缺少字段均返回 `422 REQUEST_VALIDATION_ERROR`。
 
@@ -250,42 +252,57 @@ curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `student_name` | 非空字符串 | 是 | 新建档案时使用的孩子名称；恢复会话不覆盖已有名称。 |
+| `student_name` | 非空字符串 | `profile` 时是 | 新建档案时使用的孩子名称；`unbound` 时不得传。 |
 | `user_id` | 非空字符串 | 是 | BFF 从登录态注入的稳定用户 ID。 |
-| `profile_id` | 非空字符串 | 是 | 孩子档案 ID；与 `user_id` 一起决定归属。 |
+| `profile_id` | 非空字符串 | `profile` 时是 | 孩子档案 ID；`unbound` 时不得传。 |
 | `school_year` | 非空字符串 | 否 | 如 `"2026"`、`"2026-2027"`。 |
 | `grade` | 非空字符串 | 否 | 如 `"高一"`。 |
 | `facts` | 对象 | 否 | 可扩展 Facts 信封；键必须在服务端 `facts_schema.yml` 注册并启用，例如 `{ "student_province": "浙江", "score_total": 580 }`。 |
 | 其他字段 | 任意合法 JSON 值 | 否 | 允许业务扩展；接口接受但不会自动写入 Facts。 |
 
-仅前三项必填。首次创建时，服务会在传入 `grade` 后立即初始化档案年级 Fact；若同时传入 `school_year`，还会写入完整的学年—年级记录。
+`profile` 范围时前三项必填。`unbound` 范围只传 `user_id`，不读取或写入孩子、账户共享 Facts。首次创建档案时，服务会在传入 `grade` 后立即初始化档案年级 Fact；若同时传入 `school_year`，还会写入完整的学年—年级记录。
 
 首次创建时，`facts` 中已注册的字段会依据 Facts Schema 校验、归一化并按其 scope 保存；为兼容旧转发端，同样已注册的字段也可以直接放在 `context_data` 顶层。未注册字段只作为转发元数据保留，不会进入模型上下文。
 
 #### `input` 中的对象
 
+除 `stop` 外，所有动作都必须带 `context_scope`。`profile` 动作携带非空 `profile_id` 并与
+`context_data.profile_id` 保持一致；`unbound` 动作不携带 `profile_id`，且 `context_data` 只含 `user_id`。
+
 | `action` | 必填字段 | `source` | 说明 |
 | --- | --- | --- | --- |
-| `chat` | `content`：非空字符串 | `chat` | 普通聊天。 |
-| `switch_team_member` | `target_expert_id`、`content`：非空字符串 | `toolbar` | 从当前专家团工具栏指定专家并携带问题；禁止从 `content` 解析专家名称。 |
-| `confirm_team_handoff` | `source_message_id`、`target_expert_id` | `team_handoff` | 确认主协调专家消息中的有效候选卡片。 |
-| `enter_skill` | `target_skill_id`：非空字符串 | `toolbar`、`route_suggestion` | 推荐跳转时额外需要 `source_message_id`、`source_interaction_id`。 |
-| `quit_skill` | `target_skill_id`：非空字符串 | `toolbar`、`exit_button` | `target_skill_id` 必须等于当前活动 Skill。 |
+| `chat` | `content`：非空字符串；`profile` 范围还需 `profile_id` | `chat` | 普通聊天；可选 `expert_team_id` 或 `expert_id`。无专家字段时走通用对话 Runtime。 |
+| `switch_team_member` | `profile_id`、`target_expert_id`、`content`：非空字符串 | `toolbar` | 从当前专家团工具栏指定专家并携带问题；禁止从 `content` 解析专家名称。 |
+| `confirm_team_handoff` | `profile_id`、`source_message_id`、`target_expert_id` | `team_handoff` | 确认主协调专家消息中的有效候选卡片。 |
+| `enter_skill` | `profile_id`、`target_skill_id`：非空字符串 | `toolbar`、`route_suggestion` | 推荐跳转时额外需要 `source_message_id`、`source_interaction_id`。 |
+| `quit_skill` | `profile_id`、`target_skill_id`：非空字符串 | `toolbar`、`exit_button` | `target_skill_id` 必须等于当前活动 Skill。 |
 | `stop` | 无 | `composer` | 取消当前 run。 |
 
 `enable_thinking`、`return_reasoning` 均为可选布尔值，默认 `false`。未知字段、错误类型或枚举不匹配返回 `422 REQUEST_VALIDATION_ERROR`。
 
-专家切换必须使用结构化 `target_expert_id`。`chat.content` 中即使出现 `@专家名称` 也只是普通对话文本，不触发路由；`context_data.expert_id` 也不能替代本轮结构化切换动作。
+普通 `chat` 不传 `expert_team_id`、`expert_id` 时，由通用对话 Runtime 承接，即“大模型 + 当前 Soul”；不会隐式选择专家团或专家。只有客户端明确传入专家团或专家字段，才进入相应模式。
+
+#### 专家团 / 专家选择字段说明
+
+| 字段 | 所属动作 | 中文含义 | 服务端校验 | 响应关联字段 |
+| --- | --- | --- | --- | --- |
+| `expert_team_id` | `chat` | 用户本轮明确选择的专家团；该团会持续绑定当前上下文范围。 | 必须是可用专家团。未指定成员时激活该团主协调专家。 | `expert.team`、`expert.active` |
+| `expert_id` | `chat` | 用户在普通聊天输入框中显式点选 / @ 的回答专家，并与 `content` 一起提交。 | 必须是可用专家；若当前已有专家团，还必须属于该团。未选专家团时进入单专家模式；不能用 `context_data.expert_id` 代替。 | `expert.active`；当前 `transition` 为空对象。 |
+| `target_expert_id` | `switch_team_member`、`confirm_team_handoff` | 用户通过工具栏切换、或确认转交卡后要由谁承接。 | 工具栏：当前团队成员；转交卡：同时属于卡片有效候选。 | `expert.active`、`expert.transition` |
+| `source_message_id` | `confirm_team_handoff` | 专家团转交卡所在的助手消息 ID。 | 必须是当前范围有效且未确认的卡片。 | `team_handoff` 的状态及 `expert.transition.source_message_id` |
+| `source` | 所有动作 | 请求来自何种交互入口。 | 普通消息为 `chat`；工具栏为 `toolbar`；转交卡为 `team_handoff`。 | `expert.transition.source`（仅实际切换时） |
+
+普通聊天里显式指定专家使用 `expert_id`；工具栏切换和转交卡确认使用 `target_expert_id`。`chat.content` 中即使出现 `@专家名称` 也只是普通文本，不触发路由；前端应把用户点选的专家名称转换为上述结构化 ID。
 
 #### 专家团工具栏指定专家并携带问题
 
 ```bash
-curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
+curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   -H 'Accept: text/event-stream' -H 'Content-Type: application/json' \
   -H 'X-SSE-Protocol: hailiang.sse.v2' \
   --data-raw '{
     "session_id":"session-1","run_id":"run-expert-toolbar-001",
-    "input":"{\"action\":\"switch_team_member\",\"source\":\"toolbar\",\"target_expert_id\":\"family_education_expert\",\"content\":\"孩子最近不愿意和我沟通，怎么办？\"}",
+    "input":"{\"action\":\"switch_team_member\",\"context_scope\":\"profile\",\"profile_id\":\"pro-0723-1\",\"source\":\"toolbar\",\"target_expert_id\":\"family_education_expert\",\"content\":\"孩子最近不愿意和我沟通，怎么办？\"}",
     "context_data":{"student_name":"zz","user_id":"test-0723-1","profile_id":"pro-0723-1"}
   }'
 ```
@@ -297,6 +314,8 @@ curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
 ```json
 {
   "action": "confirm_team_handoff",
+  "context_scope": "profile",
+  "profile_id": "pro-0723-1",
   "source": "team_handoff",
   "source_message_id": "msg_xxx",
   "target_expert_id": "family_education_expert"
@@ -305,17 +324,17 @@ curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
 
 两种来源的校验规则不同：`team_handoff` 只能选择来源卡片中的有效候选；`toolbar` 可以选择当前专家团任一成员，且不携带 `source_message_id`。
 
-### 3. 工具栏进入与退出 Skill
+### 3. 通用对话模式下工具栏进入与退出 Skill
 
-点击工具栏后使用新的、未使用过的 `run_id`；`target_skill_id` 必须取自 `GET /skills` 的返回值。
+通用对话模式下，点击工具栏后使用新的、未使用过的 `run_id`；`target_skill_id` 必须取自 `GET /skills` 的返回值。专家团模式由当前专家在锁定范围内自动调用和切换 Skill，不允许 BFF 或前端调用本节的 `enter_skill` / `quit_skill`。
 
 ```bash
-curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
+curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   -H 'Accept: text/event-stream' -H 'Content-Type: application/json' \
   -H 'X-SSE-Protocol: hailiang.sse.v2' \
   --data-raw '{
     "session_id":"session-1","run_id":"run-enter-001",
-    "input":"{\"action\":\"enter_skill\",\"target_skill_id\":\"subject_advisor\",\"source\":\"toolbar\"}",
+    "input":"{\"action\":\"enter_skill\",\"context_scope\":\"profile\",\"profile_id\":\"pro-0723-1\",\"target_skill_id\":\"subject_advisor\",\"source\":\"toolbar\"}",
     "context_data":{"student_name":"zz","user_id":"test-0723-1","profile_id":"pro-0723-1"}
   }'
 ```
@@ -335,12 +354,12 @@ curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
 #### 推荐卡片进入 Skill 的示例
 
 ```bash
-curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
+curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   -H 'Accept: text/event-stream' -H 'Content-Type: application/json' \
   -H 'X-SSE-Protocol: hailiang.sse.v2' \
   --data-raw '{
     "session_id":"session-1","run_id":"run-enter-002",
-    "input":"{\"action\":\"enter_skill\",\"target_skill_id\":\"interest_explore\",\"source\":\"route_suggestion\",\"source_message_id\":\"msg_001\",\"source_interaction_id\":\"route_suggestions\"}",
+    "input":"{\"action\":\"enter_skill\",\"context_scope\":\"profile\",\"profile_id\":\"pro-0723-1\",\"target_skill_id\":\"interest_explore\",\"source\":\"route_suggestion\",\"source_message_id\":\"msg_001\",\"source_interaction_id\":\"route_suggestions\"}",
     "context_data":{"student_name":"zz","user_id":"test-0723-1","profile_id":"pro-0723-1"}
   }'
 ```
@@ -353,12 +372,12 @@ curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
 #### 退出 Skill 的示例
 
 ```bash
-curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
+curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   -H 'Accept: text/event-stream' -H 'Content-Type: application/json' \
   -H 'X-SSE-Protocol: hailiang.sse.v2' \
   --data-raw '{
     "session_id":"session-1","run_id":"run-exit-001",
-    "input":"{\"action\":\"quit_skill\",\"target_skill_id\":\"interest_explore\",\"source\":\"exit_button\"}",
+    "input":"{\"action\":\"quit_skill\",\"context_scope\":\"profile\",\"profile_id\":\"pro-0723-1\",\"target_skill_id\":\"interest_explore\",\"source\":\"exit_button\"}",
     "context_data":{"student_name":"zz","user_id":"test-0723-1","profile_id":"pro-0723-1"}
   }'
 ```
@@ -370,7 +389,7 @@ curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
 取消的是当前执行中的 **run**，不是删除会话。调用同一流接口，且必须复用要停止的活动 `run_id`：
 
 ```bash
-curl -N "$ALGORITHM_BASE/api/v1/sessions/chat/stream" \
+curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   -H 'Accept: text/event-stream' -H 'Content-Type: application/json' \
   -H 'X-SSE-Protocol: hailiang.sse.v2' \
   --data-raw '{
@@ -483,13 +502,13 @@ curl -X PATCH "$ALGORITHM_BASE/api/v1/sessions/$SESSION_ID/messages/$MESSAGE_ID/
 1. `PATCH /sessions/{session_id}/messages/{message_id}/interactions/{interaction_id}`
    - 作用：把表单交互状态同步为 `submitted`
    - 主要服务于 UI 状态和历史回放
-2. `POST /sessions/chat/stream`
+2. `POST /api/v2/sessions/chat/stream`
    - 作用：把用户答案继续发给当前 Skill，让后端消费并推进流程
 
 对 `multi_path_planning` 这类 `skill_session` 问卷，前端常见续发内容是把答案拼成一条普通 `chat` 文本，例如：
 
 ```json
-{"action":"chat","content":"高考省份：浙江；选科科目：物理、化学、生物；预估高考总分：620","source":"chat"}
+{"action":"chat","context_scope":"profile","profile_id":"pro-0723-1","content":"高考省份：浙江；选科科目：物理、化学、生物；预估高考总分：620","source":"chat"}
 ```
 
 如果前端暂时无法发送交互状态 PATCH，后端通常仍可从上述文本中解析答案并继续执行；但历史消息中的表单不会自动变成 `submitted`，因此 UI 状态会不完整。
@@ -572,3 +591,15 @@ curl -X POST "$ALGORITHM_BASE/api/v1/users/$USER_ID/facts:clear-by-source" \
 - BFF 负责认证、注入 `user_id`、校验档案/会话归属、生成 `X-Request-Id`。
 - 透传算法服务的 HTTP 状态、错误 JSON、`Retry-After`、`X-Request-Id` 和 SSE 数据。
 - 客户端断开 SSE 时，BFF 应取消上游请求；SSE 代理禁用响应缓冲与压缩。
+# Token 用量统计（运维接口）
+
+`GET /deployment/v1/token-usage` 用于按 UTC 时间范围聚合模型调用 token。接口需要 `HAILIANG_SECURITY_ADMIN_TOKEN` 对应的 `X-Security-Admin-Token` 或 Bearer 凭证；`start`、`end` 必须携带时区，查询范围最多 31 天。
+
+```bash
+curl -G 'http://127.0.0.1:8015/deployment/v1/token-usage' \
+  -H 'X-Security-Admin-Token: <运维令牌>' \
+  --data-urlencode 'start=2026-09-01T00:00:00+08:00' \
+  --data-urlencode 'end=2026-09-02T00:00:00+08:00'
+```
+
+返回总计及按日明细：`request_count`、`input_tokens`、`output_tokens`、`total_tokens`。查询只读使用已有 `created_at` 索引，不读取对话原文；应在低频运维场景调用，避免连续大范围查询。

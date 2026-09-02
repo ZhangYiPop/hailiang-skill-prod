@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import inspect
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -63,6 +64,7 @@ from hailiang_skills.runtime_bridge.runtime_config import load_runtime_bridge_co
 from hailiang_skills.llm.test_routing import TestLLMRoutingConfig
 from hailiang_skills.core.deployment import deployment_environment
 from hailiang_skills.skills.base import SkillResult
+from hailiang_skills.workbench.runtime_overlay import configured_skill_bundle
 
 ensure_skill_runtime_importable()
 
@@ -1106,6 +1108,26 @@ class MainPlannerOrchestrator:
             event_recorder=self._record_events,
         )
 
+    @staticmethod
+    def _configured_bundle(context, bundle):
+        """Overlay the immutable business Prompt while retaining core code/tools."""
+        if bundle is None:
+            return None
+        snapshot = (getattr(context, "session_meta", {}) or {}).get("configuration_snapshot")
+        entries = snapshot.get("entries", []) if isinstance(snapshot, dict) else []
+        skill_id = str(getattr(getattr(bundle, "contract", None), "skill_id", "") or getattr(bundle, "root_name", ""))
+        entry = next(
+            (
+                item for item in entries
+                if isinstance(item, dict)
+                and item.get("object_type") == "skill"
+                and str(item.get("object_key") or "") == skill_id
+                and isinstance(item.get("payload"), dict)
+            ),
+            None,
+        )
+        return configured_skill_bundle(bundle, entry)
+
     def _load_runtime_registry(self) -> RuntimeSkillRegistry:
         project_registry = load_local_skill_registry(
             PROJECT_RUNTIME_SKILLS_ROOT,
@@ -1999,7 +2021,7 @@ class MainPlannerOrchestrator:
         logger: RuntimeLogger,
         context,
     ) -> tuple[str, str]:
-        current_bundle = self.runtime_registry.get(state.active_skill_id) or bundle
+        current_bundle = self._configured_bundle(context, self.runtime_registry.get(state.active_skill_id) or bundle)
         logger.log(
             "turn.resolve.start",
             latest_user_message=next((item.content for item in reversed(state.messages) if item.role == "user"), ""),
@@ -2151,7 +2173,7 @@ class MainPlannerOrchestrator:
                 return reply, ""
 
         for tool_index in range(MAX_TOOL_CALLS_PER_TURN + 1):
-            current_bundle = self.runtime_registry.get(state.active_skill_id) or bundle
+            current_bundle = self._configured_bundle(context, self.runtime_registry.get(state.active_skill_id) or bundle)
 
             if tool_results:
                 assembly = build_prompt_assembly(
@@ -2561,6 +2583,7 @@ class MainPlannerOrchestrator:
         logger: RuntimeLogger,
         context,
     ) -> tuple[str, str]:
+        bundle = self._configured_bundle(context, bundle)
         messages = self._skill_entry_messages(bundle, state)
         self._emit_runtime_status(context, "response", "正在生成回复")
         started = time.perf_counter()
@@ -2650,6 +2673,7 @@ class MainPlannerOrchestrator:
         raw_reply: str | None = None,
     ) -> tuple[str, str]:
         """Use a non-streaming internal envelope, then stream only user-visible text."""
+        bundle = self._configured_bundle(context, bundle)
         self._emit_runtime_status(context, "response", "正在生成回复")
         assembly = build_prompt_assembly(
             bundle,
@@ -2827,7 +2851,12 @@ class MainPlannerOrchestrator:
                         # Retain the durable marker as a safe fallback when a
                         # cancellation backend is temporarily unavailable.
                         pass
-                return str((context.session_meta or {}).get("cancelled_stream_generation") or "") == active_generation
+                # A caller outside StreamingRunner may not have assigned a
+                # generation yet.  Two absent markers must mean "not
+                # cancellable", never "already cancelled".
+                return bool(active_generation) and (
+                    str((context.session_meta or {}).get("cancelled_stream_generation") or "") == active_generation
+                )
 
             stream_kwargs["cancel_check"] = cancel_check
         if "request_purpose" in inspect.signature(client.stream_complete).parameters:
@@ -2990,7 +3019,7 @@ class MainPlannerOrchestrator:
         active_skill_id: str,
     ) -> None:
         bundle = self.runtime_registry.get(active_skill_id) or self.main_bundle
-        state.soul_context = self._soul_context()
+        state.soul_context = self._soul_context(context)
         telemetry = current_telemetry()
         memory_logger = RuntimeLogger(
             default_log_file(self._runtime_session_file(context.session_id)),
@@ -3093,7 +3122,14 @@ class MainPlannerOrchestrator:
         safe_profile = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in profile_id)
         return f"{session_id}__profile__{safe_profile}"
 
-    def _soul_context(self) -> dict[str, Any]:
+    def _soul_context(self, context=None) -> dict[str, Any]:
+        override = (getattr(context, "session_meta", {}) or {}).get("soul_context") if context is not None else None
+        if isinstance(override, dict):
+            if not override.get("enabled", True):
+                return {"content": "", "content_hash": None, "available": False, "path": "workbench-disabled"}
+            content = str(override.get("content") or "")
+            if content:
+                return {"content": content, "content_hash": override.get("content_hash"), "available": True, "path": "workbench-snapshot"}
         path = self.runtime_bridge_config.soul_path
         if not path.is_file():
             return {"content": "", "content_hash": None, "available": False, "path": str(path)}
@@ -3108,12 +3144,20 @@ class MainPlannerOrchestrator:
         }
 
     def handle_message(self, user_message: str, context) -> SkillResult:
-        """Run the default Expert, retaining the existing API/result contract."""
-        return self.expert_runtime.handle_message(
-            user_message,
-            context,
-            self._handle_message_legacy,
-        )
+        """Dispatch explicit expert modes; ordinary chat stays in general chat.
+
+        An Expert/Expert Team is an opt-in business capability. Without an
+        explicit selection in this context branch, the established general
+        runtime is the handler and supplies the global Soul prompt.
+        """
+        meta = getattr(context, "session_meta", {}) or {}
+        if meta.get("expert_team_id") or meta.get("expert_id") or meta.get("active_expert_id"):
+            return self.expert_runtime.handle_message(
+                user_message,
+                context,
+                self._handle_message_legacy,
+            )
+        return self._handle_message_legacy(user_message, context)
 
     def _handle_message_legacy(self, user_message: str, context) -> SkillResult:
         self._normalize_planner_state_alias(context)
@@ -3328,7 +3372,10 @@ class MainPlannerOrchestrator:
             default_log_file(self._runtime_session_file(context.session_id)),
             context.session_id,
         )
-        current_bundle = self.runtime_registry.get(runtime_state.active_skill_id) or self.main_bundle
+        current_bundle = self._configured_bundle(
+            context,
+            self.runtime_registry.get(runtime_state.active_skill_id) or self.main_bundle,
+        )
         current_skill_state = runtime_state.skill_facts.get(runtime_state.active_skill_id, {})
         pending_questionnaire = (
             current_skill_state.get("_pending_questionnaire")
@@ -3475,7 +3522,10 @@ class MainPlannerOrchestrator:
                 ],
             )
         runtime_state.messages.append(ChatMessage(role="assistant", content=reply))
-        current_bundle = self.runtime_registry.get(runtime_state.active_skill_id) or self.main_bundle
+        current_bundle = self._configured_bundle(
+            context,
+            self.runtime_registry.get(runtime_state.active_skill_id) or self.main_bundle,
+        )
         run_status_hook_if_present(current_bundle, runtime_state, logger=logger)
         sync_runtime_state_to_context(context, runtime_state)
         self._persist_runtime_state(context, runtime_state)
@@ -3716,19 +3766,16 @@ class MainPlannerOrchestrator:
 
     def _run_hailiang_fallback(self, user_message: str, context, turn_id: str) -> SkillResult:
         del turn_id
-        self._apply_legacy_llm_options(context)
-        fallback_skill = self.registry.get("chat")
-        result = fallback_skill.run(user_message, context)
+        result = SkillResult(assistant_message="当前没有可用的专家承接该问题。请重新选择可用专家或专家团。")
         if not self._has_streamed_reply(context):
             self._emit_reply_delta(context, result.assistant_message)
-        self._record_prompt_assembly_from_skill(context, fallback_skill)
-        context.interaction_state["active_skill"] = fallback_skill.skill_name
+        context.interaction_state["active_skill"] = ""
         context.add_message(
             "assistant",
             result.assistant_message,
-            metadata=self._assistant_message_metadata(context, fallback_skill.skill_name),
+            metadata={"message_type": "no_expert_handler"},
         )
-        self._record_events(context, result.events)
+        self._record_events(context, [make_event("no_expert_handler", {})])
         return result
 
     def _route_with_main_planner(self, state: SessionState, context) -> str:

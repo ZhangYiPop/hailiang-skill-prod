@@ -53,11 +53,8 @@ sse_recording:
   enabled: true
   root_dir: logs/sse_recording/sessions
   format: jsonl
-# The interaction input currently owns the target child.  ``context_data`` is
-# only a forwarding-backend snapshot and may become authoritative later
-# without changing the public request envelope.
+# The forwarding backend supplies the user's current child selection in
+# ``context_data``. ``input.profile_id`` is an optional legacy mirror and,
+# when present, must match rather than override it.
 session_profile_resolution:
-  authority: input
-
-expert_runtime:
-  default_team_id: student_growth_expert_team
+  authority: context_data

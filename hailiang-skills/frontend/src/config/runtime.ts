@@ -1,5 +1,6 @@
 type RuntimeConfig = {
   apiBaseUrl?: string;
+  workbenchApiBaseUrl?: string;
   backendPort?: number | string;
   userId?: string;
 };
@@ -55,6 +56,13 @@ export function getRuntimeApiBaseUrl(): string {
     runtimeConfig.apiBaseUrl ?? import.meta.env.VITE_API_BASE_URL,
   );
   return configuredBaseUrl || getAutoDetectedApiBaseUrl();
+}
+
+export function getRuntimeWorkbenchApiBaseUrl(): string {
+  const runtimeConfig = readRuntimeConfig();
+  return normalizeBaseUrl(
+    runtimeConfig.workbenchApiBaseUrl ?? import.meta.env.VITE_WORKBENCH_API_BASE_URL,
+  ) || getRuntimeApiBaseUrl();
 }
 
 export function getRuntimeUserId(): string {

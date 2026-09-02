@@ -97,6 +97,16 @@ class FactService:
 
     def hydrate_context(self, context: SessionContext) -> SessionContext:
         with span("facts.hydrate", node="facts_hydrate"):
+            # An unbound conversation intentionally has no account or child
+            # memory.  Its Facts are session-local and persisted only through
+            # the session snapshot branch.
+            if context.context_scope == "unbound":
+                context.load_effective_facts(
+                    shared_facts=KnownFacts(),
+                    profile_facts=KnownFacts(),
+                    session_facts=context.session_facts,
+                )
+                return context
             shared_facts = self.user_fact_repo.get(context.user_id)
             profile_facts = KnownFacts()
             if context.profile_id:
@@ -147,6 +157,8 @@ class FactService:
 
     def persist_context(self, context: SessionContext) -> None:
         with span("facts.persist", node="facts_persist"):
+            if context.context_scope == "unbound":
+                return
             self.user_fact_repo.save(context.user_id, context.shared_facts)
             if context.profile_id:
                 self.profile_repo.save_profile_facts(
@@ -271,6 +283,8 @@ class FactService:
         return changes
 
     def _persist_scope(self, context: SessionContext, scope: str) -> None:
+        if context.context_scope == "unbound":
+            return
         if scope == FACT_SCOPE_SHARED:
             self.user_fact_repo.save(context.user_id, context.shared_facts)
         elif scope == FACT_SCOPE_PROFILE and context.profile_id:

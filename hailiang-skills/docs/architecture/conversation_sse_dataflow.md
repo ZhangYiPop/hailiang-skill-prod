@@ -4,7 +4,7 @@
 
 ```text
 本地调试前端 / 项目 BFF
-  -> POST /api/v1/sessions/chat/stream
+  -> POST /api/v2/sessions/chat/stream
   -> 校验或恢复 (session_id, user_id, profile_id)
   -> run 台账与并发协调
   -> StreamingRunner / MainPlannerOrchestrator
@@ -54,4 +54,5 @@ run_completed/run_cancelled -> status 终态
 - 风控每阶段立即写入 `risk`；输出拦截会清空本轮正文、表单和 Skill 卡片，并输出通用提示。
 
 字段级规范与前端行为见 [SSE_RESPONSE_CONTRACT.md](../../guides/SSE_RESPONSE_CONTRACT.md)
+、[SSE_V2_INTEGRATION_GUIDE.md](../../guides/SSE_V2_INTEGRATION_GUIDE.md)
 和 [FRONTEND_INTERACTION_CHECKLIST.md](../../guides/FRONTEND_INTERACTION_CHECKLIST.md)。

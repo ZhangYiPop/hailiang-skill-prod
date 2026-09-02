@@ -25,6 +25,7 @@ INTERNAL_INFO_REFUSAL = (
     "抱歉，我不能提供或讨论平台的内部配置、工作指令或安全机制。"
     "请直接说明孩子的实际升学问题，我会在可服务范围内协助分析。"
 )
+CONTENT_BLOCKED_REASON = "内容触发安全风控策略，已拦截本次回答"
 _INTERNAL_INFO_PATTERNS = (
     re.compile(r"你是(?:什么|哪种|哪个)模型|什么模型|底层模型|基座模型|模型来源|模型版本|大模型来源"),
     re.compile(r"底层架构|系统架构|技术实现|后端实现|后台实现|怎么实现|如何工作|工作原理"),
@@ -99,7 +100,10 @@ def _external_events(stream: Iterator[str], *, session_id: str, request_id: str)
         delta = content[len(previous) :] if content.startswith(previous) else content
         previous = content
         status = str(payload.get("status") or "")
-        if status in {"failed", "blocked"}:
+        if status == "blocked":
+            terminal_status = "success"
+            terminal_reason = CONTENT_BLOCKED_REASON
+        elif status == "failed":
             terminal_status = "failed"
             error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
             terminal_reason = str(error.get("message") or "模型未能正常回答")
@@ -241,7 +245,11 @@ def build_external_chat_router(
                 continue
             assistant = payload.get("assistant") if isinstance(payload.get("assistant"), dict) else {}
             content = str(assistant.get("content") or content)
-            if str(payload.get("status") or "") in {"failed", "blocked"}:
+            payload_status = str(payload.get("status") or "")
+            if payload_status == "blocked":
+                status = "success"
+                reason = CONTENT_BLOCKED_REASON
+            elif payload_status == "failed":
                 status = "failed"
                 error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
                 reason = str(error.get("message") or "模型未能正常回答")

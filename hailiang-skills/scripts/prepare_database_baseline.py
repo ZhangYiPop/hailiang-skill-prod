@@ -13,15 +13,33 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.pool import NullPool
 
 
-EXPECTED_REVISION = "0001_multi_profile_runtime"
+BASELINE_REVISION = "0001_multi_profile_runtime"
 DEFAULT_LOCAL_SUFFIX = "_multi_profile_v1"
+
+
+@lru_cache(maxsize=1)
+def compatible_revisions() -> frozenset[str]:
+    """Return every revision in the current baseline lineage.
+
+    Keeping this derived from Alembic prevents each new migration from making
+    an already-upgraded local database look like a legacy incompatible one.
+    """
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    revisions = frozenset(str(item.revision) for item in ScriptDirectory.from_config(config).walk_revisions())
+    if BASELINE_REVISION not in revisions:
+        raise RuntimeError(f"Alembic 迁移链缺少基线 {BASELINE_REVISION}")
+    return revisions
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +53,7 @@ class DatabaseState:
 
     @property
     def compatible(self) -> bool:
-        return self.empty or self.revisions == (EXPECTED_REVISION,)
+        return self.empty or (bool(self.revisions) and set(self.revisions).issubset(compatible_revisions()))
 
 
 def _inspect_database(url: URL) -> DatabaseState:
@@ -127,7 +145,7 @@ def resolve_database_url(raw_url: str, *, mode: str, suffix: str) -> str:
         raise SystemExit(
             "数据库基线不兼容："
             f"{url.database} 当前 revision={_state_label(state)}，"
-            f"本版本要求空数据库或 revision={EXPECTED_REVISION}。"
+            f"本版本要求空数据库或当前迁移链 revision={','.join(sorted(compatible_revisions()))}。"
             "请保留旧库，并为本版本创建一个全新的数据库后修改 HAILIANG_DATABASE_URL。"
         )
 

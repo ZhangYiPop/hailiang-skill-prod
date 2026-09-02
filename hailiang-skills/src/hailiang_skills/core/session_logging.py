@@ -15,6 +15,7 @@ import yaml
 from hailiang_skills.core.telemetry import current_telemetry
 from hailiang_skills.core.deployment import log_root
 from hailiang_skills.core.deployment import deployment_environment
+from hailiang_skills.core.context import UNBOUND_CONTEXT_BRANCH_ID
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -212,6 +213,13 @@ def write_session_snapshot(context) -> None:
         return
     log_dir = ensure_session_log_dir(context.session_id)
     context.sync_active_branch()
+    public_branches = _sanitize_jsonable(context.profile_branches)
+    if isinstance(public_branches, dict) and UNBOUND_CONTEXT_BRANCH_ID in public_branches:
+        unbound = dict(public_branches.pop(UNBOUND_CONTEXT_BRANCH_ID) or {})
+        unbound["profile_id"] = None
+        unbound["profile_name"] = None
+        unbound["context_scope"] = "unbound"
+        public_branches["unbound"] = unbound
     snapshot = {
         "session_id": context.session_id,
         "user_id": context.user_id,
@@ -234,7 +242,7 @@ def write_session_snapshot(context) -> None:
         "event_count": len(context.event_trace),
         "session_meta": _sanitize_jsonable(context.session_meta),
         "last_fact_changes": context.last_fact_changes,
-        "profile_branches": _sanitize_jsonable(context.profile_branches),
+        "profile_branches": public_branches,
         "timeline_items": _sanitize_jsonable(context.timeline_items),
     }
     (log_dir / "snapshot.json").write_text(

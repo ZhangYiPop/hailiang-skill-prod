@@ -60,6 +60,13 @@ class _Facts:
         return self.profile_repo.get_profile_facts(user_id, profile_id)
 
     def hydrate_context(self, context: SessionContext) -> SessionContext:
+        if context.context_scope == "unbound":
+            context.load_effective_facts(
+                shared_facts=KnownFacts(),
+                profile_facts=KnownFacts(),
+                session_facts=context.session_facts,
+            )
+            return context
         context.load_effective_facts(
             shared_facts=KnownFacts(),
             profile_facts=deepcopy(self.profile_repo.get_profile_facts(context.user_id, str(context.profile_id))),
@@ -154,6 +161,53 @@ def test_profile_branches_isolate_messages_skill_expert_and_resume_state() -> No
     } == {"profile_a", "profile_b"}
 
 
+def test_unbound_branch_isolated_and_resumes_without_profile_projection() -> None:
+    repository = InMemorySessionRepository()
+    facts = _Facts()
+    session_id = "sess_unbound_" + __import__("uuid").uuid4().hex
+    unbound, created = open_or_resume_session(
+        repository,
+        facts,
+        session_id=session_id,
+        data=ContextData(user_id="user_1"),
+        context_scope="unbound",
+    )
+    assert created is True
+    assert unbound.profile_id is None
+    assert unbound.context_scope == "unbound"
+    assert unbound.shared_facts.facts == {}
+    assert unbound.profile_facts.facts == {}
+    unbound.add_message("user", "这是未绑定孩子的问题")
+    unbound.session_facts.set_fact("unbound_only", "yes", source_skill="test")
+    unbound.update_fact("declared_profile_fact", "仍在会话内", source_skill="test", scope="profile")
+    assert unbound.profile_facts.get_value("declared_profile_fact") is None
+    assert unbound.session_facts.get_value("declared_profile_fact") == "仍在会话内"
+    repository.save(unbound)
+
+    child, _ = open_or_resume_session(
+        repository,
+        facts,
+        session_id=session_id,
+        data=_context("profile_a", "小A"),
+        context_scope="profile",
+    )
+    assert child.messages == []
+    child.add_message("user", "这是小A的问题")
+    repository.save(child)
+
+    resumed, _ = open_or_resume_session(
+        repository,
+        facts,
+        session_id=session_id,
+        data=ContextData(user_id="user_1"),
+        context_scope="unbound",
+    )
+    assert resumed.profile_id is None
+    assert [message["content"] for message in resumed.messages] == ["这是未绑定孩子的问题"]
+    assert resumed.session_facts.get_value("unbound_only") == "yes"
+    assert {item["profile_id"] for item in resumed.timeline_items if item["item_type"] == "message"} == {None, "profile_a"}
+
+
 def test_mismatched_new_target_gets_no_forwarded_name_or_facts() -> None:
     repository = InMemorySessionRepository()
     facts = _Facts()
@@ -189,7 +243,7 @@ def test_default_team_uses_configured_coordinator_and_validates_membership() -> 
 
     assert require_default_expert_team(orchestrator) is team
     assert initialize_default_expert_team(context, orchestrator, force=True) is True
-    assert context.interaction_state["active_skill"] == "general_chat"
+    assert context.interaction_state["active_skill"] == "career_plan_entity"
     assert context.session_meta == {
         "expert_team_id": "student_growth_expert_team",
         "active_expert_id": "career_plan_expert",
@@ -251,6 +305,21 @@ def test_postgres_repository_round_trips_isolated_profile_branches() -> None:
     assert [item["content"] for item in restored.messages] == ["A 的数据库消息"]
     assert set(restored.profile_branches) == {"profile_a", "profile_b"}
     assert any(item["item_type"] == "profile_switch" for item in restored.timeline_items)
+
+
+def test_postgres_repository_round_trips_unbound_branch_without_profile() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    repository = PostgresSessionRepository(build_session_factory(engine))
+    context = SessionContext(session_id="sess_sql_unbound", user_id="user_1")
+    context.add_message("user", "未绑定上下文")
+    repository.create(context)
+
+    restored = repository.get("sess_sql_unbound")
+    assert restored.profile_id is None
+    assert restored.context_scope == "unbound"
+    assert [item["content"] for item in restored.messages] == ["未绑定上下文"]
+    assert "__unbound__" in restored.profile_branches
 
 
 def test_hard_context_threshold_compresses_synchronously_and_keeps_recent_turns(tmp_path) -> None:

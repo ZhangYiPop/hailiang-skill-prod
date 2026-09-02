@@ -68,7 +68,7 @@ def review_scripts(package_root: Path) -> list[ScriptReviewFinding]:
                     )
                 )
 
-    for script in sorted(scripts_dir.glob("*.py")):
+    for script in sorted(scripts_dir.rglob("*.py")):
         if script.name == "__init__.py":
             continue
         rel = script.relative_to(package_root).as_posix()

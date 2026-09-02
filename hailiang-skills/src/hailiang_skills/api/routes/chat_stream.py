@@ -11,7 +11,7 @@ from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_se
 from hailiang_skills.core.concurrency import CapacityExceededError, TurnCoordinator
 from hailiang_skills.core.fact_service import FactService
 from hailiang_skills.core.sse_protocol import SSE_V2_PROTOCOL
-from hailiang_skills.core.skill_ids import CAREER_PLAN_SKILL_ID, canonical_skill_id
+from hailiang_skills.core.skill_ids import CAREER_PLAN_SKILL_ID, GENERAL_CHAT_SKILL_ID, canonical_skill_id
 from hailiang_skills.core.streaming_runner import StreamingRunner, format_sse_event
 from hailiang_skills.storage.repositories.session_repo import InMemorySessionRepository
 from hailiang_skills.storage.repositories.postgres_repo import SessionVersionConflict
@@ -20,7 +20,6 @@ from hailiang_skills.core.logging import make_event
 from hailiang_skills.core.telemetry import PROFILE_CONTEXT_MISMATCHES
 from hailiang_skills.core.message_interactions import ACTIVE, SELECTED, ensure_message_interactions, expire_active_interactions, update_interaction
 from hailiang_skills.api.profile_targeting import ProfileTargetResolver
-from hailiang_skills.runtime_bridge.default_expert_team import initialize_default_expert_team
 from hailiang_skills.core.session_logging import append_session_events
 
 
@@ -29,12 +28,16 @@ class StrictInput(BaseModel):
 
 
 class ProfileBoundInput(StrictInput):
-    profile_id: str = Field(min_length=1)
+    # Retain the historical name for import compatibility.  A session action
+    # can now explicitly select the session-local unbound context.
+    context_scope: Literal["profile", "unbound"] | None = None
+    profile_id: str | None = Field(default=None, min_length=1)
 
 
 class ChatInput(ProfileBoundInput):
     action: Literal["chat"]
     expert_id: str | None = Field(default=None, min_length=1)
+    expert_team_id: str | None = Field(default=None, min_length=1)
     content: str = Field(min_length=1)
     source: Literal["chat"]
     enable_thinking: bool = False
@@ -97,6 +100,7 @@ class ChatStreamRequest(StrictInput):
     run_id: str = Field(min_length=1)
     input: str = Field(min_length=1)
     context_data: ContextData | None = None
+    debug_session_id: str | None = Field(default=None, min_length=1)
 
 
 def _parse_input(raw: str) -> StreamInput:
@@ -135,6 +139,70 @@ def _parse_input(raw: str) -> StreamInput:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
+def _resolve_context_scope(input_data: ProfileBoundInput, data: ContextData) -> tuple[str, str | None]:
+    """Resolve one turn's context from the BFF-selected context data.
+
+    ``context_data`` is the forwarding service's current child selection, so
+    it is the authoritative source for ordinary chat turns. ``input`` retains
+    an optional ``profile_id`` solely for older callers; when supplied it must
+    agree with the selected context rather than silently overriding it.
+    """
+    input_profile_id = str(input_data.profile_id or "").strip()
+    context_profile_id = str(data.profile_id or "").strip()
+    if input_profile_id and context_profile_id and input_profile_id != context_profile_id:
+        raise HTTPException(status_code=409, detail="PROFILE_CONTEXT_MISMATCH")
+
+    scope = input_data.context_scope or ("profile" if (context_profile_id or input_profile_id) else "unbound")
+    if scope == "unbound":
+        if input_profile_id:
+            raise HTTPException(status_code=422, detail="UNBOUND_CONTEXT_MUST_NOT_INCLUDE_PROFILE_ID")
+        if any((data.profile_id, data.student_name, data.school_year, data.grade)) or data.facts:
+            raise HTTPException(status_code=422, detail="UNBOUND_CONTEXT_MUST_NOT_INCLUDE_PROFILE_DATA")
+        return scope, None
+    profile_id = context_profile_id or input_profile_id
+    if not profile_id:
+        raise HTTPException(status_code=422, detail="PROFILE_ID_REQUIRED")
+    if not data.profile_id or not data.student_name:
+        raise HTTPException(status_code=422, detail="PROFILE_CONTEXT_REQUIRED")
+    return scope, profile_id
+
+
+def _clear_legacy_implicit_expert_team(context) -> bool:
+    """Migrate only the former automatic team entry back to general chat.
+
+    Earlier releases wrote ``default_coordinator`` to every newly created
+    profile branch. The public contract now keeps ordinary chat independent
+    of experts; explicit team selection, direct expert selection and workbench
+    snapshots must remain untouched.
+    """
+    meta = context.session_meta if isinstance(context.session_meta, dict) else {}
+    if meta.get("expert_selection_source") != "default_coordinator":
+        return False
+    if meta.get("workbench_debug_session_id"):
+        return False
+    for key in (
+        "expert_team_id",
+        "active_expert_id",
+        "expert_id",
+        "expert_selection_source",
+        "expert_requested_skill_id",
+        "pending_team_handoff",
+    ):
+        meta.pop(key, None)
+    active_skill = canonical_skill_id((context.interaction_state or {}).get("active_skill"))
+    if active_skill in {"", CAREER_PLAN_SKILL_ID, "expert_direct"}:
+        context.interaction_state["active_skill"] = GENERAL_CHAT_SKILL_ID
+        runtime_state = context.skill_states.get("skill_runtime")
+        if isinstance(runtime_state, dict):
+            runtime_state["active_skill_id"] = GENERAL_CHAT_SKILL_ID
+            runtime_state.setdefault("skill_facts", {}).setdefault(GENERAL_CHAT_SKILL_ID, {})
+            runtime_state.setdefault("stage_facts", {}).setdefault(GENERAL_CHAT_SKILL_ID, {"answer": {}})
+        planner_state = context.skill_states.get(CAREER_PLAN_SKILL_ID)
+        if isinstance(planner_state, dict):
+            planner_state["target_skill"] = GENERAL_CHAT_SKILL_ID
+    return True
+
+
 def _claim_external_run(repository, context, run_id: str, *, action: str):
     """Persist the BFF run id before work starts, so retries cannot duplicate a turn."""
     # An older worker can be finishing exactly while a new action supersedes
@@ -161,6 +229,52 @@ def _claim_external_run(repository, context, run_id: str, *, action: str):
         except SessionVersionConflict:
             context = repository.get(context.session_id)
     raise HTTPException(status_code=409, detail="SESSION_UPDATE_CONFLICT")
+
+
+def _commit_run_action(repository, context, run_id: str, *, action: str, apply):
+    """Atomically persist an interactive action together with its run claim.
+
+    A team-handoff confirmation changes both the interaction card and the
+    active expert.  Persisting that state after a separate run-claim save
+    leaves an avoidable optimistic-lock window (and used to surface as a 409
+    to the person clicking the card).  Re-apply the action to a freshly read
+    context on contention so validation is still authoritative and no stale
+    card state is written.
+    """
+    for _ in range(3):
+        prepared = apply(context)
+        used = context.session_meta.setdefault("external_run_ids", [])
+        if not isinstance(used, list):
+            used = []
+            context.session_meta["external_run_ids"] = used
+        if run_id in used:
+            raise HTTPException(status_code=409, detail="RUN_ID_CONFLICT")
+        used.append(run_id)
+        ledger = context.session_meta.setdefault("run_ledger", {})
+        if not isinstance(ledger, dict):
+            ledger = {}
+            context.session_meta["run_ledger"] = ledger
+        ledger[run_id] = {"status": "running", "action": action}
+        try:
+            repository.save(context)
+            if hasattr(repository, "record_run"):
+                repository.record_run(context, run_id, action)
+            return context, prepared
+        except SessionVersionConflict:
+            context = repository.get(context.session_id)
+    raise HTTPException(status_code=409, detail="SESSION_UPDATE_CONFLICT")
+
+
+def _save_and_refresh_context(repository, context):
+    """Persist a pre-stream mutation and continue from its stored version.
+
+    PostgreSQL guards every session write with an optimistic version. A single
+    API action may need to save setup state (for example a legacy-mode
+    migration or an explicit expert choice) before it claims its run. Reload
+    after that save so the run-claim write cannot reuse the pre-save version.
+    """
+    repository.save(context)
+    return repository.get(context.session_id)
 
 
 def _stream_headers(request: Request) -> dict[str, str]:
@@ -335,6 +449,8 @@ def build_chat_stream_router(
     orchestrator,
     turn_coordinator: TurnCoordinator | None = None,
     llm_rate_limiter: LLMRateLimiter | None = None,
+    configuration_snapshot_resolver=None,
+    debug_configuration_snapshot_resolver=None,
 ) -> APIRouter:
     router = APIRouter()
     runner = StreamingRunner(repository, fact_service, orchestrator, turn_coordinator=turn_coordinator)
@@ -385,17 +501,27 @@ def build_chat_stream_router(
                     detail="LLM_RATE_LIMITED",
                     headers={"Retry-After": "1"},
                 ) from exc
-        resolution = profile_target_resolver.resolve(
-            input_profile_id=input_data.profile_id,
-            context_data=request.context_data,
-        )
+        context_scope, selected_profile_id = _resolve_context_scope(input_data, request.context_data)
+        if context_scope == "profile":
+            resolution = profile_target_resolver.resolve(
+                input_profile_id=str(selected_profile_id or ""),
+                context_data=request.context_data,
+            )
+            target_profile_id: str | None = resolution.target_profile_id
+            profile_context_status = resolution.status
+            allow_context_seed = resolution.allow_context_seed
+        else:
+            resolution = None
+            target_profile_id = None
+            profile_context_status = "unbound"
+            allow_context_seed = False
         try:
             existing_context = repository.get(request.session_id)
         except KeyError:
             existing_context = None
         if existing_context is not None and existing_context.user_id != request.context_data.user_id:
             raise HTTPException(status_code=409, detail="SESSION_ID_CONFLICT")
-        if existing_context is not None and str(existing_context.profile_id or "") != resolution.target_profile_id:
+        if existing_context is not None and str(existing_context.profile_id or "") != str(target_profile_id or ""):
             ledger = existing_context.session_meta.get("run_ledger")
             running = [
                 run_id
@@ -410,25 +536,49 @@ def build_chat_stream_router(
             fact_service,
             session_id=request.session_id,
             data=request.context_data,
-            target_profile_id=resolution.target_profile_id,
-            allow_context_seed=resolution.allow_context_seed,
+            target_profile_id=target_profile_id,
+            allow_context_seed=allow_context_seed,
+            context_scope=context_scope,
         )
+        bound_debug_session_id = str(context.session_meta.get("workbench_debug_session_id") or "")
+        if request.debug_session_id and bound_debug_session_id and request.debug_session_id != bound_debug_session_id:
+            raise HTTPException(status_code=409, detail="DEBUG_SNAPSHOT_CONFLICT")
+        preflight_context_saved = False
+        if session_created and request.debug_session_id:
+            if debug_configuration_snapshot_resolver is None:
+                raise HTTPException(status_code=422, detail="DEBUG_SNAPSHOT_NOT_AVAILABLE")
+            try:
+                snapshot = debug_configuration_snapshot_resolver(request.debug_session_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            context.session_meta["configuration_snapshot"] = snapshot
+            context.session_meta["workbench_debug_session_id"] = request.debug_session_id
+            repository.save(context)
+            preflight_context_saved = True
+        elif session_created and configuration_snapshot_resolver is not None:
+            snapshot = configuration_snapshot_resolver()
+            if snapshot is not None:
+                context.session_meta["configuration_snapshot"] = snapshot
+                repository.save(context)
+                preflight_context_saved = True
+        if preflight_context_saved:
+            context = repository.get(context.session_id)
+        legacy_default_team_cleared = _clear_legacy_implicit_expert_team(context)
         profile_switched = bool(context.session_meta.get("_profile_switched"))
-        branch_created = bool(context.session_meta.get("_profile_branch_created"))
-        team_initialized = False
-        if branch_created and getattr(orchestrator, "expert_team_registry", None) is not None:
-            team_initialized = initialize_default_expert_team(context, orchestrator, force=True)
 
         profile_context_event = {
-            "profile_id": resolution.target_profile_id,
-            "profile_name": context.profile_name or "",
+            "profile_id": context.profile_id,
+            "profile_name": context.profile_name,
+            "context_scope": context.context_scope,
+            "context_label": context.context_label,
+            "context_switched": profile_switched,
             "branch_version": int(context.session_meta.get("_active_branch_version") or 0),
-            "profile_context_status": resolution.status,
+            "profile_context_status": profile_context_status,
             "session_created": bool(session_created),
             "profile_switched": profile_switched,
         }
         context.session_meta["_sse_profile_context"] = profile_context_event
-        if resolution.status == "mismatched":
+        if resolution is not None and resolution.status == "mismatched":
             if PROFILE_CONTEXT_MISMATCHES:
                 PROFILE_CONTEXT_MISMATCHES.labels(authority=resolution.authority).inc()
             mismatch_event = make_event("profile_context_mismatch", {
@@ -440,6 +590,18 @@ def build_chat_stream_router(
             context.event_trace.append(mismatch_event)
             append_session_events(request.session_id, [mismatch_event])
 
+        requested_team_id = str(input_data.expert_team_id or "").strip() if isinstance(input_data, ChatInput) else ""
+        if requested_team_id:
+            teams = getattr(orchestrator, "expert_team_registry", None)
+            team = teams.get(requested_team_id) if teams is not None else None
+            if team is None:
+                raise HTTPException(status_code=422, detail="EXPERT_TEAM_NOT_FOUND")
+            context.session_meta["expert_team_id"] = team.team_id
+            context.session_meta["expert_id"] = team.coordinator_expert_id
+            context.session_meta["active_expert_id"] = team.coordinator_expert_id
+            context.session_meta["expert_selection_source"] = "manual_team"
+            context.session_meta.pop("expert_requested_skill_id", None)
+            context.session_meta.pop("pending_team_handoff", None)
         requested_expert_id = str(input_data.expert_id or "").strip() if isinstance(input_data, ChatInput) else ""
         if requested_expert_id:
             expert_registry = getattr(orchestrator, "expert_registry", None)
@@ -451,40 +613,39 @@ def build_chat_stream_router(
             team = teams.get(team_id) if team_id and teams is not None else None
             if team is not None and definition.agent_id not in team.member_expert_ids:
                 raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
-            if team is None:
-                raise HTTPException(status_code=409, detail="EXPERT_TEAM_NOT_ACTIVE")
             context.session_meta["expert_id"] = definition.agent_id
             context.session_meta["active_expert_id"] = definition.agent_id
             context.session_meta["expert_selection_source"] = "manual"
             context.session_meta.pop("expert_requested_skill_id", None)
             context.session_meta.pop("pending_team_handoff", None)
 
-        if team_initialized or requested_expert_id or resolution.status == "mismatched":
-            repository.save(context)
+        if legacy_default_team_cleared or requested_team_id or requested_expert_id or profile_context_status == "mismatched":
+            context = _save_and_refresh_context(repository, context)
 
         if not profile_switched and hasattr(runner, "supersede_active_run"):
             runner.supersede_active_run(request.session_id, context.user_id, next_run_id=request.run_id)
         if isinstance(input_data, ConfirmTeamHandoffInput):
-            team_member_switch = _confirm_team_handoff(context, orchestrator, input_data)
-            prepared_context = context
-            context = _claim_external_run(repository, context, request.run_id, action=input_data.action)
-            if context is not prepared_context:
-                # Optimistic contention reloads the latest session. Re-apply
-                # the confirmation so source context and card state survive.
-                team_member_switch = _confirm_team_handoff(context, orchestrator, input_data)
-            event = make_event("team_handoff_confirmed", {
-                "team_id": str(context.session_meta.get("expert_team_id") or ""),
-                "expert_id": input_data.target_expert_id,
-                "source_message_id": input_data.source_message_id,
-            })
-            if hasattr(orchestrator, "_record_events"):
-                orchestrator._record_events(context, [event])
-            else:
-                context.event_trace.append(event)
-            try:
-                repository.save(context)
-            except SessionVersionConflict as exc:
-                raise HTTPException(status_code=409, detail="SESSION_UPDATE_CONFLICT") from exc
+            def apply_handoff(current_context):
+                team_member_switch = _confirm_team_handoff(current_context, orchestrator, input_data)
+                event = make_event("team_handoff_confirmed", {
+                    "team_id": str(current_context.session_meta.get("expert_team_id") or ""),
+                    "expert_id": input_data.target_expert_id,
+                    "source_message_id": input_data.source_message_id,
+                })
+                # Keep the event in the same optimistic write as the selected
+                # card and active-expert state.  The file index is appended
+                # only after that write succeeds, avoiding orphan audit rows.
+                current_context.event_trace.append(event)
+                return team_member_switch, event
+
+            context, (team_member_switch, event) = _commit_run_action(
+                repository,
+                context,
+                request.run_id,
+                action=input_data.action,
+                apply=apply_handoff,
+            )
+            append_session_events(request.session_id, [event])
             try:
                 lease = runner.reserve_turn(request.session_id, context.user_id, run_id=request.run_id)
             except CapacityExceededError as exc:
@@ -502,24 +663,24 @@ def build_chat_stream_router(
                 initial_events=[("profile_context", profile_context_event)],
             )
         elif isinstance(input_data, SwitchTeamMemberInput):
-            team_member_switch = _switch_team_member(context, orchestrator, input_data)
-            prepared_context = context
-            context = _claim_external_run(repository, context, request.run_id, action=input_data.action)
-            if context is not prepared_context:
-                team_member_switch = _switch_team_member(context, orchestrator, input_data)
-            event = make_event("team_member_selected_from_toolbar", {
-                "team_id": str(context.session_meta.get("expert_team_id") or ""),
-                "from_expert_id": team_member_switch["from_expert_id"],
-                "expert_id": input_data.target_expert_id,
-            })
-            if hasattr(orchestrator, "_record_events"):
-                orchestrator._record_events(context, [event])
-            else:
-                context.event_trace.append(event)
-            try:
-                repository.save(context)
-            except SessionVersionConflict as exc:
-                raise HTTPException(status_code=409, detail="SESSION_UPDATE_CONFLICT") from exc
+            def apply_member_switch(current_context):
+                team_member_switch = _switch_team_member(current_context, orchestrator, input_data)
+                event = make_event("team_member_selected_from_toolbar", {
+                    "team_id": str(current_context.session_meta.get("expert_team_id") or ""),
+                    "from_expert_id": team_member_switch["from_expert_id"],
+                    "expert_id": input_data.target_expert_id,
+                })
+                current_context.event_trace.append(event)
+                return team_member_switch, event
+
+            context, (team_member_switch, event) = _commit_run_action(
+                repository,
+                context,
+                request.run_id,
+                action=input_data.action,
+                apply=apply_member_switch,
+            )
+            append_session_events(request.session_id, [event])
             try:
                 lease = runner.reserve_turn(request.session_id, context.user_id, run_id=request.run_id)
             except CapacityExceededError as exc:
@@ -540,12 +701,22 @@ def build_chat_stream_router(
             # A new free-form turn supersedes any unconfirmed coordinator
             # recommendation.  The same rule already applies to client-side
             # cards; persist it so stale cards cannot be confirmed through
-            # a delayed request.
-            expired = expire_active_interactions(context.messages)
-            if expired:
-                context.session_meta.pop("pending_team_handoff", None)
-                repository.save(context)
-            context = _claim_external_run(repository, context, request.run_id, action=input_data.action)
+            # a delayed request.  Expire those interactions in the same
+            # optimistic write that claims this run: ``supersede_active_run``
+            # may have advanced the stored version immediately beforehand.
+            def apply_free_form_turn(current_context):
+                expired = expire_active_interactions(current_context.messages)
+                if expired:
+                    current_context.session_meta.pop("pending_team_handoff", None)
+                return expired
+
+            context, _ = _commit_run_action(
+                repository,
+                context,
+                request.run_id,
+                action=input_data.action,
+                apply=apply_free_form_turn,
+            )
             try:
                 lease = runner.reserve_turn(request.session_id, context.user_id, run_id=request.run_id)
             except CapacityExceededError as exc:

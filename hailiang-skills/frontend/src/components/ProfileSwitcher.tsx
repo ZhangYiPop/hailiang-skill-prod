@@ -128,6 +128,20 @@ export function ProfileSwitcher({
       ) : null}
 
       <div className="mt-4 space-y-2">
+        <button
+          type="button"
+          onClick={() => onSelect("")}
+          disabled={loading}
+          className={[
+            "flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left transition",
+            !activeProfileId
+              ? "border-cyan-300/40 bg-cyan-300/15 text-cyan-50"
+              : "border-white/10 bg-slate-950/70 text-slate-200 hover:border-cyan-300/25 hover:bg-cyan-300/10",
+          ].join(" ")}
+        >
+          <span className="text-sm font-medium">未绑定孩子</span>
+          <span className="text-xs text-slate-400">仅本会话</span>
+        </button>
         {profiles.length ? (
           profiles.map((profile) => {
             const active = profile.profile_id === activeProfileId;

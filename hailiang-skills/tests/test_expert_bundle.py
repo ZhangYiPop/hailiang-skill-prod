@@ -90,6 +90,30 @@ def test_expert_direct_reply_keeps_expert_identity_outside_general_chat():
     assert context.skill_states["agent_runtime"]["expert_name"] == "家庭教育专家"
 
 
+def test_shared_expert_runtime_instructs_agent_to_route_or_continue_active_skill():
+    skill_registry = _runtime_registry()
+    experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
+    runtime = AgentScopeExpertRuntime(experts, skill_registry)
+    context = SessionContext()
+    context.session_meta["active_expert_id"] = "family_education_expert"
+    context.interaction_state["active_skill"] = "mbti_self_exploration"
+    runtime._available = True
+    runtime.client_factory = lambda _context: object()
+    runtime._is_supported_client = lambda _client: True
+    instructions: list[str] = []
+
+    def capture_agent(_definition, _message, _context, _client, _state, **kwargs):
+        instructions.append(str(kwargs.get("routing_instruction") or ""))
+
+    runtime._run_agent = capture_agent
+    runtime.handle_message("我更想解决亲子冲突", context, lambda _message, _context: "legacy-result")
+
+    assert instructions
+    assert "mbti_self_exploration" in instructions[0]
+    assert "另一个授权 Skill" in instructions[0]
+    assert "自动切换后由目标 Skill 作答" in instructions[0]
+
+
 def test_team_handoff_replaces_agentscope_iteration_error_with_user_message():
     skill_registry = _runtime_registry()
     experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)

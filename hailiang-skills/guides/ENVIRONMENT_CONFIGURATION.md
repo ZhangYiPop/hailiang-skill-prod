@@ -15,7 +15,6 @@ sudo nano /etc/hailiang-skills/test.env
 | --- | --- | --- | --- |
 | `DASHSCOPE_API_KEY` | 大模型服务密钥 | 测试密钥或共享密钥 | 生产密钥 |
 | `HAILIANG_SESSION_PROFILE_AUTHORITY` | 孩子 ID 权威策略：`input` / `context_data` / `strict_match` | `input` | `input` |
-| `HAILIANG_DEFAULT_EXPERT_TEAM_ID` | 新孩子分支默认专家团 | `student_growth_expert_team` | `student_growth_expert_team` |
 | `HAILIANG_CONTEXT_WINDOW_TOKENS` | 单孩子分支的上下文预算 | `32000` | 按模型窗口设置 |
 | `HAILIANG_ASYNC_CHECKPOINT_RATIO` | 异步检查点触发比例 | `0.60` | `0.60` |
 | `HAILIANG_SYNC_COMPRESSION_RATIO` | 同步压缩触发比例 | `0.80` | `0.80` |

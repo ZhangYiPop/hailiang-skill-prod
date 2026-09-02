@@ -1,7 +1,8 @@
 # SSE v2 前端对齐协议
 
-> 权威范围：`POST /api/v1/sessions/chat/stream` 的**成功 SSE 响应**。请求体、建流前
+> 权威范围：`POST /api/v2/sessions/chat/stream` 的**成功 SSE 响应**。请求体、建流前
 > HTTP 错误见 [API_DOCUMENTATION.md](API_DOCUMENTATION.md)。前端只需按本文件渲染聊天。
+> 前端与 BFF 的完整接入顺序见 [SSE_V2_INTEGRATION_GUIDE.md](SSE_V2_INTEGRATION_GUIDE.md)。
 
 ## 1. 核心原则
 
@@ -46,6 +47,15 @@ data: {"protocol":"hailiang.sse.v2", "run_id":"run_xxx", "seq":12, "status":"com
   "ts": "2026-07-24T08:30:00+00:00",
   "elapsed_ms": 820,
   "message_id": "msg_xxx",
+  "profile_id": "profile_xxx",
+  "profile_name": "小海",
+  "context_scope": "profile",
+  "context_label": "小海",
+  "context_switched": false,
+  "branch_version": 1,
+  "profile_context_status": "matched",
+  "session_created": false,
+  "profile_switched": false,
   "status": "streaming",
   "assistant": { "content": "已生成的完整正文", "status": "streaming" },
   "intent": {},
@@ -72,6 +82,15 @@ data: {"protocol":"hailiang.sse.v2", "run_id":"run_xxx", "seq":12, "status":"com
 | `ts` | ISO 8601 字符串 | 每帧刷新 | 调试/时序记录；不作为用户消息时间来源。 |
 | `elapsed_ms` | 整数 | 每帧刷新 | 本轮耗时；默认不展示。 |
 | `message_id` | 字符串或 `null` | 助手消息创建/完成后写入 | 后续表单、反馈、卡片点击的消息标识；不要用 `run_id` 代替。 |
+| `profile_id` | 字符串或 `null` | 建流首帧确定 | 本轮实际生效的档案 ID；未绑定孩子时为 `null`。 |
+| `profile_name` | 字符串或 `null` | 档案上下文确定后写入 | 当前档案展示名；未绑定孩子时为 `null`。 |
+| `context_scope` | `profile` / `unbound` | 建流首帧确定 | 当前上下文范围。 |
+| `context_label` | 字符串 | 建流首帧确定 | 用于界面展示的范围名称。 |
+| `context_switched` | 布尔值 | 建流首帧确定 | 本轮是否从 session 中的另一范围切换而来。 |
+| `branch_version` | 非负整数 | 档案分支切换时变化 | 当前会话档案分支版本，用于页面状态同步。 |
+| `profile_context_status` | `matched` / `mismatched` | 首帧确定 | `mismatched` 表示 `input.profile_id` 与转发上下文不一致并已进入隔离分支处理。 |
+| `session_created` | 布尔值 | 首帧确定 | 本次动作是否创建了新会话。 |
+| `profile_switched` | 布尔值 | 首帧确定 | 本次动作是否切换了会话的活动档案。 |
 | `status` | 枚举 | 整轮生命周期 | 控制 loading、停止、失败及终态，见下表。 |
 | `assistant` | 对象 | 正文流式累加或终态变更 | 对话正文。`content` 是**截至当前帧的完整文本**，不可自行追加旧 delta。 |
 | `intent` | 对象或 `{}` | 推理状态开始、步骤更新、完成 | 显示在正文顶部的“推理进度”；无内容不渲染。 |
@@ -303,7 +322,7 @@ Content-Type: application/json
 
 补充约束：
 
-- 推荐卡片进入 Skill 与 toolbar 进入 Skill 共用同一个接口 `POST /sessions/chat/stream`
+- 推荐卡片进入 Skill 与 toolbar 进入 Skill 共用同一个接口 `POST /api/v2/sessions/chat/stream`
 - 但推荐卡片必须使用 `source="route_suggestion"`，且必须带 `source_message_id` 与 `source_interaction_id`
 - toolbar 进入 Skill 使用 `source="toolbar"`，不携带上述来源字段
 - 服务端会校验 `source_message_id` 指向的消息必须是**当前最新 assistant 消息**且该推荐仍为 `active`；否则常见返回为 `409 route suggestion is no longer current`
@@ -334,6 +353,18 @@ Content-Type: application/json
 - 确认后，来源消息的 `team_handoff` 交互状态变为 `selected`；目标专家的新回复不得重复携带旧卡片。
 - 字段与确认动作已经保留 `proposed_by_expert_id`，未来放开成员提议能力时无需升级 SSE 协议。
 
+| 字段 | 中文业务含义 | 前端处理规则 |
+| --- | --- | --- |
+| `handoff_id` | 本次专家转交建议的唯一编号。 | 用于区分卡片实例；不要用它替代确认请求中的 `source_message_id`。 |
+| `status` | 卡片交互状态：`active` 表示可确认，`selected` 表示已确认，其他非活动状态应只读。 | 仅 `active` 的当前范围卡片可点击。 |
+| `team_id` | 提出转交建议的专家团 ID。 | 用于展示与调试校验，不是用户选择目标专家的字段。 |
+| `source_message_id` | 承载该转交卡的助手消息 ID。 | 点击候选人时原样提交为 `confirm_team_handoff.source_message_id`。 |
+| `reason` | 协调专家给出的转交原因，可面向用户展示。 | 展示为说明文字；不能仅凭该文本自行切换专家。 |
+| `proposed_by_expert_id` | 提出这次转交建议的专家 ID。 | 用于“由谁建议”的标识和调试轨迹。 |
+| `candidates[].expert_id` | 可接管本轮的候选专家 ID。 | 用户点击后提交为 `target_expert_id`；只允许使用本卡片返回的候选。 |
+| `candidates[].name` / `mention_name` | 候选专家显示名称 / @ 与卡片展示名称。 | 仅用于显示，不能将名称字符串作为路由参数。 |
+| `candidates[].brief` | 候选专家的能力简介。 | 可作为卡片补充说明。 |
+
 ### 4.6 当前专家与切换结果 `expert`
 
 ```json
@@ -360,13 +391,33 @@ Content-Type: application/json
 }
 ```
 
-- `mode` 为 `none`、`single` 或 `team`。
-- 推荐卡确认的 `transition.source` 为 `team_handoff`；工具栏指定为 `toolbar`。
-- 工具栏请求必须传 `switch_team_member.target_expert_id` 和独立的 `content`，后端不解析正文中的 `@名称`。
-- 普通 `chat` 即使以 `@` 开头也不会切换专家。
-- 前端只根据 `expert.active.expert_id` 更新当前专家；刷新会话时则以会话查询中的 `expert_team.active_expert_id` 恢复。
+| 字段 | 可见值 | 中文业务含义与前端用途 |
+| --- | --- | --- |
+| `mode` | `none`、`single`、`team` | 当前对话承接模式：`none` 为通用对话 Runtime（大模型 + Soul，未选择专家）；`single` 为单专家直接承接；`team` 为专家团承接。 |
+| `team.team_id` | 专家团 ID 或空 | 当前上下文范围绑定的专家团唯一标识；用于继续同一团队，而不是展示名称。 |
+| `team.name` | 名称或空 | 当前专家团的中文显示名称。 |
+| `team.coordinator_expert_id` | 专家 ID 或空 | 专家团主协调专家；用户刚选择专家团、或没有指定成员时，通常由它先承接。 |
+| `active.expert_id` | 专家 ID 或空 | **本轮实际承接/回答的专家**；这是前端更新“当前专家”唯一可信字段。 |
+| `active.name` / `active.mention_name` | 名称或空 | 专家的显示名称 / 适合在 @、气泡和卡片中展示的名称。不能反向拿名称做路由。 |
+| `active.is_coordinator` | 布尔值 | `true` 表示当前专家是主协调专家，`false` 表示成员专家。 |
+| `transition.status` | 通常为 `completed` 或空对象 | 本次是否发生了可审计的专家切换；空对象表示本轮没有以“切换动作”产生状态记录。 |
+| `transition.source` | `toolbar`、`team_handoff` | 切换来源：用户在工具栏主动指定，或用户确认协调专家提出的转交卡。 |
+| `transition.from_expert_id` / `to_expert_id` | 专家 ID | 切换前 / 切换后的专家，用于时间线、调试轨迹和审计。 |
+| `transition.source_message_id` | 消息 ID 或 `null` | 触发本次切换的助手消息；工具栏切换为 `null`，转交卡确认则为卡片所在消息 ID。 |
+
+三种用户唤起专家的请求和返回语义如下：
+
+| 用户操作 | 结构化请求字段 | 返回中的识别方式 |
+| --- | --- | --- |
+| 输入框点选 / @ 专家并提问 | `chat.expert_id` 与 `chat.content` | `expert.active` 变为指定专家；若没有 `expert.team`，即为单专家模式。当前协议不会为此路径填充 `transition`，调用方应结合自己本轮传出的 `expert_id` 记录为“用户显式指定”。 |
+| 工具栏切换专家并提问 | `switch_team_member.target_expert_id` 与 `content` | `expert.transition.source="toolbar"`，并返回前后专家 ID。 |
+| 确认协调专家的转交卡 | `confirm_team_handoff.source_message_id` 与 `target_expert_id` | 转交卡状态变为 `selected`，且 `expert.transition.source="team_handoff"`。 |
+
+`chat.expert_id` 表示普通聊天时显式指定的可用专家；如果当前已有专家团，它还必须属于该团队。`switch_team_member.target_expert_id` 仅用于专家团工具栏/卡片动作，必须是当前团队成员。前端不得只把 `@名称` 拼进 `chat.content`；服务端不会从正文解析专家身份。刷新会话时，以会话查询中的 `expert_team.active_expert_id` 恢复当前专家。
 
 ### 4.7 Skill 状态与转场
+
+本节的 toolbar / `route_suggestion` 转场只属于通用对话模式。专家团或单专家模式中，专家 Runtime 根据其锁定权限自动调用、切换或结束 Skill；前端不应发送 `enter_skill` / `quit_skill`，也不应把自动执行误展示为用户点击工具栏。
 
 ```json
 {

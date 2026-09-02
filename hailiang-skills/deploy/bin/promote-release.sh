@@ -68,6 +68,9 @@ if [ "$environment" = prod ]; then
   fi
 fi
 sudo systemctl restart "hailiang-skills-api@$environment.service"
+if systemctl list-unit-files "hailiang-skills-workbench@.service" --no-legend 2>/dev/null | grep -q hailiang-skills-workbench; then
+  sudo systemctl restart "hailiang-skills-workbench@$environment.service"
+fi
 sudo systemctl restart "hailiang-skills-web@$environment.service"
 wait_for_url "http://${HAILIANG_BIND_HOST:?}:${BACKEND_PORT:?}/health/ready" "API"
 wait_for_url "http://${HAILIANG_FRONTEND_BIND_HOST:?}:${FRONTEND_PORT:?}/" "frontend"
