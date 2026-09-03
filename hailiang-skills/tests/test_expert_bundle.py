@@ -324,6 +324,13 @@ def test_confirmed_team_handoff_carries_source_question_and_keeps_visible_mentio
     assert "我的孩子比较叛逆，怎么办" in content
     assert "更适合处理亲子沟通" in content
     assert context.session_meta["team_handoff_visible_user_message"] == "@家庭教育专家"
+    assert context.session_meta["team_handoff_visible_user_message_type"] == "team_handoff_confirmation"
+    assert context.session_meta["team_handoff_visible_user_message_metadata"] == {
+        "source_message_id": "",
+        "target_expert_id": "family_education_expert",
+        "expert_team_id": "student_growth_expert_team",
+        "source": "team_handoff",
+    }
 
 
 def test_structured_toolbar_switch_uses_expert_id_and_keeps_content_separate():
@@ -369,10 +376,16 @@ def test_toolbar_switch_request_validates_team_member_by_id():
         SimpleNamespace(expert_team_registry=teams),
         SwitchTeamMemberInput(
             action="switch_team_member",
-            profile_id="profile_a",
+            context_scope="profile",
             source="toolbar",
             target_expert_id="family_education_expert",
             content="孩子沉迷手机怎么办",
+            expert_context={
+                "expert_team_id": team.team_id,
+                "expert_id": team.coordinator_expert_id,
+                "expected_branch_version": 0,
+                "operation": "continue",
+            },
         ),
     )
 
@@ -400,15 +413,47 @@ def test_expert_sse_state_is_fixed_and_authoritative():
     from hailiang_skills.core.sse_protocol import SseEnvelopeBuilder
 
     builder = SseEnvelopeBuilder(run_id="run_expert", session_id="session_expert")
-    assert builder.snapshot()["expert"] == {"mode": "none", "team": {}, "active": {}, "transition": {}}
+    assert builder.snapshot()["expert"] == {"mode": "none", "team": {}, "active": {}, "activation": {}, "transition": {}}
     builder.encode("expert_context", {
         "mode": "team",
         "team": {"team_id": "student_growth_expert_team", "coordinator_expert_id": "career_plan_expert"},
         "active": {"expert_id": "family_education_expert", "name": "家庭教育专家", "mention_name": "家庭教育专家", "is_coordinator": False},
+        "activation": {"source": "explicit_or_restored", "is_default": False, "selection_source": "manual"},
         "transition": {"status": "completed", "source": "toolbar", "from_expert_id": "career_plan_expert", "to_expert_id": "family_education_expert", "source_message_id": None},
     })
     assert builder.snapshot()["expert"]["active"]["expert_id"] == "family_education_expert"
+    assert builder.snapshot()["expert"]["activation"]["is_default"] is False
     assert builder.snapshot()["expert"]["transition"]["source"] == "toolbar"
+
+    legacy_snapshot = builder.snapshot()
+    legacy_snapshot["expert"].pop("activation")
+    resumed = SseEnvelopeBuilder(run_id="run_expert", session_id="session_expert")
+    resumed.restore(legacy_snapshot)
+    assert resumed.snapshot()["expert"]["activation"] == {}
+
+
+def test_team_default_coordinator_has_an_explicit_sse_activation_marker():
+    from hailiang_skills.core.streaming_runner import _expert_state_payload
+
+    skills = _runtime_registry()
+    experts = load_local_expert_registry(ROOT / "runtime_agents", skills)
+    teams = load_local_expert_team_registry(ROOT / "runtime_agent_teams", experts)
+    context = SessionContext()
+    context.session_meta.update({
+        "expert_team_id": "student_growth_expert_team",
+        "expert_id": "career_plan_expert",
+        "active_expert_id": "career_plan_expert",
+        "expert_selection_source": "manual_team",
+    })
+
+    payload = _expert_state_payload(context, SimpleNamespace(expert_registry=experts, expert_team_registry=teams))
+
+    assert payload["active"]["is_coordinator"] is True
+    assert payload["activation"] == {
+        "source": "team_default_coordinator",
+        "is_default": True,
+        "selection_source": "manual_team",
+    }
 
 
 def test_agentscope_react_agent_can_only_select_an_authorized_skill():

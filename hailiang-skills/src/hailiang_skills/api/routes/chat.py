@@ -317,6 +317,17 @@ def build_chat_router(
             "skill_ids": list(definition.authorized_skill_ids),
         }
 
+    def expert_context(context: SessionContext) -> dict[str, Any]:
+        """The authoritative branch + session Agent state for the next SSE turn."""
+        meta = context.session_meta or {}
+        selection = context.session_agent_selection()
+        return {
+            "expert_team_id": str(meta.get("expert_team_id") or "").strip() or None,
+            "expert_id": str(meta.get("active_expert_id") or meta.get("expert_id") or "").strip() or None,
+            "branch_version": int(meta.get("_active_branch_version") or 0),
+            "selection_version": int(selection.get("selection_version") or 0),
+        }
+
     def selected_expert_team(context: SessionContext) -> dict[str, Any] | None:
         team_id = str(context.session_meta.get("expert_team_id") or "").strip()
         if not team_id:
@@ -608,7 +619,7 @@ def build_chat_router(
             "skill_states": context.skill_states,
             "expert": selected_expert(context),
             "expert_team": selected_expert_team(context),
-            "expert_team": selected_expert_team(context),
+            "expert_context": expert_context(context),
             "skill_display": build_skill_display(
                 context,
                 runtime_registry=getattr(orchestrator, "runtime_registry", None),
@@ -748,6 +759,8 @@ def build_chat_router(
             "effective_facts": serialize_known_facts(context.known_facts),
             "skill_states": context.skill_states,
             "expert": selected_expert(context),
+            "expert_team": selected_expert_team(context),
+            "expert_context": expert_context(context),
             "interaction_state": context.interaction_state,
             "candidate_paths": context.candidate_paths,
             "conversation_state": get_conversation_state(context),

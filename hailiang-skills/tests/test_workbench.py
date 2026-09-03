@@ -444,6 +444,7 @@ def test_candidate_stream_assigns_a_generation_before_runtime_execution(monkeypa
     )
     session = preview_service.create_revision_test_session(revision["revision_id"], actor_id=actor_id)
     observed: dict[str, object] = {}
+    emitted: list[tuple[str, dict[str, object]]] = []
 
     def execute(_snapshot, message, context):
         observed["generation"] = context.session_meta.get("active_stream_generation")
@@ -458,7 +459,7 @@ def test_candidate_stream_assigns_a_generation_before_runtime_execution(monkeypa
         session["debug_session_id"],
         user_message="开始测试",
         actor_id=actor_id,
-        on_event=lambda _event, _payload: None,
+        on_event=lambda event, payload: emitted.append((event, payload)),
     )
 
     assert str(observed["generation"]).startswith("candidate_stream_")
@@ -469,6 +470,48 @@ def test_candidate_stream_assigns_a_generation_before_runtime_execution(monkeypa
         assert row is not None
         assert "active_stream_generation" not in row.runtime_context["session_meta"]
         assert "stream_cancel_check" not in row.runtime_context["session_meta"]
+    states = [payload for event, payload in emitted if event == "state"]
+    assert states
+    assert all(state["protocol"] == "hailiang.sse.v2" for state in states)
+    assert states[-1]["status"] == "completed"
+    assert states[-1]["context_scope"] == "unbound"
+    assert states[-1]["profile_id"] is None
+    assert states[-1]["expert_context"]["branch_version"] == 1
+
+
+def test_candidate_stop_marks_live_runtime_and_emits_stopped_snapshot():
+    preview_service = _preview_service()
+    context = SessionContext(session_id="revision_test_dbg_stop", user_id="workbench-candidate-dbg_stop")
+    context.session_meta["active_stream_generation"] = "candidate_stream_stop"
+    emitted: list[str] = []
+
+    def emit_state(status: str) -> None:
+        emitted.append(status)
+        with preview_service._active_candidate_streams_lock:
+            preview_service._active_candidate_streams["dbg_stop"]["last_state"] = {
+                "protocol": "hailiang.sse.v2",
+                "status": status,
+                "assistant": {"content": "已生成的部分内容", "status": status},
+            }
+
+    with preview_service._active_candidate_streams_lock:
+        preview_service._active_candidate_streams["dbg_stop"] = {
+            "run_id": "candidate_stream_stop",
+            "context": context,
+            "emit_state": emit_state,
+            "last_state": None,
+        }
+
+    result = preview_service.stop_revision_test_turn(
+        "dbg_stop",
+        run_id="candidate_stream_stop",
+        actor_id="actor_test",
+    )
+
+    assert context.session_meta["cancelled_stream_generation"] == "candidate_stream_stop"
+    assert emitted == ["stopped"]
+    assert result["status"] == "stopped"
+    assert result["state"]["assistant"]["content"] == "已生成的部分内容"
 
 
 def test_candidate_expert_can_redispatch_to_another_locked_skill():

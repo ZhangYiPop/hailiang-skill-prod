@@ -190,7 +190,48 @@ def _expert_state_payload(context, orchestrator, switch: dict[str, Any] | None =
             "to_expert_id": str(switch.get("target_expert_id") or expert_id),
             "source_message_id": switch.get("source_message_id"),
         }
-    return {"mode": mode, "team": team_payload, "active": active, "transition": transition}
+    activation: dict[str, Any] = {}
+    # Choosing an Expert Team always starts from its coordinator. Make that
+    # server-side fact explicit: the frontend must not guess it from matching
+    # IDs, and it must not mistake a later toolbar/handoff switch back to the
+    # coordinator for the initial default takeover.
+    selection_source = str((context.session_meta or {}).get("expert_selection_source") or "").strip()
+    if mode == "team" and active.get("is_coordinator") and selection_source in {
+        "manual_team",
+        "default_coordinator",
+        "deployment_snapshot",
+    }:
+        activation = {
+            "source": "team_default_coordinator",
+            "is_default": True,
+            "selection_source": selection_source,
+        }
+    elif mode != "none":
+        activation = {
+            "source": "explicit_or_restored",
+            "is_default": False,
+            "selection_source": selection_source,
+        }
+    return {
+        "mode": mode,
+        "team": team_payload,
+        "active": active,
+        "activation": activation,
+        "transition": transition,
+    }
+
+
+def expert_context_payload(context) -> dict[str, Any]:
+    """Return branch execution state plus the session-wide Agent selection."""
+    meta = getattr(context, "session_meta", {}) or {}
+    selection_getter = getattr(context, "session_agent_selection", None)
+    selection = selection_getter() if callable(selection_getter) else {}
+    return {
+        "expert_team_id": str(meta.get("expert_team_id") or "").strip() or None,
+        "expert_id": str(meta.get("active_expert_id") or meta.get("expert_id") or "").strip() or None,
+        "branch_version": int(meta.get("_active_branch_version") or 0),
+        "selection_version": int(selection.get("selection_version") or 0),
+    }
 
 
 def _preactivate_requested_target_skill(
@@ -435,6 +476,11 @@ class StreamingRunner:
         )
         self._active_stream_queues: dict[tuple[str, str], Queue] = {}
         self._active_stream_queues_lock = threading.Lock()
+        # A stop request is served by another HTTP worker while this stream is
+        # still producing deltas.  Keep the latest immutable envelope in the
+        # runner as well as the persisted run record so the stopped response
+        # can include partial text without racing a database write.
+        self._active_run_snapshots: dict[tuple[str, str], dict[str, Any]] = {}
 
     def reserve_turn(self, session_id: str, user_id: str, *, run_id: str | None = None) -> TurnLease:
         return self.turn_coordinator.acquire(session_id, user_id, run_id=run_id)
@@ -499,11 +545,28 @@ class StreamingRunner:
         context = self.repository.get(session_id)
         if str(context.user_id or "") != str(user_id or "") or not self.cancel_run(session_id, user_id, run_id):
             raise RuntimeError("RUN_NOT_ACTIVE")
+        with self._active_stream_queues_lock:
+            live_snapshot = self._active_run_snapshots.get((session_id, run_id))
         snapshots = context.session_meta.get("sse_v2_runs")
-        snapshot = snapshots.get(run_id) if isinstance(snapshots, dict) else None
+        snapshot = live_snapshot or (snapshots.get(run_id) if isinstance(snapshots, dict) else None)
         builder = SseEnvelopeBuilder(run_id=run_id, session_id=session_id)
         if isinstance(snapshot, dict):
             builder.restore(snapshot)
+        else:
+            # New streams persist this before model work starts. Keep this
+            # fallback for a legacy/incomplete run so stop still returns a
+            # useful, branch-correct fixed-shape v2 state.
+            profile_context = context.session_meta.get("_sse_profile_context")
+            if isinstance(profile_context, dict):
+                builder.encode("profile_context", profile_context)
+            expert_payload = _expert_state_payload(context, self.orchestrator)
+            expert_payload["expert_context"] = expert_context_payload(context)
+            builder.encode("expert_context", expert_payload)
+            display = build_skill_display(
+                context,
+                runtime_registry=getattr(self.orchestrator, "runtime_registry", None),
+            )
+            builder.encode("skill_context", display)
         raw = self._encode_and_record_sse(
             builder=builder,
             session_id=session_id,
@@ -522,6 +585,8 @@ class StreamingRunner:
             if isinstance(item, dict):
                 item["status"] = "stopped"
         self.repository.save(context)
+        with self._active_stream_queues_lock:
+            self._active_run_snapshots.pop((session_id, run_id), None)
         if raw:
             yield raw
 
@@ -645,6 +710,8 @@ class StreamingRunner:
                     snapshots = context.session_meta.setdefault("sse_v2_runs", {})
                     if isinstance(snapshots, dict):
                         snapshots[stream_generation] = envelope_builder.snapshot()
+                    with self._active_stream_queues_lock:
+                        self._active_run_snapshots[(session_id, stream_generation)] = envelope_builder.snapshot()
                     if event in {"run_completed", "run_cancelled", "run_superseded", "run_failed"}:
                         ledger = context.session_meta.setdefault("run_ledger", {})
                         if isinstance(ledger, dict):
@@ -1326,10 +1393,28 @@ class StreamingRunner:
         if SSE_ACTIVE:
             SSE_ACTIVE.inc()
         first_event_started = __import__("time").perf_counter()
+        expert_payload = _expert_state_payload(context, self.orchestrator, team_member_switch)
+        expert_payload["expert_context"] = expert_context_payload(context)
         for event, data in initial_events or []:
+            if event == "profile_context":
+                # The first v2 state is the context-activation acknowledgement.
+                # It must already be actionable: clients should not have to
+                # wait for a second frame to learn the restored Agent/Skill.
+                data = {
+                    **data,
+                    "initial_expert": expert_payload,
+                    "initial_active_skill": {
+                        "skill_id": initial_skill_display["skill_id"],
+                        "title": initial_skill_display["active_skill_label"],
+                        "brief": initial_skill_display.get("brief", ""),
+                        "info": initial_skill_display.get("info", ""),
+                        "description": initial_skill_display.get("description", ""),
+                        "scene_name": initial_skill_display["scene_name"],
+                    },
+                }
             push(event, data)
         push("run_started", {"session_id": session_id, "run_id": stream_generation, "risk_stage": "input"})
-        push("expert_context", _expert_state_payload(context, self.orchestrator, team_member_switch))
+        push("expert_context", expert_payload)
         if protocol == UNIFIED_PROTOCOL:
             # Always provide one immediate, safe placeholder. Its normalized
             # label is also the stable name for this stage in both the live
@@ -1362,6 +1447,11 @@ class StreamingRunner:
                 "skill_theme": initial_skill_display["skill_theme"],
             },
         )
+        # Make the initial envelope durable before model execution starts.
+        # A separate stop request may arrive before the first model callback;
+        # it must recover this exact expert/scope/skill snapshot rather than
+        # infer state from whatever branch the UI currently displays.
+        self.repository.save(context)
         # copy_context carries request/trace context into a bounded worker.
         worker_context = copy_context()
         if progress_simulation_enabled:
@@ -1404,6 +1494,7 @@ class StreamingRunner:
             with self._active_stream_queues_lock:
                 if self._active_stream_queues.get(stream_queue_key) is queue:
                     self._active_stream_queues.pop(stream_queue_key, None)
+                self._active_run_snapshots.pop(stream_queue_key, None)
             # Starlette closes the iterator when the browser disconnects.  The
             # worker sees the generation mismatch before each output/persist
             # boundary and therefore cannot overwrite a newer request.

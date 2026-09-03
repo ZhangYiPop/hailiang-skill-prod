@@ -103,8 +103,12 @@ _HTTP_ERROR_MESSAGES = {
     "SKILL_ENTRY_BLOCKED_IN_EXPERT_TEAM": "专家团内不能直接进入单个 Skill。",
     "DIALOGUE_LAST_MESSAGE_MUST_BE_USER": "dialogue 最后一条消息必须是 user。",
     "ACTIVE_RUN_MUST_STOP": "当前回答仍在生成，请先停止并等待完成后再切换孩子。",
-    "INPUT_PROFILE_ID_REQUIRED": "非停止操作必须在 input 中提供 profile_id。",
-    "PROFILE_CONTEXT_MISMATCH": "input 与 context_data 的孩子 ID 不一致。",
+    "INPUT_PROFILE_ID_FORBIDDEN": "SSE v2 不接受 input.profile_id；请仅使用 context_data.profile_id。",
+    "LEGACY_EXPERT_FIELDS_FORBIDDEN": "请将专家团和专家状态放入 expert_context，不能使用顶层旧字段。",
+    "EXPERT_CONTEXT_REQUIRED": "非停止操作必须提供 expert_context。",
+    "EXPERT_CONTEXT_STALE": "专家上下文已更新，请使用服务端返回的最新状态继续。",
+    "EXPERT_CONTEXT_OPERATION_INVALID": "expert_context.operation 与当前操作不匹配。",
+    "CONTEXT_ACTIVATION_REQUIRED": "当前请求会切换孩子上下文；请使用 context_activation=auto，或先完成当前操作。",
 }
 
 
@@ -159,15 +163,6 @@ def _extract_request_context(request: Request, *, body_payload: dict[str, object
     if isinstance(context_data, dict):
         user_id = user_id or str(context_data.get("user_id") or "")
         profile_id = profile_id or str(context_data.get("profile_id") or "")
-    raw_input = payload.get("input")
-    if isinstance(raw_input, str):
-        try:
-            parsed_input = json.loads(raw_input)
-        except json.JSONDecodeError:
-            parsed_input = None
-        if isinstance(parsed_input, dict):
-            # Interaction input currently owns profile targeting.
-            profile_id = str(parsed_input.get("profile_id") or profile_id)
     return {
         "session_id": session_id,
         "profile_id": profile_id,

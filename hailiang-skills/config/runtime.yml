@@ -53,8 +53,3 @@ sse_recording:
   enabled: true
   root_dir: logs/sse_recording/sessions
   format: jsonl
-# The forwarding backend supplies the user's current child selection in
-# ``context_data``. ``input.profile_id`` is an optional legacy mirror and,
-# when present, must match rather than override it.
-session_profile_resolution:
-  authority: context_data

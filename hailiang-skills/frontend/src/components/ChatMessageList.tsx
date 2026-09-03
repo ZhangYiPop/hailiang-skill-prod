@@ -21,6 +21,7 @@ type ChatMessageListProps = {
 type MessageSection = {
   id: string;
   topicLabel: string;
+  topicKind: "skill" | "expert" | "topic";
   messages: ChatMessage[];
 };
 
@@ -58,15 +59,23 @@ function agentKeyForMessage(message: ChatMessage) {
   return [message.presentation?.session.active_skill.skill_id ?? message.skillId ?? "", label, message.themeKey ?? ""].join("|");
 }
 
-function PlanningTopicBadge({ label }: { label: string }) {
+function topicKindForMessage(message: ChatMessage): MessageSection["topicKind"] {
+  const skillId = message.presentation?.session.active_skill?.skill_id || message.skillId;
+  if (skillId && skillId !== "general_chat" && skillId !== "chat") return "skill";
+  if (message.agentLabel) return "expert";
+  return "topic";
+}
+
+function PlanningTopicBadge({ label, kind }: { label: string; kind: MessageSection["topicKind"] }) {
+  const prefix = kind === "skill" ? "当前 Skill：" : kind === "expert" ? "当前专家：" : "当前主题：";
   return (
     <div className="sticky top-0 z-20 flex justify-center py-2">
       <div
         className="inline-flex max-w-full items-center gap-3 rounded-full border border-[#f4d796]/70 bg-[linear-gradient(135deg,rgba(255,248,218,0.98),rgba(238,198,119,0.96)_46%,rgba(174,124,47,0.98))] px-7 py-2.5 text-sm font-semibold text-[#35230d] shadow-[0_14px_34px_rgba(213,174,92,0.34),inset_0_1px_0_rgba(255,255,255,0.78)]"
-        aria-label={`当前规划主题：${label}`}
+        aria-label={`${prefix}${label}`}
         data-testid="planning-topic-badge"
       >
-        <span className="text-[#73511d]">当前规划主题：</span>
+        <span className="text-[#73511d]">{prefix}</span>
         <span className="truncate tracking-wide text-[#2c1b08]">{label}</span>
       </div>
     </div>
@@ -75,7 +84,7 @@ function PlanningTopicBadge({ label }: { label: string }) {
 
 function buildMessageSections(messages: ChatMessage[]): MessageSection[] {
   const sections: MessageSection[] = [];
-  let currentSection: MessageSection = { id: "initial", topicLabel: "", messages: [] };
+  let currentSection: MessageSection = { id: "initial", topicLabel: "", topicKind: "topic", messages: [] };
   let previousAssistantKey = "";
 
   messages.forEach((message) => {
@@ -91,6 +100,7 @@ function buildMessageSections(messages: ChatMessage[]): MessageSection[] {
       currentSection = {
         id: `topic-${message.id}`,
         topicLabel: agentLabel,
+        topicKind: topicKindForMessage(message),
         messages: [message],
       };
       previousAssistantKey = agentKey;
@@ -143,7 +153,7 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
     <div className="space-y-4">
       {sections.map((section) => (
         <section key={section.id} className="relative space-y-4">
-          {section.topicLabel ? <PlanningTopicBadge label={section.topicLabel} /> : null}
+          {section.topicLabel ? <PlanningTopicBadge label={section.topicLabel} kind={section.topicKind} /> : null}
           {section.messages.map((message) => {
         const isUser = message.role === "user";
         const isActiveContext = (message.profileId || "") === activeProfileId;
@@ -153,6 +163,11 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
         // assistant content becomes a blank bubble below the route card.
         const isTransition = message.messageType === "skill_transition";
         const isProfileSwitch = message.messageType === "profile_switch";
+        // A confirmed team handoff is a visible, auditable timeline event.
+        // It is not a fresh user question (the Runtime receives the original
+        // question plus structured handoff context), so do not render it as a
+        // normal user chat bubble that appears to have been sent to the model.
+        const isTeamHandoffConfirmation = message.messageType === "team_handoff_confirmation";
         const statusBlocks = !isUser
           ? presentation && "steps" in presentation.intent
             ? [{
@@ -203,6 +218,17 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
                 {message.content}
               </span>
               <span className="h-px flex-1 bg-white/10" />
+            </div>
+          );
+        }
+        if (isTeamHandoffConfirmation) {
+          return (
+            <div key={message.id} className="flex items-center gap-3 py-1 text-xs text-violet-200/80">
+              <span className="h-px flex-1 bg-violet-300/15" />
+              <span className="rounded-full border border-violet-300/25 bg-violet-300/[0.08] px-3 py-1.5">
+                已确认由 {message.content.replace(/^@/, "")} 专家接管
+              </span>
+              <span className="h-px flex-1 bg-violet-300/15" />
             </div>
           );
         }

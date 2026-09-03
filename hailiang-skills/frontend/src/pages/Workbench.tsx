@@ -31,8 +31,10 @@ import { getRuntimeWorkbenchApiBaseUrl } from "@/config/runtime";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { MessageBlocksRenderer } from "@/components/message-blocks/MessageBlocksRenderer";
 import { TeamHandoffCard } from "@/components/message-blocks/TeamHandoffCard";
+import { presentationFromSseState } from "@/utils/conversationPresentation";
 import type { FactFormField, MessageBlock } from "@/types/messageBlocks";
 import type { MessageInteractionState, MessagePresentation, TeamHandoff } from "@/utils/api";
+import type { SseV2State } from "@/types/streamEvents";
 import {
   SkillFilesEditor,
   type EditableSkillFile,
@@ -306,10 +308,13 @@ export default function Workbench() {
   const [conversionDraft, setConversionDraft] = useState<Record<string, unknown> | null>(null);
   const [conversionTargetId, setConversionTargetId] = useState("");
   const debugTargetInitialized = useRef(false);
+  const candidateStreamAbortRef = useRef<AbortController | null>(null);
+  const candidateLastSeqRef = useRef<Record<string, number>>({});
   const [revisionTestSession, setRevisionTestSession] =
     useState<RevisionTestSession | null>(null);
   const [revisionTestInput, setRevisionTestInput] = useState("");
   const [candidateTargetExpertId, setCandidateTargetExpertId] = useState("");
+  const [candidateConversationState, setCandidateConversationState] = useState<SseV2State | null>(null);
   const [evaluationInputs, setEvaluationInputs] = useState(
     "我想了解适合自己的升学路径\n请根据当前信息给出下一步建议",
   );
@@ -468,6 +473,8 @@ export default function Workbench() {
     setRevisionTestSession(null);
     setRevisionTestInput("");
     setCandidateTargetExpertId("");
+    setCandidateConversationState(null);
+    candidateLastSeqRef.current = {};
     setEvaluationRun(null);
     setDebugEvidenceId("");
     setDebugComplete(false);
@@ -789,12 +796,13 @@ export default function Workbench() {
   async function runRevisionTestTurn(
     submittedInput?: string,
     formSubmission?: { source_message_id: string; form_id: string; values: Record<string, unknown> },
-    teamHandoffSelection?: { source_message_id: string; handoff_id: string; target_expert_id: string; team_id?: string },
+    teamHandoffSelection?: { source_message_id: string; handoff_id: string; target_expert_id: string; team_id?: string; mention_name?: string },
     expertSelection?: { target_expert_id: string },
   ) {
     const message = (submittedInput ?? revisionTestInput).trim();
     if (!actor || !selectedTestRevision || (!message && !formSubmission && !teamHandoffSelection && !expertSelection)) return;
     setBusy(true);
+    let streamAbortController: AbortController | null = null;
     try {
       const session =
         revisionTestSession?.revision_id === selectedTestRevision.revision_id &&
@@ -807,13 +815,15 @@ export default function Workbench() {
             });
       const submittedAt = new Date().toISOString();
       const visibleUserMessage = teamHandoffSelection
-        ? `确认由专家接管`
+        ? `@${teamHandoffSelection.mention_name || teamHandoffSelection.target_expert_id}`
         : expertSelection
           ? `@${candidateTeamMembers.find((item) => item.expert_id === expertSelection.target_expert_id)?.mention_name || expertSelection.target_expert_id} ${message}`
         : formSubmission
           ? "已提交表单"
           : message;
       const optimisticAssistantId = `candidate-stream-${crypto.randomUUID()}`;
+      streamAbortController = new AbortController();
+      candidateStreamAbortRef.current = streamAbortController;
       let streamError = "";
       setRevisionTestSession({
         ...session,
@@ -834,6 +844,29 @@ export default function Workbench() {
           actor_id: actor.actor_id,
         },
         (event, payload) => {
+          if (event === "state" && payload.protocol === "hailiang.sse.v2") {
+            const state = payload as unknown as SseV2State;
+            const lastSeq = candidateLastSeqRef.current[state.run_id] ?? -1;
+            if (state.seq <= lastSeq) return;
+            candidateLastSeqRef.current[state.run_id] = state.seq;
+            setCandidateConversationState(state);
+            setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
+              ...current,
+              transcript: current.transcript.map((item) => item.message_id === optimisticAssistantId
+                ? {
+                    ...item,
+                    message_id: state.message_id ?? item.message_id,
+                    content: state.assistant.content,
+                    presentation: presentationFromSseState(state),
+                    team_handoff:
+                      "candidates" in state.team_handoff && Array.isArray(state.team_handoff.candidates)
+                        ? state.team_handoff as TeamHandoff
+                        : item.team_handoff,
+                  }
+                : item),
+            } : current);
+            return;
+          }
           if (event === "reply_delta") {
             const delta = String(payload.delta ?? "");
             if (!delta) return;
@@ -871,6 +904,7 @@ export default function Workbench() {
             setNotice({ tone: "error", text: errorMessage });
           }
         },
+        { signal: streamAbortController.signal },
       );
       if (streamError) throw new Error(streamError);
       setRevisionTestInput("");
@@ -885,7 +919,28 @@ export default function Workbench() {
         text: error instanceof Error ? error.message : "候选修订测试失败",
       });
     } finally {
+      if (candidateStreamAbortRef.current === streamAbortController) {
+        candidateStreamAbortRef.current = null;
+      }
       setBusy(false);
+    }
+  }
+
+  async function stopCandidateRevisionTest() {
+    if (!actor || !revisionTestSession || !candidateConversationState?.run_id || !busy) return;
+    try {
+      await workbenchApi.stopRevisionTestTurn(
+        apiBaseUrl,
+        revisionTestSession.debug_session_id,
+        candidateConversationState.run_id,
+        actor.actor_id,
+      );
+      setNotice({ tone: "ok", text: "已请求停止候选修订回复，正在保留已生成内容与当前专家状态。" });
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        text: error instanceof Error ? error.message : "停止候选修订测试失败",
+      });
     }
   }
 
@@ -899,11 +954,13 @@ export default function Workbench() {
   }
 
   function confirmCandidateTeamHandoff(sourceMessageId: string, handoff: TeamHandoff, targetExpertId: string) {
+    const candidate = handoff.candidates.find((item) => item.expert_id === targetExpertId);
     void runRevisionTestTurn(undefined, undefined, {
       source_message_id: sourceMessageId,
       handoff_id: handoff.handoff_id ?? "",
       target_expert_id: targetExpertId,
       team_id: handoff.team_id,
+      mention_name: candidate?.mention_name || candidate?.name || targetExpertId,
     });
   }
 
@@ -1847,13 +1904,35 @@ export default function Workbench() {
                         <p className="text-xs uppercase tracking-[0.18em] text-sky-300">Debug Zone</p>
                         <h2 className="mt-1 text-lg font-semibold">候选修订手动测试</h2>
                       </div>
-                      <StatusBadge tone={revisionTestSession?.status === "active" ? "green" : "slate"}>
-                        {revisionTestSession?.status === "active" ? "会话进行中" : "等待测试"}
-                      </StatusBadge>
+                      <div className="flex items-center gap-2">
+                        {busy && candidateConversationState?.status === "streaming" ? (
+                          <button
+                            type="button"
+                            onClick={() => void stopCandidateRevisionTest()}
+                            className="inline-flex items-center gap-1 rounded-lg border border-rose-300/30 px-2 py-1 text-xs text-rose-100"
+                          >
+                            <X size={13} /> 停止
+                          </button>
+                        ) : null}
+                        <StatusBadge tone={revisionTestSession?.status === "active" ? "green" : "slate"}>
+                          {candidateConversationState?.status === "stopped"
+                            ? "已停止"
+                            : revisionTestSession?.status === "active" ? "会话进行中" : "等待测试"}
+                        </StatusBadge>
+                      </div>
                     </div>
                     <p className="mt-2 text-sm text-slate-500">
                       直接测试所选 Skill、专家或专家团的不可变候选快照；不会跳转或写入现有长对话测试台。
                     </p>
+                    <div className="mt-3 rounded-xl border border-sky-300/15 bg-sky-300/[0.05] px-3 py-2 text-xs leading-5 text-slate-300">
+                      <span className="text-slate-500">候选上下文：</span>未绑定孩子
+                      <span className="mx-2 text-slate-600">·</span>
+                      <span className="text-slate-500">专家团：</span>{candidateConversationState?.expert_context.expert_team_id || "未选择"}
+                      <span className="mx-2 text-slate-600">·</span>
+                      <span className="text-slate-500">专家：</span>{candidateConversationState?.expert_context.expert_id || "未选择"}
+                      <span className="mx-2 text-slate-600">·</span>
+                      <span className="text-slate-500">Skill：</span>{candidateConversationState?.session.active_skill.title || "等待路由"}
+                    </div>
                     {revisionTestSession?.transcript?.length && revisionTestSession.status === "active" ? (
                       <button
                         type="button"
@@ -1874,10 +1953,17 @@ export default function Workbench() {
                           const interactionStates = item.interaction_states ?? {};
                           const presentation = item.presentation as MessagePresentation | undefined;
                           const isTransition = item.message_type === "skill_transition";
+                          const isTeamHandoffConfirmation = item.message_type === "team_handoff_confirmation";
                           const transition = presentation?.skill_transition as { action?: string } | undefined;
                           return (
                             <div key={item.message_id || `${item.role}-${index}`} className={item.role === "user" ? "text-right" : "text-left"}>
-                              {isAssistant && isTransition ? (
+                              {isTeamHandoffConfirmation ? (
+                                <div className="my-1 text-center text-xs text-violet-200/80">
+                                  <span className="rounded-full border border-violet-300/25 bg-violet-300/[0.08] px-3 py-1.5">
+                                    已确认由 {item.content.replace(/^@/, "")} 专家接管
+                                  </span>
+                                </div>
+                              ) : isAssistant && isTransition ? (
                                 <div className="inline-block max-w-[90%] rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-xs text-slate-300">
                                   {transition?.action === "exit"
                                     ? "已退出当前 Skill"

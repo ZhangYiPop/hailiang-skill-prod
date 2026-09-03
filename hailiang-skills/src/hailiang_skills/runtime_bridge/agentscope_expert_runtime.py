@@ -658,13 +658,35 @@ class AgentScopeExpertRuntime:
         context.session_meta["active_expert_id"] = member.expert_id
         context.session_meta["expert_id"] = member.expert_id
         context.session_meta.pop("pending_team_handoff", None)
+        source = str(switch.get("source") or "toolbar")
+        # A confirmed handoff/tool-bar selection is a user-visible Agent
+        # choice. Preserve it at session scope so entering another child's
+        # isolated branch continues with the same member, while that branch's
+        # facts/forms/Skill state remain local.
+        set_selection = getattr(context, "set_session_agent_selection", None)
+        if callable(set_selection):
+            set_selection(
+                expert_team_id=team.team_id,
+                expert_id=member.expert_id,
+                selection_source="handoff_card" if source == "team_handoff" else "manual",
+            )
         context.session_meta["team_handoff_visible_user_message"] = str(
             switch.get("visible_user_message") or f"@{member.mention_name}"
         )
+        if source == "team_handoff":
+            # This is a timeline/audit event, not a new semantic question.
+            # Keep it visible for history restoration while the planner
+            # filters it out of subsequent model prompts.
+            context.session_meta["team_handoff_visible_user_message_type"] = "team_handoff_confirmation"
+            context.session_meta["team_handoff_visible_user_message_metadata"] = {
+                "source_message_id": str(switch.get("source_message_id") or ""),
+                "target_expert_id": member.expert_id,
+                "expert_team_id": team.team_id,
+                "source": "team_handoff",
+            }
         state = context.skill_states.setdefault(AGENT_RUNTIME_STATE_KEY, {})
         if isinstance(state, dict):
             state["active_expert_id"] = member.expert_id
-        source = str(switch.get("source") or "toolbar")
         self._event(context, "team_member_switched", {
             "team_id": team.team_id,
             "expert_id": member.expert_id,

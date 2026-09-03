@@ -12,6 +12,7 @@ import uuid
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
+from threading import RLock
 from typing import Any, Iterable
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile, ZipInfo
 
@@ -29,7 +30,8 @@ from hailiang_skills.core.message_interactions import (
     expire_active_interactions,
     update_interaction,
 )
-from hailiang_skills.core.sse_protocol import presentation_from_message
+from hailiang_skills.core.sse_protocol import empty_message_state, presentation_from_message
+from hailiang_skills.core.skill_display import build_skill_display
 from hailiang_skills.schemas.facts import KnownFacts
 from hailiang_skills.storage.database import (
     WorkbenchActorRow,
@@ -102,6 +104,17 @@ class WorkbenchService:
     def __init__(self, session_factory, *, orchestrator: Any | None = None):
         self.session_factory = session_factory
         self.orchestrator = orchestrator
+        # Candidate conversations deliberately do not use the formal session
+        # repository or its turn coordinator.  This small in-process registry
+        # is only the live cancellation bridge for a workbench SSE response;
+        # durable transcript/state continue to live on the debug session row.
+        self._active_candidate_streams: dict[str, dict[str, Any]] = {}
+        self._active_candidate_streams_lock = RLock()
+        # A candidate overlay temporarily occupies a Runtime skill id while
+        # the formal executor resolves it. Serialize this short-lived mount so
+        # concurrent candidate turns cannot observe or restore each other's
+        # bundle.
+        self._candidate_runtime_mount_lock = RLock()
 
     @property
     def kernel_fingerprint(self) -> str:
@@ -722,6 +735,37 @@ class WorkbenchService:
             event_count_before = len(context.event_trace)
             turn_started = datetime.now().timestamp()
             candidate_stream_generation: str | None = None
+            candidate_stream_sequence = 0
+            stream_content = ""
+            stream_handoff: dict[str, Any] | None = None
+
+            def emit_candidate_state(
+                status: str = "streaming",
+                *,
+                assistant_record: dict[str, Any] | None = None,
+                error: dict[str, Any] | None = None,
+            ) -> None:
+                nonlocal candidate_stream_sequence
+                if callable(on_event) and candidate_stream_generation:
+                    state = self._candidate_sse_state(
+                        context,
+                        run_id=candidate_stream_generation,
+                        status=status,
+                        assistant_content=stream_content,
+                        assistant_record=assistant_record,
+                        team_handoff=stream_handoff,
+                        error=error,
+                    )
+                    with self._active_candidate_streams_lock:
+                        candidate_stream_sequence += 1
+                        state["seq"] = candidate_stream_sequence
+                        state["ts"] = _iso(utc_now()) or ""
+                        state["elapsed_ms"] = round((datetime.now().timestamp() - turn_started) * 1000, 2)
+                        active = self._active_candidate_streams.get(debug_session_id)
+                        if isinstance(active, dict) and active.get("run_id") == candidate_stream_generation:
+                            active["last_state"] = copy.deepcopy(state)
+                    on_event("state", state)
+
             if callable(on_event):
                 # The formal StreamingRunner assigns a generation before the
                 # Runtime opens the upstream model stream.  Candidate tests
@@ -733,12 +777,33 @@ class WorkbenchService:
                 candidate_stream_generation = _id("candidate_stream")
                 context.session_meta["active_stream_generation"] = candidate_stream_generation
                 context.session_meta.pop("cancelled_stream_generation", None)
-                context.session_meta["stream_cancel_check"] = lambda: False
+                context.session_meta["stream_cancel_check"] = lambda: (
+                    context.session_meta.get("cancelled_stream_generation") == candidate_stream_generation
+                )
                 context.session_meta["stream_final_reply"] = True
-                context.session_meta["reply_delta_callback"] = lambda text: on_event("reply_delta", {"delta": text})
-                context.session_meta["reasoning_delta_callback"] = lambda text: on_event("reasoning_delta", {"delta": text})
-                context.session_meta["status_callback"] = lambda payload: on_event("status", payload if isinstance(payload, dict) else {})
-                context.session_meta["team_handoff_callback"] = lambda payload: on_event("team_handoff", payload if isinstance(payload, dict) else {})
+                def reply_delta_callback(text: str) -> None:
+                    nonlocal stream_content
+                    stream_content += str(text or "")
+                    on_event("reply_delta", {"delta": str(text or "")})
+                    emit_candidate_state()
+
+                def reasoning_delta_callback(text: str) -> None:
+                    on_event("reasoning_delta", {"delta": str(text or "")})
+
+                def status_callback(payload: Any) -> None:
+                    on_event("status", payload if isinstance(payload, dict) else {})
+                    emit_candidate_state()
+
+                def team_handoff_callback(payload: Any) -> None:
+                    nonlocal stream_handoff
+                    stream_handoff = copy.deepcopy(payload) if isinstance(payload, dict) else None
+                    on_event("team_handoff", payload if isinstance(payload, dict) else {})
+                    emit_candidate_state()
+
+                context.session_meta["reply_delta_callback"] = reply_delta_callback
+                context.session_meta["reasoning_delta_callback"] = reasoning_delta_callback
+                context.session_meta["status_callback"] = status_callback
+                context.session_meta["team_handoff_callback"] = team_handoff_callback
             message = self._revision_test_input_message(
                 context,
                 user_message,
@@ -748,6 +813,15 @@ class WorkbenchService:
             )
             if not message:
                 raise WorkbenchError("测试问题或表单答案不能为空", code="REVISION_TEST_INPUT_REQUIRED")
+            if candidate_stream_generation:
+                with self._active_candidate_streams_lock:
+                    self._active_candidate_streams[debug_session_id] = {
+                        "run_id": candidate_stream_generation,
+                        "context": context,
+                        "emit_state": emit_candidate_state,
+                        "last_state": None,
+                    }
+            emit_candidate_state()
             self._record_candidate_turn_event(
                 context,
                 "candidate_turn_started",
@@ -756,7 +830,17 @@ class WorkbenchService:
                     "root": self._candidate_root_debug(snapshot),
                 },
             )
-            assistant_message = self._execute_snapshot_message(snapshot, message, context)
+            try:
+                assistant_message = self._execute_snapshot_message(snapshot, message, context)
+            except Exception:
+                if candidate_stream_generation:
+                    with self._active_candidate_streams_lock:
+                        self._active_candidate_streams.pop(debug_session_id, None)
+                raise
+            was_stopped = bool(
+                candidate_stream_generation
+                and context.session_meta.get("cancelled_stream_generation") == candidate_stream_generation
+            )
             if candidate_stream_generation:
                 # Callback and cancellation state are request-scoped.  They
                 # must not become durable candidate conversation state and
@@ -780,6 +864,17 @@ class WorkbenchService:
                 context,
                 fallback_content=assistant_message,
             )
+            if was_stopped:
+                presentation = assistant_projection.get("presentation")
+                if not isinstance(presentation, dict):
+                    presentation = {}
+                    assistant_projection["presentation"] = presentation
+                presentation["assistant"] = {
+                    **(presentation.get("assistant") if isinstance(presentation.get("assistant"), dict) else {}),
+                    "content": str(assistant_projection.get("content") or assistant_message or ""),
+                    "status": "stopped",
+                }
+                assistant_projection["generation_status"] = "cancelled"
             user_projection = self._latest_user_projection(context, fallback_content=message)
             transcript = [
                 *self._refresh_candidate_transcript_interactions(row.transcript or [], context),
@@ -816,8 +911,12 @@ class WorkbenchService:
             )
             db.commit()
             if callable(on_event):
+                emit_candidate_state("stopped" if was_stopped else "completed", assistant_record=assistant_projection)
                 on_event("message", {"assistant_message": assistant_projection})
                 on_event("blocks", {"blocks": assistant_blocks, "form": form})
+            if candidate_stream_generation:
+                with self._active_candidate_streams_lock:
+                    self._active_candidate_streams.pop(debug_session_id, None)
             return {
                 "assistant_message": assistant_message,
                 "trace": turn_events,
@@ -827,6 +926,47 @@ class WorkbenchService:
                 "assistant_message_record": assistant_projection,
                 "debug_session": self._debug_dict(row),
             }
+
+    def stop_revision_test_turn(
+        self,
+        debug_session_id: str,
+        *,
+        run_id: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Request cancellation for a live candidate SSE turn.
+
+        The original stream remains responsible for persisting its partial
+        transcript and emitting its final ``state``/``done`` pair.  This
+        endpoint merely sets the request-scoped Runtime cancellation marker
+        and immediately emits a stopped snapshot, matching formal chat's
+        user-visible stop semantics without coupling candidates to production
+        sessions.
+        """
+        expected_run_id = str(run_id or "").strip()
+        if not expected_run_id:
+            raise WorkbenchError("缺少候选测试运行 ID", code="REVISION_TEST_RUN_ID_REQUIRED")
+        with self._active_candidate_streams_lock:
+            active = self._active_candidate_streams.get(debug_session_id)
+            if not isinstance(active, dict) or active.get("run_id") != expected_run_id:
+                raise WorkbenchConflict("候选修订当前没有该运行中的回复", code="REVISION_TEST_RUN_NOT_ACTIVE")
+            context = active.get("context")
+            if not isinstance(context, SessionContext):
+                raise WorkbenchConflict("候选修订当前没有该运行中的回复", code="REVISION_TEST_RUN_NOT_ACTIVE")
+            context.session_meta["cancelled_stream_generation"] = expected_run_id
+            emit_state = active.get("emit_state")
+            last_state = copy.deepcopy(active.get("last_state")) if isinstance(active.get("last_state"), dict) else None
+        if callable(emit_state):
+            emit_state("stopped")
+        with self._active_candidate_streams_lock:
+            current = self._active_candidate_streams.get(debug_session_id)
+            if isinstance(current, dict) and current.get("run_id") == expected_run_id:
+                last_state = copy.deepcopy(current.get("last_state")) if isinstance(current.get("last_state"), dict) else last_state
+        return {
+            "run_id": expected_run_id,
+            "status": "stopped",
+            "state": last_state,
+        }
 
     @staticmethod
     def _revision_test_input_message(
@@ -939,6 +1079,9 @@ class WorkbenchService:
         context.session_meta["active_expert_id"] = target_expert_id
         context.session_meta["expert_id"] = target_expert_id
         context.session_meta["expert_selection_source"] = "candidate_handoff_card"
+        context.session_meta["_candidate_branch_version"] = int(
+            context.session_meta.get("_candidate_branch_version") or 1
+        ) + 1
         context.session_meta.pop("pending_team_handoff", None)
         context.session_meta.pop("expert_requested_skill_id", None)
         context.interaction_state["active_skill"] = ""
@@ -953,6 +1096,16 @@ class WorkbenchService:
                 break
         mention_name = str(candidate.get("mention_name") or candidate.get("name") or target_expert_id)
         context.session_meta["team_handoff_visible_user_message"] = f"@{mention_name}"
+        # The Runtime writes this as a display/audit event.  It is deliberately
+        # excluded from later model history; the target expert receives the
+        # original question and structured handoff context below instead.
+        context.session_meta["team_handoff_visible_user_message_type"] = "team_handoff_confirmation"
+        context.session_meta["team_handoff_visible_user_message_metadata"] = {
+            "source_message_id": str(selection.get("source_message_id") or ""),
+            "target_expert_id": target_expert_id,
+            "expert_team_id": team_id,
+            "source": "team_handoff",
+        }
         # Match the formal handoff path: the authoritative, server-validated
         # selection is passed structurally to the Expert Runtime.  Do not put
         # internal object IDs into a synthetic user message; it both diverges
@@ -1048,6 +1201,9 @@ class WorkbenchService:
         context.session_meta["active_expert_id"] = target_expert_id
         context.session_meta["expert_id"] = target_expert_id
         context.session_meta["expert_selection_source"] = "candidate_manual_at"
+        context.session_meta["_candidate_branch_version"] = int(
+            context.session_meta.get("_candidate_branch_version") or 1
+        ) + 1
         context.session_meta.pop("pending_team_handoff", None)
         context.session_meta.pop("expert_requested_skill_id", None)
         context.session_meta["team_member_switch"] = {
@@ -1073,8 +1229,8 @@ class WorkbenchService:
             # user's children.  The anonymous identity is deliberately
             # derived from this immutable debug-session id.
             user_id=f"workbench-candidate-{row.debug_session_id}",
-            profile_id="anonymous-candidate",
-            profile_name="匿名候选测试",
+            profile_id=None,
+            profile_name=None,
         )
         saved = row.runtime_context if isinstance(row.runtime_context, dict) else {}
         context.messages = list(saved.get("messages") or [])
@@ -1089,6 +1245,7 @@ class WorkbenchService:
         context.event_trace = list(saved.get("event_trace") or [])
         context.last_fact_changes = list(saved.get("last_fact_changes") or [])
         context.session_meta.update(dict(saved.get("session_meta") or {}))
+        context.session_meta.setdefault("_candidate_branch_version", 1)
         self._configure_snapshot_context(context, snapshot)
         return context
 
@@ -1112,6 +1269,102 @@ class WorkbenchService:
                 if key not in {"configuration_snapshot", "soul_context"} and not callable(value)
             },
         }
+
+    def _candidate_expert_state(self, context: SessionContext) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Project an anonymous candidate Runtime state into the public v2 shape."""
+        meta = context.session_meta if isinstance(context.session_meta, dict) else {}
+        team_id = str(meta.get("expert_team_id") or "").strip()
+        expert_id = str(meta.get("active_expert_id") or meta.get("expert_id") or "").strip()
+        registry = getattr(self.orchestrator, "expert_registry", None)
+        definition = registry.get(expert_id) if expert_id and registry is not None else None
+        team_registry = getattr(self.orchestrator, "expert_team_registry", None)
+        team = team_registry.get(team_id) if team_id and team_registry is not None else None
+        mode = "team" if team is not None else "single" if definition is not None else "none"
+        member = team.member_for_expert(expert_id) if team is not None else None
+        expert = {
+            "mode": mode,
+            "team": {
+                "team_id": team.team_id,
+                "name": team.name,
+                "coordinator_expert_id": team.coordinator_expert_id,
+            } if team is not None else {},
+            "active": {
+                "expert_id": expert_id,
+                "name": str(getattr(definition, "name", "") or expert_id),
+                "mention_name": str(getattr(member, "mention_name", "") or ""),
+                "is_coordinator": bool(team is not None and expert_id == team.coordinator_expert_id),
+            } if expert_id else {},
+            "activation": {
+                "source": "candidate_snapshot",
+                "is_default": bool(team is not None and expert_id == team.coordinator_expert_id),
+                "selection_source": str(meta.get("expert_selection_source") or ""),
+            } if mode != "none" else {},
+            "transition": {},
+        }
+        expert_context = {
+            "expert_team_id": team_id or None,
+            "expert_id": expert_id or None,
+            "branch_version": int(meta.get("_candidate_branch_version") or 1),
+        }
+        return expert, expert_context
+
+    def _candidate_sse_state(
+        self,
+        context: SessionContext,
+        *,
+        run_id: str,
+        status: str,
+        assistant_content: str = "",
+        assistant_record: dict[str, Any] | None = None,
+        team_handoff: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return the fixed SSE v2 presentation shape for a candidate turn."""
+        state = empty_message_state(session_id=context.session_id, run_id=run_id)
+        expert, expert_context = self._candidate_expert_state(context)
+        record = assistant_record if isinstance(assistant_record, dict) else {}
+        presentation = record.get("presentation") if isinstance(record.get("presentation"), dict) else {}
+        active_skill = build_skill_display(
+            context,
+            runtime_registry=getattr(self.orchestrator, "runtime_registry", None),
+        )
+        state.update({
+            "profile_id": None,
+            "profile_name": None,
+            "context_scope": "unbound",
+            "context_label": "未绑定孩子",
+            "context_switched": False,
+            "context_notice": {},
+            "branch_version": expert_context["branch_version"],
+            "profile_context_status": "unbound",
+            "status": status,
+            "message_id": str(record.get("message_id") or "") or None,
+            "assistant": {
+                "content": str(record.get("content") or assistant_content or ""),
+                "status": status,
+            },
+            "intent": copy.deepcopy(presentation.get("intent") or {}),
+            "form": copy.deepcopy(presentation.get("form") or {}),
+            "path_options": copy.deepcopy(presentation.get("path_options") or {}),
+            "skill_rooms": copy.deepcopy(presentation.get("skill_rooms") or []),
+            "team_handoff": copy.deepcopy(team_handoff or presentation.get("team_handoff") or {}),
+            "expert": expert,
+            "expert_context": expert_context,
+            "skill_transition": copy.deepcopy(presentation.get("skill_transition") or {}),
+            "session": copy.deepcopy(presentation.get("session") or {
+                "active_skill": {
+                    "skill_id": active_skill.get("skill_id"),
+                    "title": active_skill.get("active_skill_label"),
+                    "brief": active_skill.get("brief", ""),
+                    "info": active_skill.get("info", ""),
+                    "description": active_skill.get("description", ""),
+                    "scene_name": active_skill.get("scene_name", ""),
+                },
+            }),
+            "risk": copy.deepcopy(presentation.get("risk") or state["risk"]),
+            "error": copy.deepcopy(error or presentation.get("error") or state["error"]),
+        })
+        return state
 
     @staticmethod
     def _latest_fact_form(context) -> dict[str, Any] | None:
@@ -1263,6 +1516,7 @@ class WorkbenchService:
                 "content": str(message.get("content") or fallback_content or ""),
                 "message_id": str(message.get("message_id") or ""),
                 "message_type": str(message.get("message_type") or metadata.get("message_type") or ""),
+                "metadata": copy.deepcopy(metadata),
                 "blocks": [],
                 "interaction_states": {},
                 "created_at": str(message.get("created_at") or _iso(utc_now()) or ""),
@@ -1272,6 +1526,7 @@ class WorkbenchService:
             "content": fallback_content,
             "message_id": "",
             "message_type": "",
+            "metadata": {},
             "blocks": [],
             "interaction_states": {},
             "created_at": _iso(utc_now()),
@@ -1847,14 +2102,44 @@ class WorkbenchService:
         The snapshot overlay is read by ``MainPlannerOrchestrator`` and swaps
         only the business files/prompt. The state machine, questionnaire,
         script sandbox and message construction remain the production code.
-        An isolated fallback is kept for imported packages that have not yet
-        been installed as a Runtime Skill; it is deliberately visible in the
-        trace and cannot synthesize formal interactive blocks.
+        Unpublished candidates are temporarily mounted over the shared
+        Runtime registry for the duration of this call, so they use exactly
+        the same executor without becoming visible to formal conversations.
         """
         skill_id = str(entry.get("object_key") or "")
         runtime_registry = getattr(self.orchestrator, "runtime_registry", None)
         bundle = runtime_registry.get(skill_id) if runtime_registry is not None and skill_id else None
         formal_executor = getattr(self.orchestrator, "_handle_message_legacy", None)
+        temporary_mount = False
+        previous_bundle = None
+        registry_key = skill_id
+        runtime_mount_lock = None
+        if bundle is None and runtime_registry is not None and callable(formal_executor):
+            # Candidate revisions must be testable before their first release.
+            # Reuse the main/general bundle as the immutable code shell and
+            # overlay the candidate's prompt, references, contract and scripts.
+            template = runtime_registry.get_raw("general_chat") or getattr(self.orchestrator, "main_bundle", None)
+            if template is not None and skill_id:
+                candidate_bundle = configured_skill_bundle(template, entry)
+                candidate_bundle = copy.copy(candidate_bundle)
+                candidate_bundle.contract = replace(candidate_bundle.contract, skill_id=skill_id)
+                candidate_bundle.runtime_metadata = replace(
+                    candidate_bundle.runtime_metadata,
+                    skill_id=skill_id,
+                    name=str(entry.get("name") or skill_id),
+                    version=f"candidate-{str(entry.get('revision_id') or '')[:12]}",
+                )
+                runtime_mount_lock = self._candidate_runtime_mount_lock
+                runtime_mount_lock.acquire()
+                previous_bundle = runtime_registry.bundles.get(registry_key)
+                runtime_registry.bundles[registry_key] = candidate_bundle
+                temporary_mount = True
+                bundle = runtime_registry.get(skill_id)
+                self._record_candidate_turn_event(
+                    context,
+                    "candidate_runtime_temporary_mount",
+                    {"skill_id": skill_id, "revision_id": entry.get("revision_id"), "mode": "candidate_overlay"},
+                )
         if bundle is not None and callable(formal_executor):
             context.interaction_state["active_skill"] = skill_id
             runtime_state = context.skill_states.setdefault("skill_runtime", {})
@@ -1865,14 +2150,16 @@ class WorkbenchService:
                 "candidate_runtime_shared_executor",
                 {"skill_id": skill_id, "mode": "formal_runtime"},
             )
-            result = formal_executor(message, context)
-            return str(getattr(result, "assistant_message", "") or self._latest_assistant_content(context))
-        if runtime_registry is not None:
-            raise WorkbenchError(
-                "当前候选 Skill 尚未安装为统一 Runtime 能力，无法保证表单和正式环境一致。请先完成 Runtime 安装或选择已安装的 Skill。",
-                code="CANDIDATE_RUNTIME_SKILL_UNAVAILABLE",
-                details={"skill_id": skill_id},
-            )
+            try:
+                result = formal_executor(message, context)
+                return str(getattr(result, "assistant_message", "") or self._latest_assistant_content(context))
+            finally:
+                if temporary_mount:
+                    if previous_bundle is None:
+                        runtime_registry.bundles.pop(registry_key, None)
+                    else:
+                        runtime_registry.bundles[registry_key] = previous_bundle
+                    runtime_mount_lock.release()
         self._record_candidate_turn_event(
             context,
             "candidate_runtime_fallback",

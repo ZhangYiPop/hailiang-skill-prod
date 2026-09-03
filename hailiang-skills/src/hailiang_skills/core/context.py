@@ -82,7 +82,103 @@ class SessionContext:
             "_profile_branch_created",
             "_sse_profile_context",
             "configuration_snapshot",
+            # The chosen Team/member belongs to the whole user-visible
+            # session. Child branches still own their histories, facts,
+            # forms and active Skill, but a later child switch must not make
+            # the product forget which Agent the user was speaking with.
+            "session_agent_selection",
         }
+
+    def session_agent_selection(self) -> dict[str, Any]:
+        """Return the session-wide Agent selection without exposing branches.
+
+        Older sessions do not have this record.  They intentionally remain
+        ordinary chat until an explicit selection happens; copying legacy
+        branch state here would accidentally turn general chat into an Expert
+        conversation during a child switch.
+        """
+        raw = self.session_meta.get("session_agent_selection")
+        if not isinstance(raw, dict):
+            return {
+                "expert_team_id": None,
+                "expert_id": None,
+                "selection_source": "",
+                "selection_version": 0,
+            }
+        return {
+            "expert_team_id": str(raw.get("expert_team_id") or "").strip() or None,
+            "expert_id": str(raw.get("expert_id") or "").strip() or None,
+            "selection_source": str(raw.get("selection_source") or "").strip(),
+            "selection_version": int(raw.get("selection_version") or 0),
+        }
+
+    def set_session_agent_selection(
+        self,
+        *,
+        expert_team_id: str | None,
+        expert_id: str | None,
+        selection_source: str,
+    ) -> dict[str, Any]:
+        """Persist the last actually selected Agent for every child branch."""
+        previous = self.session_agent_selection()
+        next_selection = {
+            "expert_team_id": str(expert_team_id or "").strip() or None,
+            "expert_id": str(expert_id or "").strip() or None,
+            "selection_source": str(selection_source or "").strip(),
+        }
+        changed = any(
+            previous[key] != next_selection[key]
+            for key in ("expert_team_id", "expert_id", "selection_source")
+        )
+        next_selection["selection_version"] = previous["selection_version"] + (1 if changed else 0)
+        self.session_meta["session_agent_selection"] = next_selection
+        return dict(next_selection)
+
+    def apply_session_agent_selection(self) -> bool:
+        """Restore the session Agent into the active child/unbound branch.
+
+        This deliberately resets only branch-local *live* interactions when
+        the Agent changes.  Historical messages and Facts survive, while a
+        form, handoff card or active Skill created under another Agent can no
+        longer be submitted against the new execution owner.
+        """
+        selection_present = isinstance(self.session_meta.get("session_agent_selection"), dict)
+        selection = self.session_agent_selection()
+        team_id = selection["expert_team_id"]
+        expert_id = selection["expert_id"]
+        if not selection_present:
+            return False
+        current_team_id = str(self.session_meta.get("expert_team_id") or "").strip() or None
+        current_expert_id = str(
+            self.session_meta.get("active_expert_id") or self.session_meta.get("expert_id") or ""
+        ).strip() or None
+        changed = (current_team_id, current_expert_id) != (team_id, expert_id)
+        if team_id or expert_id:
+            self.session_meta["expert_team_id"] = team_id
+            self.session_meta["expert_id"] = expert_id
+            self.session_meta["active_expert_id"] = expert_id
+            self.session_meta["expert_selection_source"] = selection["selection_source"]
+        else:
+            for key in ("expert_team_id", "expert_id", "active_expert_id", "expert_requested_skill_id", "pending_team_handoff"):
+                self.session_meta.pop(key, None)
+            self.session_meta["expert_selection_source"] = selection["selection_source"]
+        if not changed:
+            return False
+        self.session_meta.pop("pending_team_handoff", None)
+        self.session_meta.pop("expert_requested_skill_id", None)
+        expire_active_interactions(self.messages)
+        self.interaction_state["active_skill"] = "career_plan_entity" if (team_id or expert_id) else "general_chat"
+        runtime_state = self.skill_states.get("skill_runtime")
+        if isinstance(runtime_state, dict):
+            runtime_state["active_skill_id"] = "career_plan_entity" if (team_id or expert_id) else "general_chat"
+            for facts in (runtime_state.get("skill_facts") or {}).values():
+                if isinstance(facts, dict):
+                    facts.pop("_pending_questionnaire", None)
+        agent_state = self.skill_states.get("agent_runtime")
+        if isinstance(agent_state, dict):
+            agent_state.pop("pending_form", None)
+            agent_state["active_expert_id"] = expert_id
+        return True
 
     def _global_session_meta(self) -> dict[str, Any]:
         return {

@@ -43,11 +43,12 @@ def record_security_result(context, *, stage: str, result, case_id: str | None =
                 "status": payload["status"],
                 "stage": stage,
                 "blocked": payload["status"] == "blocked",
-                # Public SSE deliberately does not reveal provider labels,
-                # case ids, or moderation diagnostics.
-                "message": "该内容当前无法继续处理，请调整后重新输入。"
+                "message": "该内容被内容安全策略拦截，请调整后重新输入。"
                 if payload["status"] == "blocked"
                 else "",
+                "category": (payload.get("categories") or ["content_policy"])[0]
+                if payload["status"] == "blocked" else "",
+                "provider": payload.get("provider", "") if payload["status"] == "blocked" else "",
             }
         )
     return payload

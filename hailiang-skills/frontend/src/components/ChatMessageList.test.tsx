@@ -162,6 +162,25 @@ describe("ChatMessageList", () => {
     expect(screen.getByText("已进入 生涯规划").closest("article")).toBeNull();
   });
 
+  it("renders a confirmed team handoff as a timeline event instead of a user question", () => {
+    render(
+      <ChatMessageList
+        messages={[
+          makeMessage({
+            id: "handoff-confirmation",
+            role: "user",
+            content: "@家庭教育专家",
+            messageType: "team_handoff_confirmation",
+          }),
+        ]}
+      />,
+    );
+
+    const confirmation = screen.getByText("已确认由 家庭教育专家 专家接管");
+    expect(confirmation.closest("article")).toBeNull();
+    expect(screen.queryByText("你")).not.toBeInTheDocument();
+  });
+
   it("hides historical route suggestions after entering a specialist skill", () => {
     render(
       <ChatMessageList

@@ -8,6 +8,12 @@
 >
 > 适用对象：业务前端、项目转发后端（BFF）、联调与测试人员
 
+> **严格请求字段更新（2026-09-03）：** `input.profile_id`、顶层
+> `expert_team_id` 与顶层 `expert_id` 已不再兼容。所有非停止动作必须携带
+> `expert_context`。请以
+> [SSE_V2_EXPERT_CONTEXT_CONTRACT.md](SSE_V2_EXPERT_CONTEXT_CONTRACT.md) 为准；
+> 本文中遗留的旧请求示例仅供理解历史流程，不能直接用于联调。
+
 本文是 SSE v2 跨服务联调的统一入口。字段的详细渲染语义继续以
 [SSE_RESPONSE_CONTRACT.md](SSE_RESPONSE_CONTRACT.md) 为准；普通 JSON 接口见
 [API_DOCUMENTATION.md](API_DOCUMENTATION.md)。
@@ -17,10 +23,9 @@
 1. 普通聊天、普通模式下进入/退出 Skill、切换专家、确认专家转交和停止生成，都调用同一个接口：
    `POST /api/v2/sessions/chat/stream`。
 2. 请求体顶层是 JSON，但其中 `input` 本身是一个 **JSON 字符串**，不是嵌套对象。
-3. 除 `stop` 外，每轮都应显式选择 `context_scope`：`profile` 时只需由
-   `context_data.profile_id` 表示 BFF 当前选中的孩子；`input.profile_id` 是
-   可省略的旧版兼容字段。`unbound` 时两处均不得传孩子 ID，`context_data`
-   仅传可信 `user_id`。
+3. 除 `stop` 外，每轮都应显式选择 `context_scope` 并携带 `expert_context`：
+   `profile` 时孩子只由 `context_data.profile_id` 表示；`input.profile_id` 会被
+   拒绝。`unbound` 时 `context_data` 仅传可信 `user_id`。
 4. 服务端对外只发送 `state`、`ping`、`done` 三种 SSE 事件。前端不消费 Runtime 内部事件。
 5. 每个 `state.data` 都是完整状态快照，不是 patch，也不是文本 delta。
 6. 同一 `run_id` 只接受 `seq` 更大的状态；`done` 与最后一个 `state` 相同，不重复渲染。
@@ -48,6 +53,14 @@
   ├─ 内部细粒度事件归并为 SSE v2 完整状态
   └─ state* → ping* → done → 关闭连接
 ```
+
+浏览器无需、也不应知道算法服务内部的 `profile_id`。用户在页面选择孩子后，浏览器只向
+BFF 传业务侧的选中孩子标识；BFF 校验该孩子属于当前登录用户，并映射为算法服务所需的
+`context_data.profile_id`。同一 `session_id` 的下一轮请求只要携带不同的
+`context_data.profile_id`，就表示切换孩子；算法服务会隔离旧分支并恢复或创建新孩子分支。
+`input` 只承载动作、正文和专家/Skill 交互，不需要镜像孩子 ID。
+普通 `chat` 固定传 `context_activation="auto"`：同一条请求会恢复 session 级最后活跃
+专家（如已选择），无需浏览器先读取目标孩子分支或因版本未知重发消息。
 
 ### BFF 负责
 
@@ -144,7 +157,7 @@ X-SSE-Protocol: hailiang.sse.v2
 | 扩展字段 | 任意 JSON | 否 | 可作为转发元数据保留，不自动成为 Facts。 |
 
 `context_scope: "profile"` 时，服务端以 `context_data.profile_id` 作为本轮明确目标。
-`input.profile_id` 仅为旧调用方保留：省略时服务端直接采用 `context_data.profile_id`；若同时传递但不一致，服务端返回 `409 PROFILE_CONTEXT_MISMATCH`，绝不混合两个档案内容。
+`input.profile_id` 已被禁止；携带它会返回 `422 INPUT_PROFILE_ID_FORBIDDEN`。
 
 `context_scope: "unbound"` 时，`context_data` 只能包含 `user_id`，不得包含孩子名称、档案 ID、年级或 Facts。该范围只使用当前 session 的未绑定分支，不读取或写入孩子/账户共享 Facts。
 
@@ -370,6 +383,7 @@ data: {与最后一个 state 相同的完整 SseV2State JSON}
   "profile_name": "小海",
   "branch_version": 1,
   "profile_context_status": "matched",
+  "context_notice": {},
   "session_created": false,
   "profile_switched": false,
   "status": "completed",
@@ -379,7 +393,7 @@ data: {与最后一个 state 相同的完整 SseV2State JSON}
   "path_options": {},
   "skill_rooms": [],
   "team_handoff": {},
-  "expert": {"mode": "team", "team": {}, "active": {}, "transition": {}},
+  "expert": {"mode": "team", "team": {}, "active": {}, "activation": {}, "transition": {}},
   "skill_transition": {},
   "session": {"active_skill": {}},
   "risk": {"status": "passed", "stage": "output", "blocked": false, "message": ""},
@@ -406,7 +420,7 @@ data: {与最后一个 state 相同的完整 SseV2State JSON}
 | `path_options` | 路径选择卡。 |
 | `skill_rooms` | Skill 推荐卡。 |
 | `team_handoff` | 专家团转交确认卡。 |
-| `expert` | 当前专家团、专家及最近切换状态。 |
+| `expert` | 当前专家团、专家、默认承接标志及最近切换状态。 |
 | `skill_transition` | Skill 进入/退出转场。 |
 | `session.active_skill` | 页面当前 Skill 的唯一权威来源。 |
 | `risk` | 输入/输出安全状态和可展示提示。 |

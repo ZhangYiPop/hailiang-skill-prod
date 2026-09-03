@@ -87,13 +87,8 @@ if Histogram:
     SSE_ACTIVE = Gauge("hailiang_sse_active_connections", "Current active SSE streams.")
     SSE_TTFT = Histogram("hailiang_sse_time_to_first_token_seconds", "Time to first response token.", ("skill_id",))
     ERRORS = Counter("hailiang_errors_total", "Application errors.", ("node", "error_type"))
-    PROFILE_CONTEXT_MISMATCHES = Counter(
-        "hailiang_profile_context_mismatches_total",
-        "Requests whose input and forwarded profile identifiers differ.",
-        ("authority",),
-    )
 else:  # pragma: no cover
-    REQUEST_DURATION = NODE_DURATION = SSE_ACTIVE = SSE_TTFT = ERRORS = PROFILE_CONTEXT_MISMATCHES = None
+    REQUEST_DURATION = NODE_DURATION = SSE_ACTIVE = SSE_TTFT = ERRORS = None
 
 
 def current_telemetry() -> TelemetryContext | None:

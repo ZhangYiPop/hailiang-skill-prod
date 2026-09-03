@@ -79,6 +79,7 @@ export type MessagePresentation = {
     mode: string;
     team: Record<string, unknown>;
     active: Record<string, unknown>;
+    activation: Record<string, unknown>;
     transition: Record<string, unknown>;
   };
   skill_transition: Record<string, unknown>;
@@ -229,6 +230,13 @@ export type SelectedExpertTeam = {
   active_expert_id: string;
   active_mention_name: string;
   members: ExpertTeamMember[];
+};
+
+export type ExpertContext = {
+  expert_team_id: string | null;
+  expert_id: string | null;
+  branch_version: number;
+  selection_version: number;
 };
 
 export type CandidatePath = {
@@ -398,6 +406,7 @@ export type SessionResponse = {
   skill_states: Record<string, Record<string, unknown>>;
   expert?: SelectedExpert | null;
   expert_team?: SelectedExpertTeam | null;
+  expert_context?: ExpertContext;
   conversation_state?: ConversationState;
   profile_school_facts?: Array<{ school_year: string; grade: string }>;
   skill_display?: {
@@ -496,6 +505,7 @@ export type SessionContextResponse = {
   skill_states: Record<string, Record<string, unknown>>;
   expert?: SelectedExpert | null;
   expert_team?: SelectedExpertTeam | null;
+  expert_context?: ExpertContext;
   interaction_state: Record<string, unknown>;
   candidate_paths: CandidatePath[];
   event_count: number;
@@ -624,6 +634,7 @@ export type CreateSessionResponse = {
   conversation_state: ConversationState;
   expert?: SelectedExpert | null;
   expert_team?: SelectedExpertTeam | null;
+  expert_context?: ExpertContext;
 };
 
 export type ConversationState = {

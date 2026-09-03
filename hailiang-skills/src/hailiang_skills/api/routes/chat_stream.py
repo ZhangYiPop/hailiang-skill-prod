@@ -12,14 +12,12 @@ from hailiang_skills.core.concurrency import CapacityExceededError, TurnCoordina
 from hailiang_skills.core.fact_service import FactService
 from hailiang_skills.core.sse_protocol import SSE_V2_PROTOCOL
 from hailiang_skills.core.skill_ids import CAREER_PLAN_SKILL_ID, GENERAL_CHAT_SKILL_ID, canonical_skill_id
-from hailiang_skills.core.streaming_runner import StreamingRunner, format_sse_event
+from hailiang_skills.core.streaming_runner import StreamingRunner, expert_context_payload, format_sse_event
 from hailiang_skills.storage.repositories.session_repo import InMemorySessionRepository
 from hailiang_skills.storage.repositories.postgres_repo import SessionVersionConflict
 from hailiang_skills.core.rate_limit import LLMRateLimitError, LLMRateLimiter
 from hailiang_skills.core.logging import make_event
-from hailiang_skills.core.telemetry import PROFILE_CONTEXT_MISMATCHES
 from hailiang_skills.core.message_interactions import ACTIVE, SELECTED, ensure_message_interactions, expire_active_interactions, update_interaction
-from hailiang_skills.api.profile_targeting import ProfileTargetResolver
 from hailiang_skills.core.session_logging import append_session_events
 
 
@@ -27,21 +25,26 @@ class StrictInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ExpertContextInput(StrictInput):
+    expert_team_id: str | None = Field(default=None, min_length=1)
+    expert_id: str | None = Field(default=None, min_length=1)
+    expected_branch_version: int = Field(ge=0)
+    expected_selection_version: int = Field(default=0, ge=0)
+    operation: Literal["continue", "select_team", "select_expert"]
+
+
 class ProfileBoundInput(StrictInput):
-    # Retain the historical name for import compatibility.  A session action
-    # can now explicitly select the session-local unbound context.
     context_scope: Literal["profile", "unbound"] | None = None
-    profile_id: str | None = Field(default=None, min_length=1)
+    expert_context: ExpertContextInput
 
 
 class ChatInput(ProfileBoundInput):
     action: Literal["chat"]
-    expert_id: str | None = Field(default=None, min_length=1)
-    expert_team_id: str | None = Field(default=None, min_length=1)
     content: str = Field(min_length=1)
     source: Literal["chat"]
     enable_thinking: bool = False
     return_reasoning: bool = False
+    context_activation: Literal["auto", "strict"] = "auto"
 
 
 class EnterSkillInput(ProfileBoundInput):
@@ -112,6 +115,13 @@ def _parse_input(raw: str) -> StreamInput:
         raise HTTPException(status_code=422, detail="input must be a JSON object")
     try:
         action = payload.get("action")
+        if action != "stop":
+            if "profile_id" in payload:
+                raise HTTPException(status_code=422, detail="INPUT_PROFILE_ID_FORBIDDEN")
+            if "expert_team_id" in payload or "expert_id" in payload:
+                raise HTTPException(status_code=422, detail="LEGACY_EXPERT_FIELDS_FORBIDDEN")
+            if "expert_context" not in payload:
+                raise HTTPException(status_code=422, detail="EXPERT_CONTEXT_REQUIRED")
         if action == "chat":
             return ChatInput.model_validate(payload)
         if action == "enter_skill":
@@ -140,31 +150,129 @@ def _parse_input(raw: str) -> StreamInput:
 
 
 def _resolve_context_scope(input_data: ProfileBoundInput, data: ContextData) -> tuple[str, str | None]:
-    """Resolve one turn's context from the BFF-selected context data.
-
-    ``context_data`` is the forwarding service's current child selection, so
-    it is the authoritative source for ordinary chat turns. ``input`` retains
-    an optional ``profile_id`` solely for older callers; when supplied it must
-    agree with the selected context rather than silently overriding it.
-    """
-    input_profile_id = str(input_data.profile_id or "").strip()
+    """Resolve one turn's context solely from the BFF-selected context data."""
     context_profile_id = str(data.profile_id or "").strip()
-    if input_profile_id and context_profile_id and input_profile_id != context_profile_id:
-        raise HTTPException(status_code=409, detail="PROFILE_CONTEXT_MISMATCH")
-
-    scope = input_data.context_scope or ("profile" if (context_profile_id or input_profile_id) else "unbound")
+    scope = input_data.context_scope or ("profile" if context_profile_id else "unbound")
     if scope == "unbound":
-        if input_profile_id:
-            raise HTTPException(status_code=422, detail="UNBOUND_CONTEXT_MUST_NOT_INCLUDE_PROFILE_ID")
         if any((data.profile_id, data.student_name, data.school_year, data.grade)) or data.facts:
             raise HTTPException(status_code=422, detail="UNBOUND_CONTEXT_MUST_NOT_INCLUDE_PROFILE_DATA")
         return scope, None
-    profile_id = context_profile_id or input_profile_id
-    if not profile_id:
+    if not context_profile_id:
         raise HTTPException(status_code=422, detail="PROFILE_ID_REQUIRED")
     if not data.profile_id or not data.student_name:
         raise HTTPException(status_code=422, detail="PROFILE_CONTEXT_REQUIRED")
-    return scope, profile_id
+    return scope, context_profile_id
+
+
+def _expert_context_error(code: str, message: str, *, status_code: int = 422, details: dict | None = None) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message, "details": details or {}},
+    )
+
+
+def _assert_expert_context_current(context, input_data: ProfileBoundInput, *, require_exact_identity: bool) -> dict:
+    """Validate an echoed branch state before any expert action mutates it."""
+    expected = input_data.expert_context
+    actual = expert_context_payload(context)
+    expected_selection_version = input_data.expert_context.expected_selection_version
+    if expected_selection_version != actual["selection_version"]:
+        raise _expert_context_error(
+            "EXPERT_CONTEXT_STALE",
+            "专家选择已在其他位置更新，请使用最新会话状态继续。",
+            status_code=409,
+            details={"expert_context": actual},
+        )
+    if expected.expected_branch_version != actual["branch_version"]:
+        raise _expert_context_error(
+            "EXPERT_CONTEXT_STALE",
+            "专家上下文已更新，请使用最新会话状态继续。",
+            status_code=409,
+            details={"expert_context": actual},
+        )
+    if require_exact_identity and (
+        expected.expert_team_id != actual["expert_team_id"]
+        or expected.expert_id != actual["expert_id"]
+    ):
+        raise _expert_context_error(
+            "EXPERT_CONTEXT_STALE",
+            "当前专家或专家团已变化，请使用最新会话状态继续。",
+            status_code=409,
+            details={"expert_context": actual},
+        )
+    return actual
+
+
+def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBoundInput) -> bool:
+    """Apply only an explicit chat selection; all other actions are assertions."""
+    expert_context = input_data.expert_context
+    operation = expert_context.operation
+    if not isinstance(input_data, ChatInput):
+        if operation != "continue":
+            raise _expert_context_error(
+                "EXPERT_CONTEXT_OPERATION_INVALID",
+                "切换专家团或专家只能通过 chat 的显式选择操作完成。",
+            )
+        _assert_expert_context_current(context, input_data, require_exact_identity=True)
+        return False
+
+    if operation == "continue":
+        _assert_expert_context_current(context, input_data, require_exact_identity=True)
+        return False
+
+    # A selection is permitted only against the branch version the client just
+    # rendered. Its target identity naturally differs from the current one.
+    actual = _assert_expert_context_current(context, input_data, require_exact_identity=False)
+    if operation == "select_team":
+        if not expert_context.expert_team_id or expert_context.expert_id is not None:
+            raise _expert_context_error(
+                "EXPERT_CONTEXT_OPERATION_INVALID",
+                "选择专家团时必须提供 expert_team_id，且 expert_id 必须为 null。",
+            )
+        teams = getattr(orchestrator, "expert_team_registry", None)
+        team = teams.get(expert_context.expert_team_id) if teams is not None else None
+        if team is None:
+            raise HTTPException(status_code=422, detail="EXPERT_TEAM_NOT_FOUND")
+        context.session_meta["expert_team_id"] = team.team_id
+        context.session_meta["expert_id"] = team.coordinator_expert_id
+        context.session_meta["active_expert_id"] = team.coordinator_expert_id
+        context.session_meta["expert_selection_source"] = "manual_team"
+        context.set_session_agent_selection(
+            expert_team_id=team.team_id,
+            expert_id=team.coordinator_expert_id,
+            selection_source="manual_team",
+        )
+    elif operation == "select_expert":
+        if not expert_context.expert_id:
+            raise _expert_context_error("EXPERT_CONTEXT_OPERATION_INVALID", "选择专家时必须提供 expert_id。")
+        if expert_context.expert_team_id != actual["expert_team_id"]:
+            raise _expert_context_error(
+                "EXPERT_CONTEXT_OPERATION_INVALID",
+                "选择专家时 expert_team_id 必须与当前专家团一致；切换团队请先使用 select_team。",
+            )
+        registry = getattr(orchestrator, "expert_registry", None)
+        definition = registry.get(expert_context.expert_id) if registry is not None else None
+        if definition is None:
+            raise HTTPException(status_code=422, detail="EXPERT_NOT_FOUND")
+        team_id = str(actual["expert_team_id"] or "")
+        teams = getattr(orchestrator, "expert_team_registry", None)
+        team = teams.get(team_id) if team_id and teams is not None else None
+        if team is not None and definition.agent_id not in team.member_expert_ids:
+            raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
+        context.session_meta["expert_id"] = definition.agent_id
+        context.session_meta["active_expert_id"] = definition.agent_id
+        context.session_meta["expert_selection_source"] = "manual"
+        context.set_session_agent_selection(
+            expert_team_id=team_id or None,
+            expert_id=definition.agent_id,
+            selection_source="manual",
+        )
+    else:  # Defensive: Pydantic owns the enum, but keep the router total.
+        raise _expert_context_error("EXPERT_CONTEXT_OPERATION_INVALID", "未知的专家上下文操作。")
+    context.session_meta.pop("expert_requested_skill_id", None)
+    context.session_meta.pop("pending_team_handoff", None)
+    expire_active_interactions(context.messages)
+    return True
 
 
 def _clear_legacy_implicit_expert_team(context) -> bool:
@@ -201,6 +309,62 @@ def _clear_legacy_implicit_expert_team(context) -> bool:
         if isinstance(planner_state, dict):
             planner_state["target_skill"] = GENERAL_CHAT_SKILL_ID
     return True
+
+
+def _profile_context_notice(
+    context,
+    *,
+    switched: bool,
+    session_created: bool,
+) -> dict[str, object]:
+    """Build the public, user-displayable profile-context acknowledgement.
+
+    The notice is deliberately part of the v2 state instead of assistant text:
+    it is a deterministic session-context event, not something the model should
+    phrase or remember.  The source/target metadata lets every client render a
+    consistent system bubble without inferring it from profile IDs.
+    """
+    switch_item: dict[str, object] = {}
+    for item in reversed(getattr(context, "timeline_items", [])):
+        if isinstance(item, dict) and item.get("item_type") == "profile_switch":
+            switch_item = item
+            break
+
+    target_scope = str(getattr(context, "context_scope", "profile") or "profile")
+    target_profile_id = getattr(context, "profile_id", None)
+    # Do not use ``context_label`` here: it intentionally falls back to a
+    # generic label for UI chrome, whereas this acknowledgement promises that
+    # the answer is based on a *named* child's archived data.
+    target_name = str(getattr(context, "profile_name", "") or "").strip()
+    target_label = str(getattr(context, "context_label", "") or "")
+    from_scope = str(switch_item.get("from_context_scope") or ("profile" if switch_item.get("from_profile_id") else "unbound"))
+    from_profile_id = switch_item.get("from_profile_id") or None
+    from_label = str(switch_item.get("from_profile_name") or ("未绑定孩子" if from_scope == "unbound" else "未命名孩子"))
+
+    if target_scope == "profile" and target_name and (switched or session_created):
+        return {
+            "type": "profile_switched" if switched else "profile_context_activated",
+            "text": f"本轮回答将结合 **{target_name}** 的档案数据。",
+            "from_context_scope": from_scope if switched else None,
+            "from_profile_id": str(from_profile_id) if switched and from_profile_id else None,
+            "from_context_label": from_label if switched else "",
+            "to_context_scope": target_scope,
+            "to_profile_id": str(target_profile_id) if target_profile_id else None,
+            "to_context_label": target_label,
+        }
+    if target_scope == "unbound" and switched:
+        text = "已切换为未绑定孩子的上下文，后续回答不会使用任何孩子档案信息。"
+        return {
+            "type": "profile_switched",
+            "text": text,
+            "from_context_scope": from_scope,
+            "from_profile_id": str(from_profile_id) if from_profile_id else None,
+            "from_context_label": from_label,
+            "to_context_scope": target_scope,
+            "to_profile_id": None,
+            "to_context_label": target_label,
+        }
+    return {}
 
 
 def _claim_external_run(repository, context, run_id: str, *, action: str):
@@ -390,6 +554,11 @@ def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffI
     context.session_meta["active_expert_id"] = input_data.target_expert_id
     context.session_meta["expert_id"] = input_data.target_expert_id
     context.session_meta["expert_selection_source"] = "handoff_card"
+    context.set_session_agent_selection(
+        expert_team_id=team_id,
+        expert_id=input_data.target_expert_id,
+        selection_source="handoff_card",
+    )
     context.session_meta.pop("pending_team_handoff", None)
     source_user_message = ""
     source_index = context.messages.index(source)
@@ -429,6 +598,11 @@ def _switch_team_member(context, orchestrator, input_data: SwitchTeamMemberInput
     context.session_meta["active_expert_id"] = member.expert_id
     context.session_meta["expert_id"] = member.expert_id
     context.session_meta["expert_selection_source"] = "manual"
+    context.set_session_agent_selection(
+        expert_team_id=team_id,
+        expert_id=member.expert_id,
+        selection_source="manual",
+    )
     context.session_meta.pop("pending_team_handoff", None)
     expire_active_interactions(context.messages)
     return {
@@ -454,7 +628,6 @@ def build_chat_stream_router(
 ) -> APIRouter:
     router = APIRouter()
     runner = StreamingRunner(repository, fact_service, orchestrator, turn_coordinator=turn_coordinator)
-    profile_target_resolver = ProfileTargetResolver()
 
     @router.post("/sessions/chat/stream")
     def post_chat_stream(request: ChatStreamRequest, http_request: Request) -> StreamingResponse:
@@ -503,15 +676,12 @@ def build_chat_stream_router(
                 ) from exc
         context_scope, selected_profile_id = _resolve_context_scope(input_data, request.context_data)
         if context_scope == "profile":
-            resolution = profile_target_resolver.resolve(
-                input_profile_id=str(selected_profile_id or ""),
-                context_data=request.context_data,
-            )
-            target_profile_id: str | None = resolution.target_profile_id
-            profile_context_status = resolution.status
-            allow_context_seed = resolution.allow_context_seed
+            # ``context_data.profile_id`` is constructed by the BFF and is
+            # deliberately the only child identity accepted by SSE v2.
+            target_profile_id: str | None = selected_profile_id
+            profile_context_status = "matched"
+            allow_context_seed = True
         else:
-            resolution = None
             target_profile_id = None
             profile_context_status = "unbound"
             allow_context_seed = False
@@ -521,6 +691,14 @@ def build_chat_stream_router(
             existing_context = None
         if existing_context is not None and existing_context.user_id != request.context_data.user_id:
             raise HTTPException(status_code=409, detail="SESSION_ID_CONFLICT")
+        requested_context_activation = input_data.context_activation if isinstance(input_data, ChatInput) else "strict"
+        requested_target_key = str(target_profile_id or "")
+        if (
+            existing_context is not None
+            and requested_context_activation == "strict"
+            and str(existing_context.profile_id or "") != requested_target_key
+        ):
+            raise HTTPException(status_code=409, detail="CONTEXT_ACTIVATION_REQUIRED")
         if existing_context is not None and str(existing_context.profile_id or "") != str(target_profile_id or ""):
             ledger = existing_context.session_meta.get("run_ledger")
             running = [
@@ -565,6 +743,25 @@ def build_chat_stream_router(
             context = repository.get(context.session_id)
         legacy_default_team_cleared = _clear_legacy_implicit_expert_team(context)
         profile_switched = bool(context.session_meta.get("_profile_switched"))
+        profile_branch_created = bool(context.session_meta.get("_profile_branch_created"))
+        automatic_context_activation = bool(
+            isinstance(input_data, ChatInput)
+            and input_data.context_activation == "auto"
+            and (session_created or profile_switched or profile_branch_created)
+        )
+
+        # Every action carries the client-rendered expert state.  A normal
+        # chat only asserts it, except while an auto activation has just
+        # entered a different branch. In that case this very request is the
+        # context preflight: restore the session-wide Agent selection first,
+        # return it as authoritative state, and never make the client retry.
+        if automatic_context_activation and input_data.expert_context.operation == "continue":
+            expert_context_changed = context.apply_session_agent_selection()
+        else:
+            expert_context_changed = _apply_expert_context_operation(context, orchestrator, input_data)
+
+        if legacy_default_team_cleared or expert_context_changed:
+            context = _save_and_refresh_context(repository, context)
 
         profile_context_event = {
             "profile_id": context.profile_id,
@@ -572,55 +769,22 @@ def build_chat_stream_router(
             "context_scope": context.context_scope,
             "context_label": context.context_label,
             "context_switched": profile_switched,
+            "context_notice": _profile_context_notice(
+                context,
+                switched=profile_switched,
+                session_created=session_created,
+            ),
             "branch_version": int(context.session_meta.get("_active_branch_version") or 0),
             "profile_context_status": profile_context_status,
             "session_created": bool(session_created),
             "profile_switched": profile_switched,
+            "context_activation": "auto" if automatic_context_activation else "none",
         }
         context.session_meta["_sse_profile_context"] = profile_context_event
-        if resolution is not None and resolution.status == "mismatched":
-            if PROFILE_CONTEXT_MISMATCHES:
-                PROFILE_CONTEXT_MISMATCHES.labels(authority=resolution.authority).inc()
-            mismatch_event = make_event("profile_context_mismatch", {
-                "input_profile_id": resolution.input_profile_id,
-                "context_profile_id": resolution.context_profile_id,
-                "target_profile_id": resolution.target_profile_id,
-                "authority": resolution.authority,
-            })
-            context.event_trace.append(mismatch_event)
-            append_session_events(request.session_id, [mismatch_event])
-
-        requested_team_id = str(input_data.expert_team_id or "").strip() if isinstance(input_data, ChatInput) else ""
-        if requested_team_id:
-            teams = getattr(orchestrator, "expert_team_registry", None)
-            team = teams.get(requested_team_id) if teams is not None else None
-            if team is None:
-                raise HTTPException(status_code=422, detail="EXPERT_TEAM_NOT_FOUND")
-            context.session_meta["expert_team_id"] = team.team_id
-            context.session_meta["expert_id"] = team.coordinator_expert_id
-            context.session_meta["active_expert_id"] = team.coordinator_expert_id
-            context.session_meta["expert_selection_source"] = "manual_team"
-            context.session_meta.pop("expert_requested_skill_id", None)
-            context.session_meta.pop("pending_team_handoff", None)
-        requested_expert_id = str(input_data.expert_id or "").strip() if isinstance(input_data, ChatInput) else ""
-        if requested_expert_id:
-            expert_registry = getattr(orchestrator, "expert_registry", None)
-            definition = expert_registry.get(requested_expert_id) if expert_registry is not None else None
-            if definition is None:
-                raise HTTPException(status_code=422, detail="EXPERT_NOT_FOUND")
-            team_id = str(context.session_meta.get("expert_team_id") or "").strip()
-            teams = getattr(orchestrator, "expert_team_registry", None)
-            team = teams.get(team_id) if team_id and teams is not None else None
-            if team is not None and definition.agent_id not in team.member_expert_ids:
-                raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
-            context.session_meta["expert_id"] = definition.agent_id
-            context.session_meta["active_expert_id"] = definition.agent_id
-            context.session_meta["expert_selection_source"] = "manual"
-            context.session_meta.pop("expert_requested_skill_id", None)
-            context.session_meta.pop("pending_team_handoff", None)
-
-        if legacy_default_team_cleared or requested_team_id or requested_expert_id or profile_context_status == "mismatched":
-            context = _save_and_refresh_context(repository, context)
+        # Persist this immediately.  ``stop`` is allowed before the model has
+        # emitted its first token and must still be able to return the exact
+        # scope/expert state for the run.
+        context = _save_and_refresh_context(repository, context)
 
         if not profile_switched and hasattr(runner, "supersede_active_run"):
             runner.supersede_active_run(request.session_id, context.user_id, next_run_id=request.run_id)
@@ -744,6 +908,11 @@ def build_chat_stream_router(
                 context.session_meta.pop("expert_id", None)
                 context.session_meta.pop("active_expert_id", None)
                 context.session_meta.pop("expert_requested_skill_id", None)
+                context.set_session_agent_selection(
+                    expert_team_id=None,
+                    expert_id=None,
+                    selection_source="direct_skill",
+                )
                 repository.save(context)
             if isinstance(input_data, QuitSkillInput):
                 active_skill = str(

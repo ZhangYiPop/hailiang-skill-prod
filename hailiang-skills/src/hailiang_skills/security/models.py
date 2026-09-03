@@ -28,6 +28,13 @@ class ModerationResult:
         return self.matched or self.risk_level in {"low", "medium", "high"}
 
     def to_public_dict(self) -> dict[str, Any]:
+        data = self.raw.get("Data", self.raw.get("data", {})) if isinstance(self.raw, dict) else {}
+        data = data if isinstance(data, dict) else {}
+        advice = data.get("advice", data.get("Advice", [])) or []
+        advice = [item for item in advice if isinstance(item, dict)]
+        categories = sorted({str(item.get("hitLabel", item.get("label", ""))) for item in advice if item.get("hitLabel", item.get("label"))})
+        categories = sorted(set(categories).union(self.labels))
+        safe_answers = [str(item.get("answer", "")) for item in advice if item.get("answer")]
         return {
             "matched": self.matched,
             "risk_level": self.risk_level,
@@ -40,6 +47,8 @@ class ModerationResult:
             "source_files": self.source_files,
             "matched_text_hashes": self.matched_text_hashes,
             "match_positions": self.match_positions,
+            "categories": categories,
+            "advice": safe_answers,
         }
 
 
@@ -49,4 +58,3 @@ class ModerationBlockedError(RuntimeError):
         self.stage = stage
         self.case_id = case_id
         super().__init__(f"content blocked at {stage}: {result.risk_level}")
-

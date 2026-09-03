@@ -98,7 +98,13 @@ type ChatStore = {
   pendingExpertId: string;
   pendingExpertTeamId: string;
   activeExpertTeam: SelectedExpertTeam | null;
-  profileBranches: Record<string, { activeExpertId?: string; activeSkill?: string; branchVersion?: number }>;
+  profileBranches: Record<string, {
+    activeExpertTeamId?: string;
+    activeExpertId?: string;
+    activeSkill?: string;
+    branchVersion?: number;
+    selectionVersion?: number;
+  }>;
   messages: ChatMessage[];
   candidatePaths: CandidatePath[];
   events: SkillEvent[];
@@ -145,7 +151,13 @@ type ChatStore = {
   setPendingExpertId: (value: string) => void;
   setPendingExpertTeamId: (value: string) => void;
   setActiveExpertTeam: (value: SelectedExpertTeam | null) => void;
-  setProfileBranch: (profileId: string, value: { activeExpertId?: string; activeSkill?: string; branchVersion?: number }) => void;
+  setProfileBranch: (profileId: string, value: {
+    activeExpertTeamId?: string;
+    activeExpertId?: string;
+    activeSkill?: string;
+    branchVersion?: number;
+    selectionVersion?: number;
+  }) => void;
   setMessages: (messages: ChatMessage[]) => void;
   appendMessage: (message: ChatMessage) => void;
   updateMessage: (messageId: string, updater: (message: ChatMessage) => ChatMessage) => void;

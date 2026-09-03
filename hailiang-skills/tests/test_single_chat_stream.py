@@ -264,9 +264,19 @@ def test_new_session_seeds_registered_forwarded_facts_from_envelope_and_extra_fi
 
 def _api_payload(*, session_id: str = "sess_1", run_id: str = "run_1", input_payload: dict | str | None = None) -> dict:
     if input_payload is None:
-        input_payload = {"action": "chat", "profile_id": "p1", "content": "你好", "source": "chat"}
+        input_payload = {"action": "chat", "content": "你好", "source": "chat"}
     elif isinstance(input_payload, dict) and input_payload.get("action") != "stop":
-        input_payload = {"profile_id": "p1", **input_payload}
+        input_payload = dict(input_payload)
+    if isinstance(input_payload, dict) and input_payload.get("action") != "stop":
+        input_payload.setdefault(
+            "expert_context",
+            {
+                "expert_team_id": None,
+                "expert_id": None,
+                "expected_branch_version": 1,
+                "operation": "continue",
+            },
+        )
     raw_input = input_payload if isinstance(input_payload, str) else __import__("json").dumps(input_payload)
     return {
         "session_id": session_id,
@@ -358,20 +368,25 @@ def test_open_or_resume_tolerates_concurrent_profile_insert(tmp_path: Path, monk
 
 
 def test_input_contract_and_external_run_id() -> None:
-    parsed = _parse_input('{"action":"chat","profile_id":"p1","content":"你好","source":"chat"}')
+    expert_context = '{"expert_team_id":null,"expert_id":null,"expected_branch_version":1,"operation":"continue"}'
+    parsed = _parse_input('{"action":"chat","content":"你好","source":"chat","expert_context":' + expert_context + '}')
     assert isinstance(parsed, ChatInput)
-    parsed = _parse_input('{"action":"enter_skill","profile_id":"p1","target_skill_id":"interest_explore","source":"toolbar"}')
+    parsed = _parse_input('{"action":"enter_skill","target_skill_id":"interest_explore","source":"toolbar","expert_context":' + expert_context + '}')
     assert isinstance(parsed, EnterSkillInput)
     parsed = _parse_input('{"action":"stop","source":"composer"}')
     assert isinstance(parsed, StopInput)
-    reserved = _parse_input('{"action":"open_session","profile_id":"p1","opening_mode":"model"}')
+    reserved = _parse_input('{"action":"open_session","opening_mode":"model","expert_context":' + expert_context + '}')
     assert reserved.action == "open_session"
-    parsed = _parse_input('{"action":"switch_team_member","profile_id":"p1","source":"toolbar","target_expert_id":"family_education_expert","content":"孩子沉迷手机怎么办"}')
+    parsed = _parse_input('{"action":"switch_team_member","source":"toolbar","target_expert_id":"family_education_expert","content":"孩子沉迷手机怎么办","expert_context":' + expert_context + '}')
     assert isinstance(parsed, SwitchTeamMemberInput)
+    with pytest.raises(HTTPException, match="INPUT_PROFILE_ID_FORBIDDEN"):
+        _parse_input('{"action":"chat","profile_id":"p1","content":"你好","source":"chat","expert_context":' + expert_context + '}')
+    with pytest.raises(HTTPException, match="EXPERT_CONTEXT_REQUIRED"):
+        _parse_input('{"action":"chat","content":"你好","source":"chat"}')
     with pytest.raises(HTTPException, match="INVALID_INPUT_JSON"):
         _parse_input("not-json")
     with pytest.raises(HTTPException, match="requires source_message_id"):
-        _parse_input('{"action":"enter_skill","profile_id":"p1","target_skill_id":"interest_explore","source":"route_suggestion"}')
+        _parse_input('{"action":"enter_skill","target_skill_id":"interest_explore","source":"route_suggestion","expert_context":' + expert_context + '}')
 
     coordinator = TurnCoordinator()
     lease = coordinator.acquire("sess_1", "u1", run_id="bff_run_1")
@@ -384,7 +399,7 @@ def test_chat_stream_api_accepts_unbound_context_and_rejects_profile_data(api_cl
     response = client.post("/api/v2/sessions/chat/stream", json={
         "session_id": "sess_unbound_api",
         "run_id": "run_unbound_api",
-        "input": '{"action":"chat","context_scope":"unbound","content":"你好","source":"chat"}',
+        "input": '{"action":"chat","context_scope":"unbound","content":"你好","source":"chat","expert_context":{"expert_team_id":null,"expert_id":null,"expected_branch_version":1,"operation":"continue"}}',
         "context_data": {"user_id": "u1"},
     })
     assert response.status_code == 200
@@ -400,7 +415,7 @@ def test_chat_stream_api_accepts_unbound_context_and_rejects_profile_data(api_cl
         "context_data": {"user_id": "u1"},
     })
     assert invalid.status_code == 422
-    assert invalid.json()["detail"] == "UNBOUND_CONTEXT_MUST_NOT_INCLUDE_PROFILE_ID"
+    assert invalid.json()["detail"] == "INPUT_PROFILE_ID_FORBIDDEN"
 
 
 def test_chat_stream_api_creates_session_and_uses_external_run_id(api_client) -> None:
@@ -430,6 +445,107 @@ def test_chat_stream_api_rejects_duplicate_external_run_id(api_client) -> None:
     assert second.status_code == 409
     assert second.json()["detail"] == "RUN_ID_CONFLICT"
     assert repository.get("sess_1").session_meta["external_run_ids"] == ["same_run"]
+
+
+def test_chat_auto_activates_new_child_and_inherits_session_agent(api_client) -> None:
+    client, repository = api_client
+    first = client.post("/api/v2/sessions/chat/stream", json=_api_payload(session_id="sess_switch", run_id="run_p1"))
+    assert first.status_code == 200
+
+    context = repository.get("sess_switch")
+    context.session_meta.update({
+        "expert_team_id": "team_1",
+        "expert_id": "expert_member",
+        "active_expert_id": "expert_member",
+        "expert_selection_source": "handoff_card",
+    })
+    context.set_session_agent_selection(
+        expert_team_id="team_1",
+        expert_id="expert_member",
+        selection_source="handoff_card",
+    )
+    repository.save(context)
+
+    payload = _api_payload(session_id="sess_switch", run_id="run_p2")
+    payload["input"] = __import__("json").dumps({
+        "action": "chat",
+        "context_scope": "profile",
+        "context_activation": "auto",
+        "content": "请结合另一个孩子的信息回答",
+        "source": "chat",
+        # This is deliberately the old/unloaded branch state. Auto activation
+        # must not require a preflight GET or a retry.
+        "expert_context": {
+            "expert_team_id": "team_1",
+            "expert_id": "expert_member",
+            "expected_branch_version": 1,
+            "expected_selection_version": 1,
+            "operation": "continue",
+        },
+    })
+    payload["context_data"] = {
+        "user_id": "u1",
+        "profile_id": "p2",
+        "student_name": "小海二号",
+    }
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+
+    assert response.status_code == 200
+    states = _state_frames(response.text)
+    assert states[0]["context_switched"] is True
+    assert states[0]["context_activation"] == "auto"
+    restored = repository.get("sess_switch")
+    assert restored.profile_id == "p2"
+    assert restored.session_meta["expert_team_id"] == "team_1"
+    assert restored.session_meta["active_expert_id"] == "expert_member"
+    assert restored.session_agent_selection()["selection_version"] == 1
+    # No profile data/Facts from p1 enters the newly created p2 branch.
+    assert restored.messages == []
+
+
+def test_chat_strict_rejects_cross_child_activation(api_client) -> None:
+    client, _ = api_client
+    assert client.post("/api/v2/sessions/chat/stream", json=_api_payload(session_id="sess_strict", run_id="run_p1")).status_code == 200
+    payload = _api_payload(session_id="sess_strict", run_id="run_p2")
+    payload["input"] = __import__("json").dumps({
+        "action": "chat",
+        "context_scope": "profile",
+        "context_activation": "strict",
+        "content": "切换到另一个孩子",
+        "source": "chat",
+        "expert_context": {
+            "expert_team_id": None,
+            "expert_id": None,
+            "expected_branch_version": 1,
+            "expected_selection_version": 0,
+            "operation": "continue",
+        },
+    })
+    payload["context_data"] = {"user_id": "u1", "profile_id": "p2", "student_name": "小海二号"}
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "CONTEXT_ACTIVATION_REQUIRED"
+
+
+def test_session_agent_selection_clears_an_old_child_agent_on_switch() -> None:
+    context = SessionContext(session_id="sess_agent_clear", user_id="u1", profile_id="p1", profile_name="小海")
+    context.session_meta.update({
+        "expert_team_id": "team_1",
+        "expert_id": "expert_1",
+        "active_expert_id": "expert_1",
+    })
+    context.set_session_agent_selection(expert_team_id="team_1", expert_id="expert_1", selection_source="manual")
+    context.sync_active_branch()
+    context.activate_profile_branch("p2", profile_name="小海二号")
+    assert context.apply_session_agent_selection() is True
+    context.set_session_agent_selection(expert_team_id=None, expert_id=None, selection_source="direct_skill")
+    context.sync_active_branch()
+
+    context.activate_profile_branch("p1", profile_name="小海")
+    assert context.apply_session_agent_selection() is True
+    assert "expert_team_id" not in context.session_meta
+    assert "active_expert_id" not in context.session_meta
+    assert context.interaction_state["active_skill"] == "general_chat"
 
 
 def test_team_interaction_commit_retries_from_a_fresh_session_snapshot() -> None:
@@ -529,7 +645,17 @@ def test_free_form_follow_up_expires_team_handoff_without_forcing_a_click(api_cl
         json=_api_payload(
             session_id="sess_optional_handoff",
             run_id="run_follow_up",
-            input_payload={"action": "chat", "profile_id": "p1", "content": "我再补充一点情况", "source": "chat"},
+            input_payload={
+                "action": "chat",
+                "content": "我再补充一点情况",
+                "source": "chat",
+                "expert_context": {
+                    "expert_team_id": "student_growth_expert_team",
+                    "expert_id": "career_plan_expert",
+                    "expected_branch_version": 1,
+                    "operation": "continue",
+                },
+            },
         ),
     )
 
@@ -541,7 +667,7 @@ def test_free_form_follow_up_expires_team_handoff_without_forcing_a_click(api_cl
     assert commit_calls == ["chat"]
 
 
-def test_chat_stream_rejects_mismatched_legacy_input_profile_id(api_client) -> None:
+def test_chat_stream_rejects_legacy_input_profile_id(api_client) -> None:
     client, repository = api_client
     payload = _api_payload(
         session_id="sess_mismatch_api",
@@ -552,8 +678,8 @@ def test_chat_stream_rejects_mismatched_legacy_input_profile_id(api_client) -> N
 
     response = client.post("/api/v2/sessions/chat/stream", json=payload)
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == "PROFILE_CONTEXT_MISMATCH"
+    assert response.status_code == 422
+    assert response.json()["detail"] == "INPUT_PROFILE_ID_FORBIDDEN"
     with pytest.raises(KeyError):
         repository.get("sess_mismatch_api")
 
@@ -563,7 +689,7 @@ def test_chat_stream_uses_context_data_profile_without_legacy_input_profile_id(a
     payload = {
         "session_id": "sess_context_selected_profile",
         "run_id": "run_context_selected_profile",
-        "input": '{"action":"chat","content":"聊孩子","source":"chat"}',
+        "input": '{"action":"chat","content":"聊孩子","source":"chat","expert_context":{"expert_team_id":null,"expert_id":null,"expected_branch_version":1,"operation":"continue"}}',
         "context_data": _context_data().model_dump(),
     }
 
@@ -572,7 +698,59 @@ def test_chat_stream_uses_context_data_profile_without_legacy_input_profile_id(a
     assert response.status_code == 200
     frames = _state_frames(response.text)
     assert all(frame["profile_id"] == "p1" for frame in frames)
+    assert frames[0]["context_notice"]["type"] == "profile_context_activated"
+    assert frames[0]["context_notice"]["text"] == "本轮回答将结合 **小海** 的档案数据。"
     assert repository.get("sess_context_selected_profile").profile_id == "p1"
+
+
+def test_chat_stream_emits_context_notice_when_switching_profile(api_client) -> None:
+    client, _ = api_client
+    session_id = "sess_context_notice"
+    first = client.post(
+        "/api/v2/sessions/chat/stream",
+        json=_api_payload(session_id=session_id, run_id="run_context_notice_a"),
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/v2/sessions/chat/stream",
+        json={
+            "session_id": session_id,
+            "run_id": "run_context_notice_b",
+                "input": '{"action":"chat","context_scope":"profile","content":"请结合小明的情况回答","source":"chat","expert_context":{"expert_team_id":null,"expert_id":null,"expected_branch_version":1,"operation":"continue"}}',
+            "context_data": {
+                "user_id": "u1",
+                "profile_id": "p2",
+                "student_name": "小明",
+            },
+        },
+    )
+
+    assert second.status_code == 200
+    frames = _state_frames(second.text)
+    notice = frames[0]["context_notice"]
+    assert notice == {
+        "type": "profile_switched",
+        "text": "本轮回答将结合 **小明** 的档案数据。",
+        "from_context_scope": "profile",
+        "from_profile_id": "p1",
+        "from_context_label": "小海",
+        "to_context_scope": "profile",
+        "to_profile_id": "p2",
+        "to_context_label": "小明",
+    }
+    assert all(frame["context_notice"] == notice for frame in frames)
+
+
+def test_chat_stream_omits_profile_notice_when_child_name_is_blank(api_client) -> None:
+    client, _ = api_client
+    payload = _api_payload(session_id="sess_blank_profile_name", run_id="run_blank_profile_name")
+    payload["context_data"] = {"user_id": "u1", "profile_id": "p_blank", "student_name": " "}
+
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+
+    assert response.status_code == 200
+    assert _state_frames(response.text)[0]["context_notice"] == {}
 
 
 def test_manual_expert_is_bound_to_chat_and_persists_on_profile_branch(monkeypatch) -> None:
@@ -599,12 +777,16 @@ def test_manual_expert_is_bound_to_chat_and_persists_on_profile_branch(monkeypat
     first = _api_payload(
         session_id=session_id,
         run_id="manual_1",
-        input_payload={
-            "action": "chat",
-            "profile_id": "p1",
-            "expert_id": "family_education_expert",
-            "content": "分析亲子沟通",
-            "source": "chat",
+            input_payload={
+                "action": "chat",
+                "content": "分析亲子沟通",
+                "source": "chat",
+                "expert_context": {
+                    "expert_team_id": None,
+                    "expert_id": "family_education_expert",
+                    "expected_branch_version": 1,
+                    "operation": "select_expert",
+                },
         },
     )
 
@@ -616,10 +798,47 @@ def test_manual_expert_is_bound_to_chat_and_persists_on_profile_branch(monkeypat
     follow_up = _api_payload(
         session_id=session_id,
         run_id="manual_2",
-        input_payload={"action": "chat", "profile_id": "p1", "content": "继续", "source": "chat"},
+        input_payload={
+            "action": "chat",
+            "content": "继续",
+            "source": "chat",
+            "expert_context": {
+                "expert_team_id": None,
+                    "expert_id": "family_education_expert",
+                    "expected_branch_version": 1,
+                    "expected_selection_version": 1,
+                    "operation": "continue",
+            },
+        },
     )
     assert client.post("/api/v2/sessions/chat/stream", json=follow_up).status_code == 200
     assert repository.get(session_id).session_meta["active_expert_id"] == "family_education_expert"
+
+    stale = _api_payload(
+        session_id=session_id,
+        run_id="manual_stale",
+        input_payload={
+            "action": "chat",
+            "content": "旧页面的继续提问",
+            "source": "chat",
+            "expert_context": {
+                "expert_team_id": None,
+                "expert_id": None,
+                "expected_branch_version": 0,
+                "operation": "continue",
+            },
+        },
+    )
+    stale_response = client.post("/api/v2/sessions/chat/stream", json=stale)
+    assert stale_response.status_code == 409
+    detail = stale_response.json()["detail"]
+    assert detail["code"] == "EXPERT_CONTEXT_STALE"
+    assert detail["details"]["expert_context"] == {
+        "expert_team_id": None,
+        "expert_id": "family_education_expert",
+        "branch_version": 1,
+        "selection_version": 1,
+    }
 
 
 def test_plain_chat_does_not_implicitly_activate_an_expert_or_team(api_client) -> None:
@@ -697,7 +916,7 @@ def test_non_stop_actions_still_require_session_and_context_data(api_client) -> 
         json={
             "session_id": "sess_1",
             "run_id": "missing_context",
-            "input": '{"action":"chat","profile_id":"p1","content":"你好","source":"chat"}',
+                "input": '{"action":"chat","content":"你好","source":"chat","expert_context":{"expert_team_id":null,"expert_id":null,"expected_branch_version":1,"operation":"continue"}}',
         },
     )
 

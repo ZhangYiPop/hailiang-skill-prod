@@ -115,6 +115,7 @@ export type RevisionTestSession = {
     content: string;
     message_id?: string;
     message_type?: string;
+    metadata?: Record<string, unknown>;
     blocks?: MessageBlock[];
     team_handoff?: import("@/utils/api").TeamHandoff | null;
     interaction_states?: Record<string, import("@/utils/api").MessageInteractionState>;
@@ -227,11 +228,13 @@ export async function streamWorkbenchSse(
   path: string,
   input: Record<string, unknown>,
   onEvent: (event: string, payload: Record<string, unknown>) => void,
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const response = await fetch(`${normalizeBaseUrl(baseUrl)}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(input),
+    signal: options.signal,
   });
   if (!response.ok || !response.body) {
     const payload = await response.json().catch(() => null) as { message?: string; detail?: { message?: string } } | null;
@@ -357,7 +360,14 @@ export const workbenchApi = {
     debugSessionId: string,
     input: Record<string, unknown>,
     onEvent: (event: string, payload: Record<string, unknown>) => void,
-  ) => streamWorkbenchSse(baseUrl, `/workbench/v1/revision-tests/${debugSessionId}/turns/stream`, input, onEvent),
+    options?: { signal?: AbortSignal },
+  ) => streamWorkbenchSse(baseUrl, `/workbench/v1/revision-tests/${debugSessionId}/turns/stream`, input, onEvent, options),
+  stopRevisionTestTurn: (baseUrl: string, debugSessionId: string, runId: string, actorId: string) =>
+    request<{ run_id: string; status: "stopped"; state: Record<string, unknown> | null }>(
+      baseUrl,
+      `/workbench/v1/revision-tests/${debugSessionId}/turns/${encodeURIComponent(runId)}/stop`,
+      { method: "POST", body: JSON.stringify({ actor_id: actorId }) },
+    ),
   createFormalTeamChatSession: (baseUrl: string, input: Record<string, unknown>) =>
     request<RevisionTestSession>(
       baseUrl,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from queue import Queue
 from threading import Thread
@@ -237,14 +238,44 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
     def stream_revision_test_turn(debug_session_id: str, body: RevisionTestTurnInput):
         def stream():
             queue: Queue[tuple[str, dict[str, Any]]] = Queue()
+            latest_state: dict[str, Any] | None = None
+
             def emit(event: str, payload: dict[str, Any]):
+                nonlocal latest_state
+                # Candidate transport is independent from formal chat, but a
+                # ``state`` frame has the exact same v2 semantics.  Keeping
+                # the last snapshot lets an error finish with authoritative
+                # context instead of forcing the UI to guess the active
+                # expert or Skill from stale local state.
+                if event == "state" and payload.get("protocol") == "hailiang.sse.v2":
+                    latest_state = copy.deepcopy(payload)
                 queue.put((event, payload))
+
+            def emit_failure_state(code: str, message: str, details: dict[str, Any] | None = None) -> None:
+                if latest_state is None:
+                    return
+                failed = copy.deepcopy(latest_state)
+                failed["seq"] = int(failed.get("seq") or 0) + 1
+                failed["status"] = "failed"
+                assistant = failed.get("assistant") if isinstance(failed.get("assistant"), dict) else {}
+                failed["assistant"] = {**assistant, "status": "failed"}
+                failed["error"] = {
+                    "code": code,
+                    "message": message,
+                    "upstream_detail": str((details or {}).get("detail") or ""),
+                    "retryable": False,
+                    "terminal": True,
+                }
+                emit("state", failed)
+
             def worker():
                 try:
                     emit("done", service.run_revision_test_turn(debug_session_id, **body.model_dump(), on_event=emit))
                 except WorkbenchError as exc:
+                    emit_failure_state(exc.code, str(exc), exc.details)
                     emit("error", {"code": exc.code, "message": str(exc), "details": exc.details})
                 except Exception as exc:
+                    emit_failure_state("REVISION_TEST_FAILED", str(exc))
                     emit("error", {"code": "REVISION_TEST_FAILED", "message": str(exc)})
             Thread(target=worker, daemon=True).start()
             yield "event: started\ndata: {}\n\n"
@@ -254,6 +285,14 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
                 if event in {"done", "error"}:
                     return
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @router.post("/revision-tests/{debug_session_id}/turns/{run_id}/stop")
+    def stop_revision_test_turn(debug_session_id: str, run_id: str, body: ActorAction):
+        return _call(lambda: service.stop_revision_test_turn(
+            debug_session_id,
+            run_id=run_id,
+            actor_id=body.actor_id,
+        ))
 
     @router.post("/formal-team-chat-sessions", status_code=201)
     def create_formal_team_chat_session(body: RevisionTestSessionInput):

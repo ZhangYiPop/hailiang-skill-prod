@@ -62,10 +62,12 @@ def empty_message_state(*, session_id: str, run_id: str) -> dict[str, Any]:
         "context_scope": "profile",
         "context_label": "",
         "context_switched": False,
+        "context_notice": {},
         "branch_version": 0,
         "profile_context_status": "matched",
         "session_created": False,
         "profile_switched": False,
+        "context_activation": "none",
         "status": "streaming",
         "assistant": {"content": "", "status": "streaming"},
         "intent": {},
@@ -73,7 +75,8 @@ def empty_message_state(*, session_id: str, run_id: str) -> dict[str, Any]:
         "path_options": {},
         "skill_rooms": [],
         "team_handoff": {},
-        "expert": {"mode": "none", "team": {}, "active": {}, "transition": {}},
+        "expert": {"mode": "none", "team": {}, "active": {}, "activation": {}, "transition": {}},
+        "expert_context": {"expert_team_id": None, "expert_id": None, "branch_version": 0, "selection_version": 0},
         "skill_transition": {},
         "session": {"active_skill": {}},
         "risk": empty_risk_state(),
@@ -345,13 +348,32 @@ class SseEnvelopeBuilder:
             return
         if restored.get("session_id") != self.session_id or restored.get("run_id") != self.run_id:
             return
+        # A stopped/reconnected legacy run may have been persisted before
+        # ``expert.activation`` was introduced. Normalize it before emitting
+        # another v2 frame so the public fixed shape stays intact.
+        expert = _as_mapping(restored.get("expert"))
+        expert.setdefault("mode", "none")
+        expert.setdefault("team", {})
+        expert.setdefault("active", {})
+        expert.setdefault("activation", {})
+        expert.setdefault("transition", {})
+        restored["expert"] = expert
+        restored.setdefault("expert_context", {
+            "expert_team_id": None,
+            "expert_id": None,
+            "branch_version": int(restored.get("branch_version") or 0),
+            "selection_version": 0,
+        })
+        if isinstance(restored.get("expert_context"), dict):
+            restored["expert_context"].setdefault("selection_version", 0)
+        restored.setdefault("context_activation", "none")
         self.state = restored
         self.seq = int(restored.get("seq") or 0)
 
     def presentation(self) -> dict[str, Any]:
         return {
             key: deepcopy(self.state[key])
-            for key in ("assistant", "intent", "form", "path_options", "skill_rooms", "team_handoff", "expert", "skill_transition", "session", "risk", "error")
+            for key in ("assistant", "intent", "form", "path_options", "skill_rooms", "team_handoff", "expert", "expert_context", "skill_transition", "session", "risk", "error")
         }
 
     def encode(self, event: str, data: dict[str, Any]) -> str | None:
@@ -403,13 +425,34 @@ class SseEnvelopeBuilder:
                 "context_scope",
                 "context_label",
                 "context_switched",
+                "context_notice",
                 "branch_version",
                 "profile_context_status",
                 "session_created",
                 "profile_switched",
+                "context_activation",
             ):
                 if key in data:
                     changed |= self._set(key, data[key])
+            initial_expert = _as_mapping(data.get("initial_expert"))
+            if initial_expert:
+                changed |= self._set("expert", {
+                    "mode": str(initial_expert.get("mode") or "none"),
+                    "team": _as_mapping(initial_expert.get("team")),
+                    "active": _as_mapping(initial_expert.get("active")),
+                    "activation": _as_mapping(initial_expert.get("activation")),
+                    "transition": _as_mapping(initial_expert.get("transition")),
+                })
+                if isinstance(initial_expert.get("expert_context"), dict):
+                    changed |= self._set("expert_context", {
+                        "expert_team_id": initial_expert["expert_context"].get("expert_team_id"),
+                        "expert_id": initial_expert["expert_context"].get("expert_id"),
+                        "branch_version": int(initial_expert["expert_context"].get("branch_version") or 0),
+                        "selection_version": int(initial_expert["expert_context"].get("selection_version") or 0),
+                    })
+            initial_skill = _as_mapping(data.get("initial_active_skill"))
+            if initial_skill:
+                changed |= self._set("session", {"active_skill": initial_skill})
             return changed
         if event == "run_started":
             changed |= self._set("status", "streaming")
@@ -499,12 +542,21 @@ class SseEnvelopeBuilder:
             return self._set("team_handoff", _as_mapping(data))
 
         if event == "expert_context":
-            return self._set("expert", {
+            changed |= self._set("expert", {
                 "mode": str(data.get("mode") or "none"),
                 "team": _as_mapping(data.get("team")),
                 "active": _as_mapping(data.get("active")),
+                "activation": _as_mapping(data.get("activation")),
                 "transition": _as_mapping(data.get("transition")),
             })
+            if isinstance(data.get("expert_context"), dict):
+                changed |= self._set("expert_context", {
+                    "expert_team_id": data["expert_context"].get("expert_team_id"),
+                    "expert_id": data["expert_context"].get("expert_id"),
+                    "branch_version": int(data["expert_context"].get("branch_version") or 0),
+                    "selection_version": int(data["expert_context"].get("selection_version") or 0),
+                })
+            return changed
 
         if event == "skill_transition":
             transition = {
@@ -579,8 +631,12 @@ class SseEnvelopeBuilder:
             return self._set("risk", risk)
 
         if event == "moderation_blocked":
+            public = dict(data)
+            advice = public.get("advice") if isinstance(public.get("advice"), list) else []
+            category = next((str(item) for item in public.get("categories", []) if str(item)), "content_policy")
+            message = str(advice[0]) if advice else "该内容被内容安全策略拦截，请调整后重新输入。"
             changed |= self._set("status", "blocked")
-            changed |= self._set("assistant", {"content": "", "status": "blocked"})
+            changed |= self._set("assistant", {"content": message, "status": "blocked"})
             changed |= self._set("form", {})
             changed |= self._set("path_options", {})
             changed |= self._set("skill_rooms", [])
@@ -589,7 +645,11 @@ class SseEnvelopeBuilder:
                 "status": "blocked",
                 "stage": str(data.get("stage") or ""),
                 "blocked": True,
-                "message": "该内容当前无法继续处理，请调整后重新输入。",
+                "message": message,
+                "category": category,
+                "provider": str(public.get("provider") or ""),
+                "risk_level": str(public.get("risk_level") or ""),
+                "request_id": public.get("request_id"),
             })
             return changed
 

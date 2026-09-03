@@ -477,6 +477,30 @@ def test_exit_transition_keeps_history_but_resets_model_context_and_facts(tmp_pa
     assert restored.session_meta["runtime_context_start_message_id"] == transition["message_id"]
 
 
+def test_team_handoff_confirmation_is_visible_but_excluded_from_runtime_history():
+    context = SessionContext(session_id="sess_handoff_history", user_id="user")
+    context.add_message("user", "我的孩子最近不愿意沟通")
+    context.add_message(
+        "user",
+        "@家庭教育专家",
+        metadata={
+            "message_type": "team_handoff_confirmation",
+            "source_message_id": "msg_handoff_1",
+            "target_expert_id": "family_education_expert",
+            "expert_team_id": "student_growth_expert_team",
+        },
+    )
+    context.add_message("assistant", "我来帮你一起梳理。")
+
+    runtime_messages = MainPlannerOrchestrator._runtime_messages_from_context(None, context)
+
+    assert [(message.role, message.content) for message in runtime_messages] == [
+        ("user", "我的孩子最近不愿意沟通"),
+        ("assistant", "我来帮你一起梳理。"),
+    ]
+    assert context.messages[1]["metadata"]["message_type"] == "team_handoff_confirmation"
+
+
 def test_exit_transition_promotes_compacted_memory_facts_before_reset(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(session_logging, "SESSION_LOG_ROOT", tmp_path / "sessions")
     monkeypatch.setattr(session_logging, "USER_LOG_ROOT", tmp_path / "users")

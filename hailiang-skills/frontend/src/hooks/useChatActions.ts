@@ -39,6 +39,7 @@ import {
   type TeamHandoff,
 } from "@/utils/api";
 import { postSseStream } from "@/utils/sse";
+import { isTerminalSseState, presentationFromSseState } from "@/utils/conversationPresentation";
 import { buildClientOpeningMessage } from "@/utils/opening";
 import { isStatusTimelineBlock, type FactFormField, type MessageBlock } from "@/types/messageBlocks";
 import type {
@@ -84,26 +85,6 @@ function makeMessage(
     streamingStatus: role === "assistant" ? "completed" : "idle",
     ...metadata,
   };
-}
-
-function presentationFromState(state: SseV2State): MessagePresentation {
-  return {
-    assistant: state.assistant,
-    intent: state.intent,
-    form: state.form,
-    path_options: state.path_options,
-    skill_rooms: state.skill_rooms,
-    team_handoff: state.team_handoff,
-    expert: state.expert,
-    skill_transition: state.skill_transition,
-    session: state.session,
-    risk: state.risk,
-    error: state.error,
-  };
-}
-
-function isTerminalState(status: SseV2State["status"]): boolean {
-  return status !== "streaming";
 }
 
 function normalizeContextMessages(messages: SessionContextMessage[]): ChatMessage[] {
@@ -397,6 +378,28 @@ export function useChatActions() {
             return;
           }
           const response = event.data as SseV2State;
+          const branchKey = response.profile_id || "__unbound__";
+          state.setProfileBranch(branchKey, {
+            activeExpertTeamId: response.expert_context.expert_team_id ?? "",
+            activeExpertId: response.expert_context.expert_id ?? "",
+            activeSkill: response.session.active_skill.skill_id ?? "",
+            branchVersion: response.expert_context.branch_version,
+            selectionVersion: response.expert_context.selection_version,
+          });
+          state.setActiveExpertId(response.expert_context.expert_id ?? "");
+          if (response.expert.mode === "none") {
+            state.setActiveExpertTeam(null);
+          } else if (response.expert.mode === "team") {
+            const activeTeam = useChatStore.getState().activeExpertTeam;
+            const teamId = response.expert_context.expert_team_id ?? "";
+            if (activeTeam?.team_id === teamId) {
+              state.setActiveExpertTeam({
+                ...activeTeam,
+                active_expert_id: response.expert_context.expert_id ?? "",
+                active_mention_name: response.expert.active.mention_name ?? activeTeam.active_mention_name,
+              });
+            }
+          }
           const target = [...useChatStore.getState().messages]
             .reverse()
             .find((message) => message.role === "assistant" && message.streamingStatus === "streaming");
@@ -404,7 +407,7 @@ export function useChatActions() {
             state.updateMessage(target.id, (message) => ({
               ...message,
               content: response.assistant.content,
-              presentation: presentationFromState(response),
+              presentation: presentationFromSseState(response),
               generationStatus: "cancelled",
               streamingStatus: "completed",
             }));
@@ -443,6 +446,15 @@ export function useChatActions() {
     store.setSkillStates(sessionResult.skill_states);
     store.setActiveExpertId(sessionResult.expert?.expert_id ?? "");
     store.setActiveExpertTeam(sessionResult.expert_team ?? null);
+    const branchKey = sessionResult.profile_id || "__unbound__";
+    if (sessionResult.expert_context) {
+      store.setProfileBranch(branchKey, {
+        activeExpertTeamId: sessionResult.expert_context.expert_team_id ?? "",
+        activeExpertId: sessionResult.expert_context.expert_id ?? "",
+        branchVersion: sessionResult.expert_context.branch_version,
+        selectionVersion: sessionResult.expert_context.selection_version,
+      });
+    }
     store.setEvents(eventsResult.events);
   }, [store]);
 
@@ -535,6 +547,15 @@ export function useChatActions() {
       store.setActiveSkill(nextActiveSkill);
       store.setActiveExpertId(contextResult.expert?.expert_id ?? sessionResult.expert?.expert_id ?? "");
       store.setActiveExpertTeam(contextResult.expert_team ?? sessionResult.expert_team ?? null);
+      const serverExpertContext = contextResult.expert_context ?? sessionResult.expert_context;
+      if (serverExpertContext) {
+        store.setProfileBranch(nextProfileId || "__unbound__", {
+          activeExpertTeamId: serverExpertContext.expert_team_id ?? "",
+          activeExpertId: serverExpertContext.expert_id ?? "",
+          branchVersion: serverExpertContext.branch_version,
+          selectionVersion: serverExpertContext.selection_version,
+        });
+      }
       store.setCurrentScenario(nextScenario);
       const contextMessages = normalizeContextMessages(contextResult.messages);
       store.setMessages(
@@ -1024,6 +1045,15 @@ export function useChatActions() {
       const contextScope = targetProfileId ? "profile" : "unbound";
       const requestedExpertId = requestState.pendingExpertId.trim();
       const requestedExpertTeamId = requestState.pendingExpertTeamId.trim();
+      const branchKey = targetProfileId || "__unbound__";
+      const branch = requestState.profileBranches[branchKey];
+      const currentExpertTeamId = branch?.activeExpertTeamId
+        ?? (requestState.activeExpertTeam?.team_id || "");
+      const currentExpertId = branch?.activeExpertId ?? requestState.activeExpertId ?? "";
+      // A newly opened scope begins at version 1 on the server.  There is no
+      // separate "first message" branch in the client contract.
+      const expectedBranchVersion = branch?.branchVersion ?? 1;
+      const expectedSelectionVersion = branch?.selectionVersion ?? 0;
 
       const trimmed = content.trim();
       if (!trimmed) {
@@ -1175,12 +1205,43 @@ export function useChatActions() {
         }
         const contextInput = {
           context_scope: contextScope,
-          ...(targetProfileId ? { profile_id: targetProfileId } : {}),
         };
+        const expertContext = options.transition || options.teamHandoff || options.teamMemberSwitch
+          ? {
+              expert_team_id: currentExpertTeamId || null,
+              expert_id: currentExpertId || null,
+              expected_branch_version: expectedBranchVersion,
+              expected_selection_version: expectedSelectionVersion,
+              operation: "continue" as const,
+            }
+          : requestedExpertTeamId
+            ? {
+                expert_team_id: requestedExpertTeamId,
+                expert_id: null,
+                expected_branch_version: expectedBranchVersion,
+                expected_selection_version: expectedSelectionVersion,
+                operation: "select_team" as const,
+              }
+            : requestedExpertId
+              ? {
+                  expert_team_id: currentExpertTeamId || null,
+                  expert_id: requestedExpertId,
+                  expected_branch_version: expectedBranchVersion,
+                  expected_selection_version: expectedSelectionVersion,
+                  operation: "select_expert" as const,
+                }
+              : {
+                  expert_team_id: currentExpertTeamId || null,
+                  expert_id: currentExpertId || null,
+                  expected_branch_version: expectedBranchVersion,
+                  expected_selection_version: expectedSelectionVersion,
+                  operation: "continue" as const,
+                };
         const input = options.transition
           ? {
               action: options.transition.action === "enter" ? "enter_skill" : "quit_skill",
               ...contextInput,
+              expert_context: expertContext,
               target_skill_id: options.transition.targetSkillId ?? useChatStore.getState().activeSkill ?? "career_plan_entity",
               source: options.transition.source,
               source_message_id: options.transition.sourceMessageId,
@@ -1192,6 +1253,7 @@ export function useChatActions() {
             ? {
                 action: "confirm_team_handoff",
                 ...contextInput,
+                expert_context: expertContext,
                 source_message_id: options.teamHandoff.sourceMessageId,
                 target_expert_id: options.teamHandoff.targetExpertId,
                 source: "team_handoff",
@@ -1202,6 +1264,7 @@ export function useChatActions() {
               ? {
                   action: "switch_team_member",
                   ...contextInput,
+                  expert_context: expertContext,
                   source: "toolbar",
                   target_expert_id: options.teamMemberSwitch.targetExpertId,
                   content: trimmed,
@@ -1211,13 +1274,10 @@ export function useChatActions() {
             : {
                 action: "chat",
                 ...contextInput,
-                ...(requestedExpertTeamId
-                  ? { expert_team_id: requestedExpertTeamId }
-                  : requestedExpertId
-                    ? { expert_id: requestedExpertId }
-                    : {}),
+                expert_context: expertContext,
                 content: trimmed,
                 source: "chat",
+                context_activation: "auto" as const,
                 enable_thinking: thinkingEnabledForTurn,
                 return_reasoning: thinkingEnabledForTurn,
               };
@@ -1254,9 +1314,11 @@ export function useChatActions() {
                 store.setSelectedProfileId(state.profile_id ?? "");
                 store.setActiveProfileName(state.profile_name ?? "");
                 store.setProfileBranch(branchKey, {
-                  activeExpertId: state.expert.active.expert_id ?? "",
+                  activeExpertTeamId: state.expert_context.expert_team_id ?? "",
+                  activeExpertId: state.expert_context.expert_id ?? "",
                   activeSkill: state.session.active_skill.skill_id ?? "",
-                  branchVersion: state.branch_version,
+                  branchVersion: state.expert_context.branch_version,
+                  selectionVersion: state.expert_context.selection_version,
                 });
                 if (requestedExpertId) {
                   store.setPendingExpertId("");
@@ -1277,6 +1339,9 @@ export function useChatActions() {
                 const authoritativeExpertId = state.expert.active.expert_id ?? "";
                 if (state.expert.mode !== "none") {
                   store.setActiveExpertId(authoritativeExpertId);
+                } else {
+                  store.setActiveExpertId("");
+                  store.setActiveExpertTeam(null);
                 }
                 if (state.expert.mode === "team" && authoritativeExpertId) {
                   const currentTeam = useChatStore.getState().activeExpertTeam;
@@ -1313,7 +1378,7 @@ export function useChatActions() {
                   profileId: state.profile_id ?? undefined,
                   profileName: state.profile_name ?? undefined,
                   content: state.assistant.content,
-                  presentation: presentationFromState(state),
+                  presentation: presentationFromSseState(state),
                   teamHandoff:
                     "candidates" in state.team_handoff && Array.isArray(state.team_handoff.candidates)
                       ? (state.team_handoff as TeamHandoff)
@@ -1323,7 +1388,7 @@ export function useChatActions() {
                   reasoningContent: "",
                   reasoningStatus: "idle",
                   generationStatus: state.status === "stopped" ? "cancelled" : state.status,
-                  streamingStatus: isTerminalState(state.status) ? (state.status === "failed" || state.status === "blocked" ? "failed" : "completed") : "streaming",
+                  streamingStatus: isTerminalSseState(state.status) ? (state.status === "failed" || state.status === "blocked" ? "failed" : "completed") : "streaming",
                   errorMessage: state.risk.blocked
                     ? state.risk.message
                     : state.error.message
@@ -1335,7 +1400,7 @@ export function useChatActions() {
                 if (state.risk.blocked) {
                   store.setErrorMessage(state.risk.message);
                 }
-                if (isTerminalState(state.status)) {
+                if (isTerminalSseState(state.status)) {
                   store.setSending(false);
                   store.setCancellingRun(false);
                   releaseComposerForThisStream();
@@ -1694,6 +1759,29 @@ export function useChatActions() {
       } catch (error) {
         if (abortController && supersededStreamControllers.has(abortController)) {
           return;
+        }
+        // A stale tab must adopt the authoritative branch state but must not
+        // replay or silently redirect the user's message.
+        if (error instanceof Error) {
+          try {
+            const payload = JSON.parse(error.message) as {
+              code?: string;
+              detail?: { details?: { expert_context?: { expert_team_id?: string | null; expert_id?: string | null; branch_version?: number; selection_version?: number } } };
+            };
+            const authoritative = payload.detail?.details?.expert_context;
+            if (payload.code === "EXPERT_CONTEXT_STALE" && authoritative) {
+              const key = targetProfileId || "__unbound__";
+              store.setProfileBranch(key, {
+                activeExpertTeamId: authoritative.expert_team_id ?? "",
+                activeExpertId: authoritative.expert_id ?? "",
+                branchVersion: authoritative.branch_version ?? 0,
+                selectionVersion: authoritative.selection_version ?? 0,
+              });
+              void refreshEventPanels();
+            }
+          } catch {
+            // Non-JSON transport errors follow the existing error path.
+          }
         }
         if (assistantMessageId) {
           store.failStreamingMessage(

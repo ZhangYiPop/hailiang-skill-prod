@@ -4,10 +4,8 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import create_engine
 
-from hailiang_skills.api.profile_targeting import ProfileTargetResolver
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.core.fact_service import FactService as RuntimeFactService
@@ -85,30 +83,6 @@ def _context(profile_id: str, name: str, *, grade: str | None = None) -> Context
         student_name=name,
         grade=grade,
     )
-
-
-def test_resolver_supports_input_context_and_strict_match_without_contract_change() -> None:
-    forwarded = _context("profile_a", "小A")
-    input_resolution = ProfileTargetResolver("input").resolve(
-        input_profile_id="profile_b",
-        context_data=forwarded,
-    )
-    assert input_resolution.target_profile_id == "profile_b"
-    assert input_resolution.status == "mismatched"
-    assert input_resolution.allow_context_seed is False
-
-    context_resolution = ProfileTargetResolver("context_data").resolve(
-        input_profile_id="profile_b",
-        context_data=forwarded,
-    )
-    assert context_resolution.target_profile_id == "profile_a"
-    assert context_resolution.allow_context_seed is True
-
-    with pytest.raises(HTTPException, match="PROFILE_CONTEXT_MISMATCH"):
-        ProfileTargetResolver("strict_match").resolve(
-            input_profile_id="profile_b",
-            context_data=forwarded,
-        )
 
 
 def test_profile_branches_isolate_messages_skill_expert_and_resume_state() -> None:

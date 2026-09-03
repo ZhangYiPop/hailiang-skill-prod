@@ -62,6 +62,17 @@ export type SseV2PathOptions = {
   options: SseV2PathOption[];
 };
 
+export type SseV2ContextNotice = {
+  type: "profile_switched" | "profile_context_activated" | string;
+  text: string;
+  from_context_scope: "profile" | "unbound" | string;
+  from_profile_id: string | null;
+  from_context_label: string;
+  to_context_scope: "profile" | "unbound" | string;
+  to_profile_id: string | null;
+  to_context_label: string;
+};
+
 export type SseV2State = {
   protocol: "hailiang.sse.v2";
   session_id: string;
@@ -75,10 +86,18 @@ export type SseV2State = {
   context_scope: "profile" | "unbound";
   context_label: string;
   context_switched: boolean;
+  context_notice: SseV2ContextNotice | Record<string, never>;
   branch_version: number;
-  profile_context_status: "matched" | "mismatched" | "unbound";
+  profile_context_status: "matched" | "unbound";
   session_created: boolean;
   profile_switched: boolean;
+  context_activation: "auto" | "none" | string;
+  expert_context: {
+    expert_team_id: string | null;
+    expert_id: string | null;
+    branch_version: number;
+    selection_version: number;
+  };
   status: "streaming" | "completed" | "stopped" | "superseded" | "blocked" | "failed";
   assistant: { content: string; status: string };
   intent: { status: "streaming" | "completed"; steps: SseV2IntentStep[] } | Record<string, never>;
@@ -90,6 +109,11 @@ export type SseV2State = {
     mode: "none" | "single" | "team" | string;
     team: { team_id?: string; name?: string; coordinator_expert_id?: string } | Record<string, never>;
     active: { expert_id?: string; name?: string; mention_name?: string; is_coordinator?: boolean } | Record<string, never>;
+    activation: {
+      source?: "team_default_coordinator" | "explicit_or_restored" | string;
+      is_default?: boolean;
+      selection_source?: string;
+    } | Record<string, never>;
     transition: {
       status?: "switching" | "completed" | "failed" | string;
       source?: "team_handoff" | "toolbar" | string;

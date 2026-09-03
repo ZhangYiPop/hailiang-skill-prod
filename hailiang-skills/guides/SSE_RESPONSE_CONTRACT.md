@@ -3,6 +3,8 @@
 > 权威范围：`POST /api/v2/sessions/chat/stream` 的**成功 SSE 响应**。请求体、建流前
 > HTTP 错误见 [API_DOCUMENTATION.md](API_DOCUMENTATION.md)。前端只需按本文件渲染聊天。
 > 前端与 BFF 的完整接入顺序见 [SSE_V2_INTEGRATION_GUIDE.md](SSE_V2_INTEGRATION_GUIDE.md)。
+> 多孩子与专家状态的请求/停止契约见
+> [SSE_V2_EXPERT_CONTEXT_CONTRACT.md](SSE_V2_EXPERT_CONTEXT_CONTRACT.md)。
 
 ## 1. 核心原则
 
@@ -52,10 +54,12 @@ data: {"protocol":"hailiang.sse.v2", "run_id":"run_xxx", "seq":12, "status":"com
   "context_scope": "profile",
   "context_label": "小海",
   "context_switched": false,
+  "context_notice": {},
   "branch_version": 1,
   "profile_context_status": "matched",
   "session_created": false,
   "profile_switched": false,
+  "context_activation": "none",
   "status": "streaming",
   "assistant": { "content": "已生成的完整正文", "status": "streaming" },
   "intent": {},
@@ -63,7 +67,8 @@ data: {"protocol":"hailiang.sse.v2", "run_id":"run_xxx", "seq":12, "status":"com
   "path_options": {},
   "skill_rooms": [],
   "team_handoff": {},
-  "expert": { "mode": "none", "team": {}, "active": {}, "transition": {} },
+  "expert": { "mode": "none", "team": {}, "active": {}, "activation": {}, "transition": {} },
+  "expert_context": { "expert_team_id": null, "expert_id": null, "branch_version": 1, "selection_version": 0 },
   "skill_transition": {},
   "session": { "active_skill": {} },
   "risk": { "status": "passed", "stage": "input", "blocked": false, "message": "" },
@@ -87,10 +92,12 @@ data: {"protocol":"hailiang.sse.v2", "run_id":"run_xxx", "seq":12, "status":"com
 | `context_scope` | `profile` / `unbound` | 建流首帧确定 | 当前上下文范围。 |
 | `context_label` | 字符串 | 建流首帧确定 | 用于界面展示的范围名称。 |
 | `context_switched` | 布尔值 | 建流首帧确定 | 本轮是否从 session 中的另一范围切换而来。 |
+| `context_notice` | 对象或 `{}` | 建流首帧确定 | 首次进入有名字的孩子范围或切换孩子时的可展示系统提示。首次进入类型为 `profile_context_activated`，切换为 `profile_switched`；`text` 为 Markdown，例如“本轮回答将结合 **小海** 的档案数据。”。孩子名称为空时为 `{}`。前端作为独立系统提示展示，不拼入 `assistant.content`。 |
 | `branch_version` | 非负整数 | 档案分支切换时变化 | 当前会话档案分支版本，用于页面状态同步。 |
-| `profile_context_status` | `matched` / `mismatched` | 首帧确定 | `mismatched` 表示 `input.profile_id` 与转发上下文不一致并已进入隔离分支处理。 |
+| `profile_context_status` | `matched` / `unbound` | 首帧确定 | `matched` 表示 profile 范围已按 `context_data.profile_id` 建立；`unbound` 表示未绑定孩子范围。 |
 | `session_created` | 布尔值 | 首帧确定 | 本次动作是否创建了新会话。 |
 | `profile_switched` | 布尔值 | 首帧确定 | 本次动作是否切换了会话的活动档案。 |
+| `context_activation` | `auto` / `none` | 首帧确定 | `auto` 表示服务端在同一条 `chat` 请求中完成孩子分支的恢复/创建和 session 级 Agent 恢复；此时首帧已带权威专家与 Skill。 |
 | `status` | 枚举 | 整轮生命周期 | 控制 loading、停止、失败及终态，见下表。 |
 | `assistant` | 对象 | 正文流式累加或终态变更 | 对话正文。`content` 是**截至当前帧的完整文本**，不可自行追加旧 delta。 |
 | `intent` | 对象或 `{}` | 推理状态开始、步骤更新、完成 | 显示在正文顶部的“推理进度”；无内容不渲染。 |
@@ -99,6 +106,7 @@ data: {"protocol":"hailiang.sse.v2", "run_id":"run_xxx", "seq":12, "status":"com
 | `skill_rooms` | 数组 | general_chat 模型给出合法推荐后出现 | 显示在表单后；只有满足可点击条件的卡片可操作。 |
 | `team_handoff` | 对象或 `{}` | 主协调专家直接提出团内转交建议时出现 | 即时显示专家接管卡；`message_id` 产生前只展示、不可点击。 |
 | `expert` | 固定对象 | 建流后立即给出；切换专家时更新 | 当前专家与切换结果的唯一权威来源，禁止前端根据点击动作提前切换。 |
+| `expert_context` | 固定对象 | 建流后立即给出；专家/范围变化时更新 | 下一次非停止请求必须回传的专家状态。包括分支版本 `branch_version` 与 session 级 Agent 选择版本 `selection_version`；停止后的终态也会原样保留。 |
 | `skill_transition` | 对象或 `{}` | 进入/退出 Skill | 即时更新顶部当前主题；可展示转场提示。 |
 | `session.active_skill` | 对象或 `{}` | 首帧、转场、最终状态 | 页面顶部的唯一当前 Skill 来源；历史消息不得覆盖。 |
 | `risk` | 固定对象 | 输入/输出风控检测时 | 驱动通用安全提示；不得显示内部标签或供应商详情。 |

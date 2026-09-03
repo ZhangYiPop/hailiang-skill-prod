@@ -3209,6 +3209,16 @@ class MainPlannerOrchestrator:
         visible_user_message = str(
             context.session_meta.pop("team_handoff_visible_user_message", "") or user_message
         )
+        visible_user_message_type = str(
+            context.session_meta.pop("team_handoff_visible_user_message_type", "") or ""
+        )
+        visible_user_message_metadata = context.session_meta.pop(
+            "team_handoff_visible_user_message_metadata", {}
+        )
+        if visible_user_message_type:
+            user_metadata["message_type"] = visible_user_message_type
+        if isinstance(visible_user_message_metadata, dict):
+            user_metadata.update(visible_user_message_metadata)
         context.add_message("user", visible_user_message, metadata=user_metadata)
         context.session_meta["active_turn_index"] = sum(
             1 for item in context.messages if item.get("role") == "user"
@@ -4748,7 +4758,10 @@ class MainPlannerOrchestrator:
                 continue
             if not include_message:
                 continue
-            if metadata.get("hidden") or metadata.get("message_type") == "skill_transition":
+            if metadata.get("hidden") or metadata.get("message_type") in {
+                "skill_transition",
+                "team_handoff_confirmation",
+            }:
                 if not (
                     include_internal_transition_turn
                     and metadata.get("message_type") == "skill_transition_command"
