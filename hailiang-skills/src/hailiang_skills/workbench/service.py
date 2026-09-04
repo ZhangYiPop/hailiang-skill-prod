@@ -527,13 +527,122 @@ class WorkbenchService:
                 "revision_count": len(revision_ids),
                 "release_count": int(release_count),
                 "asset_count": int(asset_count),
+                "reference_policy": "latest_unarchived_release_only",
                 "permanent": True,
             }
             db.delete(obj)
             self._audit(db, actor_id, "object.deleted", obj.object_type, object_id, summary)
             db.commit()
-            self._uninstall_runtime_object(obj.object_type, obj.object_key)
+            # Production conversations bind their deployment ZIP snapshot when
+            # they start.  Do not tear down the shared code shell here: an
+            # active, immutable deployment may still be resolving that snapshot.
             return summary
+
+    def migrate_object_id(
+        self,
+        object_id: str,
+        *,
+        new_object_key: str,
+        confirmation_name: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Create a safe, unpublished successor for an object whose public ID changes.
+
+        IDs participate in release packages and deployment snapshots.  Updating the
+        object row in place would silently rewrite that history, so an ID change is
+        deliberately modelled as a new object plus a copied candidate revision.
+        """
+        with self.session_factory() as db:
+            source = self._require_object(db, object_id)
+            if str(confirmation_name or "") != source.name:
+                raise WorkbenchError("确认名称与对象名称不一致", code="ID_MIGRATION_CONFIRMATION_MISMATCH")
+            key = self._validate_available_object_key(db, source.object_type, new_object_key)
+            latest = db.scalar(
+                select(WorkbenchRevisionRow)
+                .where(WorkbenchRevisionRow.object_id == source.object_id)
+                .order_by(WorkbenchRevisionRow.revision_no.desc())
+                .limit(1)
+            )
+            if latest is None:
+                raise WorkbenchError("对象尚无可复制的修订，请先保存配置", code="ID_MIGRATION_REVISION_REQUIRED")
+
+            successor = WorkbenchObjectRow(
+                object_id=_id("obj"), object_type=source.object_type,
+                object_key=key, name=source.name, description=source.description,
+                created_by=actor_id,
+            )
+            db.add(successor)
+            db.flush()
+            revision = self._copy_candidate_revision(
+                db, source_revision=latest, target=successor,
+                payload=copy.deepcopy(latest.payload),
+                requested_locks=[{"release_id": item["release_id"]} for item in (latest.dependency_locks or [])],
+                actor_id=actor_id,
+                base_revision_id=None,
+            )
+            source_release = db.scalar(select(WorkbenchReleaseRow).where(WorkbenchReleaseRow.revision_id == latest.revision_id))
+            downstream = self._reference_migration_candidates(db, source_release.release_id) if source_release else []
+            result = {
+                "source": self._object_dict(source, latest.revision_no, self._latest_release_no(db, source.object_id)),
+                "successor": self._object_dict(successor, revision.revision_no, 0),
+                "revision": self._revision_dict(revision),
+                "source_release_id": source_release.release_id if source_release else None,
+                "downstream": downstream,
+            }
+            self._audit(db, actor_id, "object.id_migrated", source.object_type, successor.object_id, {
+                "source_object_id": source.object_id, "source_object_key": source.object_key,
+                "new_object_key": key, "source_revision_id": latest.revision_id,
+            })
+            db.commit()
+            return result
+
+    def migrate_references(
+        self,
+        *,
+        from_release_id: str,
+        to_release_id: str,
+        confirmation_name: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Create the next layer of candidate revisions for a released replacement."""
+        with self.session_factory() as db:
+            old_release = self._require_release(db, from_release_id)
+            new_release = self._require_release(db, to_release_id)
+            old_object = self._require_object(db, old_release.object_id)
+            new_object = self._require_object(db, new_release.object_id)
+            if str(confirmation_name or "") != old_object.name:
+                raise WorkbenchError("确认名称与对象名称不一致", code="REFERENCE_MIGRATION_CONFIRMATION_MISMATCH")
+            if old_object.object_type != new_object.object_type or old_release.archived or new_release.archived:
+                raise WorkbenchError("替换版本必须是同类型且未归档的已发布对象", code="REFERENCE_MIGRATION_RELEASE_INVALID")
+
+            created: list[dict[str, Any]] = []
+            for source_revision, owner in self._reference_migration_candidates(db, old_release.release_id, include_rows=True):
+                replacement_locks = [
+                    {"release_id": new_release.release_id} if item.get("release_id") == old_release.release_id
+                    else {"release_id": item["release_id"]}
+                    for item in (source_revision.dependency_locks or [])
+                ]
+                payload = copy.deepcopy(source_revision.payload)
+                if owner.object_type == "expert_team":
+                    members = payload.get("members")
+                    if isinstance(members, list):
+                        for member in members:
+                            if isinstance(member, dict) and str(member.get("expert_id") or "") == old_object.object_key:
+                                member["expert_id"] = new_object.object_key
+                    if str(payload.get("coordinator_expert_id") or "") == old_object.object_id:
+                        payload["coordinator_expert_id"] = new_object.object_id
+                revision = self._copy_candidate_revision(
+                    db, source_revision=source_revision, target=owner, payload=payload,
+                    requested_locks=replacement_locks, actor_id=actor_id,
+                    base_revision_id=source_revision.revision_id,
+                )
+                created.append({"object": self._object_dict(owner, revision.revision_no, self._latest_release_no(db, owner.object_id)), "revision": self._revision_dict(revision)})
+            self._audit(db, actor_id, "object.references_migrated", old_object.object_type, old_release.release_id, {
+                "from_release_id": old_release.release_id, "to_release_id": new_release.release_id,
+                "created_revision_count": len(created),
+            })
+            db.commit()
+            return {"from_release_id": old_release.release_id, "to_release_id": new_release.release_id, "created": created}
 
     def save_revision(
         self,
@@ -2421,94 +2530,16 @@ class WorkbenchService:
             return archive, manifest
 
     def import_package(self, package_bytes: bytes, *, environment: str, actor_id: str) -> dict[str, Any]:
-        if not package_bytes or len(package_bytes) > MAX_PACKAGE_BYTES:
-            raise WorkbenchError("配置包为空或超过大小限制", code="PACKAGE_TOO_LARGE")
-        files = self._read_zip(package_bytes)
-        if "manifest.json" not in files:
-            raise WorkbenchError("配置包缺少 manifest.json", code="INVALID_PACKAGE")
-        try:
-            manifest = json.loads(files["manifest.json"])
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise WorkbenchError("manifest.json 无法解析", code="INVALID_PACKAGE") from exc
-        if manifest.get("schema_version") != 1:
-            raise WorkbenchError("不支持的配置包 Schema", code="PACKAGE_SCHEMA_MISMATCH")
-        claimed_hash = str(manifest.get("manifest_hash") or "")
-        unsigned = dict(manifest)
-        unsigned.pop("manifest_hash", None)
-        if not claimed_hash or _hash(unsigned) != claimed_hash:
-            raise WorkbenchError("配置包清单哈希校验失败", code="PACKAGE_HASH_MISMATCH")
-        if manifest.get("kernel_fingerprint") != self.kernel_fingerprint:
-            raise WorkbenchError("调试与生产内核版本不一致", code="KERNEL_INCOMPATIBLE")
-        manifest_objects = manifest.get("objects", [])
-        if not isinstance(manifest_objects, list) or not manifest_objects:
-            raise WorkbenchError("配置包对象清单不能为空", code="INVALID_PACKAGE")
-        object_release_ids = {str(item.get("release_id") or "") for item in manifest_objects if isinstance(item, dict)}
-        object_hashes = {
-            str(item.get("release_id") or ""): str(item.get("content_hash") or "")
-            for item in manifest_objects
-            if isinstance(item, dict)
-        }
-        declared_paths = {"manifest.json"}
-        known_capabilities = {item["capability_id"] for item in capability_catalog(self.orchestrator)}
-        for item in manifest_objects:
-            if not isinstance(item, dict):
-                raise WorkbenchError("配置包对象清单不合法", code="INVALID_PACKAGE")
-            for lock in item.get("dependency_locks", []):
-                dependency_release_id = str(lock.get("release_id") or "")
-                if dependency_release_id not in object_release_ids:
-                    raise WorkbenchError("配置包缺少依赖版本", code="PACKAGE_DEPENDENCY_MISSING")
-                if str(lock.get("content_hash") or "") != object_hashes[dependency_release_id]:
-                    raise WorkbenchError("依赖锁内容哈希不匹配", code="PACKAGE_DEPENDENCY_MISMATCH")
-            object_files: list[tuple[str, bytes]] = []
-            declared_contents: list[tuple[str, bytes]] = []
-            for declared in item.get("files", []):
-                path = _safe_relative_path(str(declared.get("path") or ""))
-                declared_paths.add(path)
-                content = files.get(path)
-                if content is None or hashlib.sha256(content).hexdigest() != declared.get("sha256"):
-                    raise WorkbenchError("配置包文件缺失或哈希不匹配", code="PACKAGE_FILE_HASH_MISMATCH")
-                if path.endswith("/object.json"):
-                    object_files.append((path, content))
-                declared_contents.append((path, content))
-                if PurePosixPath(path).suffix.lower() in EXECUTABLE_SUFFIXES:
-                    raise WorkbenchError("配置包不得携带可执行代码", code="EXECUTABLE_CONTENT_FORBIDDEN")
-            if len(object_files) != 1:
-                raise WorkbenchError("每个对象必须且只能包含一个 object.json", code="INVALID_PACKAGE")
-            try:
-                declaration = json.loads(object_files[0][1])
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise WorkbenchError("对象声明无法解析", code="INVALID_PACKAGE") from exc
-            for field in ("object_id", "object_type", "object_key", "release_id", "release_no", "content_hash", "dependency_locks"):
-                if declaration.get(field) != item.get(field):
-                    raise WorkbenchError("对象声明与 manifest 不一致", code="PACKAGE_OBJECT_MISMATCH")
-            if declaration.get("object_type") not in VALID_OBJECT_TYPES:
-                raise WorkbenchError("对象声明类型不合法", code="INVALID_PACKAGE")
-            prefix = object_files[0][0].rsplit("/object.json", 1)[0] + "/"
-            script_sources: list[tuple[str, str, bytes]] = []
-            for path, content in declared_contents:
-                relative_path = path[len(prefix):] if path.startswith(prefix) else path
-                if PurePosixPath(relative_path).suffix.lower() == ".py":
-                    if declaration.get("object_type") != "skill" or not relative_path.startswith("scripts/"):
-                        raise WorkbenchError("Python 脚本只能位于 Skill 的 scripts/ 目录", code="EXECUTABLE_CONTENT_FORBIDDEN")
-                    script_sources.append((relative_path, "text/x-python", content))
-                elif relative_path == "scripts/requirements.txt":
-                    script_sources.append((relative_path, "text/plain", content))
-            script_errors = self._script_validation_errors(script_sources)
-            if script_errors:
-                raise WorkbenchError(
-                    "Python 脚本安全校验未通过",
-                    code="SCRIPT_REVIEW_FAILED",
-                    details={"errors": script_errors},
-                )
-            unknown = sorted(set((declaration.get("payload") or {}).get("capability_ids") or []) - known_capabilities)
-            if unknown:
-                raise WorkbenchError(
-                    f"配置包引用未知底层能力: {', '.join(unknown)}",
-                    code="UNKNOWN_CAPABILITY",
-                )
-        if set(files) != declared_paths:
-            raise WorkbenchError("配置包包含未在 manifest 声明的文件", code="UNDECLARED_PACKAGE_FILE")
-        package_hash = hashlib.sha256(package_bytes).hexdigest()
+        validated = self._validated_package_contents(package_bytes)
+        manifest = copy.deepcopy(validated["manifest"])
+        root_release_id = str((manifest.get("root") or {}).get("release_id") or "")
+        root_entry = next((item for item in validated["entries"] if str(item.get("release_id") or "") == root_release_id), {})
+        if isinstance(manifest.get("root"), dict) and isinstance(root_entry, dict):
+            # Deployment metadata is separate from the signed ZIP manifest and
+            # makes the immutable root name available to the operations UI.
+            manifest["root"]["name"] = str(root_entry.get("name") or manifest["root"].get("object_key") or "")
+        package_hash = validated["package_hash"]
+        object_release_ids = validated["object_release_ids"]
         with self.session_factory() as db:
             existing = db.scalar(
                 select(WorkbenchDeploymentRow).where(
@@ -2531,7 +2562,6 @@ class WorkbenchService:
                             "相同 release_id 已存在但内容哈希不同",
                             code="RELEASE_CONTENT_CONFLICT",
                         )
-            root_release_id = str((manifest.get("root") or {}).get("release_id") or "")
             if root_release_id not in object_release_ids:
                 raise WorkbenchError("根发布版本不在配置包对象中", code="INVALID_PACKAGE")
             deployment = WorkbenchDeploymentRow(
@@ -2548,6 +2578,79 @@ class WorkbenchService:
             self._audit(db, actor_id, "deployment.imported", "deployment", deployment.deployment_id, {"environment": environment})
             db.commit()
             return self._deployment_dict(deployment)
+
+    def import_object_package(self, package_bytes: bytes, *, actor_id: str) -> dict[str, Any]:
+        validated = self._validated_package_contents(package_bytes, materialize_entries=False)
+        manifest = validated["manifest"]
+        package_hash = validated["package_hash"]
+        ordered_entries = sorted(
+            validated["entries"],
+            key=lambda item: {"skill": 0, "expert": 1, "expert_team": 2}.get(str(item.get("object_type") or ""), 9),
+        )
+        source_release_map: dict[str, dict[str, Any]] = {}
+        imported_entries: list[dict[str, Any]] = []
+        summary = {
+            "root": manifest.get("root") or {},
+            "package_hash": package_hash,
+            "created_objects": 0,
+            "created_revisions": 0,
+            "created_releases": 0,
+            "reused_objects": 0,
+            "reused_revisions": 0,
+            "reused_releases": 0,
+            "entries": imported_entries,
+        }
+        runtime_entries: list[dict[str, Any]] = []
+        with self.session_factory() as db:
+            for entry in ordered_entries:
+                source_release_id = str(entry.get("release_id") or "")
+                local_locks: list[dict[str, Any]] = []
+                for lock in entry.get("dependency_locks", []) if isinstance(entry.get("dependency_locks"), list) else []:
+                    dependency = source_release_map.get(str(lock.get("release_id") or ""))
+                    if dependency is None:
+                        raise WorkbenchError("配置包缺少可导入的依赖闭包", code="PACKAGE_DEPENDENCY_MISSING")
+                    local_locks.append({
+                        "object_id": dependency["object_id"],
+                        "object_type": dependency["object_type"],
+                        "object_key": dependency["object_key"],
+                        "release_id": dependency["release_id"],
+                        "release_no": dependency["release_no"],
+                        "content_hash": dependency["content_hash"],
+                    })
+                result = self._import_workbench_entry(
+                    db,
+                    entry,
+                    local_dependency_locks=local_locks,
+                    package_hash=package_hash,
+                    actor_id=actor_id,
+                )
+                source_release_map[source_release_id] = result["release"]
+                imported_entries.append(result["entry"])
+                runtime_entry = result.get("runtime_entry")
+                if isinstance(runtime_entry, dict):
+                    runtime_entries.append(runtime_entry)
+                for key in ("created_objects", "created_revisions", "created_releases", "reused_objects", "reused_revisions", "reused_releases"):
+                    summary[key] += int(result[key])
+            self._audit(
+                db,
+                actor_id,
+                "package.imported_to_workbench",
+                "package",
+                package_hash,
+                {
+                    "root": manifest.get("root") or {},
+                    "created_objects": summary["created_objects"],
+                    "created_revisions": summary["created_revisions"],
+                    "created_releases": summary["created_releases"],
+                    "reused_objects": summary["reused_objects"],
+                    "reused_revisions": summary["reused_revisions"],
+                    "reused_releases": summary["reused_releases"],
+                },
+            )
+            db.commit()
+        for entry in runtime_entries:
+            self._install_runtime_entry(entry)
+        return summary
 
     def list_deployments(self, environment: str = "prod") -> list[dict[str, Any]]:
         with self.session_factory() as db:
@@ -2570,7 +2673,7 @@ class WorkbenchService:
             ))
             row = next(
                 (item for item in active_rows if str((item.manifest.get("root") or {}).get("object_type") or "") == "expert_team"),
-                active_rows[0] if active_rows else None,
+                None,
             )
             if row is None:
                 return None
@@ -2618,6 +2721,7 @@ class WorkbenchService:
             target = db.get(WorkbenchDeploymentRow, deployment_id)
             if target is None:
                 raise WorkbenchError("部署记录不存在", code="DEPLOYMENT_NOT_FOUND")
+            root_team_id = self._deployment_root_team_id(target, required=False)
             root_object_id = str((target.manifest.get("root") or {}).get("object_id") or "")
             active_rows = list(
                 db.scalars(
@@ -2627,25 +2731,74 @@ class WorkbenchService:
                     )
                 )
             )
-            previous = next(
-                (item for item in active_rows if str((item.manifest.get("root") or {}).get("object_id") or "") == root_object_id),
-                None,
-            )
-            if previous is not None and previous.deployment_id != target.deployment_id:
+            eligible_active = [
+                item for item in active_rows
+                if item.deployment_id != target.deployment_id
+                and (
+                    self._deployment_root_team_id(item, required=False) is not None
+                    if root_team_id is not None
+                    else str((item.manifest.get("root") or {}).get("object_id") or "") == root_object_id
+                )
+            ]
+            previous = eligible_active[0] if eligible_active else None
+            if previous is not None:
                 previous.status = "superseded"
                 target.previous_deployment_id = previous.deployment_id
             target.status = "active"
             target.activated_by = actor_id
             target.activated_at = utc_now()
-            if target.package_bytes:
-                try:
-                    files = self._read_zip(bytes(target.package_bytes))
-                    entries = [self._package_object_entry(item, files) for item in target.manifest.get("objects", [])]
-                    for entry in sorted(entries, key=lambda item: {"skill": 0, "expert": 1, "expert_team": 2}.get(item.get("object_type"), 9)):
-                        self._install_runtime_entry(entry)
-                except (WorkbenchError, UnicodeDecodeError, json.JSONDecodeError):
-                    pass
-            self._audit(db, actor_id, "deployment.activated", "deployment", target.deployment_id, {"previous_deployment_id": target.previous_deployment_id})
+            self._install_deployment_runtime(target)
+            self._audit(db, actor_id, "deployment.activated", "deployment", target.deployment_id, {
+                "previous_deployment_id": target.previous_deployment_id,
+                "expert_team_id": root_team_id,
+            })
+            db.commit()
+            return self._deployment_dict(target)
+
+    def deactivate_deployment(self, deployment_id: str, *, expert_team_id: str, actor_id: str) -> dict[str, Any]:
+        with self.session_factory() as db:
+            target = db.get(WorkbenchDeploymentRow, deployment_id)
+            if target is None:
+                raise WorkbenchError("部署记录不存在", code="DEPLOYMENT_NOT_FOUND")
+            root_team_id = self._deployment_root_team_id(target)
+            if target.status != "active":
+                raise WorkbenchConflict("只能下线当前活跃的生产专家团", code="DEPLOYMENT_NOT_ACTIVE")
+            if str(expert_team_id or "") != root_team_id:
+                raise WorkbenchError("确认的 expert_team_id 与部署不一致", code="DEPLOYMENT_CONFIRMATION_MISMATCH")
+            target.status = "deactivated"
+            self._audit(db, actor_id, "deployment.deactivated", "deployment", target.deployment_id, {"expert_team_id": root_team_id})
+            db.commit()
+            return self._deployment_dict(target)
+
+    def restore_deployment(self, deployment_id: str, *, actor_id: str) -> dict[str, Any]:
+        with self.session_factory() as db:
+            target = db.get(WorkbenchDeploymentRow, deployment_id)
+            if target is None:
+                raise WorkbenchError("部署记录不存在", code="DEPLOYMENT_NOT_FOUND")
+            root_team_id = self._deployment_root_team_id(target, required=False)
+            if target.status not in {"superseded", "rolled_back", "deactivated"}:
+                raise WorkbenchConflict("只能恢复历史生产专家团部署", code="DEPLOYMENT_RESTORE_FORBIDDEN")
+            active_rows = list(db.scalars(select(WorkbenchDeploymentRow).where(
+                WorkbenchDeploymentRow.environment == target.environment,
+                WorkbenchDeploymentRow.status == "active",
+            )))
+            root_object_id = str((target.manifest.get("root") or {}).get("object_id") or "")
+            previous = next((item for item in active_rows if item.deployment_id != target.deployment_id and (
+                self._deployment_root_team_id(item, required=False) is not None
+                if root_team_id is not None
+                else str((item.manifest.get("root") or {}).get("object_id") or "") == root_object_id
+            )), None)
+            if previous is not None:
+                previous.status = "superseded"
+                target.previous_deployment_id = previous.deployment_id
+            target.status = "active"
+            target.activated_by = actor_id
+            target.activated_at = utc_now()
+            self._install_deployment_runtime(target)
+            self._audit(db, actor_id, "deployment.restored", "deployment", target.deployment_id, {
+                "previous_deployment_id": target.previous_deployment_id,
+                "expert_team_id": root_team_id,
+            })
             db.commit()
             return self._deployment_dict(target)
 
@@ -2766,24 +2919,27 @@ class WorkbenchService:
         self._apply_deletion_tombstones()
 
     def _apply_deletion_tombstones(self) -> None:
-        if self.orchestrator is None:
+        """Keep deployment/runtime shells independent from workbench tombstones.
+
+        A deleted workbench row is intentionally not a command to mutate the
+        shared runtime registry: active deployment sessions are backed by their
+        archived package snapshot and must remain runnable.
+        """
+        return
+
+    def _install_deployment_runtime(self, deployment: WorkbenchDeploymentRow) -> None:
+        """Mount an immutable deployment archive for the formal runtime shell."""
+        if not deployment.package_bytes:
             return
-        with self.session_factory() as db:
-            events = db.scalars(
-                select(WorkbenchAuditRow)
-                .where(WorkbenchAuditRow.action == "object.deleted")
-                .order_by(WorkbenchAuditRow.created_at)
-            )
-            deleted = [
-                (
-                    str((event.payload or {}).get("object_type") or event.target_type),
-                    str((event.payload or {}).get("object_key") or ""),
-                )
-                for event in events
-            ]
-        for object_type, object_key in deleted:
-            if object_key:
-                self._uninstall_runtime_object(object_type, object_key)
+        try:
+            files = self._read_zip(bytes(deployment.package_bytes))
+            entries = [self._package_object_entry(item, files) for item in deployment.manifest.get("objects", [])]
+            for entry in sorted(entries, key=lambda item: {"skill": 0, "expert": 1, "expert_team": 2}.get(item.get("object_type"), 9)):
+                self._install_runtime_entry(entry)
+        except (WorkbenchError, UnicodeDecodeError, json.JSONDecodeError):
+            # The archive was fully validated at import; keep activation status
+            # durable even if a runtime shell cannot currently be mounted.
+            return
 
     def _uninstall_runtime_object(self, object_type: str, object_key: str) -> None:
         if self.orchestrator is None:
@@ -2817,13 +2973,27 @@ class WorkbenchService:
             db.scalars(select(WorkbenchReleaseRow.release_id).where(WorkbenchReleaseRow.object_id == obj.object_id))
         )
         blockers: list[dict[str, Any]] = []
-        revisions = db.execute(
-            select(WorkbenchRevisionRow, WorkbenchObjectRow)
-            .join(WorkbenchObjectRow, WorkbenchObjectRow.object_id == WorkbenchRevisionRow.object_id)
-            .where(WorkbenchRevisionRow.object_id != obj.object_id)
+        owners = db.scalars(
+            select(WorkbenchObjectRow).where(
+                WorkbenchObjectRow.object_id != obj.object_id,
+                WorkbenchObjectRow.archived.is_(False),
+            )
         )
-        for revision, owner in revisions:
-            locks = revision.dependency_locks or []
+        for owner in owners:
+            # Only the current published configuration is live.  Drafts and
+            # superseded releases are retained as history, not delete blockers.
+            release = db.scalar(
+                select(WorkbenchReleaseRow)
+                .where(
+                    WorkbenchReleaseRow.object_id == owner.object_id,
+                    WorkbenchReleaseRow.archived.is_(False),
+                )
+                .order_by(WorkbenchReleaseRow.release_no.desc())
+                .limit(1)
+            )
+            if release is None:
+                continue
+            locks = release.dependency_locks or []
             if any(
                 str(lock.get("object_id") or "") == obj.object_id
                 or str(lock.get("release_id") or "") in release_ids
@@ -2836,25 +3006,113 @@ class WorkbenchService:
                     "object_type": owner.object_type,
                     "object_key": owner.object_key,
                     "name": owner.name,
-                    "revision_no": revision.revision_no,
-                    "message": f"{owner.name} 的 r{revision.revision_no} 正在引用该对象",
-                })
-        deployments = db.scalars(
-            select(WorkbenchDeploymentRow).where(WorkbenchDeploymentRow.status.in_(("staged", "active")))
-        )
-        for deployment in deployments:
-            if any(
-                isinstance(item, dict) and str(item.get("object_id") or "") == obj.object_id
-                for item in (deployment.manifest or {}).get("objects", [])
-            ):
-                blockers.append({
-                    "kind": "deployment",
-                    "deployment_id": deployment.deployment_id,
-                    "environment": deployment.environment,
-                    "status": deployment.status,
-                    "message": f"{deployment.environment} 环境存在 {deployment.status} 部署",
+                    "release_id": release.release_id,
+                    "release_no": release.release_no,
+                    "message": f"{owner.name} 的当前发布版本 v{release.release_no} 正在引用该对象",
                 })
         return blockers
+
+    def _validate_available_object_key(self, db, object_type: str, raw_key: str) -> str:
+        key = str(raw_key or "").strip()
+        if not key:
+            raise WorkbenchError("新的对象 ID 不能为空", code="ID_MIGRATION_KEY_REQUIRED")
+        if any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in key):
+            raise WorkbenchError("对象标识只能包含字母、数字、下划线和连字符", code="ID_MIGRATION_KEY_INVALID")
+        deleted_keys = db.scalars(select(WorkbenchAuditRow).where(WorkbenchAuditRow.action == "object.deleted"))
+        if any(
+            str((event.payload or {}).get("object_type") or "") == object_type
+            and str((event.payload or {}).get("object_key") or "") == key
+            for event in deleted_keys
+        ):
+            raise WorkbenchConflict("该对象 ID 曾被永久删除，不能再次使用", code="DELETED_OBJECT_KEY_RESERVED")
+        existing = db.scalar(select(WorkbenchObjectRow).where(
+            WorkbenchObjectRow.object_type == object_type,
+            WorkbenchObjectRow.object_key == key,
+        ))
+        if existing is not None:
+            raise WorkbenchConflict("同类型对象标识已存在", code="OBJECT_KEY_CONFLICT")
+        return key
+
+    @staticmethod
+    def _latest_release_no(db, object_id: str) -> int:
+        return int(db.scalar(select(func.max(WorkbenchReleaseRow.release_no)).where(
+            WorkbenchReleaseRow.object_id == object_id
+        )) or 0)
+
+    def _copy_candidate_revision(
+        self,
+        db,
+        *,
+        source_revision: WorkbenchRevisionRow,
+        target: WorkbenchObjectRow,
+        payload: dict[str, Any],
+        requested_locks: list[dict[str, Any]],
+        actor_id: str,
+        base_revision_id: str | None,
+    ) -> WorkbenchRevisionRow:
+        """Persist a new candidate revision inside an existing transaction."""
+        if target.object_type == "skill":
+            payload = {**payload, "_workbench_managed_files": True}
+        canonical_locks = self._validate_dependencies(db, target.object_type, payload, requested_locks)
+        source_assets = list(db.scalars(select(WorkbenchAssetRow).where(
+            WorkbenchAssetRow.revision_id == source_revision.revision_id
+        ).order_by(WorkbenchAssetRow.relative_path)))
+        files = [(item.relative_path, item.media_type, bytes(item.content)) for item in source_assets]
+        validation = self._validate_payload(target.object_type, payload, canonical_locks)
+        if target.object_type == "skill":
+            script_errors = self._script_validation_errors(files)
+            if script_errors:
+                validation = {**validation, "valid": False, "errors": [*validation.get("errors", []), *script_errors]}
+        latest = db.scalar(select(WorkbenchRevisionRow).where(
+            WorkbenchRevisionRow.object_id == target.object_id
+        ).order_by(WorkbenchRevisionRow.revision_no.desc()).limit(1))
+        expected_base = latest.revision_id if latest else None
+        if expected_base != base_revision_id:
+            raise WorkbenchConflict("配置已被其他修订更新，请刷新后重试", code="REVISION_BASE_CONFLICT")
+        revision = WorkbenchRevisionRow(
+            revision_id=_id("rev"), object_id=target.object_id,
+            revision_no=(latest.revision_no if latest else 0) + 1,
+            base_revision_id=base_revision_id, payload=payload,
+            dependency_locks=canonical_locks, validation=validation,
+            content_hash=_hash({
+                "payload": payload, "dependency_locks": canonical_locks,
+                "assets": [{"relative_path": path, "media_type": media_type, "size_bytes": len(content), "content_hash": hashlib.sha256(content).hexdigest()} for path, media_type, content in files],
+            }), created_by=actor_id,
+        )
+        db.add(revision)
+        db.flush()
+        for path, media_type, content in files:
+            db.add(WorkbenchAssetRow(
+                asset_id=_id("asset"), revision_id=revision.revision_id,
+                relative_path=path, media_type=media_type, size_bytes=len(content),
+                content_hash=hashlib.sha256(content).hexdigest(), content=content,
+            ))
+        target.updated_at = utc_now()
+        self._audit(db, actor_id, "revision.saved", target.object_type, revision.revision_id, {"revision_no": revision.revision_no, "migration": True})
+        return revision
+
+    def _reference_migration_candidates(self, db, from_release_id: str, *, include_rows: bool = False):
+        """Only the current revision of each direct owner can receive a new draft."""
+        rows = db.execute(
+            select(WorkbenchRevisionRow, WorkbenchObjectRow)
+            .join(WorkbenchObjectRow, WorkbenchObjectRow.object_id == WorkbenchRevisionRow.object_id)
+            .order_by(WorkbenchRevisionRow.object_id, WorkbenchRevisionRow.revision_no.desc())
+        )
+        candidates: list[tuple[WorkbenchRevisionRow, WorkbenchObjectRow]] = []
+        seen: set[str] = set()
+        for revision, owner in rows:
+            if owner.object_id in seen:
+                continue
+            seen.add(owner.object_id)
+            if any(isinstance(lock, dict) and lock.get("release_id") == from_release_id for lock in (revision.dependency_locks or [])):
+                candidates.append((revision, owner))
+        if include_rows:
+            return candidates
+        return [{
+            "object_id": owner.object_id, "object_type": owner.object_type,
+            "object_key": owner.object_key, "name": owner.name,
+            "revision_id": revision.revision_id, "revision_no": revision.revision_no,
+        } for revision, owner in candidates]
 
     def _install_runtime_entry(self, entry: dict[str, Any]) -> None:
         if self.orchestrator is None:
@@ -3268,8 +3526,136 @@ class WorkbenchService:
                 archive.writestr(info, content)
         return output.getvalue()
 
-    @staticmethod
-    def _package_object_entry(item: dict[str, Any], files: dict[str, bytes]) -> dict[str, Any]:
+    def _validated_package_contents(self, package_bytes: bytes, *, materialize_entries: bool = True) -> dict[str, Any]:
+        if not package_bytes or len(package_bytes) > MAX_PACKAGE_BYTES:
+            raise WorkbenchError("配置包为空或超过大小限制", code="PACKAGE_TOO_LARGE")
+        files = self._read_zip(package_bytes)
+        if "manifest.json" not in files:
+            raise WorkbenchError("配置包缺少 manifest.json", code="INVALID_PACKAGE")
+        try:
+            manifest = json.loads(files["manifest.json"])
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WorkbenchError("manifest.json 无法解析", code="INVALID_PACKAGE") from exc
+        if not isinstance(manifest, dict):
+            raise WorkbenchError("manifest.json 必须是对象", code="INVALID_PACKAGE")
+        if manifest.get("schema_version") != 1:
+            raise WorkbenchError("不支持的配置包 Schema", code="PACKAGE_SCHEMA_MISMATCH")
+        claimed_hash = str(manifest.get("manifest_hash") or "")
+        unsigned = dict(manifest)
+        unsigned.pop("manifest_hash", None)
+        if not claimed_hash or _hash(unsigned) != claimed_hash:
+            raise WorkbenchError("配置包清单哈希校验失败", code="PACKAGE_HASH_MISMATCH")
+        if manifest.get("kernel_fingerprint") != self.kernel_fingerprint:
+            raise WorkbenchError("调试与生产内核版本不一致", code="KERNEL_INCOMPATIBLE")
+        manifest_objects = manifest.get("objects", [])
+        if not isinstance(manifest_objects, list) or not manifest_objects:
+            raise WorkbenchError("配置包对象清单不能为空", code="INVALID_PACKAGE")
+        object_release_ids = {str(item.get("release_id") or "") for item in manifest_objects if isinstance(item, dict)}
+        if "" in object_release_ids or len(object_release_ids) != len(manifest_objects):
+            raise WorkbenchError("配置包对象发布版本不能为空且不能重复", code="INVALID_PACKAGE")
+        root = manifest.get("root")
+        root_release_id = str(root.get("release_id") or "") if isinstance(root, dict) else ""
+        root_item = next(
+            (
+                item for item in manifest_objects
+                if isinstance(item, dict) and str(item.get("release_id") or "") == root_release_id
+            ),
+            None,
+        )
+        if root_item is None or not isinstance(root, dict):
+            raise WorkbenchError("根发布版本不在配置包对象中", code="INVALID_PACKAGE")
+        if any(
+            str(root.get(field) or "") != str(root_item.get(field) or "")
+            for field in ("object_type", "object_key")
+        ):
+            raise WorkbenchError("根对象声明与配置包不一致", code="PACKAGE_OBJECT_MISMATCH")
+        object_hashes = {
+            str(item.get("release_id") or ""): str(item.get("content_hash") or "")
+            for item in manifest_objects
+            if isinstance(item, dict)
+        }
+        declared_paths = {"manifest.json"}
+        known_capabilities = {item["capability_id"] for item in capability_catalog(self.orchestrator)}
+        for item in manifest_objects:
+            if not isinstance(item, dict):
+                raise WorkbenchError("配置包对象清单不合法", code="INVALID_PACKAGE")
+            dependency_locks = item.get("dependency_locks", [])
+            if not isinstance(dependency_locks, list) or not all(isinstance(lock, dict) for lock in dependency_locks):
+                raise WorkbenchError("配置包依赖锁格式不合法", code="INVALID_PACKAGE")
+            for lock in dependency_locks:
+                dependency_release_id = str(lock.get("release_id") or "")
+                if dependency_release_id not in object_release_ids:
+                    raise WorkbenchError("配置包缺少依赖版本", code="PACKAGE_DEPENDENCY_MISSING")
+                if str(lock.get("content_hash") or "") != object_hashes[dependency_release_id]:
+                    raise WorkbenchError("依赖锁内容哈希不匹配", code="PACKAGE_DEPENDENCY_MISMATCH")
+            object_files: list[tuple[str, bytes]] = []
+            declared_contents: list[tuple[str, bytes]] = []
+            declared_files = item.get("files", [])
+            if not isinstance(declared_files, list) or not all(isinstance(declared, dict) for declared in declared_files):
+                raise WorkbenchError("配置包文件清单格式不合法", code="INVALID_PACKAGE")
+            for declared in declared_files:
+                path = _safe_relative_path(str(declared.get("path") or ""))
+                declared_paths.add(path)
+                content = files.get(path)
+                if content is None or hashlib.sha256(content).hexdigest() != declared.get("sha256"):
+                    raise WorkbenchError("配置包文件缺失或哈希不匹配", code="PACKAGE_FILE_HASH_MISMATCH")
+                if path.endswith("/object.json"):
+                    object_files.append((path, content))
+                declared_contents.append((path, content))
+                if PurePosixPath(path).suffix.lower() in EXECUTABLE_SUFFIXES:
+                    raise WorkbenchError("配置包不得携带可执行代码", code="EXECUTABLE_CONTENT_FORBIDDEN")
+            if len(object_files) != 1:
+                raise WorkbenchError("每个对象必须且只能包含一个 object.json", code="INVALID_PACKAGE")
+            try:
+                declaration = json.loads(object_files[0][1])
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise WorkbenchError("对象声明无法解析", code="INVALID_PACKAGE") from exc
+            if not isinstance(declaration, dict):
+                raise WorkbenchError("对象声明必须是对象", code="INVALID_PACKAGE")
+            for field in ("object_id", "object_type", "object_key", "release_id", "release_no", "content_hash", "dependency_locks"):
+                if declaration.get(field) != item.get(field):
+                    raise WorkbenchError("对象声明与 manifest 不一致", code="PACKAGE_OBJECT_MISMATCH")
+            if declaration.get("object_type") not in VALID_OBJECT_TYPES:
+                raise WorkbenchError("对象声明类型不合法", code="INVALID_PACKAGE")
+            if not isinstance(declaration.get("payload"), dict):
+                raise WorkbenchError("对象声明 payload 必须是对象", code="INVALID_PACKAGE")
+            prefix = object_files[0][0].rsplit("/object.json", 1)[0] + "/"
+            script_sources: list[tuple[str, str, bytes]] = []
+            for path, content in declared_contents:
+                relative_path = path[len(prefix):] if path.startswith(prefix) else path
+                if PurePosixPath(relative_path).suffix.lower() == ".py":
+                    if declaration.get("object_type") != "skill" or not relative_path.startswith("scripts/"):
+                        raise WorkbenchError("Python 脚本只能位于 Skill 的 scripts/ 目录", code="EXECUTABLE_CONTENT_FORBIDDEN")
+                    script_sources.append((relative_path, "text/x-python", content))
+                elif relative_path == "scripts/requirements.txt":
+                    script_sources.append((relative_path, "text/plain", content))
+            script_errors = self._script_validation_errors(script_sources)
+            if script_errors:
+                raise WorkbenchError(
+                    "Python 脚本安全校验未通过",
+                    code="SCRIPT_REVIEW_FAILED",
+                    details={"errors": script_errors},
+                )
+            unknown = sorted(set((declaration.get("payload") or {}).get("capability_ids") or []) - known_capabilities)
+            if unknown:
+                raise WorkbenchError(
+                    f"配置包引用未知底层能力: {', '.join(unknown)}",
+                    code="UNKNOWN_CAPABILITY",
+                )
+        if set(files) != declared_paths:
+            raise WorkbenchError("配置包包含未在 manifest 声明的文件", code="UNDECLARED_PACKAGE_FILE")
+        return {
+            "manifest": manifest,
+            "files": files,
+            "package_hash": hashlib.sha256(package_bytes).hexdigest(),
+            "object_release_ids": object_release_ids,
+            "entries": [
+                self._package_object_entry(item, files, materialize=materialize_entries)
+                for item in manifest_objects
+            ],
+        }
+
+    def _package_object_entry(self, item: dict[str, Any], files: dict[str, bytes], *, materialize: bool = True) -> dict[str, Any]:
         object_file = next(
             (
                 str(declared.get("path") or "")
@@ -3295,7 +3681,271 @@ class WorkbenchService:
             and path != object_file
             and PurePosixPath(path).name not in {"SKILL.md", "AGENT.md", "TEAM.md", "runtime_contract.json", "agent.yaml", "team.yaml", "skills.lock.json", "experts.lock.json"}
         ]
-        return materialize_entry_files(entry)
+        return materialize_entry_files(entry) if materialize else entry
+
+    @staticmethod
+    def _entry_content_hash(
+        payload: dict[str, Any],
+        locks: list[dict[str, Any]],
+        files: list[tuple[str, str, bytes]],
+    ) -> str:
+        return _hash({
+            "payload": payload,
+            "dependency_locks": locks,
+            "assets": [
+                {
+                    "relative_path": relative_path,
+                    "media_type": media_type,
+                    "size_bytes": len(content),
+                    "content_hash": hashlib.sha256(content).hexdigest(),
+                }
+                for relative_path, media_type, content in files
+            ],
+        })
+
+    def _create_imported_release(
+        self,
+        db,
+        *,
+        obj: WorkbenchObjectRow,
+        revision: WorkbenchRevisionRow,
+        locks: list[dict[str, Any]],
+        package_hash: str,
+        source_release_id: str,
+        source_release_no: int,
+        actor_id: str,
+    ) -> WorkbenchReleaseRow:
+        next_release_no = (
+            db.scalar(select(func.max(WorkbenchReleaseRow.release_no)).where(WorkbenchReleaseRow.object_id == obj.object_id)) or 0
+        ) + 1
+        release = WorkbenchReleaseRow(
+            release_id=_id("rel"),
+            object_id=obj.object_id,
+            revision_id=revision.revision_id,
+            release_no=next_release_no,
+            dependency_locks=locks,
+            content_hash=revision.content_hash,
+            verification={
+                "evidence_type": "package_import",
+                "manual_confirmation": True,
+                "source_package_hash": package_hash,
+                "source_release_id": source_release_id,
+                "source_release_no": source_release_no,
+                "imported_by": actor_id,
+                "imported_at": _iso(utc_now()),
+            },
+            published_by=actor_id,
+        )
+        db.add(release)
+        return release
+
+    def _import_workbench_entry(
+        self,
+        db,
+        entry: dict[str, Any],
+        *,
+        local_dependency_locks: list[dict[str, Any]],
+        package_hash: str,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        object_type = str(entry.get("object_type") or "")
+        object_key = str(entry.get("object_key") or "")
+        payload = dict(entry.get("payload") or {})
+        if object_type == "expert_team":
+            source_locks = entry.get("dependency_locks") if isinstance(entry.get("dependency_locks"), list) else []
+            source_to_local_object_ids = {
+                str(source.get("object_id") or ""): str(local.get("object_id") or "")
+                for source, local in zip(source_locks, local_dependency_locks)
+                if str(source.get("object_id") or "") and str(local.get("object_id") or "")
+            }
+            coordinator_object_id = str(payload.get("coordinator_expert_id") or "")
+            if coordinator_object_id in source_to_local_object_ids:
+                payload["coordinator_expert_id"] = source_to_local_object_ids[coordinator_object_id]
+        if object_type == "skill":
+            payload["_workbench_managed_files"] = True
+        obj = db.scalar(
+            select(WorkbenchObjectRow).where(
+                WorkbenchObjectRow.object_type == object_type,
+                WorkbenchObjectRow.object_key == object_key,
+            )
+        )
+        created_object = 0
+        reused_object = 0
+        if obj is None:
+            obj = WorkbenchObjectRow(
+                object_id=_id("obj"),
+                object_type=object_type,
+                object_key=object_key,
+                name=str(entry.get("name") or object_key),
+                description=str(entry.get("description") or ""),
+                created_by=actor_id,
+            )
+            db.add(obj)
+            db.flush()
+            created_object = 1
+        else:
+            reused_object = 1
+        validation = self._validate_payload(object_type, payload, local_dependency_locks)
+        decoded_assets = self._decode_assets(
+            entry.get("files") if isinstance(entry.get("files"), list) else [],
+            object_type=object_type,
+        )
+        if object_type == "skill":
+            script_errors = self._script_validation_errors(decoded_assets)
+            if script_errors:
+                validation = {
+                    **validation,
+                    "valid": False,
+                    "errors": [*validation.get("errors", []), *script_errors],
+                }
+        if not validation.get("valid", False):
+            raise WorkbenchError(
+                "导入包中的对象校验未通过",
+                code="REVISION_VALIDATION_FAILED",
+                details={
+                    "object_type": object_type,
+                    "object_key": object_key,
+                    "errors": list(validation.get("errors") or []),
+                    "warnings": list(validation.get("warnings") or []),
+                },
+            )
+        content_hash = self._entry_content_hash(payload, local_dependency_locks, decoded_assets)
+        revision = db.scalar(
+            select(WorkbenchRevisionRow)
+            .where(
+                WorkbenchRevisionRow.object_id == obj.object_id,
+                WorkbenchRevisionRow.content_hash == content_hash,
+            )
+            .order_by(WorkbenchRevisionRow.revision_no.desc())
+            .limit(1)
+        )
+        created_revision = 0
+        reused_revision = 0
+        if revision is None:
+            latest = db.scalar(
+                select(WorkbenchRevisionRow)
+                .where(WorkbenchRevisionRow.object_id == obj.object_id)
+                .order_by(WorkbenchRevisionRow.revision_no.desc())
+                .limit(1)
+            )
+            revision = WorkbenchRevisionRow(
+                revision_id=_id("rev"),
+                object_id=obj.object_id,
+                revision_no=(latest.revision_no if latest else 0) + 1,
+                base_revision_id=latest.revision_id if latest else None,
+                payload=payload,
+                dependency_locks=local_dependency_locks,
+                validation=validation,
+                content_hash=content_hash,
+                created_by=actor_id,
+            )
+            db.add(revision)
+            db.flush()
+            for relative_path, media_type, content in decoded_assets:
+                db.add(WorkbenchAssetRow(
+                    asset_id=_id("asset"),
+                    revision_id=revision.revision_id,
+                    relative_path=relative_path,
+                    media_type=media_type,
+                    size_bytes=len(content),
+                    content_hash=hashlib.sha256(content).hexdigest(),
+                    content=content,
+                ))
+            obj.updated_at = utc_now()
+            created_revision = 1
+            self._audit(
+                db,
+                actor_id,
+                "revision.imported",
+                object_type,
+                revision.revision_id,
+                {"object_key": object_key, "source_release_id": entry.get("release_id")},
+            )
+        else:
+            reused_revision = 1
+        release = db.scalar(select(WorkbenchReleaseRow).where(WorkbenchReleaseRow.revision_id == revision.revision_id))
+        created_release = 0
+        reused_release = 0
+        entry_status = "reused_release"
+        runtime_entry: dict[str, Any] | None = None
+        if release is None:
+            release = self._create_imported_release(
+                db,
+                obj=obj,
+                revision=revision,
+                locks=local_dependency_locks,
+                package_hash=package_hash,
+                source_release_id=str(entry.get("release_id") or ""),
+                source_release_no=int(entry.get("release_no") or 0),
+                actor_id=actor_id,
+            )
+            created_release = 1
+            entry_status = "created" if created_object else "created_revision_and_release" if created_revision else "reused_revision_and_created_release"
+            self._audit(
+                db,
+                actor_id,
+                "release.imported",
+                object_type,
+                release.release_id,
+                {"object_key": object_key, "source_release_id": entry.get("release_id")},
+            )
+            runtime_entry = {
+                "object_id": obj.object_id,
+                "object_type": object_type,
+                "object_key": obj.object_key,
+                "name": obj.name,
+                "release_id": release.release_id,
+                "release_no": release.release_no,
+                "payload": revision.payload,
+                "dependency_locks": release.dependency_locks,
+                "content_hash": revision.content_hash,
+                "files": self._revision_files(db, revision.revision_id),
+            }
+        else:
+            reused_release = 1
+        self._audit(
+            db,
+            actor_id,
+            "object.imported",
+            object_type,
+            obj.object_id,
+            {
+                "object_key": object_key,
+                "source_release_id": entry.get("release_id"),
+                "status": entry_status,
+            },
+        )
+        return {
+            "created_objects": created_object,
+            "created_revisions": created_revision,
+            "created_releases": created_release,
+            "reused_objects": reused_object,
+            "reused_revisions": reused_revision,
+            "reused_releases": reused_release,
+            "runtime_entry": runtime_entry,
+            "release": {
+                "object_id": obj.object_id,
+                "object_type": object_type,
+                "object_key": obj.object_key,
+                "release_id": release.release_id,
+                "release_no": release.release_no,
+                "content_hash": release.content_hash,
+                "revision_id": revision.revision_id,
+            },
+            "entry": {
+                "object_id": obj.object_id,
+                "object_type": object_type,
+                "object_key": obj.object_key,
+                "name": obj.name,
+                "source_release_id": entry.get("release_id"),
+                "source_release_no": entry.get("release_no"),
+                "local_revision_id": revision.revision_id,
+                "local_revision_no": revision.revision_no,
+                "local_release_id": release.release_id,
+                "local_release_no": release.release_no,
+                "status": entry_status,
+            },
+        }
 
     @staticmethod
     def _read_zip(package_bytes: bytes) -> dict[str, bytes]:
@@ -3445,11 +4095,24 @@ class WorkbenchService:
 
     @staticmethod
     def _deployment_dict(row) -> dict[str, Any]:
+        root = row.manifest.get("root") if isinstance(row.manifest, dict) else {}
         return {
             "deployment_id": row.deployment_id, "environment": row.environment,
             "root_release_id": row.root_release_id, "package_hash": row.package_hash,
             "manifest": row.manifest, "status": row.status,
+            "expert_team_id": str((root or {}).get("object_key") or "") if (root or {}).get("object_type") == "expert_team" else None,
+            "expert_team_name": str((root or {}).get("name") or "") if (root or {}).get("object_type") == "expert_team" else None,
             "previous_deployment_id": row.previous_deployment_id, "imported_by": row.imported_by,
             "imported_at": _iso(row.imported_at), "activated_by": row.activated_by,
             "activated_at": _iso(row.activated_at),
         }
+
+    @staticmethod
+    def _deployment_root_team_id(deployment: WorkbenchDeploymentRow, *, required: bool = True) -> str | None:
+        root = deployment.manifest.get("root") if isinstance(deployment.manifest, dict) else {}
+        team_id = str((root or {}).get("object_key") or "")
+        if (root or {}).get("object_type") == "expert_team" and team_id:
+            return team_id
+        if required:
+            raise WorkbenchError("生产部署根对象必须是专家团", code="DEPLOYMENT_ROOT_TEAM_REQUIRED")
+        return None

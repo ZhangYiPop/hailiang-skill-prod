@@ -1214,7 +1214,15 @@ export function useChatActions() {
               expected_selection_version: expectedSelectionVersion,
               operation: "continue" as const,
             }
-          : requestedExpertTeamId
+          : requestedExpertTeamId && requestedExpertId
+            ? {
+                expert_team_id: requestedExpertTeamId,
+                expert_id: requestedExpertId,
+                expected_branch_version: expectedBranchVersion,
+                expected_selection_version: expectedSelectionVersion,
+                operation: "select_team_member" as const,
+              }
+            : requestedExpertTeamId
             ? {
                 expert_team_id: requestedExpertTeamId,
                 expert_id: null,
@@ -1276,7 +1284,7 @@ export function useChatActions() {
                 ...contextInput,
                 expert_context: expertContext,
                 content: trimmed,
-                source: "chat",
+                source: requestedExpertTeamId && requestedExpertId ? "toolbar" : "chat",
                 context_activation: "auto" as const,
                 enable_thinking: thinkingEnabledForTurn,
                 return_reasoning: thinkingEnabledForTurn,
@@ -1844,13 +1852,21 @@ export function useChatActions() {
     async (expertId: string) => {
       const state = useChatStore.getState();
       const normalizedExpertId = expertId.trim();
+      const selectedTeam = state.expertTeamCatalog.find(
+        (team) => team.team_id === state.pendingExpertTeamId,
+      );
+      const isSelectedTeamMember = Boolean(
+        selectedTeam?.members.some((member) => member.expert_id === normalizedExpertId),
+      );
       const expert = state.expertCatalog.find((item) => item.expert_id === normalizedExpertId);
-      if (normalizedExpertId && !expert) {
+      if (normalizedExpertId && !expert && !isSelectedTeamMember) {
         throw new Error("专家不存在或当前不可用");
       }
-      // Selection is only a client-side intent. The next chat request carries
-      // input.expert_id and atomically activates the expert with that message.
-      store.setPendingExpertTeamId("");
+      // When a team has already been selected for the first message, retain it
+      // so the request atomically enters that team at the selected member.
+      if (!isSelectedTeamMember) {
+        store.setPendingExpertTeamId("");
+      }
       store.setPendingExpertId(normalizedExpertId);
     },
     [store],

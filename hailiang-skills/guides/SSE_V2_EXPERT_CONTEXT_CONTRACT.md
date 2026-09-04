@@ -38,6 +38,35 @@
 `input` 必须是 JSON 字符串。非停止动作必须有 `context_data`；停止动作不需要
 `context_data` 或 `expert_context`。
 
+`expected_branch_version` 和 `expected_selection_version` 对请求方可省略。省略时，服务端会在完成
+当前 session/profile 分支恢复后，使用对应的权威版本继续处理；响应中的 `state.expert_context` 仍会返回完整版本。
+如果请求显式传入版本，服务端仍会严格校验，显式旧版本继续返回 `409 EXPERT_CONTEXT_STALE`。
+
+调试时不要省略 `expert_context.expected_branch_version` 和
+`expert_context.expected_selection_version`。如果从最近一次 SSE `state` 中获得的权威状态为
+`branch_version=1`、`selection_version=1`，继续对话请求至少应为：
+
+```json
+{
+  "action": "chat",
+  "context_scope": "profile",
+  "content": "一年级，男孩，杭州",
+  "source": "chat",
+  "expert_context": {
+    "expert_team_id": "student_growth_expert_team",
+    "expert_id": "career_plan_expert",
+    "expected_branch_version": 1,
+    "expected_selection_version": 1,
+    "operation": "continue"
+  },
+  "enable_thinking": false,
+  "return_reasoning": false
+}
+```
+
+缺少上述版本字段会在进入会话恢复和专家运行时之前直接返回 `422`，错误详情会指出
+`expert_context.expected_branch_version` 或 `expert_context.expected_selection_version` 缺失。
+
 ### 2.1 `context_data` 的中文含义
 
 | 字段 | 何时传 | 中文含义与规则 |
@@ -159,7 +188,33 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 }
 ```
 
-### 4.3 用户选择专家：`operation="select_expert"`
+### 4.3 首条消息直接选择团内专家：`operation="select_team_member"`
+
+当用户已选择专家团、并在发送首条消息前又从该团平铺成员中选择了一位专家时使用。该操作在
+**同一条** `chat` 请求中完成团队和成员绑定；无需先让主协调专家回复一次。`expert_id` 必须是
+该 `expert_team_id` 的成员，未选择成员时仍应使用 `select_team` 并传 `expert_id=null`。
+
+```json
+{
+  "action": "chat",
+  "context_scope": "profile",
+  "content": "请直接分析亲子沟通问题。",
+  "source": "toolbar",
+  "expert_context": {
+    "expert_team_id": "student_growth_expert_team",
+    "expert_id": "family_education_expert",
+    "expected_branch_version": 1,
+    "expected_selection_version": 0,
+    "operation": "select_team_member"
+  }
+}
+```
+
+专家团不存在时返回 `422 EXPERT_TEAM_NOT_FOUND`；专家不属于该团时返回
+`422 EXPERT_NOT_IN_ACTIVE_TEAM`。首次选择完成后，后续追问仍只回传服务端返回的
+`expert_context`，并使用 `operation="continue"`。
+
+### 4.4 用户选择专家：`operation="select_expert"`
 
 没有专家团时，进入单专家模式；已有专家团时，目标专家必须属于当前团队。要切换团队，
 先发 `select_team`，不能借 `select_expert` 跨团切换。

@@ -15,6 +15,7 @@
 7. [统一错误规范](#统一错误规范)
 8. [BFF 转发边界](#bff-转发边界)
 9. [外部大模型测试接口](#外部大模型测试接口)
+10. [业务调试台 ID 安全迁移](#业务调试台-id-安全迁移)
 
 ## 接入约定
 
@@ -45,6 +46,57 @@
 | 健康 | GET | `/health`、`/health/live`、`/health/ready` | 仅 BFF/监控 | 健康检查。 |
 
 不应转发给业务前端：`/sessions/{session_id}/events`、`/sessions/{session_id}/logs/download`、`/security-quarantine/**`、`/assets/versions`。旧的非流式 `POST /sessions/{session_id}/messages` 仅兼容存量调用；新聊天一律使用流接口。
+
+## 业务调试台 ID 安全迁移
+
+### 正式专家团部署
+
+工作台发布仅产生可调试的本地版本。正式 `hailiang-skills` 对话测试台只有在配置包进入生产暂存区并被激活后，才会让**新建会话**绑定新的 ZIP 快照；已有会话持续使用创建时的快照。
+
+当前每个生产环境只允许一个活跃根专家团。激活专家团部署时以 `expert_team_id`（而非名称）标识部署身份；同 ID 的新版本替换旧版本，激活不同 ID 的专家团则切换当前全局专家团。名称来自新 ZIP 快照，因此改名后按“发布 → 导入 → 激活”即可在新会话中生效。
+
+`POST /deployment/v1/deployments/{deployment_id}/deactivate` 接收：
+
+```json
+{"expert_team_id": "team_id_to_confirm", "actor_id": "actor_xxx"}
+```
+
+仅当前活跃专家团可下线。下线后状态为 `deactivated`，新正式会话回退默认通用对话；部署 ZIP 和既有会话均不改变。`POST /deployment/v1/deployments/{deployment_id}/restore` 可恢复 `superseded`、`rolled_back` 或 `deactivated` 的历史专家团版本，重新作为当前全局专家团。
+
+### 永久删除的引用判定
+
+工作台永久删除仅检查其他未归档对象的**当前最新未归档发布版本**。历史发布版本、全部草稿修订和未发布对象的引用均不阻止删除；阻塞响应会返回实际引用对象及其当前发布版本号。生产暂存和已激活部署保存独立 ZIP 快照，不阻止本地对象删除，也不会因工作台删除而被改写。
+
+工作台的 `object_key` 分别对应 Skill 的 `skill_id`、专家的 `expert_id` 和专家团的 `expert_team_id`。为避免篡改已发布配置包、调试快照和生产部署，修改 ID 不会原地更新历史对象，而是创建一个带新 ID 的后继对象及其最新修订副本；后继修订必须重新调试、人工确认并发布。
+
+### 创建后继草稿
+
+`POST /workbench/v1/objects/{object_id}/id-migrations`
+
+```json
+{
+  "new_object_key": "new_skill_id",
+  "confirmation_name": "对象显示名称",
+  "actor_id": "actor_xxx"
+}
+```
+
+服务端校验确认名称、ID 格式、同类型 ID 冲突和已删除 ID 保留规则。成功响应包含 `source`、未发布的 `successor`、复制的 `revision`，以及可在其发布后继续处理的 `downstream` 直接引用摘要。旧对象不会自动归档。
+
+### 分阶段迁移引用
+
+后继对象发布后，调用 `POST /workbench/v1/reference-migrations`，以旧发布版本和替代发布版本生成直接上游对象的新草稿修订：
+
+```json
+{
+  "from_release_id": "rel_old",
+  "to_release_id": "rel_new",
+  "confirmation_name": "旧对象显示名称",
+  "actor_id": "actor_xxx"
+}
+```
+
+两个发布版本必须同类型且未归档。接口会重写对应依赖锁；专家团还会更新成员 `expert_id` 与协调专家引用。它不会发布草稿或创建/激活生产部署。每一层完成调试发布后，可重复调用该接口，依次完成 Skill → 专家 → 专家团的迁移。
 
 ## 外部大模型测试接口
 
@@ -567,6 +619,8 @@ curl -X POST "$ALGORITHM_BASE/api/v1/users/$USER_ID/facts:clear-by-source" \
 ```json
 {"code":"RUN_ID_CONFLICT","message":"run_id 已使用，不能重复提交。","detail":"RUN_ID_CONFLICT"}
 ```
+
+`detail` 的类型不是固定字符串：业务异常通常是 `{code, message, details}` 对象，请求参数校验通常是 `{loc, msg, type}` 数组。前端展示优先使用顶层 `message`，再依次兼容 `detail.message`、字符串 `detail` 和校验项的 `loc + msg`；网关返回 HTML 或纯文本错误时，显示截断后的文本与 HTTP 状态。所有失败响应均应结束 loading 并保留 `X-Request-Id`，BFF 不得吞掉错误正文。
 
 | HTTP 状态 | `code` | 典型触发条件 | 是否重试 |
 | --- | --- | --- | --- |

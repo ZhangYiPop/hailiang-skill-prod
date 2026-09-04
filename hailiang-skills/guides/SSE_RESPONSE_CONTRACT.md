@@ -485,6 +485,20 @@ Content-Type: application/json
 
 这些错误没有 SSE 帧，应按 HTTP 状态处理。
 
+生产接口的标准错误信封为：
+
+```json
+{
+  "code": "REQUEST_VALIDATION_ERROR",
+  "message": "请求字段校验失败。",
+  "detail": [{"loc": ["query", "actor_id"], "msg": "Field required"}]
+}
+```
+
+- `code` 用于程序判断，`message` 用于直接展示；`detail` 保留原始业务或 FastAPI 校验详情，可能是对象、字符串或数组。
+- 前端取提示文案的优先级为顶层 `message`、`detail.message`、字符串 `detail`、校验数组中的 `loc + msg`；若网关返回非 JSON 响应，则显示截断后的响应文本和 HTTP 状态。
+- 所有建流前失败都必须立即结束本轮 loading；响应头中的 `X-Request-Id` 应随错误提示或日志一同保留，方便排查。BFF 不得将上游错误 JSON 改写为空响应或只保留状态码。
+
 | HTTP | `detail` / 业务码 | 含义 | 前端动作 |
 | --- | --- | --- |
 | 422 | `INVALID_INPUT_JSON` | `input` 不是 JSON 对象字符串 | 修正请求，不重试。 |

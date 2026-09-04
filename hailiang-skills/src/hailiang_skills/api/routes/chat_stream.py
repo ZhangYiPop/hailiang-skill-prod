@@ -28,9 +28,9 @@ class StrictInput(BaseModel):
 class ExpertContextInput(StrictInput):
     expert_team_id: str | None = Field(default=None, min_length=1)
     expert_id: str | None = Field(default=None, min_length=1)
-    expected_branch_version: int = Field(ge=0)
-    expected_selection_version: int = Field(default=0, ge=0)
-    operation: Literal["continue", "select_team", "select_expert"]
+    expected_branch_version: int | None = Field(default=None, ge=0)
+    expected_selection_version: int | None = Field(default=None, ge=0)
+    operation: Literal["continue", "select_team", "select_team_member", "select_expert"]
 
 
 class ProfileBoundInput(StrictInput):
@@ -41,7 +41,7 @@ class ProfileBoundInput(StrictInput):
 class ChatInput(ProfileBoundInput):
     action: Literal["chat"]
     content: str = Field(min_length=1)
-    source: Literal["chat"]
+    source: Literal["chat", "toolbar"]
     enable_thinking: bool = False
     return_reasoning: bool = False
     context_activation: Literal["auto", "strict"] = "auto"
@@ -107,6 +107,24 @@ class ChatStreamRequest(StrictInput):
 
 
 def _parse_input(raw: str) -> StreamInput:
+    # #region debug-point A:parse-input
+    _debug_url, _debug_session = "http://127.0.0.1:7777/event", "chat-422-after-team-wakeup"
+    try:
+        _debug_config = open(".dbg/chat-422-after-team-wakeup.env", encoding="utf-8").read().splitlines()
+        _debug_url = next((line.split("=", 1)[1] for line in _debug_config if line.startswith("DEBUG_SERVER_URL=")), _debug_url)
+        _debug_session = next((line.split("=", 1)[1] for line in _debug_config if line.startswith("DEBUG_SESSION_ID=")), _debug_session)
+    except OSError:
+        pass
+    try:
+        _debug_payload = json.loads(raw)
+        _debug_data = {"raw_type": type(_debug_payload).__name__, "keys": sorted(_debug_payload) if isinstance(_debug_payload, dict) else [], "expert_context_keys": sorted(_debug_payload.get("expert_context", {})) if isinstance(_debug_payload, dict) and isinstance(_debug_payload.get("expert_context"), dict) else []}
+    except (TypeError, json.JSONDecodeError):
+        _debug_data = {"raw_type": "invalid_json", "keys": [], "expert_context_keys": []}
+    try:
+        __import__("urllib.request").request.urlopen(__import__("urllib.request").request.Request(_debug_url, data=json.dumps({"sessionId": _debug_session, "runId": "pre", "hypothesisId": "A", "location": "chat_stream.py:_parse_input", "msg": "[DEBUG] input validation entry", "data": _debug_data}).encode(), headers={"Content-Type": "application/json"}), timeout=1).read()
+    except OSError:
+        pass
+    # #endregion
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -123,7 +141,10 @@ def _parse_input(raw: str) -> StreamInput:
             if "expert_context" not in payload:
                 raise HTTPException(status_code=422, detail="EXPERT_CONTEXT_REQUIRED")
         if action == "chat":
-            return ChatInput.model_validate(payload)
+            result = ChatInput.model_validate(payload)
+            if result.source == "toolbar" and result.expert_context.operation != "select_team_member":
+                raise HTTPException(status_code=422, detail="toolbar chat requires select_team_member")
+            return result
         if action == "enter_skill":
             result = EnterSkillInput.model_validate(payload)
             if result.source == "route_suggestion" and not (
@@ -146,6 +167,12 @@ def _parse_input(raw: str) -> StreamInput:
             return StopInput.model_validate(payload)
         raise HTTPException(status_code=422, detail="unsupported action")
     except ValidationError as exc:
+        # #region debug-point A:validation-error
+        try:
+            __import__("urllib.request").request.urlopen(__import__("urllib.request").request.Request(_debug_url, data=json.dumps({"sessionId": _debug_session, "runId": "pre", "hypothesisId": "A", "location": "chat_stream.py:_parse_input", "msg": "[DEBUG] input validation error", "data": {"errors": exc.errors()}}).encode(), headers={"Content-Type": "application/json"}), timeout=1).read()
+        except OSError:
+            pass
+        # #endregion
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
@@ -203,6 +230,27 @@ def _assert_expert_context_current(context, input_data: ProfileBoundInput, *, re
     return actual
 
 
+def _normalize_expert_context_versions(context, input_data: ProfileBoundInput) -> ProfileBoundInput:
+    actual = expert_context_payload(context)
+    expected = input_data.expert_context
+    if expected.expected_branch_version is not None and expected.expected_selection_version is not None:
+        return input_data
+    return input_data.model_copy(
+        update={
+            "expert_context": expected.model_copy(
+                update={
+                    "expected_branch_version": actual["branch_version"]
+                    if expected.expected_branch_version is None
+                    else expected.expected_branch_version,
+                    "expected_selection_version": actual["selection_version"]
+                    if expected.expected_selection_version is None
+                    else expected.expected_selection_version,
+                }
+            )
+        }
+    )
+
+
 def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBoundInput) -> bool:
     """Apply only an explicit chat selection; all other actions are assertions."""
     expert_context = input_data.expert_context
@@ -223,24 +271,41 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
     # A selection is permitted only against the branch version the client just
     # rendered. Its target identity naturally differs from the current one.
     actual = _assert_expert_context_current(context, input_data, require_exact_identity=False)
-    if operation == "select_team":
-        if not expert_context.expert_team_id or expert_context.expert_id is not None:
+    if operation in {"select_team", "select_team_member"}:
+        if not expert_context.expert_team_id:
             raise _expert_context_error(
                 "EXPERT_CONTEXT_OPERATION_INVALID",
-                "选择专家团时必须提供 expert_team_id，且 expert_id 必须为 null。",
+                "选择专家团时必须提供 expert_team_id。",
+            )
+        if operation == "select_team" and expert_context.expert_id is not None:
+            raise _expert_context_error(
+                "EXPERT_CONTEXT_OPERATION_INVALID",
+                "选择专家团时 expert_id 必须为 null；首次直接选择成员请使用 select_team_member。",
+            )
+        if operation == "select_team_member" and not expert_context.expert_id:
+            raise _expert_context_error(
+                "EXPERT_CONTEXT_OPERATION_INVALID",
+                "选择专家团成员时必须同时提供 expert_team_id 和 expert_id。",
             )
         teams = getattr(orchestrator, "expert_team_registry", None)
         team = teams.get(expert_context.expert_team_id) if teams is not None else None
         if team is None:
             raise HTTPException(status_code=422, detail="EXPERT_TEAM_NOT_FOUND")
+        selected_expert_id = (
+            team.coordinator_expert_id
+            if operation == "select_team"
+            else str(expert_context.expert_id)
+        )
+        if selected_expert_id not in team.member_expert_ids:
+            raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
         context.session_meta["expert_team_id"] = team.team_id
-        context.session_meta["expert_id"] = team.coordinator_expert_id
-        context.session_meta["active_expert_id"] = team.coordinator_expert_id
-        context.session_meta["expert_selection_source"] = "manual_team"
+        context.session_meta["expert_id"] = selected_expert_id
+        context.session_meta["active_expert_id"] = selected_expert_id
+        context.session_meta["expert_selection_source"] = "manual_team" if operation == "select_team" else "manual"
         context.set_session_agent_selection(
             expert_team_id=team.team_id,
-            expert_id=team.coordinator_expert_id,
-            selection_source="manual_team",
+            expert_id=selected_expert_id,
+            selection_source="manual_team" if operation == "select_team" else "manual",
         )
     elif operation == "select_expert":
         if not expert_context.expert_id:
@@ -741,6 +806,7 @@ def build_chat_stream_router(
                 preflight_context_saved = True
         if preflight_context_saved:
             context = repository.get(context.session_id)
+        input_data = _normalize_expert_context_versions(context, input_data)
         legacy_default_team_cleared = _clear_legacy_implicit_expert_team(context)
         profile_switched = bool(context.session_meta.get("_profile_switched"))
         profile_branch_created = bool(context.session_meta.get("_profile_branch_created"))

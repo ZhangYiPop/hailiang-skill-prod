@@ -50,9 +50,22 @@ class ActorAction(StrictModel):
     actor_id: str = Field(min_length=1)
 
 
+class DeploymentDeactivateInput(ActorAction):
+    expert_team_id: str = Field(min_length=1, max_length=160)
+
+
 class DeleteObjectInput(StrictModel):
     confirmation_name: str = Field(min_length=1, max_length=256)
     actor_id: str = Field(min_length=1)
+
+
+class IdMigrationInput(DeleteObjectInput):
+    new_object_key: str = Field(min_length=1, max_length=160)
+
+
+class ReferenceMigrationInput(DeleteObjectInput):
+    from_release_id: str = Field(min_length=1)
+    to_release_id: str = Field(min_length=1)
 
 
 class DebugSessionInput(StrictModel):
@@ -180,6 +193,14 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
     @router.delete("/objects/{object_id}")
     def delete_object(object_id: str, body: DeleteObjectInput):
         return _call(lambda: service.delete_object(object_id, **body.model_dump()))
+
+    @router.post("/objects/{object_id}/id-migrations", status_code=201)
+    def migrate_object_id(object_id: str, body: IdMigrationInput):
+        return _call(lambda: service.migrate_object_id(object_id, **body.model_dump()))
+
+    @router.post("/reference-migrations", status_code=201)
+    def migrate_references(body: ReferenceMigrationInput):
+        return _call(lambda: service.migrate_references(**body.model_dump()))
 
     @router.post("/objects/{object_id}/revisions", status_code=201)
     def save_revision(object_id: str, body: RevisionInput):
@@ -357,6 +378,14 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
             },
         )
 
+    @router.post("/imports", status_code=201)
+    async def import_object_package(
+        request: Request,
+        actor_id: str = Query(min_length=1),
+    ):
+        package_bytes = await request.body()
+        return _call(lambda: service.import_object_package(package_bytes, actor_id=actor_id))
+
     @router.get("/audit")
     def audit(limit: int = Query(default=50, ge=1, le=200)):
         return {"events": service.list_audit_events(limit)}
@@ -395,5 +424,13 @@ def build_deployment_router(service: WorkbenchService) -> APIRouter:
     @router.post("/deployments/{deployment_id}/rollback")
     def rollback_deployment(deployment_id: str, body: ActorAction):
         return _call(lambda: service.rollback_deployment(deployment_id, actor_id=body.actor_id))
+
+    @router.post("/deployments/{deployment_id}/deactivate")
+    def deactivate_deployment(deployment_id: str, body: DeploymentDeactivateInput):
+        return _call(lambda: service.deactivate_deployment(deployment_id, **body.model_dump()))
+
+    @router.post("/deployments/{deployment_id}/restore")
+    def restore_deployment(deployment_id: str, body: ActorAction):
+        return _call(lambda: service.restore_deployment(deployment_id, actor_id=body.actor_id))
 
     return router

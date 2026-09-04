@@ -371,6 +371,8 @@ def test_input_contract_and_external_run_id() -> None:
     expert_context = '{"expert_team_id":null,"expert_id":null,"expected_branch_version":1,"operation":"continue"}'
     parsed = _parse_input('{"action":"chat","content":"你好","source":"chat","expert_context":' + expert_context + '}')
     assert isinstance(parsed, ChatInput)
+    parsed = _parse_input('{"action":"chat","content":"你好","source":"chat","expert_context":{"expert_team_id":null,"expert_id":null,"operation":"continue"}}')
+    assert isinstance(parsed, ChatInput)
     parsed = _parse_input('{"action":"enter_skill","target_skill_id":"interest_explore","source":"toolbar","expert_context":' + expert_context + '}')
     assert isinstance(parsed, EnterSkillInput)
     parsed = _parse_input('{"action":"stop","source":"composer"}')
@@ -433,6 +435,34 @@ def test_chat_stream_api_creates_session_and_uses_external_run_id(api_client) ->
     assert context.user_id == "u1"
     assert context.profile_id == "p1"
     assert context.session_meta["external_run_ids"] == ["bff_run_1"]
+
+
+def test_chat_stream_api_defaults_missing_expert_context_versions_to_current_state(api_client) -> None:
+    client, repository = api_client
+    response = client.post("/api/v2/sessions/chat/stream", json=_api_payload(
+        session_id="sess_missing_versions",
+        run_id="missing_versions_1",
+        input_payload={
+            "action": "chat",
+            "content": "继续",
+            "source": "chat",
+            "expert_context": {
+                "expert_team_id": None,
+                "expert_id": None,
+                "operation": "continue",
+            },
+        },
+    ))
+
+    assert response.status_code == 200
+    frames = _state_frames(response.text)
+    assert frames[-1]["expert_context"] == {
+        "expert_team_id": None,
+        "expert_id": None,
+        "branch_version": 0,
+        "selection_version": 0,
+    }
+    assert repository.get("sess_missing_versions").session_id == "sess_missing_versions"
 
 
 def test_chat_stream_api_rejects_duplicate_external_run_id(api_client) -> None:
@@ -839,6 +869,68 @@ def test_manual_expert_is_bound_to_chat_and_persists_on_profile_branch(monkeypat
         "branch_version": 1,
         "selection_version": 1,
     }
+
+
+def test_new_session_can_select_team_and_member_in_one_chat_request(monkeypatch) -> None:
+    monkeypatch.setattr(chat_stream, "StreamingRunner", _FakeRunner)
+    repository = InMemorySessionRepository()
+    coordinator = SimpleNamespace(agent_id="career_plan_expert")
+    family = SimpleNamespace(agent_id="family_education_expert")
+    team = SimpleNamespace(
+        team_id="student_growth_expert_team",
+        coordinator_expert_id="career_plan_expert",
+        member_expert_ids={"career_plan_expert", "family_education_expert"},
+    )
+    orchestrator = SimpleNamespace(
+        expert_registry={"career_plan_expert": coordinator, "family_education_expert": family},
+        expert_team_registry={"student_growth_expert_team": team},
+    )
+    app = FastAPI()
+    app.include_router(build_chat_stream_router(repository, _FactService(), orchestrator), prefix="/api/v2")
+    client = TestClient(app)
+
+    session_id = "sess_team_member_" + uuid4().hex
+    response = client.post("/api/v2/sessions/chat/stream", json=_api_payload(
+        session_id=session_id,
+        run_id="team_member_1",
+        input_payload={
+            "action": "chat",
+            "content": "请直接分析亲子沟通问题",
+            "source": "toolbar",
+            "expert_context": {
+                "expert_team_id": "student_growth_expert_team",
+                "expert_id": "family_education_expert",
+                "expected_branch_version": 1,
+                "expected_selection_version": 0,
+                "operation": "select_team_member",
+            },
+        },
+    ))
+
+    assert response.status_code == 200
+    session = repository.get(session_id)
+    assert session.session_meta["expert_team_id"] == "student_growth_expert_team"
+    assert session.session_meta["active_expert_id"] == "family_education_expert"
+    assert session.session_meta["expert_selection_source"] == "manual"
+
+    invalid = client.post("/api/v2/sessions/chat/stream", json=_api_payload(
+        session_id="sess_team_member_invalid_" + uuid4().hex,
+        run_id="team_member_invalid",
+        input_payload={
+            "action": "chat",
+            "content": "不应进入专家团",
+            "source": "toolbar",
+            "expert_context": {
+                "expert_team_id": "student_growth_expert_team",
+                "expert_id": "not_a_member",
+                "expected_branch_version": 1,
+                "expected_selection_version": 0,
+                "operation": "select_team_member",
+            },
+        },
+    ))
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"] == "EXPERT_NOT_IN_ACTIVE_TEAM"
 
 
 def test_plain_chat_does_not_implicitly_activate_an_expert_or_team(api_client) -> None:

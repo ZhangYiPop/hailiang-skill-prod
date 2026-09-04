@@ -11,6 +11,7 @@
 - [对话 SSE 完整数据流](docs/architecture/conversation_sse_dataflow.md)
 - [SSE v2 前端与转发后端联调指南](guides/SSE_V2_INTEGRATION_GUIDE.md)
 - [SSE v2 专家团对话接入说明](guides/SSE_V2_EXPERT_TEAM_INTEGRATION_GUIDE.md)
+- [SSE v2 专家上下文严格契约](guides/SSE_V2_EXPERT_CONTEXT_CONTRACT.md)
 - [API 文档](guides/API_DOCUMENTATION.md)
 - [前端交互与渲染清单](guides/FRONTEND_INTERACTION_CHECKLIST.md)
 - [SSE 前端联调示例](guides/SSE_FRONTEND_MOCK_EXAMPLES.md)
@@ -20,6 +21,11 @@
 其中对话链路、SSE 协议、事件顺序、表单/按钮/转场/取消/风控等完整说明，统一以 `docs/architecture/conversation_sse_dataflow.md` 为准。
 前端如果需要直接做 parser、状态机和 UI mock，优先参考 `guides/SSE_FRONTEND_MOCK_EXAMPLES.md`。
 
+业务调试台当前有两条不同的“导入”链路：
+
+- `递归导入到工作台对象库`：把导出的专家团 / 专家 / Skill 配置包按依赖闭包完整回灌到工作台对象库中。专家团包会自动递归导入其专家与 Skill，导入后对象可继续编辑、调试和发布。
+- `生产暂存导入`：把配置包导入部署暂存区，供后续激活 / 回滚使用，不会把对象回写到工作台对象库。
+
 最近一轮前后端联调中，围绕 `run_id / message_id / source_message_id` 的语义区别、toolbar 与推荐卡片进入 Skill 的请求差异、退出 Skill 的请求与返回、以及表单提交后“交互状态同步 + chat 续发”的双阶段链路，已补充到：
 
 - [API 文档](guides/API_DOCUMENTATION.md)
@@ -28,6 +34,15 @@
 
 前端或 BFF 做接口联调时，优先从 [SSE v2 前端与转发后端联调指南](guides/SSE_V2_INTEGRATION_GUIDE.md)
 开始，再按需要查字段协议、API 文档和 Mock 示例。
+
+SSE v2 的非 `stop` 请求可以省略 `input.expert_context` 中的
+`expected_branch_version` 和 `expected_selection_version`。服务端会在恢复当前 session/profile 分支后使用权威版本，
+并继续在响应中返回完整 `expert_context`；显式传入旧版本时仍返回 409，保留新客户端的并发保护能力。
+详细规则和请求示例见 [SSE v2 专家上下文严格契约](guides/SSE_V2_EXPERT_CONTEXT_CONTRACT.md)。
+
+专家团主协调专家会在每一轮新的用户消息中重新判断成员承接意图。若当前问题更适合团内成员，
+运行时必须生成新的结构化 `team_handoff` 转交卡；上一轮卡片未点击不会阻止下一轮重新生成，
+也不会把正文中的 `@专家` 当作自动转交。
 
 如果前端需要基于后端真实出流做联调，可以在 `config/runtime.yml` 中打开：
 

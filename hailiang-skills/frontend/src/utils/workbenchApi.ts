@@ -71,18 +71,65 @@ export type WorkbenchObject = {
   releases?: ObjectRelease[];
 };
 
+export type IdMigrationResult = {
+  source: WorkbenchObject;
+  successor: WorkbenchObject;
+  revision: ObjectRevision;
+  source_release_id: string | null;
+  downstream: Array<{
+    object_id: string;
+    object_type: WorkbenchObjectType;
+    object_key: string;
+    name: string;
+    revision_id: string;
+    revision_no: number;
+  }>;
+};
+
 export type Deployment = {
   deployment_id: string;
   environment: string;
   root_release_id: string;
   package_hash: string;
   manifest: {
-    root?: { object_key?: string; release_no?: number; object_type?: string };
+    root?: { object_key?: string; release_no?: number; object_type?: string; name?: string };
   };
-  status: "staged" | "active" | "superseded" | "rolled_back";
+  status: "staged" | "active" | "superseded" | "rolled_back" | "deactivated";
+  expert_team_id?: string | null;
+  expert_team_name?: string | null;
   previous_deployment_id?: string | null;
   imported_by: string;
   imported_at: string;
+};
+
+export type WorkbenchObjectImportResult = {
+  root: {
+    object_id?: string;
+    object_type?: WorkbenchObjectType;
+    object_key?: string;
+    release_id?: string;
+    release_no?: number;
+  };
+  package_hash: string;
+  created_objects: number;
+  created_revisions: number;
+  created_releases: number;
+  reused_objects: number;
+  reused_revisions: number;
+  reused_releases: number;
+  entries: Array<{
+    object_id: string;
+    object_type: WorkbenchObjectType;
+    object_key: string;
+    name: string;
+    source_release_id?: string;
+    source_release_no?: number;
+    local_revision_id: string;
+    local_revision_no: number;
+    local_release_id: string;
+    local_release_no: number;
+    status: string;
+  }>;
 };
 
 export type EvaluationSuite = {
@@ -187,6 +234,53 @@ export function storeWorkbenchActor(actor: WorkbenchActor): void {
   localStorage.setItem(ACTOR_KEY, JSON.stringify(actor));
 }
 
+function errorMessageFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const value = payload as {
+    message?: unknown;
+    detail?: unknown;
+  };
+  if (typeof value.message === "string" && value.message.trim()) {
+    return value.message;
+  }
+  if (typeof value.detail === "string" && value.detail.trim()) {
+    return value.detail;
+  }
+  if (value.detail && typeof value.detail === "object" && !Array.isArray(value.detail)) {
+    const detail = value.detail as { message?: unknown };
+    if (typeof detail.message === "string" && detail.message.trim()) {
+      return detail.message;
+    }
+  }
+  if (Array.isArray(value.detail)) {
+    const errors = value.detail
+      .slice(0, 3)
+      .flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const error = item as { loc?: unknown; msg?: unknown };
+        if (typeof error.msg !== "string" || !error.msg.trim()) return [];
+        const location = Array.isArray(error.loc)
+          ? error.loc.filter((part) => typeof part === "string" || typeof part === "number").join(".")
+          : "";
+        return [location ? `${location}: ${error.msg}` : error.msg];
+      });
+    if (errors.length) return errors.join("；");
+  }
+  return null;
+}
+
+async function responseError(response: Response, fallback: string): Promise<Error> {
+  const payload = await response.clone().json().catch(() => null);
+  const message = errorMessageFromPayload(payload);
+  const rawBody = message ? "" : (await response.text().catch(() => "")).trim();
+  const bodyMessage = rawBody
+    ? rawBody.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
+    : "";
+  const requestId = response.headers.get("X-Request-Id");
+  const suffix = `（HTTP ${response.status}${requestId ? `，请求 ID：${requestId}` : ""}）`;
+  return new Error(`${message ?? bodyMessage ?? fallback}${suffix}`);
+}
+
 async function request<T>(
   baseUrl: string,
   path: string,
@@ -202,23 +296,15 @@ async function request<T>(
     },
   });
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as {
-      message?: string;
-      detail?: {
-        message?: string;
-        details?: { blockers?: Array<{ message?: string }> };
-      };
+    const payload = await response.clone().json().catch(() => null) as {
+      detail?: { details?: { blockers?: Array<{ message?: string }> } };
     } | null;
-    const message =
-      payload?.message ??
-      payload?.detail?.message ??
-      `请求失败 (${response.status})`;
+    const error = await responseError(response, "请求处理失败");
     const blockers = payload?.detail?.details?.blockers
       ?.map((item) => item.message)
       .filter(Boolean);
-    throw new Error(
-      blockers?.length ? `${message}：${blockers.join("；")}` : message,
-    );
+    if (blockers?.length) error.message = `${error.message}：${blockers.join("；")}`;
+    throw error;
   }
   return response.json() as Promise<T>;
 }
@@ -237,8 +323,7 @@ export async function streamWorkbenchSse(
     signal: options.signal,
   });
   if (!response.ok || !response.body) {
-    const payload = await response.json().catch(() => null) as { message?: string; detail?: { message?: string } } | null;
-    throw new Error(payload?.message ?? payload?.detail?.message ?? `请求失败 (${response.status})`);
+    throw await responseError(response, "流式请求未建立");
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -300,6 +385,21 @@ export const workbenchApi = {
       method: "DELETE",
       body: JSON.stringify(input),
     }),
+  migrateObjectId: (
+    baseUrl: string,
+    objectId: string,
+    input: { new_object_key: string; confirmation_name: string; actor_id: string },
+  ) => request<IdMigrationResult>(baseUrl, `/workbench/v1/objects/${objectId}/id-migrations`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  }),
+  migrateReferences: (
+    baseUrl: string,
+    input: { from_release_id: string; to_release_id: string; confirmation_name: string; actor_id: string },
+  ) => request<{ created: Array<{ object: WorkbenchObject; revision: ObjectRevision }> }>(baseUrl, "/workbench/v1/reference-migrations", {
+    method: "POST",
+    body: JSON.stringify(input),
+  }),
   saveRevision: (
     baseUrl: string,
     objectId: string,
@@ -335,7 +435,7 @@ export const workbenchApi = {
     request<SoulRevision>(baseUrl, "/workbench/v1/soul-revisions", { method: "POST", body: JSON.stringify(input) }),
   previewStandardSkillConversion: async (baseUrl: string, file: File, actorId: string) => {
     const response = await fetch(`${normalizeBaseUrl(baseUrl)}/workbench/v1/standard-skill-conversions/preview?actor_id=${encodeURIComponent(actorId)}`, { method: "POST", body: file });
-    if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail?.message ?? "标准 Skill 转换失败");
+    if (!response.ok) throw await responseError(response, "标准 Skill 转换失败");
     return response.json() as Promise<StandardSkillConversion>;
   },
   commitStandardSkillConversion: (baseUrl: string, input: Record<string, unknown>) =>
@@ -484,6 +584,20 @@ export const workbenchApi = {
         body: JSON.stringify({ actor_id: actorId }),
       },
     ),
+  deactivateDeployment: (
+    baseUrl: string,
+    deploymentId: string,
+    expertTeamId: string,
+    actorId: string,
+  ) => request<Deployment>(baseUrl, `/deployment/v1/deployments/${deploymentId}/deactivate`, {
+    method: "POST",
+    body: JSON.stringify({ expert_team_id: expertTeamId, actor_id: actorId }),
+  }),
+  restoreDeployment: (baseUrl: string, deploymentId: string, actorId: string) =>
+    request<Deployment>(baseUrl, `/deployment/v1/deployments/${deploymentId}/restore`, {
+      method: "POST",
+      body: JSON.stringify({ actor_id: actorId }),
+    }),
   async exportRelease(
     baseUrl: string,
     releaseId: string,
@@ -497,7 +611,7 @@ export const workbenchApi = {
         body: JSON.stringify({ release_id: releaseId, actor_id: actorId }),
       },
     );
-    if (!response.ok) throw new Error("配置包导出失败");
+    if (!response.ok) throw await responseError(response, "配置包导出失败");
     return response.blob();
   },
   async importPackage(
@@ -514,14 +628,26 @@ export const workbenchApi = {
       },
     );
     if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as {
-        detail?: { message?: string };
-        message?: string;
-      } | null;
-      throw new Error(
-        payload?.message ?? payload?.detail?.message ?? "配置包导入失败",
-      );
+      throw await responseError(response, "配置包导入失败");
     }
     return response.json() as Promise<Deployment>;
+  },
+  async importObjectPackage(
+    baseUrl: string,
+    file: File,
+    actorId: string,
+  ): Promise<WorkbenchObjectImportResult> {
+    const response = await fetch(
+      `${normalizeBaseUrl(baseUrl)}/workbench/v1/imports?actor_id=${encodeURIComponent(actorId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/zip" },
+        body: file,
+      },
+    );
+    if (!response.ok) {
+      throw await responseError(response, "工作台对象导入失败");
+    }
+    return response.json() as Promise<WorkbenchObjectImportResult>;
   },
 };

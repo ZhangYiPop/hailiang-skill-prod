@@ -32,6 +32,7 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
   const { composerValue, setComposerValue } = useChatStore();
   const [toolbarTargetExpertId, setToolbarTargetExpertId] = useState("");
   const toolbarTarget = activeExpertTeam?.members.find((member) => member.expert_id === toolbarTargetExpertId);
+  const pendingTeam = expertTeamCatalog.find((team) => team.team_id === pendingExpertTeamId);
 
   useEffect(() => {
     if (!activeExpertTeam?.members.some((member) => member.expert_id === toolbarTargetExpertId)) {
@@ -149,6 +150,26 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
                 </button>
               );
             })}
+            {pendingTeam?.members.map((member) => {
+              const selected = pendingExpertId === member.expert_id;
+              return (
+                <button
+                  key={`pending-${member.expert_id}`}
+                  type="button"
+                  disabled={disabled || selected || !onSelectExpert}
+                  title={member.routing_brief}
+                  onClick={() => void onSelectExpert?.(member.expert_id)}
+                  className={[
+                    "rounded-full border px-3 py-2 text-xs transition disabled:cursor-not-allowed disabled:opacity-40",
+                    selected
+                      ? "border-violet-200/60 bg-violet-200/15 text-violet-100"
+                      : "border-white/10 bg-white/[0.04] text-slate-300 hover:border-violet-400/30 hover:bg-violet-400/10 hover:text-violet-100",
+                  ].join(" ")}
+                >
+                  {member.is_coordinator ? "主协调：" : "@"}{member.mention_name}{selected ? "（待下次发送）" : ""}
+                </button>
+              );
+            })}
             {expertTeamCatalog.length === 0 && expertCatalog.map((expert) => {
               const selected = (pendingExpertId || activeExpertId) === expert.expert_id;
               const skillLabels = expert.skills.map((skill) => skill.label).join("、");
@@ -176,7 +197,7 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
               );
             })}
           </div>
-          <p className="px-1 text-[11px] leading-5 text-slate-500">专家能力由专家包锁定；专家团由主协调专家决定是否建议转交。</p>
+          <p className="px-1 text-[11px] leading-5 text-slate-500">{pendingTeam ? "可在首条消息前直接选择团内成员；不选则由主协调专家承接。" : "专家能力由专家包锁定；专家团由主协调专家决定是否建议转交。"}</p>
         </div>
       ) : null
       )}

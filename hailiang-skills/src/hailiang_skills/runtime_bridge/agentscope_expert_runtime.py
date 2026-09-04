@@ -113,6 +113,7 @@ class AgentScopeExpertRuntime:
             "max_skill_calls": definition.max_skill_calls,
             "skill_calls": 0,
         }
+        state["handoff_tool_calls"] = 0
         state["pending_form"] = None
         # A handoff proposal belongs to exactly one coordinator turn.  Keeping
         # the previous value here caused a member's next reply to inherit and
@@ -444,9 +445,11 @@ class AgentScopeExpertRuntime:
                 team_prompt = (
                     f"\n\n# 专家团规则\n你是“{team.name}”的主协调专家。\n{team.rules_markdown}\n"
                     f"# 团内专家\n{roster}\n"
-                    "需要其他成员处理时，调用 propose_member_handoff；只给团内候选和简短原因，"
-                    "不得自动转交、不得调用成员的 Skill。调用后必须立即输出简短的用户说明，"
-                    "请用户点击转交卡确认；不要再次调用该工具或继续推理。"
+                    "每次收到新的用户消息，都必须重新判断当前问题是否更适合团内成员；上一轮转交卡未点击，"
+                    "也不能跳过本轮判断。只要某个成员比你更适合处理，必须调用 propose_member_handoff，"
+                    "只给团内候选和简短原因，不得自动转交、不得调用成员的 Skill。调用后必须立即输出简短的用户说明，"
+                    "请用户点击本轮转交卡确认；不要再次调用该工具或继续推理。未调用该工具时，禁止在正文中输出"
+                    "@专家名称、建议由某专家承接或已经转交等表达。"
                 )
             else:
                 team_prompt = (
@@ -476,7 +479,7 @@ class AgentScopeExpertRuntime:
 
         reply = _run_async(run_agent())
         state["agent_reply"] = reply.get_text_content()[:1000]
-        self._event(context, "expert_agent_completed", {"expert_id": definition.agent_id, "tool_calls": state["budget"]["skill_calls"]})
+        self._event(context, "expert_agent_completed", {"expert_id": definition.agent_id, "tool_calls": state["budget"]["skill_calls"], "handoff_tool_calls": int(state.get("handoff_tool_calls") or 0), "structured_handoff": isinstance(state.get("team_handoff"), dict)})
 
     def _execute_skill(self, definition: ExpertDefinition, state: dict[str, Any], context, skill_id: str, task: str, handoff_context: dict[str, Any] | None) -> dict[str, Any]:
         skill_id = str(skill_id or "").strip()
@@ -525,6 +528,7 @@ class AgentScopeExpertRuntime:
         return {"status": "deferred_to_native_questionnaire", "skill_id": skill_id, "question_ids": ids}
 
     def _propose_member_handoff(self, team: ExpertTeamDefinition, state: dict[str, Any], context, candidate_expert_ids: list[str], reason: str) -> dict[str, Any]:
+        state["handoff_tool_calls"] = int(state.get("handoff_tool_calls") or 0) + 1
         ids: list[str] = []
         for item in candidate_expert_ids:
             expert_id = str(item or "").strip()

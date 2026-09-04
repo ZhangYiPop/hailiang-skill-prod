@@ -18,4 +18,4 @@
 | `MODEL_UPSTREAM_ERROR` | 模型上游服务错误 | 是 |
 | `MODEL_RUNTIME_ERROR` | 未分类模型运行错误 | 是 |
 
-请求校验、身份冲突和重复 run 等发生在 SSE 建连前，继续使用 HTTP `4xx/429`，不包装为流帧。
+请求校验、身份冲突和重复 run 等发生在 SSE 建连前，继续使用 HTTP `4xx/429`，不包装为流帧。标准 HTTP 错误信封为 `code`、面向用户的 `message` 和原始 `detail`；`detail` 可能是对象、字符串或 FastAPI 校验数组。前端收到任一 HTTP 失败都应结束 loading，并保留 `X-Request-Id`；字段提取顺序和非 JSON 网关错误处理见 [SSE_RESPONSE_CONTRACT.md](SSE_RESPONSE_CONTRACT.md#53-建流前-http-错误)。

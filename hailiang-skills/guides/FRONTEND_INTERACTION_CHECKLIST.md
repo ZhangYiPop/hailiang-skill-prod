@@ -45,6 +45,8 @@
 - `stopped` 保留已显示正文，显示“已停止”，不显示新表单/Skill 卡片。
 - 建连前失败可重试；一旦收到 state 帧，不自动重放同一个请求，避免重复用户消息。
 - `error.message` 和 `error.code` 用于展示错误；本地调试可展开 `upstream_detail`，生产界面默认隐藏它。
+- 建流前 HTTP 失败不等待 SSE 帧：优先展示顶层 `message`，并兼容 `detail.message`、字符串 `detail`、FastAPI 校验数组中的 `loc + msg`；非 JSON 网关错误显示截断后的响应文本与 HTTP 状态。
+- 任何 HTTP 失败都必须关闭本轮 loading；保留响应头 `X-Request-Id` 供用户反馈或日志关联，不能显示为“仍在生成”。
 
 ## Skill 场景锁
 

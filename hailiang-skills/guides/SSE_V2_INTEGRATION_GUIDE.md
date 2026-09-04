@@ -585,6 +585,16 @@ proxy_read_timeout 180s;
 
 建流前错误是普通 JSON 响应，不会发送 SSE：
 
+```json
+{
+  "code": "REQUEST_VALIDATION_ERROR",
+  "message": "请求字段校验失败。",
+  "detail": [{"loc": ["body", "input"], "msg": "Field required"}]
+}
+```
+
+前端应优先展示顶层 `message`；为兼容本地直连或中间层，应依次兼容 `detail.message`、字符串 `detail` 及 FastAPI 校验数组中的 `loc + msg`。若响应不是 JSON，展示截断后的文本与 HTTP 状态；同时读取 `X-Request-Id` 用于排查。无论是哪一种错误形态，都必须结束本轮 loading，不能把建流失败伪装成持续生成。
+
 | HTTP | detail 示例 | 建议动作 |
 | --- | --- | --- |
 | 422 | `INVALID_INPUT_JSON`、字段校验错误 | 修正请求，不自动重试。 |

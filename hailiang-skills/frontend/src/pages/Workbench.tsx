@@ -54,6 +54,7 @@ import {
   type SoulRevision,
   type StandardSkillConversion,
   type WorkbenchActor,
+  type WorkbenchObjectImportResult,
   type WorkbenchObject,
   type WorkbenchObjectType,
 } from "@/utils/workbenchApi";
@@ -283,6 +284,15 @@ export default function Workbench() {
     null,
   );
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [idMigrationTarget, setIdMigrationTarget] = useState<WorkbenchObject | null>(null);
+  const [idMigrationConfirmation, setIdMigrationConfirmation] = useState("");
+  const [nextObjectKey, setNextObjectKey] = useState("");
+  const [referenceMigrationTarget, setReferenceMigrationTarget] = useState<WorkbenchObject | null>(null);
+  const [referenceMigrationConfirmation, setReferenceMigrationConfirmation] = useState("");
+  const [referenceFromReleaseId, setReferenceFromReleaseId] = useState("");
+  const [referenceToReleaseId, setReferenceToReleaseId] = useState("");
+  const [deactivateDeploymentTarget, setDeactivateDeploymentTarget] = useState<Deployment | null>(null);
+  const [deactivateTeamConfirmation, setDeactivateTeamConfirmation] = useState("");
   const [newObject, setNewObject] = useState({
     object_type: "skill" as WorkbenchObjectType,
     object_key: "",
@@ -697,6 +707,48 @@ export default function Workbench() {
         tone: "error",
         text: error instanceof Error ? error.message : "永久删除失败",
       });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function migrateObjectId() {
+    if (!actor || !idMigrationTarget || idMigrationConfirmation !== idMigrationTarget.name || !nextObjectKey.trim()) return;
+    setBusy(true);
+    try {
+      const result = await workbenchApi.migrateObjectId(apiBaseUrl, idMigrationTarget.object_id, {
+        new_object_key: nextObjectKey.trim(), confirmation_name: idMigrationConfirmation, actor_id: actor.actor_id,
+      });
+      setIdMigrationTarget(null);
+      setIdMigrationConfirmation("");
+      setNextObjectKey("");
+      await loadAll();
+      await openObject(result.successor.object_id);
+      setNotice({
+        tone: "ok",
+        text: `已创建新 ID “${result.successor.object_key}”的待调试修订；旧对象仍保留。${result.downstream.length ? ` 发布后可迁移 ${result.downstream.length} 个直接引用对象。` : ""}`,
+      });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "修改 ID 失败" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function migrateReferences() {
+    if (!actor || !referenceMigrationTarget || referenceMigrationConfirmation !== referenceMigrationTarget.name || !referenceFromReleaseId || !referenceToReleaseId) return;
+    setBusy(true);
+    try {
+      const result = await workbenchApi.migrateReferences(apiBaseUrl, {
+        from_release_id: referenceFromReleaseId, to_release_id: referenceToReleaseId,
+        confirmation_name: referenceMigrationConfirmation, actor_id: actor.actor_id,
+      });
+      setReferenceMigrationTarget(null);
+      setReferenceMigrationConfirmation("");
+      await loadAll();
+      setNotice({ tone: "ok", text: result.created.length ? `已生成 ${result.created.length} 个引用迁移草稿，请逐个调试并发布。` : "没有当前修订引用所选旧版本。" });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "迁移引用失败" });
     } finally {
       setBusy(false);
     }
@@ -1169,6 +1221,7 @@ export default function Workbench() {
   async function importPackage(file: File) {
     if (!actor) return;
     setBusy(true);
+    setNotice({ tone: "ok", text: "正在校验配置包并导入生产暂存区…" });
     try {
       await workbenchApi.importPackage(apiBaseUrl, file, actor.actor_id);
       await loadAll();
@@ -1183,9 +1236,31 @@ export default function Workbench() {
     }
   }
 
+  async function importObjectPackage(file: File) {
+    if (!actor) return;
+    setBusy(true);
+    setNotice({ tone: "ok", text: "正在校验配置包并递归导入专家团依赖…" });
+    try {
+      const result: WorkbenchObjectImportResult =
+        await workbenchApi.importObjectPackage(apiBaseUrl, file, actor.actor_id);
+      await loadAll();
+      setNotice({
+        tone: "ok",
+        text: `已导入 ${result.created_objects} 个新对象，新增 ${result.created_revisions} 个修订、${result.created_releases} 个发布；复用 ${result.reused_releases} 个已有发布版本。`,
+      });
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        text: error instanceof Error ? error.message : "工作台对象导入失败",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function changeDeployment(
     deployment: Deployment,
-    action: "activate" | "rollback",
+    action: "activate" | "rollback" | "restore",
   ) {
     if (!actor) return;
     setBusy(true);
@@ -1196,25 +1271,50 @@ export default function Workbench() {
           deployment.deployment_id,
           actor.actor_id,
         );
-      else
+      else if (action === "rollback")
         await workbenchApi.rollbackDeployment(
           apiBaseUrl,
           deployment.deployment_id,
           actor.actor_id,
         );
+      else
+        await workbenchApi.restoreDeployment(apiBaseUrl, deployment.deployment_id, actor.actor_id);
       await loadAll();
       setNotice({
         tone: "ok",
         text:
           action === "activate"
             ? "生产版本已激活，新会话将使用该快照。"
-            : "已回滚到上一部署快照。",
+            : action === "rollback"
+              ? "已回滚到上一部署快照。"
+              : "历史专家团版本已恢复，新会话将使用该快照。",
       });
     } catch (error) {
       setNotice({
         tone: "error",
         text: error instanceof Error ? error.message : "部署操作失败",
       });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deactivateDeployment() {
+    if (!actor || !deactivateDeploymentTarget || deactivateTeamConfirmation !== deactivateDeploymentTarget.expert_team_id) return;
+    setBusy(true);
+    try {
+      await workbenchApi.deactivateDeployment(
+        apiBaseUrl,
+        deactivateDeploymentTarget.deployment_id,
+        deactivateTeamConfirmation,
+        actor.actor_id,
+      );
+      setDeactivateDeploymentTarget(null);
+      setDeactivateTeamConfirmation("");
+      await loadAll();
+      setNotice({ tone: "ok", text: "正式专家团已下线；新会话将回退到默认通用对话，已有会话保持原快照。" });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "下线生产专家团失败" });
     } finally {
       setBusy(false);
     }
@@ -1518,6 +1618,34 @@ export default function Workbench() {
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            setIdMigrationTarget(selectedObject);
+                            setIdMigrationConfirmation("");
+                            setNextObjectKey("");
+                          }}
+                          className="inline-flex items-center gap-2 rounded-xl border border-amber-400/25 bg-amber-400/[0.06] px-4 py-2.5 text-sm font-medium text-amber-100 hover:bg-amber-400/10 disabled:opacity-40"
+                        >
+                          <Wrench size={16} />
+                          修改 ID
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy || !selectedObject.releases?.length}
+                          onClick={() => {
+                            const currentRelease = selectedObject.releases?.[0];
+                            setReferenceMigrationTarget(selectedObject);
+                            setReferenceMigrationConfirmation("");
+                            setReferenceFromReleaseId(currentRelease?.release_id ?? "");
+                            setReferenceToReleaseId("");
+                          }}
+                          className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 hover:bg-white/5 disabled:opacity-40"
+                        >
+                          <GitCompareArrows size={16} />
+                          迁移引用
+                        </button>
                         <button
                           type="button"
                           disabled={busy}
@@ -2260,6 +2388,36 @@ export default function Workbench() {
                 <div className="space-y-6">
                   <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-6">
                     <div className="flex items-center gap-3">
+                      <Boxes className="text-cyan-300" />
+                      <div>
+                        <h2 className="font-semibold">递归导入到工作台</h2>
+                        <p className="text-sm text-slate-500">
+                          将专家团包中的专家与 Skill 一并回灌为可编辑对象，不影响线上部署。
+                        </p>
+                      </div>
+                    </div>
+                    <label className="mt-5 flex cursor-pointer flex-col items-center rounded-2xl border border-dashed border-cyan-400/25 bg-cyan-400/[0.05] px-5 py-7 text-center">
+                      <Boxes size={25} className="text-cyan-300" />
+                      <span className="mt-3 text-sm font-medium">
+                        选择配置包 ZIP
+                      </span>
+                      <span className="mt-1 text-xs text-slate-500">
+                        自动递归导入专家团、专家与 Skill 闭包
+                      </span>
+                      <input
+                        type="file"
+                        accept=".zip,application/zip"
+                        className="hidden"
+                        onChange={(event) => {
+                          const file = event.target.files?.[0];
+                          if (file) void importObjectPackage(file);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                  </div>
+                  <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-6">
+                    <div className="flex items-center gap-3">
                       <CloudUpload className="text-violet-300" />
                       <div>
                         <h2 className="font-semibold">生产暂存导入</h2>
@@ -2300,11 +2458,11 @@ export default function Workbench() {
                             <div className="flex items-center justify-between gap-3">
                               <div>
                                 <p className="text-sm font-medium">
-                                  {deployment.manifest.root?.object_key ??
+                                  {deployment.expert_team_name ?? deployment.manifest.root?.name ?? deployment.manifest.root?.object_key ??
                                     deployment.root_release_id}
                                 </p>
                                 <p className="mt-1 text-xs text-slate-500">
-                                  {formatTime(deployment.imported_at)}
+                                  {deployment.expert_team_id ? `expert_team_id: ${deployment.expert_team_id} · ` : ""}{formatTime(deployment.imported_at)}
                                 </p>
                               </div>
                               <StatusBadge
@@ -2349,6 +2507,27 @@ export default function Workbench() {
                                   回滚
                                 </button>
                               ) : null}
+                              {deployment.status === "active" && deployment.expert_team_id ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setDeactivateDeploymentTarget(deployment);
+                                    setDeactivateTeamConfirmation("");
+                                  }}
+                                  className="flex-1 rounded-xl border border-rose-400/25 px-3 py-2 text-sm text-rose-200"
+                                >
+                                  下线专家团
+                                </button>
+                              ) : null}
+                              {["superseded", "rolled_back", "deactivated"].includes(deployment.status) && deployment.expert_team_id ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void changeDeployment(deployment, "restore")}
+                                  className="flex-1 rounded-xl border border-sky-400/25 px-3 py-2 text-sm text-sky-200"
+                                >
+                                  恢复此版本
+                                </button>
+                              ) : null}
                             </div>
                           </div>
                         ))
@@ -2385,6 +2564,65 @@ export default function Workbench() {
         </div>
       </div>
 
+      {deactivateDeploymentTarget ? (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
+          <div role="alertdialog" aria-modal="true" className="w-full max-w-lg rounded-3xl border border-rose-400/20 bg-[#151923] p-6 shadow-2xl shadow-black/50">
+            <div className="flex items-start justify-between gap-5"><div><p className="text-xs font-medium uppercase tracking-[0.18em] text-rose-300">生产变更确认</p><h2 className="mt-1 text-xl font-semibold">下线正式专家团？</h2></div><button type="button" aria-label="关闭下线确认" onClick={() => setDeactivateDeploymentTarget(null)} className="rounded-xl p-2 text-slate-500 hover:bg-white/5 hover:text-white"><X size={18} /></button></div>
+            <div className="mt-5 rounded-2xl border border-rose-400/15 bg-rose-400/[0.05] p-4 text-sm leading-6 text-rose-100/80"><p>专家团：<strong className="text-white">{deactivateDeploymentTarget.expert_team_name ?? deactivateDeploymentTarget.manifest.root?.name ?? deactivateDeploymentTarget.expert_team_id}</strong></p><p className="mt-2">下线后，新正式会话回退默认通用对话；已有会话继续使用当前 ZIP 快照。可从部署历史恢复此版本。</p></div>
+            <label className="mt-5 block text-sm text-slate-300">请输入 <strong className="font-mono text-white">{deactivateDeploymentTarget.expert_team_id}</strong> 以确认
+              <input autoFocus value={deactivateTeamConfirmation} onChange={(event) => setDeactivateTeamConfirmation(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && deactivateTeamConfirmation === deactivateDeploymentTarget.expert_team_id && !busy) void deactivateDeployment(); }} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 font-mono outline-none focus:border-rose-400/50" />
+            </label>
+            <div className="mt-6 grid grid-cols-2 gap-3"><button type="button" disabled={busy} onClick={() => setDeactivateDeploymentTarget(null)} className="rounded-xl border border-white/10 px-4 py-3 text-sm text-slate-300 hover:bg-white/5">取消</button><button type="button" disabled={busy || deactivateTeamConfirmation !== deactivateDeploymentTarget.expert_team_id} onClick={() => void deactivateDeployment()} className="rounded-xl bg-rose-500 px-4 py-3 text-sm font-semibold text-white disabled:opacity-35">确认下线</button></div>
+          </div>
+        </div>
+      ) : null}
+      {idMigrationTarget ? (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
+          <div role="dialog" aria-modal="true" className="w-full max-w-lg rounded-3xl border border-amber-400/20 bg-[#151923] p-6 shadow-2xl shadow-black/50">
+            <div className="flex items-start justify-between gap-5">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-amber-200">需确认的 ID 迁移</p>
+                <h2 className="mt-1 text-xl font-semibold">为“{idMigrationTarget.name}”创建新 ID</h2>
+              </div>
+              <button type="button" aria-label="关闭 ID 修改" onClick={() => setIdMigrationTarget(null)} className="rounded-xl p-2 text-slate-500 hover:bg-white/5 hover:text-white"><X size={18} /></button>
+            </div>
+            <div className="mt-5 rounded-2xl border border-amber-400/15 bg-amber-400/[0.05] p-4 text-sm leading-6 text-amber-50/80">
+              <p>当前 {TYPE_META[idMigrationTarget.object_type].label} ID：<strong className="font-mono text-white">{idMigrationTarget.object_key}</strong></p>
+              <p className="mt-2 text-xs text-amber-100/65">将复制最新修订为新 ID 的待调试对象；旧对象、已发布版本和生产快照不会改变。</p>
+            </div>
+            <label className="mt-5 block text-sm text-slate-300">新的 ID
+              <input autoFocus value={nextObjectKey} onChange={(event) => setNextObjectKey(event.target.value)} placeholder="仅限字母、数字、_、-" className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 font-mono outline-none focus:border-amber-400/50" />
+            </label>
+            <label className="mt-4 block text-sm text-slate-300">请输入对象名称 <strong className="text-white">{idMigrationTarget.name}</strong> 以确认
+              <input value={idMigrationConfirmation} onChange={(event) => setIdMigrationConfirmation(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && idMigrationConfirmation === idMigrationTarget.name && nextObjectKey.trim() && !busy) void migrateObjectId(); }} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none focus:border-amber-400/50" />
+            </label>
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <button type="button" disabled={busy} onClick={() => setIdMigrationTarget(null)} className="rounded-xl border border-white/10 px-4 py-3 text-sm text-slate-300 hover:bg-white/5">取消</button>
+              <button type="button" disabled={busy || idMigrationConfirmation !== idMigrationTarget.name || !nextObjectKey.trim()} onClick={() => void migrateObjectId()} className="rounded-xl bg-amber-400 px-4 py-3 text-sm font-semibold text-slate-950 disabled:opacity-35">确认创建后继草稿</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {referenceMigrationTarget ? (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
+          <div role="dialog" aria-modal="true" className="w-full max-w-lg rounded-3xl border border-sky-400/20 bg-[#151923] p-6 shadow-2xl shadow-black/50">
+            <div className="flex items-start justify-between gap-5"><div><p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-300">分阶段引用迁移</p><h2 className="mt-1 text-xl font-semibold">生成上游对象的待调试修订</h2></div><button type="button" aria-label="关闭引用迁移" onClick={() => setReferenceMigrationTarget(null)} className="rounded-xl p-2 text-slate-500 hover:bg-white/5 hover:text-white"><X size={18} /></button></div>
+            <p className="mt-4 text-sm leading-6 text-slate-300">选定旧发布版本和其已发布替代版本。系统仅生成直接引用它们的最新草稿，不会自动发布或影响生产。</p>
+            <label className="mt-4 block text-sm text-slate-300">旧发布版本
+              <select value={referenceFromReleaseId} onChange={(event) => setReferenceFromReleaseId(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none">
+                {(referenceMigrationTarget.releases ?? []).map((release) => <option key={release.release_id} value={release.release_id}>{release.version} · {release.object_key}</option>)}
+              </select>
+            </label>
+            <label className="mt-4 block text-sm text-slate-300">替代发布版本
+              <select value={referenceToReleaseId} onChange={(event) => setReferenceToReleaseId(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none"><option value="">请选择已发布替代版本</option>{releases.filter((release) => release.object_type === referenceMigrationTarget.object_type && release.object_id !== referenceMigrationTarget.object_id && !release.archived).map((release) => <option key={release.release_id} value={release.release_id}>{release.name} · {release.object_key} · {release.version}</option>)}</select>
+            </label>
+            <label className="mt-4 block text-sm text-slate-300">请输入对象名称 <strong className="text-white">{referenceMigrationTarget.name}</strong> 以确认
+              <input value={referenceMigrationConfirmation} onChange={(event) => setReferenceMigrationConfirmation(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none focus:border-sky-400/50" />
+            </label>
+            <div className="mt-6 grid grid-cols-2 gap-3"><button type="button" disabled={busy} onClick={() => setReferenceMigrationTarget(null)} className="rounded-xl border border-white/10 px-4 py-3 text-sm text-slate-300 hover:bg-white/5">取消</button><button type="button" disabled={busy || referenceMigrationConfirmation !== referenceMigrationTarget.name || !referenceFromReleaseId || !referenceToReleaseId} onClick={() => void migrateReferences()} className="rounded-xl bg-sky-400 px-4 py-3 text-sm font-semibold text-slate-950 disabled:opacity-35">生成迁移草稿</button></div>
+          </div>
+        </div>
+      ) : null}
       {deleteTarget ? (
         <div className="fixed inset-0 z-[60] grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
           <div
@@ -2443,7 +2681,7 @@ export default function Workbench() {
                 </StatusBadge>
               </div>
               <p className="mt-3 text-xs text-rose-200/60">
-                如果其他专家、专家团版本或生产部署仍在引用它，系统会阻止删除。
+                仅当其他专家或专家团的当前最新发布版本仍引用它时，系统才会阻止删除；历史版本、草稿和已固化生产部署不受影响。
               </p>
             </div>
             <label className="mt-5 block text-sm text-slate-300">
