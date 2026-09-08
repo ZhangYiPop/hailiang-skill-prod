@@ -4,6 +4,7 @@ import io
 import hashlib
 import base64
 import json
+import threading
 from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -16,8 +17,9 @@ from sqlalchemy.pool import StaticPool
 
 from hailiang_skills.storage.database import Base, WorkbenchDebugSessionRow
 from hailiang_skills.workbench.service import WorkbenchConflict, WorkbenchError, WorkbenchService, _hash
-from hailiang_skills.workbench.runtime_overlay import configured_skill_bundle
-from hailiang_skills.api.routes.workbench import build_workbench_router
+from hailiang_skills.workbench.runtime_overlay import configured_skill_bundle, skill_bundle_from_entry
+from hailiang_skills.api.routes import workbench as workbench_routes
+from hailiang_skills.api.routes.workbench import build_deployment_router, build_workbench_router
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.runtime_bridge.main_planner import MainPlannerOrchestrator
 
@@ -35,6 +37,138 @@ def service() -> WorkbenchService:
 
 def _actor(service: WorkbenchService) -> str:
     return service.register_actor("业务测试员")["actor_id"]
+
+
+def test_database_bundle_needs_no_business_template(tmp_path, monkeypatch):
+    from hailiang_skills.workbench import runtime_overlay
+    monkeypatch.setattr(runtime_overlay, "state_root", lambda: tmp_path)
+    entry = {
+        "object_key": "database_only_skill",
+        "payload": {
+            "prompt_markdown": "根据表单回答用户。",
+            "source_metadata": {"name": "数据库表单"},
+            "runtime_contract": {"questionnaire": {"enabled": True, "fields": []}},
+        },
+        "files": [
+            _text_asset("references/guide.md", "规则资料", "text/markdown"),
+            _text_asset("scripts/score.py", "def main(payload):\n    return payload\n", "text/x-python"),
+        ],
+    }
+    bundle = skill_bundle_from_entry(entry)
+    assert bundle.contract.skill_id == "database_only_skill"
+    assert bundle.metadata["questionnaire"]["enabled"] is True
+    assert bundle.references["references/guide.md"] == "规则资料"
+    assert bundle.scripts["scripts/score.py"].is_file()
+
+
+def test_candidate_single_skill_expert_enters_locked_skill_without_agent_router(monkeypatch, service):
+    snapshot = {
+        "root": {"object_id": "expert-1"},
+        "entries": [
+            {
+                "object_id": "expert-1", "object_type": "expert", "object_key": "academic_coach",
+                "dependency_locks": [{"object_type": "skill", "object_key": "score_improve"}],
+            },
+            {"object_id": "skill-1", "object_type": "skill", "object_key": "score_improve"},
+        ],
+    }
+    context = SessionContext()
+    service._configure_snapshot_context(context, snapshot)
+    called: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_execute_candidate_skill",
+        lambda entry, message, _context: called.append(str(entry["object_key"])) or "由提分技能回答",
+    )
+    service.orchestrator = SimpleNamespace(handle_message=lambda *_args: pytest.fail("不应调用专家路由"))
+
+    result = service._execute_snapshot_message(snapshot, "我想提分", context)
+
+    assert result == "由提分技能回答"
+    assert called == ["score_improve"]
+    assert context.interaction_state["active_skill"] == "score_improve"
+    assert context.event_trace[-1]["event_type"] == "candidate_single_skill_selected"
+
+
+def test_filesystem_migration_captures_root_data_and_requires_explicit_current(tmp_path, monkeypatch):
+    from hailiang_skills.workbench import runtime_overlay
+    monkeypatch.setattr(runtime_overlay, "state_root", lambda: tmp_path / "state")
+    bundle = skill_bundle_from_entry({
+        "object_key": "catalog_skill",
+        "payload": {
+            "prompt_markdown": "数据库迁移测试",
+            "source_metadata": {"name": "目录技能"},
+            "runtime_contract": {},
+        },
+        "files": [_text_asset("professions.json", '[{"name":"工程师"}]', "application/json")],
+    })
+    orchestrator = SimpleNamespace(
+        runtime_registry=SimpleNamespace(bundles={"catalog_skill": bundle}),
+        expert_registry=SimpleNamespace(definitions={}),
+        expert_team_registry=SimpleNamespace(definitions={}),
+    )
+    migrated = _blank_service()
+    migrated.orchestrator = orchestrator
+
+    preview = migrated.preview_runtime_migration()
+    assert preview["objects"][0]["files"] == ["professions.json"]
+    first = migrated.migrate_runtime_catalog(actor_id="migration", make_current=False)
+    assert first["created_objects"] == 1
+    assert migrated.list_objects()[0]["current_release_id"] is None
+
+    second = migrated.migrate_runtime_catalog(actor_id="migration", make_current=True)
+    assert second["reused_objects"] == 1
+    assert second["reused_releases"] == 1
+    assert migrated.list_objects()[0]["current_release_id"] is not None
+
+
+def test_filesystem_migration_can_be_limited_to_skills():
+    migrated = _blank_service()
+    migrated.orchestrator = SimpleNamespace(runtime_registry=SimpleNamespace(bundles={}))
+    entries = [
+        {
+            "object_type": "skill", "object_key": "only_skill", "name": "仅技能",
+            "release_id": "filesystem:skill:only_skill", "release_no": 1,
+            "payload": {"prompt_markdown": "技能", "runtime_contract": {}},
+            "dependency_locks": [], "files": [], "content_hash": "source-skill",
+        },
+        {
+            "object_type": "expert", "object_key": "file_expert", "name": "文件专家",
+            "release_id": "filesystem:expert:file_expert", "release_no": 1,
+            "payload": {"rules_markdown": "专家", "budget": {}},
+            "dependency_locks": [], "files": [], "content_hash": "source-expert",
+        },
+    ]
+    migrated._runtime_migration_entries = lambda: entries
+
+    preview = migrated.preview_runtime_migration(skills_only=True)
+    assert preview["scope"] == "runtime_skills"
+    assert [item["object_key"] for item in preview["objects"]] == ["only_skill"]
+
+    result = migrated.migrate_runtime_catalog(actor_id="migration", make_current=True, skills_only=True)
+    assert result["scope"] == "runtime_skills"
+    assert [(item["object_type"], item["object_key"]) for item in migrated.list_objects()] == [
+        ("skill", "only_skill")
+    ]
+
+
+def test_filesystem_migration_can_reuse_a_permanently_deleted_id():
+    migrated = _blank_service()
+    actor_id = _actor(migrated)
+    original = migrated.create_object(
+        object_type="skill", object_key="deleted_file_skill", name="旧技能", actor_id=actor_id,
+    )
+    migrated.delete_object(original["object_id"], confirmation_name="旧技能", actor_id=actor_id)
+    migrated.orchestrator = SimpleNamespace(runtime_registry=SimpleNamespace(bundles={}))
+    migrated._runtime_migration_entries = lambda: [{
+        "object_type": "skill", "object_key": "deleted_file_skill", "name": "目录技能",
+        "release_id": "filesystem:skill:deleted_file_skill", "release_no": 1,
+        "payload": {"prompt_markdown": "技能", "runtime_contract": {}},
+        "dependency_locks": [], "files": [], "content_hash": "source-skill",
+    }]
+
+    result = migrated.migrate_runtime_catalog(actor_id=actor_id, skills_only=True, make_current=True)
+    assert result["created_objects"] == 1
 
 
 def _text_asset(path: str, content: str, media_type: str) -> dict[str, str]:
@@ -152,7 +286,11 @@ def _publish_expert(
     revision = service.save_revision(
         expert["object_id"],
         base_revision_id=None,
-        payload={"rules_markdown": rules, "budget": {"max_iters": 4, "max_skill_calls": 3}},
+        payload={
+            "rules_markdown": rules,
+            "brief": f"{key} 的专家服务摘要",
+            "budget": {"max_iters": 4, "max_skill_calls": 3},
+        },
         dependency_locks=[{"release_id": skill_release["release_id"]}],
         assets=[],
         actor_id=actor_id,
@@ -183,6 +321,7 @@ def _publish_team(
         base_revision_id=None,
         payload={
             "rules_markdown": rules,
+            "brief": f"{key} 的专家团服务摘要",
             "coordinator_expert_id": expert_releases[0]["object_id"],
             "members": [
                 {"expert_id": item["object_key"], "mention_name": item["object_key"], "routing_brief": ""}
@@ -203,6 +342,36 @@ def _publish_team(
         actor_id=actor_id,
     )
     return team, revision, release
+
+
+def test_expert_brief_is_required_normalized_and_versioned(service: WorkbenchService):
+    actor_id = _actor(service)
+    _, _, skill_release = _publish_skill(service, actor_id, key="brief_skill")
+    expert = service.create_object(
+        object_type="expert", object_key="brief_expert", name="Brief 专家", actor_id=actor_id,
+    )
+    missing = service.save_revision(
+        expert["object_id"],
+        base_revision_id=None,
+        payload={"rules_markdown": "专家规则", "budget": {"max_iters": 4, "max_skill_calls": 3}},
+        dependency_locks=[{"release_id": skill_release["release_id"]}], assets=[], actor_id=actor_id,
+    )
+    assert missing["validation"]["valid"] is False
+    assert "专家 Brief 不能为空" in missing["validation"]["errors"]
+
+    saved = service.save_revision(
+        expert["object_id"],
+        base_revision_id=missing["revision_id"],
+        payload={
+            "rules_markdown": "专家规则",
+            "brief": "  学习规划\n  与方法支持  ",
+            "budget": {"max_iters": 4, "max_skill_calls": 3},
+        },
+        dependency_locks=[{"release_id": skill_release["release_id"]}], assets=[], actor_id=actor_id,
+    )
+    assert saved["validation"]["valid"] is True
+    assert saved["payload"]["brief"] == "学习规划 与方法支持"
+    assert service.get_object(expert["object_id"])["brief"] == "学习规划 与方法支持"
 
 
 def test_immutable_revision_conflict_and_release_sequence(service: WorkbenchService):
@@ -231,6 +400,17 @@ def test_immutable_revision_conflict_and_release_sequence(service: WorkbenchServ
     assert second["revision_no"] == 2
     assert first_release["version"] == "v1"
     assert second_release["version"] == "v2"
+    reverted = service.select_current_release(
+        first_release["release_id"], expected_current_release_id=second_release["release_id"], actor_id=actor_id,
+    )
+    assert reverted["is_current"] is True
+    assert service.get_object(obj["object_id"])["current_release_id"] == first_release["release_id"]
+    with pytest.raises(WorkbenchConflict):
+        service.select_current_release(second_release["release_id"], expected_current_release_id=second_release["release_id"], actor_id=actor_id)
+    draft = service.draft_from_release(first_release["release_id"], actor_id=actor_id)
+    assert draft["payload"] == first["payload"]
+    assert draft["revision_no"] == 3
+    assert len(service.get_object(obj["object_id"])["releases"]) == 2
 
 
 def test_expert_and_team_lock_exact_published_dependencies(service: WorkbenchService):
@@ -243,7 +423,7 @@ def test_expert_and_team_lock_exact_published_dependencies(service: WorkbenchSer
         expert = service.create_object(object_type="expert", object_key=key, name=key, actor_id=actor_id)
         revision = service.save_revision(
             expert["object_id"], base_revision_id=None,
-            payload={"rules_markdown": "专家规则", "budget": {"max_iters": 4, "max_skill_calls": 3}},
+            payload={"rules_markdown": "专家规则", "brief": f"{key} 的摘要", "budget": {"max_iters": 4, "max_skill_calls": 3}},
             dependency_locks=[{"release_id": skill_release["release_id"]}], assets=[], actor_id=actor_id,
         )
         debug = service.create_debug_session(revision["revision_id"], baseline_release_id=None, actor_id=actor_id)
@@ -256,7 +436,7 @@ def test_expert_and_team_lock_exact_published_dependencies(service: WorkbenchSer
     team = service.create_object(object_type="expert_team", object_key="team_a", name="专家团", actor_id=actor_id)
     team_revision = service.save_revision(
         team["object_id"], base_revision_id=None,
-        payload={"rules_markdown": "团队规则", "coordinator_expert_id": expert_releases[0]["object_id"]},
+        payload={"rules_markdown": "团队规则", "brief": "专家团服务摘要", "coordinator_expert_id": expert_releases[0]["object_id"]},
         dependency_locks=[{"release_id": item["release_id"]} for item in expert_releases], assets=[], actor_id=actor_id,
     )
 
@@ -264,6 +444,38 @@ def test_expert_and_team_lock_exact_published_dependencies(service: WorkbenchSer
     assert [item["release_id"] for item in team_revision["dependency_locks"]] == [item["release_id"] for item in expert_releases]
     snapshot = service.create_debug_session(team_revision["revision_id"], baseline_release_id=None, actor_id=actor_id)["snapshot"]
     assert {entry["object_type"] for entry in snapshot["entries"]} == {"skill", "expert", "expert_team"}
+
+
+def test_dependency_locks_reject_multiple_versions_of_the_same_object(service: WorkbenchService):
+    actor_id = _actor(service)
+    skill, first_revision, first_release = _publish_skill(service, actor_id, key="versioned_skill")
+    second_revision = service.save_revision(
+        skill["object_id"],
+        base_revision_id=first_revision["revision_id"],
+        payload={"prompt_markdown": "第二版规则", "runtime_contract": {}, "capability_ids": []},
+        dependency_locks=[],
+        assets=[],
+        actor_id=actor_id,
+    )
+    debug = service.create_debug_session(second_revision["revision_id"], baseline_release_id=first_release["release_id"], actor_id=actor_id)
+    service.complete_debug_session(debug["debug_session_id"], conclusion="通过", actor_id=actor_id)
+    second_release = service.publish_revision(
+        second_revision["revision_id"], evidence_id=debug["debug_session_id"], manual_confirmation=True,
+        confirmation_notes="通过", actor_id=actor_id,
+    )
+    expert = service.create_object(object_type="expert", object_key="single_version_expert", name="单版本专家", actor_id=actor_id)
+
+    with pytest.raises(WorkbenchError) as error:
+        service.save_revision(
+            expert["object_id"],
+            base_revision_id=None,
+            payload={"rules_markdown": "专家规则", "brief": "验证同对象版本锁定", "budget": {}},
+            dependency_locks=[{"release_id": first_release["release_id"]}, {"release_id": second_release["release_id"]}],
+            assets=[],
+            actor_id=actor_id,
+        )
+
+    assert error.value.code == "DEPENDENCY_OBJECT_VERSION_CONFLICT"
 
 
 def test_team_rejects_missing_members_and_invalid_coordinator(service: WorkbenchService):
@@ -315,8 +527,38 @@ def test_object_permanent_delete_removes_local_history_and_reserves_deleted_key(
     }
     assert service.list_objects(include_archived=True) == []
     assert any(event["action"] == "object.deleted" for event in service.list_audit_events())
-    with pytest.raises(WorkbenchConflict, match="曾被永久删除"):
-        service.create_object(object_type="skill", object_key="delete_me", name="试图恢复", actor_id=actor_id)
+    recreated = service.create_object(object_type="skill", object_key="delete_me", name="重新创建", actor_id=actor_id)
+    assert recreated["object_id"] != obj["object_id"]
+
+
+def test_deleted_id_can_be_rebuilt_normally(service: WorkbenchService):
+    actor_id = _actor(service)
+    original = service.create_object(
+        object_type="expert_team", object_key="restored_team", name="恢复团队", actor_id=actor_id,
+    )
+    service.delete_object(original["object_id"], confirmation_name="恢复团队", actor_id=actor_id)
+
+    restored = service.create_object(
+        object_type="expert_team", object_key="restored_team", name="恢复团队", description="新对象", actor_id=actor_id,
+    )
+
+    assert restored["object_key"] == "restored_team"
+    assert restored["object_id"] != original["object_id"]
+
+
+def test_archived_object_can_be_listed_and_restored(service: WorkbenchService):
+    actor_id = _actor(service)
+    obj = service.create_object(
+        object_type="expert", object_key="archive_me", name="待归档专家", actor_id=actor_id,
+    )
+
+    service.archive_object(obj["object_id"], actor_id=actor_id)
+    assert service.list_objects() == []
+    assert service.list_objects(include_archived=True)[0]["archived"] is True
+
+    service.unarchive_object(obj["object_id"], actor_id=actor_id)
+    assert service.list_objects()[0]["archived"] is False
+    assert any(event["action"] == "object.unarchived" for event in service.list_audit_events())
 
 
 def test_object_delete_is_blocked_when_an_upper_revision_depends_on_it(service: WorkbenchService):
@@ -325,7 +567,7 @@ def test_object_delete_is_blocked_when_an_upper_revision_depends_on_it(service: 
     expert = service.create_object(object_type="expert", object_key="dependent_expert", name="依赖专家", actor_id=actor_id)
     expert_revision = service.save_revision(
         expert["object_id"], base_revision_id=None,
-        payload={"rules_markdown": "使用依赖能力", "budget": {}},
+        payload={"rules_markdown": "使用依赖能力", "brief": "依赖能力专家", "budget": {}},
         dependency_locks=[{"release_id": skill_release["release_id"]}], assets=[], actor_id=actor_id,
     )
     debug = service.create_debug_session(expert_revision["revision_id"], baseline_release_id=None, actor_id=actor_id)
@@ -350,14 +592,14 @@ def test_delete_ignores_superseded_releases_and_all_drafts(service: WorkbenchSer
     _, _, skill_b_release = _publish_skill(service, actor_id, key="keep_current_skill")
     expert = service.create_object(object_type="expert", object_key="delete_history_expert", name="历史专家", actor_id=actor_id)
     first = service.save_revision(
-        expert["object_id"], base_revision_id=None, payload={"rules_markdown": "r1", "budget": {}},
+        expert["object_id"], base_revision_id=None, payload={"rules_markdown": "r1", "brief": "历史技能引用专家", "budget": {}},
         dependency_locks=[{"release_id": skill_a_release["release_id"]}], assets=[], actor_id=actor_id,
     )
     debug = service.create_debug_session(first["revision_id"], baseline_release_id=None, actor_id=actor_id)
     service.complete_debug_session(debug["debug_session_id"], conclusion="通过", actor_id=actor_id)
     first_release = service.publish_revision(first["revision_id"], evidence_id=debug["debug_session_id"], manual_confirmation=True, confirmation_notes="通过", actor_id=actor_id)
     second = service.save_revision(
-        expert["object_id"], base_revision_id=first["revision_id"], payload={"rules_markdown": "r2", "budget": {}},
+        expert["object_id"], base_revision_id=first["revision_id"], payload={"rules_markdown": "r2", "brief": "历史技能引用专家", "budget": {}},
         dependency_locks=[{"release_id": skill_b_release["release_id"]}], assets=[], actor_id=actor_id,
     )
     debug = service.create_debug_session(second["revision_id"], baseline_release_id=first_release["release_id"], actor_id=actor_id)
@@ -365,7 +607,7 @@ def test_delete_ignores_superseded_releases_and_all_drafts(service: WorkbenchSer
     service.publish_revision(second["revision_id"], evidence_id=debug["debug_session_id"], manual_confirmation=True, confirmation_notes="通过", actor_id=actor_id)
     # A later draft can still mention the old Skill; only v2 is live for deletion.
     service.save_revision(
-        expert["object_id"], base_revision_id=second["revision_id"], payload={"rules_markdown": "r3 草稿", "budget": {}},
+        expert["object_id"], base_revision_id=second["revision_id"], payload={"rules_markdown": "r3 草稿", "brief": "历史技能引用专家", "budget": {}},
         dependency_locks=[{"release_id": skill_a_release["release_id"]}], assets=[], actor_id=actor_id,
     )
 
@@ -379,14 +621,14 @@ def test_delete_is_blocked_by_latest_release_even_when_latest_draft_removed_refe
     _, _, skill_b_release = _publish_skill(service, actor_id, key="draft_only_skill")
     expert = service.create_object(object_type="expert", object_key="published_reference_expert", name="当前发布专家", actor_id=actor_id)
     published = service.save_revision(
-        expert["object_id"], base_revision_id=None, payload={"rules_markdown": "发布版本", "budget": {}},
+        expert["object_id"], base_revision_id=None, payload={"rules_markdown": "发布版本", "brief": "当前发布引用专家", "budget": {}},
         dependency_locks=[{"release_id": skill_a_release["release_id"]}], assets=[], actor_id=actor_id,
     )
     debug = service.create_debug_session(published["revision_id"], baseline_release_id=None, actor_id=actor_id)
     service.complete_debug_session(debug["debug_session_id"], conclusion="通过", actor_id=actor_id)
     service.publish_revision(published["revision_id"], evidence_id=debug["debug_session_id"], manual_confirmation=True, confirmation_notes="通过", actor_id=actor_id)
     service.save_revision(
-        expert["object_id"], base_revision_id=published["revision_id"], payload={"rules_markdown": "未发布草稿", "budget": {}},
+        expert["object_id"], base_revision_id=published["revision_id"], payload={"rules_markdown": "未发布草稿", "brief": "当前发布引用专家", "budget": {}},
         dependency_locks=[{"release_id": skill_b_release["release_id"]}], assets=[], actor_id=actor_id,
     )
 
@@ -597,6 +839,11 @@ def test_team_package_can_import_recursively_into_workbench_objects():
     )
 
     package, _manifest = source.export_release(team_release["release_id"], actor_id=source_actor)
+    exported = source._validated_package_contents(package, materialize_entries=False)
+    exported_briefs = {
+        (entry["object_type"], entry["object_key"]): entry["payload"].get("brief", "")
+        for entry in exported["entries"]
+    }
     imported = target.import_object_package(package, actor_id=target_actor)
 
     objects = target.list_objects()
@@ -604,10 +851,81 @@ def test_team_package_can_import_recursively_into_workbench_objects():
     assert imported["created_releases"] == 5
     assert {item["object_type"] for item in objects} == {"skill", "expert", "expert_team"}
     assert {item["object_key"] for item in objects} == {"skill_a", "skill_b", "expert_a", "expert_b", "team_a"}
+    assert exported_briefs[("expert", "expert_a")] == "expert_a 的专家服务摘要"
+    assert exported_briefs[("expert_team", "team_a")] == "team_a 的专家团服务摘要"
     team = next(item for item in objects if item["object_type"] == "expert_team")
     team_detail = target.get_object(team["object_id"])
     assert len(team_detail["releases"]) == 1
+    assert team_detail["brief"] == "team_a 的专家团服务摘要"
     assert {item["object_key"] for item in team_detail["releases"][0]["dependency_locks"]} == {"expert_a", "expert_b"}
+
+
+def test_legacy_package_without_brief_imports_but_requires_a_new_brief_to_publish():
+    source = _blank_service()
+    target = _blank_service()
+    source_actor = _actor(source)
+    target_actor = _actor(target)
+    _, _, skill_a = _publish_skill(source, source_actor, key="legacy_brief_skill_a")
+    _, _, skill_b = _publish_skill(source, source_actor, key="legacy_brief_skill_b")
+    _, _, expert_a = _publish_expert(source, source_actor, key="legacy_brief_expert_a", skill_release=skill_a)
+    _, _, expert_b = _publish_expert(source, source_actor, key="legacy_brief_expert_b", skill_release=skill_b)
+    _, _, team_release = _publish_team(
+        source, source_actor, key="legacy_brief_team", expert_releases=[expert_a, expert_b],
+    )
+    package, _ = source.export_release(team_release["release_id"], actor_id=source_actor)
+    files = source._read_zip(package)
+    manifest = json.loads(files["manifest.json"])
+    for item in manifest["objects"]:
+        if item["object_type"] not in {"expert", "expert_team"}:
+            continue
+        object_path = next(file["path"] for file in item["files"] if file["path"].endswith("/object.json"))
+        declaration = json.loads(files[object_path])
+        declaration["payload"].pop("brief", None)
+        files[object_path] = json.dumps(declaration, ensure_ascii=False).encode()
+        file_item = next(file for file in item["files"] if file["path"] == object_path)
+        file_item["sha256"] = hashlib.sha256(files[object_path]).hexdigest()
+        file_item["size_bytes"] = len(files[object_path])
+    manifest.pop("manifest_hash")
+    manifest["manifest_hash"] = _hash(manifest)
+    files["manifest.json"] = json.dumps(manifest, ensure_ascii=False).encode()
+
+    target.import_object_package(target._zip(files), actor_id=target_actor)
+
+    imported_expert = next(item for item in target.list_objects() if item["object_key"] == "legacy_brief_expert_a")
+    legacy_revision = target.get_object(imported_expert["object_id"])["revisions"][0]
+    assert legacy_revision["validation"]["valid"] is True
+    assert "历史专家包缺少 Brief，请补齐后再发布" in legacy_revision["validation"]["warnings"]
+    repaired = target.save_revision(
+        imported_expert["object_id"],
+        base_revision_id=legacy_revision["revision_id"],
+        payload={**legacy_revision["payload"], "brief": "已补齐的历史专家摘要"},
+        dependency_locks=[{"release_id": lock["release_id"]} for lock in legacy_revision["dependency_locks"]],
+        assets=[],
+        actor_id=target_actor,
+    )
+    assert repaired["validation"]["valid"] is True
+
+
+def test_recursive_import_unarchives_reused_dependency_objects():
+    source = _blank_service()
+    target = _blank_service()
+    source_actor = _actor(source)
+    target_actor = _actor(target)
+    _, _, source_release = _publish_skill(source, source_actor, key="archived_dependency", prompt="导入后恢复")
+    package, _manifest = source.export_release(source_release["release_id"], actor_id=source_actor)
+    archived = target.create_object(
+        object_type="skill", object_key="archived_dependency", name="旧归档技能", actor_id=target_actor,
+    )
+    target.archive_object(archived["object_id"], actor_id=target_actor)
+
+    imported = target.import_object_package(package, actor_id=target_actor)
+
+    visible = target.list_objects()
+    assert imported["reused_objects"] == 1
+    assert imported["unarchived_objects"] == 1
+    assert visible[0]["object_key"] == "archived_dependency"
+    assert visible[0]["archived"] is False
+    assert imported["entries"][0]["unarchived"] is True
 
 
 def test_recursive_object_import_api_returns_the_import_summary(service: WorkbenchService):
@@ -638,6 +956,20 @@ def test_recursive_object_import_api_returns_the_import_summary(service: Workben
     assert response.status_code == 201
     assert response.json()["created_objects"] == 5
     assert response.json()["created_releases"] == 5
+
+
+def test_deployment_router_uses_the_running_service_environment(monkeypatch, service: WorkbenchService):
+    monkeypatch.setenv("HAILIANG_DEPLOY_ENV", "test")
+    app = FastAPI()
+    app.include_router(build_deployment_router(service), prefix="/deployment/v1")
+
+    with TestClient(app) as client:
+        default_environment = client.get("/deployment/v1/deployments")
+        mismatched_environment = client.get("/deployment/v1/deployments?environment=prod")
+
+    assert default_environment.status_code == 200
+    assert mismatched_environment.status_code == 409
+    assert mismatched_environment.json()["detail"]["code"] == "DEPLOYMENT_ENVIRONMENT_MISMATCH"
 
 
 def test_recursive_object_import_rejects_malformed_manifest_with_a_structured_error(service: WorkbenchService):
@@ -895,6 +1227,99 @@ def test_candidate_stream_assigns_a_generation_before_runtime_execution(monkeypa
     assert states[-1]["expert_context"]["branch_version"] == 1
 
 
+def test_candidate_model_timeout_returns_a_structured_workbench_error(monkeypatch):
+    preview_service = _preview_service()
+    actor_id = _actor(preview_service)
+    obj = preview_service.create_object(
+        object_type="skill", object_key="timeout_candidate", name="超时候选 Skill", actor_id=actor_id,
+    )
+    revision = preview_service.save_revision(
+        obj["object_id"],
+        base_revision_id=None,
+        payload={"prompt_markdown": "候选规则", "runtime_contract": {}, "capability_ids": []},
+        dependency_locks=[], assets=[], actor_id=actor_id,
+    )
+    session = preview_service.create_revision_test_session(revision["revision_id"], actor_id=actor_id)
+    monkeypatch.setattr(
+        preview_service,
+        "_execute_snapshot_message",
+        lambda *_args: (_ for _ in ()).throw(TimeoutError("model request timed out")),
+    )
+
+    with pytest.raises(WorkbenchError) as error:
+        preview_service.run_revision_test_turn(
+            session["debug_session_id"], user_message="开始测试", actor_id=actor_id, on_event=lambda *_args: None,
+        )
+
+    assert error.value.code == "MODEL_TIMEOUT"
+    assert error.value.details["timeout_s"] > 0
+
+
+def test_candidate_stream_has_an_end_to_end_deadline(monkeypatch):
+    preview_service = _preview_service()
+    actor_id = _actor(preview_service)
+    obj = preview_service.create_object(
+        object_type="skill", object_key="deadline_candidate", name="整轮超时 Skill", actor_id=actor_id,
+    )
+    revision = preview_service.save_revision(
+        obj["object_id"], base_revision_id=None,
+        payload={"prompt_markdown": "候选规则", "runtime_contract": {}, "capability_ids": []},
+        dependency_locks=[], assets=[], actor_id=actor_id,
+    )
+    session = preview_service.create_revision_test_session(revision["revision_id"], actor_id=actor_id)
+    blocked = threading.Event()
+    monkeypatch.setattr(workbench_routes, "WORKBENCH_CANDIDATE_LLM_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(preview_service, "_execute_snapshot_message", lambda *_args: blocked.wait(1) or "不应完成")
+    app = FastAPI()
+    app.include_router(build_workbench_router(preview_service), prefix="/workbench/v1")
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/workbench/v1/revision-tests/{session['debug_session_id']}/turns/stream",
+            json={"user_message": "开始测试", "actor_id": actor_id},
+        )
+
+    assert response.status_code == 200
+    assert "event: error" in response.text
+    assert "REVISION_TEST_TIMEOUT" in response.text
+    assert "\"status\": \"failed\"" in response.text
+
+
+def test_stopped_candidate_worker_cannot_overwrite_a_newer_turn(monkeypatch):
+    preview_service = _preview_service()
+    actor_id = _actor(preview_service)
+    obj = preview_service.create_object(
+        object_type="skill", object_key="stopped_candidate", name="停止候选 Skill", actor_id=actor_id,
+    )
+    revision = preview_service.save_revision(
+        obj["object_id"],
+        base_revision_id=None,
+        payload={"prompt_markdown": "候选规则", "runtime_contract": {}, "capability_ids": []},
+        dependency_locks=[], assets=[], actor_id=actor_id,
+    )
+    session = preview_service.create_revision_test_session(revision["revision_id"], actor_id=actor_id)
+
+    def execute(_snapshot, _message, context):
+        generation = str(context.session_meta["active_stream_generation"])
+        context.session_meta["cancelled_stream_generation"] = generation
+        with preview_service._active_candidate_streams_lock:
+            preview_service._active_candidate_streams[session["debug_session_id"]] = {"run_id": "candidate_stream_newer"}
+        return "不应覆盖新一轮"
+
+    monkeypatch.setattr(preview_service, "_execute_snapshot_message", execute)
+    result = preview_service.run_revision_test_turn(
+        session["debug_session_id"], user_message="停止后旧响应", actor_id=actor_id, on_event=lambda *_args: None,
+    )
+
+    assert result["trace"] == []
+    with preview_service.session_factory() as db:
+        row = db.get(WorkbenchDebugSessionRow, session["debug_session_id"])
+        assert row is not None
+        assert row.transcript == []
+    with preview_service._active_candidate_streams_lock:
+        assert preview_service._active_candidate_streams[session["debug_session_id"]]["run_id"] == "candidate_stream_newer"
+
+
 def test_candidate_stop_marks_live_runtime_and_emits_stopped_snapshot():
     preview_service = _preview_service()
     context = SessionContext(session_id="revision_test_dbg_stop", user_id="workbench-candidate-dbg_stop")
@@ -941,7 +1366,7 @@ def test_candidate_expert_can_redispatch_to_another_locked_skill():
     )
     expert_revision = preview_service.save_revision(
         expert["object_id"], base_revision_id=None,
-        payload={"rules_markdown": "根据用户意图选择锁定 Skill", "budget": {}},
+        payload={"rules_markdown": "根据用户意图选择锁定 Skill", "brief": "候选修订专家", "budget": {}},
         dependency_locks=[{"release_id": disc_release["release_id"]}, {"release_id": family_release["release_id"]}],
         assets=[], actor_id=actor_id,
     )
@@ -970,7 +1395,7 @@ def test_candidate_expert_semantically_redispatches_a_new_task_to_locked_skill()
     )
     expert_revision = preview_service.save_revision(
         expert["object_id"], base_revision_id=None,
-        payload={"rules_markdown": "根据用户意图选择锁定 Skill", "budget": {}},
+        payload={"rules_markdown": "根据用户意图选择锁定 Skill", "brief": "候选修订专家", "budget": {}},
         dependency_locks=[{"release_id": disc_release["release_id"]}, {"release_id": family_release["release_id"]}],
         assets=[], actor_id=actor_id,
     )
@@ -1152,7 +1577,7 @@ def test_revision_test_supports_experts_and_teams_and_formal_chat_requires_publi
         expert = preview_service.create_object(object_type="expert", object_key=key, name=key, actor_id=actor_id)
         revision = preview_service.save_revision(
             expert["object_id"], base_revision_id=None,
-            payload={"rules_markdown": "专家候选规则", "budget": {}},
+            payload={"rules_markdown": "专家候选规则", "brief": f"{key} 的候选摘要", "budget": {}},
             dependency_locks=[{"release_id": skill_release["release_id"]}], assets=[], actor_id=actor_id,
         )
         debug = preview_service.create_debug_session(revision["revision_id"], baseline_release_id=None, actor_id=actor_id)
@@ -1165,7 +1590,7 @@ def test_revision_test_supports_experts_and_teams_and_formal_chat_requires_publi
     team = preview_service.create_object(object_type="expert_team", object_key="test_team", name="测试专家团", actor_id=actor_id)
     team_revision = preview_service.save_revision(
         team["object_id"], base_revision_id=None,
-        payload={"rules_markdown": "专家团候选规则", "coordinator_expert_id": expert_releases[0]["object_id"]},
+        payload={"rules_markdown": "专家团候选规则", "brief": "候选专家团摘要", "coordinator_expert_id": expert_releases[0]["object_id"]},
         dependency_locks=[{"release_id": item["release_id"]} for item in expert_releases], assets=[], actor_id=actor_id,
     )
     preview_service.orchestrator = _PreviewOrchestrator()
@@ -1275,6 +1700,24 @@ def test_standard_agent_skill_zip_preview_and_manual_commit(service: WorkbenchSe
     assert service.list_revision_assets(saved["revision"]["revision_id"])[0]["relative_path"] == "references/guide.md"
 
 
+def test_standard_expert_package_preview_reads_brief_from_agent_yaml(service: WorkbenchService):
+    actor_id = _actor(service)
+    output = io.BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("AGENT.md", "# 专家规则\n")
+        archive.writestr(
+            "agent.yaml",
+            "schema_version: 1\nid: imported_expert\nname: 导入专家\nbrief: 面向学生的学习规划支持\n",
+        )
+
+    preview = service.preview_standard_skill_package(output.getvalue(), actor_id=actor_id)
+
+    assert preview["draft"]["object_type"] == "expert"
+    assert preview["draft"]["object_key"] == "imported_expert"
+    assert preview["draft"]["name"] == "导入专家"
+    assert preview["draft"]["payload"]["brief"] == "面向学生的学习规划支持"
+
+
 def test_standard_zip_strips_macos_wrapper_and_maps_questions_asset(service: WorkbenchService):
     actor_id = _actor(service)
     output = io.BytesIO()
@@ -1342,7 +1785,7 @@ def test_export_import_activation_and_rollback(service: WorkbenchService):
     assert restored["status"] == "active"
 
 
-def test_import_rejects_zip_traversal_and_kernel_mismatch(service: WorkbenchService):
+def test_import_rejects_zip_traversal_but_allows_different_kernel_fingerprint(service: WorkbenchService):
     actor_id = _actor(service)
     with io.BytesIO() as output:
         with ZipFile(output, "w", ZIP_DEFLATED) as archive:
@@ -1359,8 +1802,8 @@ def test_import_rejects_zip_traversal_and_kernel_mismatch(service: WorkbenchServ
     manifest["manifest_hash"] = _hash(manifest)
     files["manifest.json"] = json.dumps(manifest).encode()
     mutated = service._zip(files)
-    with pytest.raises(WorkbenchError, match="内核版本"):
-        service.import_package(mutated, environment="prod", actor_id=actor_id)
+    imported = service.import_package(mutated, environment="prod", actor_id=actor_id)
+    assert imported["manifest"]["kernel_fingerprint"] == "different"
 
 
 def test_import_rejects_unknown_capability_and_undeclared_file(service: WorkbenchService):

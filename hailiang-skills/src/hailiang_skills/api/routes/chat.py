@@ -165,9 +165,43 @@ def build_chat_router(
     orchestrator,
     fact_service: FactService,
     user_metadata_repository=None,
+    configuration_snapshot_resolver=None,
 ) -> APIRouter:
     router = APIRouter()
     session_index_repo = FileBackedSessionIndexRepository()
+
+    def active_catalog_registries():
+        """Public catalogs describe the active deployment, not the editable object library."""
+        if configuration_snapshot_resolver is None:
+            return (
+                getattr(orchestrator, "runtime_registry", None),
+                getattr(orchestrator, "expert_registry", None),
+                getattr(orchestrator, "expert_team_registry", None),
+            )
+        snapshot = configuration_snapshot_resolver() if configuration_snapshot_resolver is not None else None
+        entries = snapshot.get("entries") if isinstance(snapshot, dict) and isinstance(snapshot.get("entries"), list) else []
+        if entries:
+            from hailiang_skills.workbench.catalog import build_runtime_registries
+
+            return build_runtime_registries(entries)
+        from hailiang_skills.runtime_bridge.expert_bundle import ExpertRegistry
+        from hailiang_skills.runtime_bridge.expert_team_bundle import ExpertTeamRegistry
+        from hailiang_skills.skill_runtime.skill_registry import SkillRegistry as RuntimeSkillRegistry
+
+        general = getattr(orchestrator, "runtime_registry", None).get_raw("general_chat")
+        skills = RuntimeSkillRegistry(bundles={"general_chat": general} if general is not None else {})
+        return skills, ExpertRegistry(definitions={}), ExpertTeamRegistry(definitions={})
+
+    def session_expert_registries(context: SessionContext):
+        """Resolve restored session metadata from its bound deployment package."""
+        snapshot = (context.session_meta or {}).get("configuration_snapshot")
+        entries = snapshot.get("entries") if isinstance(snapshot, dict) else None
+        if isinstance(entries, list) and entries:
+            from hailiang_skills.workbench.catalog import build_runtime_registries
+
+            _skills, experts, teams = build_runtime_registries(entries)
+            return experts, teams
+        return getattr(orchestrator, "expert_registry", None), getattr(orchestrator, "expert_team_registry", None)
 
     def session_context(session_id: str):
         try:
@@ -306,13 +340,14 @@ def build_chat_router(
         expert_id = str(context.session_meta.get("active_expert_id") or context.session_meta.get("expert_id") or "").strip()
         if not expert_id:
             return None
-        registry = getattr(orchestrator, "expert_registry", None)
+        registry, _teams = session_expert_registries(context)
         definition = registry.get(expert_id) if registry is not None else None
         if definition is None:
             return None
         return {
             "expert_id": definition.agent_id,
             "name": definition.name,
+            "brief": definition.brief,
             "topology": definition.topology,
             "skill_ids": list(definition.authorized_skill_ids),
         }
@@ -332,7 +367,7 @@ def build_chat_router(
         team_id = str(context.session_meta.get("expert_team_id") or "").strip()
         if not team_id:
             return None
-        registry = getattr(orchestrator, "expert_team_registry", None)
+        _experts, registry = session_expert_registries(context)
         team = registry.get(team_id) if registry is not None else None
         if team is None:
             return None
@@ -342,6 +377,7 @@ def build_chat_router(
         return {
             "team_id": team.team_id,
             "name": team.name,
+            "brief": team.brief,
             "coordinator_expert_id": team.coordinator_expert_id,
             "coordinator_mention_name": coordinator.mention_name if coordinator else "",
             "active_expert_id": active_expert_id,
@@ -359,9 +395,10 @@ def build_chat_router(
 
     @router.get("/skills")
     def list_runtime_skills(grade: str = Query(default="")) -> dict:
+        runtime_registry, _, _ = active_catalog_registries()
         return {
             "skills": build_skill_catalog(
-                getattr(orchestrator, "runtime_registry", None),
+                runtime_registry,
                 include_fallback=False,
                 grade=grade,
             )
@@ -369,19 +406,21 @@ def build_chat_router(
 
     @router.get("/experts")
     def list_experts() -> dict:
+        runtime_registry, expert_registry, _ = active_catalog_registries()
         return {
             "experts": build_expert_catalog(
-                getattr(orchestrator, "expert_registry", None),
-                getattr(orchestrator, "runtime_registry", None),
+                expert_registry,
+                runtime_registry,
             )
         }
 
     @router.get("/expert-teams")
     def list_expert_teams() -> dict:
+        _, expert_registry, team_registry = active_catalog_registries()
         return {
             "expert_teams": build_expert_team_catalog(
-                getattr(orchestrator, "expert_team_registry", None),
-                getattr(orchestrator, "expert_registry", None),
+                team_registry,
+                expert_registry,
             )
         }
 
@@ -675,6 +714,17 @@ def build_chat_router(
         request: MessageInteractionUpdateRequest,
     ) -> dict:
         context = session_context(session_id)
+        if configuration_snapshot_resolver is not None and not context.session_meta.get("workbench_debug_session_id"):
+            from hailiang_skills.api.configuration_sync import synchronize_configuration
+
+            configuration_change = synchronize_configuration(context, configuration_snapshot_resolver())
+            if configuration_change is not None:
+                repository.save(context)
+                raise HTTPException(status_code=409, detail={
+                    "code": "CONFIGURATION_UPDATED",
+                    "message": "专家团配置已更新，原表单已失效，请重新提问或填写最新表单。",
+                    "configuration": configuration_change,
+                })
         message = next(
             (
                 item
@@ -739,6 +789,8 @@ def build_chat_router(
     def get_session_context(session_id: str) -> dict:
         context = session_context(session_id)
         fact_service.hydrate_context(context)
+        configuration = context.session_meta.get("configuration_snapshot")
+        configuration_change = context.session_meta.get("configuration_change")
         return {
             "session_id": context.session_id,
             "user_id": context.user_id,
@@ -766,6 +818,11 @@ def build_chat_router(
             "conversation_state": get_conversation_state(context),
             "profile_school_facts": profile_school_facts(context),
             "event_count": len(context.event_trace),
+            "configuration": {
+                "deployment_id": str((configuration or {}).get("deployment_id") or "") or None,
+                "package_hash": str((configuration or {}).get("package_hash") or "") or None,
+                "change": configuration_change if isinstance(configuration_change, dict) else None,
+            },
         }
 
     @router.get("/sessions/{session_id}/events")

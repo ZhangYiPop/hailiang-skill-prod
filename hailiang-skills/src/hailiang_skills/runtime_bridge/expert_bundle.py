@@ -31,6 +31,7 @@ class ExpertDefinition:
     name: str
     rules_markdown: str
     skills: tuple[LockedSkill, ...]
+    brief: str = ""
     max_iters: int = 4
     max_skill_calls: int = 3
     capabilities: tuple[str, ...] = (
@@ -82,6 +83,7 @@ def build_expert_catalog(expert_registry: ExpertRegistry | None, runtime_registr
         items.append({
             "expert_id": definition.agent_id,
             "name": definition.name,
+            "brief": definition.brief,
             "description": _expert_summary(definition.rules_markdown),
             "topology": definition.topology,
             "skill_ids": list(definition.authorized_skill_ids),
@@ -169,6 +171,7 @@ def load_expert_bundle(bundle_dir: str | Path, runtime_registry) -> ExpertDefini
         name=name,
         rules_markdown=rules_path.read_text(encoding="utf-8").strip(),
         skills=tuple(validated),
+        brief=str(raw.get("brief") or "").strip(),
         max_iters=max_iters,
         max_skill_calls=max_skill_calls,
         capabilities=capabilities or tuple(sorted(allowed)),

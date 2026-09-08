@@ -10,7 +10,10 @@ from hailiang_skills.core.context import SessionContext
 from hailiang_skills.core.registry import SkillRegistry
 from hailiang_skills.core.skill_display import build_skill_catalog
 from hailiang_skills.llm.config import load_llm_config
-from hailiang_skills.runtime_bridge.main_planner import MainPlannerOrchestrator
+from hailiang_skills.runtime_bridge.main_planner import (
+    MainPlannerOrchestrator,
+    _QuestionnaireContinuationExtractor,
+)
 from hailiang_skills.runtime_bridge.native_questionnaire import (
     available_question_specs,
     build_questionnaire_protocol,
@@ -21,6 +24,7 @@ from hailiang_skills.runtime_bridge.native_questionnaire import (
     question_specs,
     resolve_questionnaire_continuation,
     stage_questionnaire_form,
+    unwrap_questionnaire_assistant_message,
 )
 from hailiang_skills.runtime_bridge.native_path_options import resolve_native_path_options
 from hailiang_skills.runtime_bridge.runtime_config import load_runtime_bridge_config
@@ -37,6 +41,34 @@ def _bundle(skill_id: str):
     bundle = load_local_skill_registry(SKILLS_ROOT).get(skill_id)
     assert bundle is not None
     return bundle
+
+
+def test_questionnaire_envelope_unwrap_preserves_real_content() -> None:
+    envelope = (
+        '{"assistant_message":"已收到你的填写信息，正在生成建议。",'
+        '"state_patch":{"stage":"output"},"question_ids":[]}'
+    )
+
+    assert unwrap_questionnaire_assistant_message(envelope) == "已收到你的填写信息，正在生成建议。"
+    assert unwrap_questionnaire_assistant_message("正文中提到 assistant_message 字段，仅作说明。") == (
+        "正文中提到 assistant_message 字段，仅作说明。"
+    )
+    assert unwrap_questionnaire_assistant_message('{"assistant_message":""}') == '{"assistant_message":""}'
+    assert unwrap_questionnaire_assistant_message("前缀文字 {\"assistant_message\":\"不应截断\"}") == (
+        "前缀文字 {\"assistant_message\":\"不应截断\"}"
+    )
+
+
+def test_questionnaire_stream_extractor_emits_only_envelope_content() -> None:
+    extractor = _QuestionnaireContinuationExtractor(set())
+    envelope = '{"assistant_message":"表单已提交，正在生成建议。","question_ids":[]}'
+    visible = "".join(
+        extractor.feed(chunk)
+        for chunk in (envelope[:18], envelope[18:41], envelope[41:])
+    )
+
+    assert visible == "表单已提交，正在生成建议。"
+    assert "assistant_message" not in visible
 
 
 def test_multi_path_question_rules_produce_canonical_form_metadata():

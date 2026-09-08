@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
-from queue import Queue
+import time
+from queue import Empty, Queue
 from threading import Thread
 from typing import Any, Literal
 
@@ -10,7 +11,9 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from hailiang_skills.core.deployment import deployment_environment
 from hailiang_skills.workbench import WorkbenchConflict, WorkbenchError, WorkbenchService
+from hailiang_skills.workbench.service import WORKBENCH_CANDIDATE_LLM_TIMEOUT_S
 
 
 class StrictModel(BaseModel):
@@ -48,6 +51,10 @@ class ReleaseInput(StrictModel):
 
 class ActorAction(StrictModel):
     actor_id: str = Field(min_length=1)
+
+
+class CurrentReleaseInput(ActorAction):
+    expected_current_release_id: str | None
 
 
 class DeploymentDeactivateInput(ActorAction):
@@ -190,6 +197,10 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
     def archive_object(object_id: str, body: ActorAction):
         return _call(lambda: service.archive_object(object_id, actor_id=body.actor_id))
 
+    @router.post("/objects/{object_id}/unarchive")
+    def unarchive_object(object_id: str, body: ActorAction):
+        return _call(lambda: service.unarchive_object(object_id, actor_id=body.actor_id))
+
     @router.delete("/objects/{object_id}")
     def delete_object(object_id: str, body: DeleteObjectInput):
         return _call(lambda: service.delete_object(object_id, **body.model_dump()))
@@ -217,6 +228,14 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
     @router.get("/releases")
     def list_releases(object_type: str | None = None, include_archived: bool = False):
         return {"releases": _call(lambda: service.list_releases(object_type=object_type, include_archived=include_archived))}
+
+    @router.post("/releases/{release_id}/make-current")
+    def make_current(release_id: str, body: CurrentReleaseInput):
+        return _call(lambda: service.select_current_release(release_id, **body.model_dump()))
+
+    @router.post("/releases/{release_id}/drafts", status_code=201)
+    def draft_from_release(release_id: str, body: ActorAction):
+        return _call(lambda: service.draft_from_release(release_id, actor_id=body.actor_id))
 
     @router.post("/releases", status_code=201)
     def publish_revision(body: ReleaseInput):
@@ -272,9 +291,13 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
                     latest_state = copy.deepcopy(payload)
                 queue.put((event, payload))
 
-            def emit_failure_state(code: str, message: str, details: dict[str, Any] | None = None) -> None:
+            def emit_failure_state(
+                code: str,
+                message: str,
+                details: dict[str, Any] | None = None,
+            ) -> dict[str, Any] | None:
                 if latest_state is None:
-                    return
+                    return None
                 failed = copy.deepcopy(latest_state)
                 failed["seq"] = int(failed.get("seq") or 0) + 1
                 failed["status"] = "failed"
@@ -284,10 +307,11 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
                     "code": code,
                     "message": message,
                     "upstream_detail": str((details or {}).get("detail") or ""),
-                    "retryable": False,
+                    "retryable": code in {"MODEL_TIMEOUT", "REVISION_TEST_TIMEOUT"},
                     "terminal": True,
                 }
                 emit("state", failed)
+                return failed
 
             def worker():
                 try:
@@ -300,8 +324,56 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
                     emit("error", {"code": "REVISION_TEST_FAILED", "message": str(exc)})
             Thread(target=worker, daemon=True).start()
             yield "event: started\ndata: {}\n\n"
+            # This is a deadline for the *entire* candidate turn, rather than
+            # one socket read in an individual model request.  Candidate
+            # execution can include snapshot mounting, expert routing, tools
+            # and several model calls; without this watchdog a stuck worker
+            # would keep the browser in a ping-only streaming state forever.
+            deadline = time.monotonic() + WORKBENCH_CANDIDATE_LLM_TIMEOUT_S
             while True:
-                event, payload = queue.get()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    run_id = str((latest_state or {}).get("run_id") or "")
+                    if run_id:
+                        try:
+                            service.stop_revision_test_turn(
+                                debug_session_id,
+                                run_id=run_id,
+                                actor_id=body.actor_id,
+                            )
+                        except WorkbenchError:
+                            # The worker may have just completed and removed
+                            # its live entry. The terminal timeout below still
+                            # prevents the client from being left loading.
+                            pass
+                    timeout_message = "候选修订测试执行超时，请稍后重试。"
+                    timeout_details = {"timeout_s": WORKBENCH_CANDIDATE_LLM_TIMEOUT_S}
+                    failed_state = emit_failure_state(
+                        "REVISION_TEST_TIMEOUT",
+                        timeout_message,
+                        timeout_details,
+                    )
+                    # Unlike worker failures, this branch terminates the
+                    # generator immediately. Flush its authoritative failed
+                    # snapshot directly instead of leaving it in the queue.
+                    if failed_state is not None:
+                        yield f"event: state\ndata: {json.dumps(failed_state, ensure_ascii=False)}\n\n"
+                    timeout_payload = {
+                        "code": "REVISION_TEST_TIMEOUT",
+                        "message": timeout_message,
+                        "details": timeout_details,
+                    }
+                    yield f"event: error\ndata: {json.dumps(timeout_payload, ensure_ascii=False)}\n\n"
+                    return
+                try:
+                    event, payload = queue.get(timeout=min(10, remaining))
+                except Empty:
+                    # Keep proxies and browser fetch streams alive while a
+                    # model is preparing its first token. The bounded model
+                    # timeout above is still responsible for the terminal
+                    # error and loading-state cleanup.
+                    yield "event: ping\ndata: {}\n\n"
+                    continue
                 yield f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 if event in {"done", "error"}:
                     return
@@ -396,26 +468,40 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
 def build_deployment_router(service: WorkbenchService) -> APIRouter:
     router = APIRouter(tags=["deployment"])
 
+    def active_environment(requested: str | None) -> str:
+        """Keep deployment writes and formal-chat reads in one environment."""
+        current = deployment_environment()
+        if requested is not None and requested != current:
+            raise WorkbenchConflict(
+                f"部署环境必须与当前服务环境一致: {current}",
+                code="DEPLOYMENT_ENVIRONMENT_MISMATCH",
+                details={"requested_environment": requested, "current_environment": current},
+            )
+        return current
+
     @router.post("/imports", status_code=201)
     async def import_package(
         request: Request,
-        environment: str = Query(default="prod"),
+        environment: str | None = Query(default=None),
         actor_id: str = Query(min_length=1),
     ):
         package_bytes = await request.body()
-        return _call(lambda: service.import_package(package_bytes, environment=environment, actor_id=actor_id))
+        return _call(lambda: service.import_package(package_bytes, environment=active_environment(environment), actor_id=actor_id))
 
     @router.get("/deployments")
-    def list_deployments(environment: str = "prod"):
-        return {"deployments": service.list_deployments(environment)}
+    def list_deployments(environment: str | None = None):
+        return _call(lambda: {"deployments": service.list_deployments(active_environment(environment))})
 
     @router.get("/deployments/{deployment_id}/preview")
-    def preview_deployment(deployment_id: str, environment: str = "prod"):
-        deployments = service.list_deployments(environment)
-        target = next((item for item in deployments if item["deployment_id"] == deployment_id), None)
-        if target is None:
-            raise HTTPException(status_code=404, detail={"code": "DEPLOYMENT_NOT_FOUND", "message": "部署记录不存在"})
-        return {"deployment": target, "validation": {"valid": True, "kernel_compatible": True, "dependency_complete": True}}
+    def preview_deployment(deployment_id: str, environment: str | None = None):
+        def preview() -> dict:
+            deployments = service.list_deployments(active_environment(environment))
+            target = next((item for item in deployments if item["deployment_id"] == deployment_id), None)
+            if target is None:
+                raise HTTPException(status_code=404, detail={"code": "DEPLOYMENT_NOT_FOUND", "message": "部署记录不存在"})
+            return {"deployment": target, "validation": {"valid": True, "kernel_compatible": True, "dependency_complete": True}}
+
+        return _call(preview)
 
     @router.post("/deployments/{deployment_id}/activate")
     def activate_deployment(deployment_id: str, body: ActorAction):

@@ -25,6 +25,12 @@ type MessageSection = {
   messages: ChatMessage[];
 };
 
+type MessageExecution = {
+  expertName: string;
+  skillName: string;
+  isExpertDirect: boolean;
+};
+
 function formatTime(value: string) {
   return new Date(value).toLocaleTimeString("zh-CN", {
     hour: "2-digit",
@@ -33,6 +39,8 @@ function formatTime(value: string) {
 }
 
 function agentLabelForMessage(message: ChatMessage) {
+  const execution = executionForMessage(message);
+  if (execution.expertName) return execution.expertName;
   const presentationSkill = message.presentation?.session.active_skill;
   const presentationSkillId = presentationSkill?.skill_id ?? "";
   // `general_chat` is the implicit conversation fallback.  It is useful for
@@ -51,6 +59,22 @@ function agentLabelForMessage(message: ChatMessage) {
   return presentationSkill?.title || message.agentLabel || message.skillName || message.sceneName || message.skillId || "";
 }
 
+function executionForMessage(message: ChatMessage): MessageExecution {
+  const presentation = message.presentation;
+  const active = presentation?.expert?.active ?? {};
+  const expertName = String(active.mention_name ?? active.name ?? "").trim();
+  const skill = presentation?.session.active_skill;
+  const skillId = String(skill?.skill_id ?? message.skillId ?? "");
+  if (skillId === "expert_direct") {
+    return { expertName, skillName: "专家直接回复（未调用独立 Skill）", isExpertDirect: true };
+  }
+  return {
+    expertName,
+    skillName: String(skill?.title ?? message.skillName ?? message.agentLabel ?? skillId).trim(),
+    isExpertDirect: false,
+  };
+}
+
 function agentKeyForMessage(message: ChatMessage) {
   const label = agentLabelForMessage(message);
   if (!label) {
@@ -60,10 +84,30 @@ function agentKeyForMessage(message: ChatMessage) {
 }
 
 function topicKindForMessage(message: ChatMessage): MessageSection["topicKind"] {
+  if (executionForMessage(message).expertName) return "expert";
   const skillId = message.presentation?.session.active_skill?.skill_id || message.skillId;
   if (skillId && skillId !== "general_chat" && skillId !== "chat") return "skill";
   if (message.agentLabel) return "expert";
   return "topic";
+}
+
+function MessageExecutionBadge({ message }: { message: ChatMessage }) {
+  const execution = executionForMessage(message);
+  if (!execution.expertName && !execution.skillName) return null;
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[11px] text-cyan-100/90">
+      {execution.expertName ? (
+        <span className="rounded-full border border-violet-300/25 bg-violet-300/[0.08] px-2 py-1">
+          本轮专家：{execution.expertName}
+        </span>
+      ) : null}
+      {execution.skillName ? (
+        <span className="rounded-full border border-cyan-300/20 bg-cyan-300/[0.06] px-2 py-1">
+          {execution.isExpertDirect ? "执行方式" : "本轮 Skill"}：{execution.skillName}
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 function PlanningTopicBadge({ label, kind }: { label: string; kind: MessageSection["topicKind"] }) {
@@ -274,6 +318,7 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
                   </div>
                   {!isUser ? (
                     <div className="space-y-3">
+                      <MessageExecutionBadge message={message} />
                       {statusBlocks.length ? (
                         <div className="space-y-3">
                           {statusBlocks.map((block, index) => (

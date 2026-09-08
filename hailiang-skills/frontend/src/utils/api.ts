@@ -191,6 +191,7 @@ export type SkillCatalogItem = {
 export type ExpertCatalogItem = {
   expert_id: string;
   name: string;
+  brief?: string;
   description: string;
   topology: "single_expert" | string;
   skill_ids: string[];
@@ -200,6 +201,7 @@ export type ExpertCatalogItem = {
 export type SelectedExpert = {
   expert_id: string;
   name: string;
+  brief?: string;
   topology: string;
   skill_ids: string[];
 };
@@ -215,6 +217,7 @@ export type ExpertTeamMember = {
 export type ExpertTeamCatalogItem = {
   team_id: string;
   name: string;
+  brief?: string;
   description: string;
   topology: "team" | string;
   coordinator_expert_id: string;
@@ -225,6 +228,7 @@ export type ExpertTeamCatalogItem = {
 export type SelectedExpertTeam = {
   team_id: string;
   name: string;
+  brief?: string;
   coordinator_expert_id: string;
   coordinator_mention_name: string;
   active_expert_id: string;

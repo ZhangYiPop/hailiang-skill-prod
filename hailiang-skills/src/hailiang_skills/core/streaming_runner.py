@@ -144,6 +144,23 @@ def _append_message_blocks_to_latest_assistant(
     return blocks
 
 
+def _snapshot_expert_registries(context, orchestrator):
+    """Return registries from this session's immutable deployment snapshot.
+
+    A server can still have an older filesystem/global registry with the same
+    team ID.  Session state and SSE must describe the package selected for the
+    session, never that process-wide fallback.
+    """
+    snapshot = (getattr(context, "session_meta", {}) or {}).get("configuration_snapshot")
+    entries = snapshot.get("entries") if isinstance(snapshot, dict) else None
+    if isinstance(entries, list) and entries:
+        from hailiang_skills.workbench.catalog import build_runtime_registries
+
+        _skills, experts, teams = build_runtime_registries(entries)
+        return experts, teams
+    return getattr(orchestrator, "expert_registry", None), getattr(orchestrator, "expert_team_registry", None)
+
+
 def _expert_state_payload(context, orchestrator, switch: dict[str, Any] | None = None) -> dict[str, Any]:
     team_id = str((context.session_meta or {}).get("expert_team_id") or "").strip()
     expert_id = str(
@@ -151,13 +168,12 @@ def _expert_state_payload(context, orchestrator, switch: dict[str, Any] | None =
         or (context.session_meta or {}).get("expert_id")
         or ""
     ).strip()
-    expert_registry = getattr(orchestrator, "expert_registry", None)
+    expert_registry, team_registry = _snapshot_expert_registries(context, orchestrator)
     definition = expert_registry.get(expert_id) if expert_id and expert_registry is not None else None
     active: dict[str, Any] = {}
     team_payload: dict[str, Any] = {}
     mode = "none"
     if team_id:
-        team_registry = getattr(orchestrator, "expert_team_registry", None)
         team = team_registry.get(team_id) if team_registry is not None else None
         if team is not None:
             mode = "team"
@@ -165,11 +181,13 @@ def _expert_state_payload(context, orchestrator, switch: dict[str, Any] | None =
             team_payload = {
                 "team_id": team.team_id,
                 "name": team.name,
+                "brief": team.brief,
                 "coordinator_expert_id": team.coordinator_expert_id,
             }
             active = {
                 "expert_id": expert_id,
                 "name": definition.name if definition is not None else expert_id,
+                "brief": definition.brief if definition is not None else "",
                 "mention_name": member.mention_name if member is not None else "",
                 "is_coordinator": expert_id == team.coordinator_expert_id,
             }
@@ -178,6 +196,7 @@ def _expert_state_payload(context, orchestrator, switch: dict[str, Any] | None =
         active = {
             "expert_id": definition.agent_id,
             "name": definition.name,
+            "brief": definition.brief,
             "mention_name": "",
             "is_coordinator": False,
         }

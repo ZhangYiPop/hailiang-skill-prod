@@ -900,9 +900,7 @@ def test_new_session_can_select_team_and_member_in_one_chat_request(monkeypatch)
             "expert_context": {
                 "expert_team_id": "student_growth_expert_team",
                 "expert_id": "family_education_expert",
-                "expected_branch_version": 1,
-                "expected_selection_version": 0,
-                "operation": "select_team_member",
+                "operation": "select_expert",
             },
         },
     ))
@@ -931,6 +929,158 @@ def test_new_session_can_select_team_and_member_in_one_chat_request(monkeypatch)
     ))
     assert invalid.status_code == 422
     assert invalid.json()["detail"] == "EXPERT_NOT_IN_ACTIVE_TEAM"
+
+
+def test_profile_switch_can_select_team_member_with_select_expert(monkeypatch) -> None:
+    """An explicit team+expert selection must not depend on target branch history."""
+    monkeypatch.setattr(chat_stream, "StreamingRunner", _FakeRunner)
+    repository = InMemorySessionRepository()
+    coordinator = SimpleNamespace(agent_id="career_plan_expert")
+    family = SimpleNamespace(agent_id="family_education_expert")
+    team = SimpleNamespace(
+        team_id="student_growth_expert_team",
+        coordinator_expert_id="career_plan_expert",
+        member_expert_ids={"career_plan_expert", "family_education_expert"},
+    )
+    orchestrator = SimpleNamespace(
+        expert_registry={"career_plan_expert": coordinator, "family_education_expert": family},
+        expert_team_registry={"student_growth_expert_team": team},
+    )
+    app = FastAPI()
+    app.include_router(build_chat_stream_router(repository, _FactService(), orchestrator), prefix="/api/v2")
+    client = TestClient(app)
+    session_id = "sess_profile_select_" + uuid4().hex
+
+    assert client.post(
+        "/api/v2/sessions/chat/stream",
+        json=_api_payload(session_id=session_id, run_id="profile_a"),
+    ).status_code == 200
+
+    payload = _api_payload(
+        session_id=session_id,
+        run_id="profile_b_select_member",
+        input_payload={
+            "action": "chat",
+            "context_scope": "profile",
+            "context_activation": "auto",
+            "content": "孩子不想上幼儿园",
+            "source": "toolbar",
+            "expert_context": {
+                "expert_team_id": "student_growth_expert_team",
+                "expert_id": "family_education_expert",
+                "operation": "select_expert",
+            },
+        },
+    )
+    payload["context_data"] = {
+        "user_id": "u1",
+        "profile_id": "p2",
+        "student_name": "小海二号",
+    }
+
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+
+    assert response.status_code == 200
+    session = repository.get(session_id)
+    assert session.profile_id == "p2"
+    assert session.session_meta["expert_team_id"] == "student_growth_expert_team"
+    assert session.session_meta["active_expert_id"] == "family_education_expert"
+
+
+def test_team_selection_uses_bound_deployment_snapshot_not_stale_global_registry(monkeypatch) -> None:
+    """A deployment can reuse a team ID after the process loaded an old team."""
+    monkeypatch.setattr(chat_stream, "StreamingRunner", _FakeRunner)
+    repository = InMemorySessionRepository()
+    stale_coordinator = SimpleNamespace(agent_id="career_plan_expert")
+    stale_team = SimpleNamespace(
+        team_id="student_growth_expert_team",
+        coordinator_expert_id="career_plan_expert",
+        member_expert_ids={"career_plan_expert"},
+    )
+    orchestrator = SimpleNamespace(
+        expert_registry={"career_plan_expert": stale_coordinator},
+        expert_team_registry={"student_growth_expert_team": stale_team},
+    )
+    snapshot = {
+        "entries": [
+            {
+                "object_id": "expert-coordinator",
+                "object_type": "expert",
+                "object_key": "e_career_planner",
+                "name": "e生涯规划助手",
+                "payload": {},
+                "dependency_locks": [],
+            },
+            {
+                "object_id": "team-student-growth",
+                "object_type": "expert_team",
+                "object_key": "student_growth_expert_team",
+                "name": "学生成长专家团",
+                "payload": {"coordinator_expert_id": "expert-coordinator", "members": []},
+                "dependency_locks": [{"object_id": "expert-coordinator", "object_key": "e_career_planner"}],
+            },
+        ]
+    }
+    app = FastAPI()
+    app.include_router(
+        build_chat_stream_router(
+            repository,
+            _FactService(),
+            orchestrator,
+            configuration_snapshot_resolver=lambda: snapshot,
+        ),
+        prefix="/api/v2",
+    )
+    client = TestClient(app)
+
+    session_id = "sess_snapshot_team_" + uuid4().hex
+    response = client.post("/api/v2/sessions/chat/stream", json=_api_payload(
+        session_id=session_id,
+        run_id="snapshot_team_1",
+        input_payload={
+            "action": "chat",
+            "content": "你好",
+            "source": "chat",
+            "expert_context": {
+                "expert_team_id": "student_growth_expert_team",
+                "expert_id": None,
+                "expected_branch_version": 1,
+                "expected_selection_version": 0,
+                "operation": "select_team",
+            },
+        },
+    ))
+
+    assert response.status_code == 200
+    context = repository.get(session_id)
+    assert context.session_meta["expert_team_id"] == "student_growth_expert_team"
+    assert context.session_meta["active_expert_id"] == "e_career_planner"
+
+
+def test_chat_continue_inherits_current_expert_when_ids_are_omitted() -> None:
+    context = SessionContext()
+    context.session_meta.update({
+        "expert_team_id": "student_growth_expert_team",
+        "expert_id": "e_career_planner",
+        "active_expert_id": "e_career_planner",
+        "_active_branch_version": 1,
+    })
+    context.set_session_agent_selection(
+        expert_team_id="student_growth_expert_team",
+        expert_id="e_career_planner",
+        selection_source="manual_team",
+    )
+    input_data = ChatInput.model_validate({
+        "action": "chat",
+        "content": "继续说说怎么沟通",
+        "source": "chat",
+        "expert_context": {"operation": "continue"},
+    })
+
+    normalized = chat_stream._normalize_expert_context_versions(context, input_data)
+
+    assert chat_stream._apply_expert_context_operation(context, SimpleNamespace(), normalized) is False
+    assert context.session_meta["active_expert_id"] == "e_career_planner"
 
 
 def test_plain_chat_does_not_implicitly_activate_an_expert_or_team(api_client) -> None:

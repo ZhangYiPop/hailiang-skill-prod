@@ -30,7 +30,8 @@ configured isolated database, and verifies /health/ready.
 Options:
   --env PATH          Private environment file (default: ./env.8010.sh)
   --replace-port      Gracefully stop an existing Hailiang Uvicorn instance on
-                      BACKEND_PORT before starting this one.
+                      BACKEND_PORT and an existing smoke static frontend on
+                      FRONTEND_PORT (when --with-frontend is set).
   --with-frontend     Build and serve the internal frontend using FRONTEND_PORT.
   --skip-install      Reuse the existing smoke virtual environment.
   --skip-migrations   Do not run Alembic (only for an already migrated DB).
@@ -39,8 +40,8 @@ Options:
   -h, --help          Show this help.
 
 This script never starts, recreates, or removes PostgreSQL/Redis containers.
-It refuses to replace an API listener unless it is a Hailiang Uvicorn process.
-An occupied frontend port is never stopped automatically.
+It refuses to replace an API listener unless it is a Hailiang Uvicorn process,
+or a frontend listener unless it is this project's static_frontend_server.py.
 EOF
 }
 
@@ -97,6 +98,36 @@ wait_for_health() {
   return 1
 }
 
+stop_existing_smoke_frontend() {
+  local port="$1"
+  local existing_pids command_line
+  existing_pids="$(listener_pids "$port")"
+  [ -z "$existing_pids" ] && return 0
+  if [ "$REPLACE_PORT" != "1" ]; then
+    echo "Frontend port $port is already in use by PID(s): $existing_pids" >&2
+    echo "Stop it manually, choose another FRONTEND_PORT, or rerun with --replace-port." >&2
+    exit 3
+  fi
+
+  for pid in $existing_pids; do
+    command_line="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+    if [[ "$command_line" != *"$PROJECT_DIR/scripts/static_frontend_server.py"* ]] || [[ "$command_line" != *"--port $port"* ]]; then
+      echo "Refusing to stop PID $pid because it is not this project's smoke frontend listener:" >&2
+      echo "$command_line" >&2
+      exit 3
+    fi
+  done
+
+  echo "Gracefully stopping existing smoke frontend listener(s): $existing_pids"
+  # static_frontend_server.py is a single-process server, so every listener
+  # PID identified above belongs to the replaceable smoke frontend.
+  kill -TERM $existing_pids
+  wait_for_port_release "$port" || {
+    echo "Frontend port $port was not released after SIGTERM; inspect the old process before retrying." >&2
+    exit 3
+  }
+}
+
 [ -f "$ENV_FILE" ] || { echo "Environment file not found: $ENV_FILE" >&2; exit 2; }
 # The environment file is private and must consist of shell exports only.
 # shellcheck disable=SC1090
@@ -110,6 +141,7 @@ require_value HAILIANG_REDIS_URL
 require_value HAILIANG_REDIS_KEY_PREFIX
 require_value HAILIANG_AUDIT_ENCRYPTION_KEY
 require_value HAILIANG_SECURITY_QUARANTINE_KEY
+require_value HAILIANG_SECURITY_ADMIN_TOKEN
 require_value DASHSCOPE_API_KEY
 require_value AGENT_SKILL_RUNTIME_CORE_PATH
 
@@ -203,10 +235,7 @@ if [ "$WITH_FRONTEND" = "1" ]; then
   fi
   command -v npm >/dev/null 2>&1 || { echo "npm is required for --with-frontend" >&2; exit 2; }
   [ -f "$FRONTEND_DIR/package.json" ] || { echo "Frontend source is missing: $FRONTEND_DIR" >&2; exit 2; }
-  [ -z "$(listener_pids "$FRONTEND_PORT")" ] || {
-    echo "Frontend port $FRONTEND_PORT is already in use; choose another FRONTEND_PORT or stop it manually." >&2
-    exit 3
-  }
+  stop_existing_smoke_frontend "$FRONTEND_PORT"
 fi
 
 if [ "$SKIP_INSTALL" = "0" ]; then

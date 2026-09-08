@@ -15,9 +15,19 @@ from hailiang_skills.core.context import SessionContext
 from hailiang_skills.core.skill_display import build_skill_display
 from hailiang_skills.core.skill_ids import EXPERT_DIRECT_EXECUTION_ID
 from hailiang_skills.runtime_bridge.agentscope_expert_runtime import AgentScopeExpertRuntime
-from hailiang_skills.runtime_bridge.expert_bundle import ExpertBundleError, load_expert_bundle, load_local_expert_registry
+from hailiang_skills.runtime_bridge.expert_bundle import (
+    ExpertBundleError,
+    ExpertDefinition,
+    ExpertRegistry,
+    LockedSkill,
+    load_expert_bundle,
+    load_local_expert_registry,
+)
 from hailiang_skills.runtime_bridge.expert_team_bundle import (
     ExpertTeamBundleError,
+    ExpertTeamDefinition,
+    ExpertTeamMember,
+    ExpertTeamRegistry,
     load_expert_team_bundle,
     load_local_expert_team_registry,
 )
@@ -268,6 +278,38 @@ def test_expert_tool_rejects_unauthorized_skill_and_persists_handoff():
     assert state["budget"]["skill_calls"] == 1
 
 
+def test_single_skill_expert_bypasses_react_and_dispatches_its_only_skill():
+    skill_registry = _runtime_registry()
+    definition = ExpertDefinition(
+        agent_id="single_skill_expert",
+        name="单技能专家",
+        rules_markdown="所有问题交给唯一技能。",
+        skills=(LockedSkill("score_improve", "v1"),),
+    )
+    runtime = AgentScopeExpertRuntime(
+        ExpertRegistry(definitions={definition.agent_id: definition}),
+        skill_registry,
+    )
+    context = SessionContext()
+    context.session_meta["active_expert_id"] = definition.agent_id
+    runtime._available = True
+    runtime._run_agent = lambda *_args, **_kwargs: pytest.fail("单技能专家不应进入 ReAct 选 Skill")
+
+    result = runtime.handle_message(
+        "我想要提分",
+        context,
+        lambda _message, received_context: received_context.session_meta["expert_requested_skill_id"],
+    )
+
+    assert result == "score_improve"
+    assert context.skill_states["agent_runtime"]["execution_mode"] == "single_skill_dispatch"
+    assert any(
+        event["event_type"] == "expert_single_skill_selected"
+        and event["payload"]["skill_id"] == "score_improve"
+        for event in context.event_trace
+    )
+
+
 def test_coordinator_can_propose_team_handoff_but_member_cannot_route():
     skill_registry = _runtime_registry()
     experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
@@ -282,6 +324,202 @@ def test_coordinator_can_propose_team_handoff_but_member_cannot_route():
     assert handoff["status"] == "awaiting_user_confirmation"
     assert handoff["candidates"][0]["mention_name"] == "家庭教育专家"
     assert context.session_meta["pending_team_handoff"]["team_id"] == team.team_id
+
+
+def _controlled_student_team_runtime():
+    skill_registry = _runtime_registry()
+    skill = LockedSkill("score_improve", "v1")
+    definitions = {
+        "coordinator": ExpertDefinition("coordinator", "主协调专家", "负责澄清与分流。", (skill,)),
+        "academic_coach": ExpertDefinition("academic_coach", "学习指导师", "负责学习提升。", (skill,)),
+        "talent_dev_specialist": ExpertDefinition("talent_dev_specialist", "特长发展专家", "负责特长发展。", (skill,)),
+        "career_explore_mentor": ExpertDefinition("career_explore_mentor", "职业探索导师", "负责职业探索。", (skill,)),
+        "study_abroad_consultant": ExpertDefinition("study_abroad_consultant", "留学咨询师", "负责留学咨询。", (skill,)),
+    }
+    team = ExpertTeamDefinition(
+        team_id="student_growth_expert_team",
+        name="学生成长专家团",
+        rules_markdown="主协调专家必须先确认转交。",
+        coordinator_expert_id="coordinator",
+        members=(
+            ExpertTeamMember("coordinator", "主协调专家", "泛泛问题澄清"),
+            ExpertTeamMember("academic_coach", "学习指导师", "学习提升、学习方法、学科问题"),
+            ExpertTeamMember("talent_dev_specialist", "特长发展专家", "绘画、艺术、特长发展"),
+            ExpertTeamMember("career_explore_mentor", "职业探索导师", "职业方向、生涯探索"),
+            ExpertTeamMember("study_abroad_consultant", "留学咨询师", "留学、海外院校"),
+        ),
+    )
+    runtime = AgentScopeExpertRuntime(
+        ExpertRegistry(definitions=definitions),
+        skill_registry,
+        team_registry=ExpertTeamRegistry(definitions={team.team_id: team}),
+        default_expert_id="coordinator",
+    )
+    runtime._available = True
+    runtime.client_factory = lambda _context: object()
+    runtime._is_supported_client = lambda _client: True
+    return runtime, team
+
+
+def test_coordinator_forces_single_specialist_handoff_card_when_react_replies_directly():
+    runtime, team = _controlled_student_team_runtime()
+    context = SessionContext()
+    context.session_meta.update({"expert_team_id": team.team_id, "active_expert_id": "coordinator"})
+    runtime._run_agent = lambda _definition, _message, _context, _client, state, **_kwargs: state.update(agent_reply="这里是未受控的专项结论")
+
+    runtime.handle_message("高一数学提分怎么安排", context, lambda _message, received: received.add_message("assistant", received.session_meta["expert_direct_reply"]["reply"]) or "ok")
+
+    handoff = context.messages[-1]["team_handoff"]
+    assert [candidate["expert_id"] for candidate in handoff["candidates"]] == ["academic_coach"]
+    assert "转交卡" in context.messages[-1]["content"]
+    assert any(event["event_type"] == "team_handoff_controlled_selected" for event in context.event_trace)
+
+
+def test_coordinator_proposes_multiple_specialists_for_explicit_competing_topics():
+    runtime, team = _controlled_student_team_runtime()
+    context = SessionContext()
+    context.session_meta.update({"expert_team_id": team.team_id, "active_expert_id": "coordinator"})
+    runtime._run_agent = lambda *_args, **_kwargs: None
+
+    runtime.handle_message("我想同时了解职业方向和留学选择", context, lambda _message, received: received.add_message("assistant", received.session_meta["expert_direct_reply"]["reply"]) or "ok")
+
+    candidates = context.messages[-1]["team_handoff"]["candidates"]
+    assert {candidate["expert_id"] for candidate in candidates} == {"career_explore_mentor", "study_abroad_consultant"}
+
+
+def test_handoff_tool_normalizes_exact_name_and_records_unknown_alias_rejection():
+    runtime, team = _controlled_student_team_runtime()
+    context = SessionContext()
+    state = runtime._state(context, runtime.expert_registry.require("coordinator"), team=team)
+    handoff = runtime._propose_member_handoff(team, state, context, ["@学习指导师"], "学习问题")
+    assert handoff["candidates"][0]["expert_id"] == "academic_coach"
+
+    with pytest.raises(ValueError, match="一至三位"):
+        runtime._propose_member_handoff(team, state, context, ["不存在的专家"], "学习问题")
+    rejected = [event for event in context.event_trace if event["event_type"] == "team_handoff_rejected"]
+    assert rejected[-1]["payload"]["rejected"] == [{"candidate": "不存在的专家", "reason": "unknown_member_alias"}]
+
+
+def test_handoff_candidate_is_resolved_from_current_snapshot_not_global_registry():
+    runtime, team = _controlled_student_team_runtime()
+    runtime.expert_registry.definitions.pop("career_explore_mentor")
+    context = SessionContext()
+    context.session_meta["configuration_snapshot"] = {
+        "entries": [{
+            "object_type": "expert",
+            "object_key": "career_explore_mentor",
+            "name": "职业探索导师",
+            "payload": {"rules_markdown": "负责职业探索。"},
+            "dependency_locks": [{"object_key": "score_improve", "release_no": 1}],
+        }],
+    }
+    state = runtime._state(context, runtime.expert_registry.require("coordinator"), team=team)
+
+    handoff = runtime._propose_member_handoff(team, state, context, ["职业探索导师"], "职业相关问题")
+
+    assert handoff["candidates"] == [{
+        "expert_id": "career_explore_mentor",
+        "name": "职业探索导师",
+        "mention_name": "职业探索导师",
+        "brief": "职业方向、生涯探索",
+    }]
+
+
+def test_handoff_candidate_falls_back_to_the_expert_brief_when_routing_brief_is_empty():
+    registry = ExpertRegistry(definitions={
+        "coordinator": ExpertDefinition(
+            agent_id="coordinator", name="协调专家", rules_markdown="协调规则", skills=(), brief="协调摘要",
+        ),
+        "study_abroad": ExpertDefinition(
+            agent_id="study_abroad", name="留学咨询师", rules_markdown="留学规则", skills=(), brief="帮助用户了解留学相关事宜",
+        ),
+    })
+    team = ExpertTeamDefinition(
+        team_id="brief_team",
+        name="摘要团队",
+        rules_markdown="团队规则",
+        coordinator_expert_id="coordinator",
+        members=(
+            ExpertTeamMember(expert_id="coordinator", mention_name="协调专家"),
+            ExpertTeamMember(expert_id="study_abroad", mention_name="留学咨询师", routing_brief=""),
+        ),
+    )
+    runtime = AgentScopeExpertRuntime(
+        registry,
+        SimpleNamespace(),
+        team_registry=ExpertTeamRegistry(definitions={team.team_id: team}),
+    )
+    context = SessionContext()
+    state = runtime._state(context, registry.require("coordinator"), team=team)
+
+    handoff = runtime._propose_member_handoff(team, state, context, ["study_abroad"], "留学问题")
+
+    assert handoff["candidates"][0]["brief"] == "帮助用户了解留学相关事宜"
+
+    registry.definitions["study_abroad"] = ExpertDefinition(
+        agent_id="study_abroad", name="留学咨询师", rules_markdown="留学规则", skills=(), brief="",
+    )
+    routing_only_team = ExpertTeamDefinition(
+        team_id="routing_only_team", name="路由摘要团队", rules_markdown="团队规则",
+        coordinator_expert_id="coordinator",
+        members=(
+            ExpertTeamMember(expert_id="coordinator", mention_name="协调专家"),
+            ExpertTeamMember(expert_id="study_abroad", mention_name="留学咨询师", routing_brief="留学申请与院校选择"),
+        ),
+    )
+    routing_handoff = runtime._propose_member_handoff(
+        routing_only_team,
+        runtime._state(SessionContext(), registry.require("coordinator"), team=routing_only_team),
+        SessionContext(),
+        ["study_abroad"],
+        "留学问题",
+    )
+    assert routing_handoff["candidates"][0]["brief"] == "留学申请与院校选择"
+
+    reason_only_team = ExpertTeamDefinition(
+        team_id="reason_only_team", name="原因摘要团队", rules_markdown="团队规则",
+        coordinator_expert_id="coordinator",
+        members=(
+            ExpertTeamMember(expert_id="coordinator", mention_name="协调专家"),
+            ExpertTeamMember(expert_id="study_abroad", mention_name="留学咨询师", routing_brief=""),
+        ),
+    )
+    reason_handoff = runtime._propose_member_handoff(
+        reason_only_team,
+        runtime._state(SessionContext(), registry.require("coordinator"), team=reason_only_team),
+        SessionContext(),
+        ["study_abroad"],
+        "当前问题更适合由留学咨询师协助",
+    )
+    assert reason_handoff["candidates"][0]["brief"] == "当前问题更适合由留学咨询师协助"
+
+
+def test_expert_history_keeps_previous_user_context_and_omits_handoff_confirmation():
+    runtime, _team = _controlled_student_team_runtime()
+    context = SessionContext()
+    context.add_message("user", "我现在是高一")
+    context.add_message("assistant", "想重点了解什么？")
+    context.add_message("user", "@职业探索导师", metadata={"message_type": "team_handoff_confirmation"})
+
+    history = runtime._expert_conversation_history(context)
+
+    assert "我现在是高一" in history
+    assert "想重点了解什么" in history
+    assert "@职业探索导师" not in history
+
+
+def test_coordinator_framework_limit_falls_back_to_clarification_not_generic_apology():
+    runtime, team = _controlled_student_team_runtime()
+    context = SessionContext()
+    context.session_meta.update({"expert_team_id": team.team_id, "active_expert_id": "coordinator"})
+    runtime._run_agent = lambda _definition, _message, _context, _client, state, **_kwargs: state.update(agent_reply="Maximum reasoning-acting iterations reached")
+    runtime._generate_team_clarification_reply = lambda *_args, **_kwargs: "你提到自己正在读高一，目前更想探索哪一类职业？"
+
+    runtime.handle_message("你好", context, lambda _message, received: received.add_message("assistant", received.session_meta["expert_direct_reply"]["reply"]) or "ok")
+
+    assert "正在读高一" in context.messages[-1]["content"]
+    assert "没有完成处理" not in context.messages[-1]["content"]
+    assert any(event["event_type"] == "team_handoff_clarification" for event in context.event_trace)
 
 
 def test_unstructured_at_text_does_not_switch_team_member():

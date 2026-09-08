@@ -19,6 +19,7 @@ from hailiang_skills.core.rate_limit import LLMRateLimitError, LLMRateLimiter
 from hailiang_skills.core.logging import make_event
 from hailiang_skills.core.message_interactions import ACTIVE, SELECTED, ensure_message_interactions, expire_active_interactions, update_interaction
 from hailiang_skills.core.session_logging import append_session_events
+from hailiang_skills.core.team_handoff_confirmation import active_handoff_decision
 
 
 class StrictInput(BaseModel):
@@ -107,24 +108,6 @@ class ChatStreamRequest(StrictInput):
 
 
 def _parse_input(raw: str) -> StreamInput:
-    # #region debug-point A:parse-input
-    _debug_url, _debug_session = "http://127.0.0.1:7777/event", "chat-422-after-team-wakeup"
-    try:
-        _debug_config = open(".dbg/chat-422-after-team-wakeup.env", encoding="utf-8").read().splitlines()
-        _debug_url = next((line.split("=", 1)[1] for line in _debug_config if line.startswith("DEBUG_SERVER_URL=")), _debug_url)
-        _debug_session = next((line.split("=", 1)[1] for line in _debug_config if line.startswith("DEBUG_SESSION_ID=")), _debug_session)
-    except OSError:
-        pass
-    try:
-        _debug_payload = json.loads(raw)
-        _debug_data = {"raw_type": type(_debug_payload).__name__, "keys": sorted(_debug_payload) if isinstance(_debug_payload, dict) else [], "expert_context_keys": sorted(_debug_payload.get("expert_context", {})) if isinstance(_debug_payload, dict) and isinstance(_debug_payload.get("expert_context"), dict) else []}
-    except (TypeError, json.JSONDecodeError):
-        _debug_data = {"raw_type": "invalid_json", "keys": [], "expert_context_keys": []}
-    try:
-        __import__("urllib.request").request.urlopen(__import__("urllib.request").request.Request(_debug_url, data=json.dumps({"sessionId": _debug_session, "runId": "pre", "hypothesisId": "A", "location": "chat_stream.py:_parse_input", "msg": "[DEBUG] input validation entry", "data": _debug_data}).encode(), headers={"Content-Type": "application/json"}), timeout=1).read()
-    except OSError:
-        pass
-    # #endregion
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -142,8 +125,11 @@ def _parse_input(raw: str) -> StreamInput:
                 raise HTTPException(status_code=422, detail="EXPERT_CONTEXT_REQUIRED")
         if action == "chat":
             result = ChatInput.model_validate(payload)
-            if result.source == "toolbar" and result.expert_context.operation != "select_team_member":
-                raise HTTPException(status_code=422, detail="toolbar chat requires select_team_member")
+            if result.source == "toolbar" and result.expert_context.operation not in {
+                "select_expert",
+                "select_team_member",
+            }:
+                raise HTTPException(status_code=422, detail="toolbar chat requires select_expert")
             return result
         if action == "enter_skill":
             result = EnterSkillInput.model_validate(payload)
@@ -167,12 +153,6 @@ def _parse_input(raw: str) -> StreamInput:
             return StopInput.model_validate(payload)
         raise HTTPException(status_code=422, detail="unsupported action")
     except ValidationError as exc:
-        # #region debug-point A:validation-error
-        try:
-            __import__("urllib.request").request.urlopen(__import__("urllib.request").request.Request(_debug_url, data=json.dumps({"sessionId": _debug_session, "runId": "pre", "hypothesisId": "A", "location": "chat_stream.py:_parse_input", "msg": "[DEBUG] input validation error", "data": {"errors": exc.errors()}}).encode(), headers={"Content-Type": "application/json"}), timeout=1).read()
-        except OSError:
-            pass
-        # #endregion
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
@@ -251,6 +231,18 @@ def _normalize_expert_context_versions(context, input_data: ProfileBoundInput) -
     )
 
 
+def _snapshot_expert_registries(context, orchestrator):
+    """Resolve selection against the session's immutable deployment snapshot."""
+    snapshot = (getattr(context, "session_meta", {}) or {}).get("configuration_snapshot")
+    entries = snapshot.get("entries") if isinstance(snapshot, dict) else None
+    if isinstance(entries, list) and entries:
+        from hailiang_skills.workbench.catalog import build_runtime_registries
+
+        _skills, experts, teams = build_runtime_registries(entries)
+        return experts, teams
+    return getattr(orchestrator, "expert_registry", None), getattr(orchestrator, "expert_team_registry", None)
+
+
 def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBoundInput) -> bool:
     """Apply only an explicit chat selection; all other actions are assertions."""
     expert_context = input_data.expert_context
@@ -265,65 +257,80 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
         return False
 
     if operation == "continue":
-        _assert_expert_context_current(context, input_data, require_exact_identity=True)
+        has_team_id = expert_context.expert_team_id is not None
+        has_expert_id = expert_context.expert_id is not None
+        if has_team_id != has_expert_id:
+            raise _expert_context_error(
+                "EXPERT_CONTEXT_OPERATION_INVALID",
+                "继续对话时 expert_team_id 与 expert_id 必须同时提供，或同时省略。",
+            )
+        # Ordinary follow-up messages inherit the session's current expert
+        # selection.  This lets a client send the minimal chat payload while
+        # toolbar selections and handoff-card actions remain explicit and
+        # protected by their full identity assertion below.
+        _assert_expert_context_current(
+            context,
+            input_data,
+            require_exact_identity=has_team_id,
+        )
         return False
 
     # A selection is permitted only against the branch version the client just
     # rendered. Its target identity naturally differs from the current one.
     actual = _assert_expert_context_current(context, input_data, require_exact_identity=False)
-    if operation in {"select_team", "select_team_member"}:
+    if operation == "select_team":
         if not expert_context.expert_team_id:
             raise _expert_context_error(
                 "EXPERT_CONTEXT_OPERATION_INVALID",
                 "选择专家团时必须提供 expert_team_id。",
             )
-        if operation == "select_team" and expert_context.expert_id is not None:
+        if expert_context.expert_id is not None:
             raise _expert_context_error(
                 "EXPERT_CONTEXT_OPERATION_INVALID",
-                "选择专家团时 expert_id 必须为 null；首次直接选择成员请使用 select_team_member。",
+                "选择专家团时 expert_id 必须为 null；直接选择成员请使用 select_expert。",
             )
-        if operation == "select_team_member" and not expert_context.expert_id:
-            raise _expert_context_error(
-                "EXPERT_CONTEXT_OPERATION_INVALID",
-                "选择专家团成员时必须同时提供 expert_team_id 和 expert_id。",
-            )
-        teams = getattr(orchestrator, "expert_team_registry", None)
+        _experts, teams = _snapshot_expert_registries(context, orchestrator)
         team = teams.get(expert_context.expert_team_id) if teams is not None else None
         if team is None:
             raise HTTPException(status_code=422, detail="EXPERT_TEAM_NOT_FOUND")
-        selected_expert_id = (
-            team.coordinator_expert_id
-            if operation == "select_team"
-            else str(expert_context.expert_id)
-        )
+        selected_expert_id = team.coordinator_expert_id
         if selected_expert_id not in team.member_expert_ids:
             raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
         context.session_meta["expert_team_id"] = team.team_id
         context.session_meta["expert_id"] = selected_expert_id
         context.session_meta["active_expert_id"] = selected_expert_id
-        context.session_meta["expert_selection_source"] = "manual_team" if operation == "select_team" else "manual"
+        context.session_meta["expert_selection_source"] = "manual_team"
         context.set_session_agent_selection(
             expert_team_id=team.team_id,
             expert_id=selected_expert_id,
-            selection_source="manual_team" if operation == "select_team" else "manual",
+            selection_source="manual_team",
         )
-    elif operation == "select_expert":
+    elif operation in {"select_expert", "select_team_member"}:
         if not expert_context.expert_id:
             raise _expert_context_error("EXPERT_CONTEXT_OPERATION_INVALID", "选择专家时必须提供 expert_id。")
-        if expert_context.expert_team_id != actual["expert_team_id"]:
-            raise _expert_context_error(
-                "EXPERT_CONTEXT_OPERATION_INVALID",
-                "选择专家时 expert_team_id 必须与当前专家团一致；切换团队请先使用 select_team。",
-            )
-        registry = getattr(orchestrator, "expert_registry", None)
+        registry, teams = _snapshot_expert_registries(context, orchestrator)
+        requested_team_id = expert_context.expert_team_id
+        if requested_team_id:
+            team = teams.get(requested_team_id) if teams is not None else None
+            if team is None:
+                raise HTTPException(status_code=422, detail="EXPERT_TEAM_NOT_FOUND")
+            if expert_context.expert_id not in team.member_expert_ids:
+                raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
+            team_id = team.team_id
+        else:
+            team_id = str(actual["expert_team_id"] or "")
+            if team_id:
+                raise _expert_context_error(
+                    "EXPERT_CONTEXT_OPERATION_INVALID",
+                    "当前已选择专家团时，选择成员必须同时提供 expert_team_id 和 expert_id。",
+                )
+            team = None
         definition = registry.get(expert_context.expert_id) if registry is not None else None
         if definition is None:
             raise HTTPException(status_code=422, detail="EXPERT_NOT_FOUND")
-        team_id = str(actual["expert_team_id"] or "")
-        teams = getattr(orchestrator, "expert_team_registry", None)
-        team = teams.get(team_id) if team_id and teams is not None else None
         if team is not None and definition.agent_id not in team.member_expert_ids:
             raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
+        context.session_meta["expert_team_id"] = team_id or None
         context.session_meta["expert_id"] = definition.agent_id
         context.session_meta["active_expert_id"] = definition.agent_id
         context.session_meta["expert_selection_source"] = "manual"
@@ -336,6 +343,7 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
         raise _expert_context_error("EXPERT_CONTEXT_OPERATION_INVALID", "未知的专家上下文操作。")
     context.session_meta.pop("expert_requested_skill_id", None)
     context.session_meta.pop("pending_team_handoff", None)
+    context.session_meta.pop("pending_team_handoff_intent", None)
     expire_active_interactions(context.messages)
     return True
 
@@ -579,7 +587,7 @@ def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffI
     if _pending_native_form(context):
         raise HTTPException(status_code=409, detail="TEAM_SWITCH_BLOCKED_BY_PENDING_FORM")
     team_id = str(context.session_meta.get("expert_team_id") or "").strip()
-    teams = getattr(orchestrator, "expert_team_registry", None)
+    _experts, teams = _snapshot_expert_registries(context, orchestrator)
     team = teams.get(team_id) if teams is not None else None
     if team is None:
         raise HTTPException(status_code=409, detail="EXPERT_TEAM_NOT_ACTIVE")
@@ -645,11 +653,77 @@ def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffI
     return switch_context
 
 
+def _acknowledge_team_handoff_text(context, orchestrator, acknowledgement: str) -> tuple[dict | None, dict | None]:
+    """Consume a valid one-member handoff using an ordinary chat message.
+
+    Returns ``(switch, replay_handoff)``.  The latter is used for a multiple
+    candidate card: it stays active and is emitted again instead of expiring.
+    """
+    if _pending_native_form(context):
+        return None, None
+    team_id = str(context.session_meta.get("expert_team_id") or "").strip()
+    if not team_id:
+        return None, None
+    decision = active_handoff_decision(context, team_id=team_id, text=acknowledgement)
+    if decision.get("kind") == "none":
+        return None, None
+    if decision.get("kind") == "multiple":
+        return None, decision.get("handoff") if isinstance(decision.get("handoff"), dict) else None
+    _experts, teams = _snapshot_expert_registries(context, orchestrator)
+    team = teams.get(team_id) if teams is not None else None
+    if team is None:
+        return None, None
+    handoff = decision["handoff"]
+    candidates = decision.get("candidates") or []
+    candidate = candidates[0]
+    target_expert_id = str(candidate.get("expert_id") or "")
+    if not target_expert_id or team.member_for_expert(target_expert_id) is None:
+        return None, None
+    source = decision.get("source")
+    recovered = decision.get("kind") == "single_recovery"
+    source_index = context.messages.index(source) if isinstance(source, dict) and source in context.messages else None
+    if isinstance(source, dict):
+        try:
+            interaction = update_interaction(source, "team_handoff", status=SELECTED, selected_target_skill_id=target_expert_id)
+            interaction["selected_target_expert_id"] = target_expert_id
+        except KeyError:
+            return None, None
+        handoff["status"] = "selected"
+        handoff["selected_target_expert_id"] = target_expert_id
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        if isinstance(metadata.get("team_handoff"), dict):
+            metadata["team_handoff"].update({"status": "selected", "selected_target_expert_id": target_expert_id})
+    from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
+    context.session_meta["active_expert_id"] = target_expert_id
+    context.session_meta["expert_id"] = target_expert_id
+    context.session_meta["expert_selection_source"] = "handoff_text_confirmation"
+    context.set_session_agent_selection(expert_team_id=team_id, expert_id=target_expert_id, selection_source="handoff_card")
+    context.session_meta.pop("pending_team_handoff", None)
+    context.session_meta.pop("pending_team_handoff_intent", None)
+    source_user_message = str(handoff.get("original_user_message") or "").strip()
+    if not source_user_message and source_index is not None:
+        for message in reversed(context.messages[:source_index]):
+            if message.get("role") == "user" and not (message.get("metadata") or {}).get("hidden"):
+                source_user_message = str(message.get("content") or "").strip()
+                break
+    return {
+        "source": "team_handoff_ack_recovered" if recovered else "team_handoff_ack",
+        "from_expert_id": from_expert_id,
+        "target_expert_id": target_expert_id,
+        "mention_name": str(candidate.get("mention_name") or candidate.get("name") or "专家").strip(),
+        "visible_user_message": acknowledgement,
+        "source_user_message": source_user_message,
+        "coordinator_reason": str(handoff.get("reason") or ""),
+        "source_message_id": str(handoff.get("source_message_id") or ""),
+        "conversation_excerpt": _conversation_excerpt(context, end_index=source_index),
+    }, None
+
+
 def _switch_team_member(context, orchestrator, input_data: SwitchTeamMemberInput) -> dict:
     if _pending_native_form(context):
         raise HTTPException(status_code=409, detail="TEAM_SWITCH_BLOCKED_BY_PENDING_FORM")
     team_id = str(context.session_meta.get("expert_team_id") or "").strip()
-    teams = getattr(orchestrator, "expert_team_registry", None)
+    _experts, teams = _snapshot_expert_registries(context, orchestrator)
     team = teams.get(team_id) if teams is not None else None
     if team is None:
         raise HTTPException(status_code=409, detail="EXPERT_TEAM_NOT_ACTIVE")
@@ -806,6 +880,24 @@ def build_chat_stream_router(
                 preflight_context_saved = True
         if preflight_context_saved:
             context = repository.get(context.session_id)
+        configuration_change = None
+        if (
+            not session_created
+            and not bound_debug_session_id
+            and configuration_snapshot_resolver is not None
+        ):
+            from hailiang_skills.api.configuration_sync import synchronize_configuration
+
+            configuration_change = synchronize_configuration(context, configuration_snapshot_resolver())
+            if configuration_change is not None:
+                repository.save(context)
+                context = repository.get(context.session_id)
+                if isinstance(input_data, ConfirmTeamHandoffInput):
+                    raise HTTPException(status_code=409, detail={
+                        "code": "CONFIGURATION_UPDATED",
+                        "message": "专家团配置已更新，原转交卡已失效，请重新提问。",
+                        "configuration": configuration_change,
+                    })
         input_data = _normalize_expert_context_versions(context, input_data)
         legacy_default_team_cleared = _clear_legacy_implicit_expert_team(context)
         profile_switched = bool(context.session_meta.get("_profile_switched"))
@@ -845,6 +937,11 @@ def build_chat_stream_router(
             "session_created": bool(session_created),
             "profile_switched": profile_switched,
             "context_activation": "auto" if automatic_context_activation else "none",
+            "configuration_changed": configuration_change is not None,
+            "configuration": configuration_change or {
+                "deployment_id": str((context.session_meta.get("configuration_snapshot") or {}).get("deployment_id") or "") or None,
+                "package_hash": str((context.session_meta.get("configuration_snapshot") or {}).get("package_hash") or "") or None,
+            },
         }
         context.session_meta["_sse_profile_context"] = profile_context_event
         # Persist this immediately.  ``stop`` is allowed before the model has
@@ -935,18 +1032,42 @@ def build_chat_stream_router(
             # optimistic write that claims this run: ``supersede_active_run``
             # may have advanced the stored version immediately beforehand.
             def apply_free_form_turn(current_context):
+                switch, replay_handoff = _acknowledge_team_handoff_text(
+                    current_context, orchestrator, input_data.content,
+                )
+                if switch is not None:
+                    event = make_event("team_handoff_text_confirmed", {
+                        "team_id": str(current_context.session_meta.get("expert_team_id") or ""),
+                        "expert_id": str(switch.get("target_expert_id") or ""),
+                        "source": str(switch.get("source") or "team_handoff_ack"),
+                    })
+                    current_context.event_trace.append(event)
+                    return {"switch": switch, "replay_handoff": None, "event": event}
+                if replay_handoff is not None:
+                    event = make_event("team_handoff_text_confirmation_ambiguous", {
+                        "team_id": str(current_context.session_meta.get("expert_team_id") or ""),
+                        "handoff_id": str(replay_handoff.get("handoff_id") or ""),
+                    })
+                    current_context.event_trace.append(event)
+                    return {"switch": None, "replay_handoff": replay_handoff, "event": event}
                 expired = expire_active_interactions(current_context.messages)
                 if expired:
                     current_context.session_meta.pop("pending_team_handoff", None)
-                return expired
+                    current_context.session_meta.pop("pending_team_handoff_intent", None)
+                return {"switch": None, "replay_handoff": None, "event": None}
 
-            context, _ = _commit_run_action(
+            context, free_form_result = _commit_run_action(
                 repository,
                 context,
                 request.run_id,
                 action=input_data.action,
                 apply=apply_free_form_turn,
             )
+            team_member_switch = free_form_result.get("switch") if isinstance(free_form_result, dict) else None
+            replay_handoff = free_form_result.get("replay_handoff") if isinstance(free_form_result, dict) else None
+            event = free_form_result.get("event") if isinstance(free_form_result, dict) else None
+            if event:
+                append_session_events(request.session_id, [event])
             try:
                 lease = runner.reserve_turn(request.session_id, context.user_id, run_id=request.run_id)
             except CapacityExceededError as exc:
@@ -957,10 +1078,11 @@ def build_chat_stream_router(
                 input_data.content,
                 enable_thinking=input_data.enable_thinking,
                 return_reasoning=input_data.return_reasoning,
+                team_member_switch=team_member_switch,
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
                 source_endpoint="sessions/chat/stream",
-                initial_events=[("profile_context", profile_context_event)],
+                initial_events=([("profile_context", profile_context_event)] + ([ ("team_handoff", replay_handoff) ] if replay_handoff else [])),
             )
         else:
             action = "enter" if input_data.action == "enter_skill" else "exit"

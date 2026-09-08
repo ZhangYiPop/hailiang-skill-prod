@@ -6,6 +6,9 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 from typing import Any
+from dataclasses import replace
+
+import yaml
 
 from hailiang_skills.core.deployment import state_root
 
@@ -106,3 +109,35 @@ def configured_skill_bundle(bundle: Any, entry: dict[str, Any] | None) -> Any:
         } if scripts_root.is_dir() else {}
         configured._scripts = overlay_scripts if managed_files else {**(getattr(bundle, "scripts", {}) or {}), **overlay_scripts}
     return configured
+
+
+def skill_bundle_from_entry(entry: dict[str, Any]) -> Any:
+    """Load an entire immutable Skill, without inheriting a filesystem template."""
+    from hailiang_skills.skill_runtime.skill_loader import load_skill_bundle_from_directory
+
+    prepared = materialize_entry_files(entry)
+    payload = entry.get("payload") or {}
+    root = Path(prepared["runtime_root"])
+    prompt = str(payload.get("prompt_markdown") or "")
+    metadata = copy.deepcopy(payload.get("source_metadata") or payload.get("configuration") or {})
+    # Preserve prompt frontmatter, with explicitly saved metadata authoritative.
+    if prompt.startswith("---\n"):
+        parts = prompt.split("---", 2)
+        if len(parts) == 3:
+            original = yaml.safe_load(parts[1]) or {}
+            metadata = {**(original if isinstance(original, dict) else {}), **metadata}
+            prompt = parts[2].lstrip("\n")
+    metadata["skill_id"] = str(entry["object_key"])
+    questionnaire = (payload.get("runtime_contract") or {}).get("questionnaire")
+    if isinstance(questionnaire, dict):
+        metadata["questionnaire"] = copy.deepcopy(questionnaire)
+    (root / "SKILL.md").write_text(
+        "---\n" + yaml.safe_dump(metadata, allow_unicode=True) + "---\n" + prompt,
+        encoding="utf-8",
+    )
+    bundle = load_skill_bundle_from_directory(root)
+    bundle.contract = replace(bundle.contract, skill_id=str(entry["object_key"]))
+    bundle._skill_markdown = str(payload.get("prompt_markdown") or "")
+    bundle._skill_markdown_loader = None
+    bundle._scripts = {path.relative_to(root).as_posix(): path for path in bundle.scripts.values()}
+    return bundle

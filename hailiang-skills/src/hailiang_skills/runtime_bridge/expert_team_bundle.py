@@ -34,6 +34,7 @@ class ExpertTeamDefinition:
     rules_markdown: str
     coordinator_expert_id: str
     members: tuple[ExpertTeamMember, ...]
+    brief: str = ""
     source_dir: Path | None = None
 
     @property
@@ -145,6 +146,7 @@ def load_expert_team_bundle(
         rules_markdown=rules_path.read_text(encoding="utf-8").strip(),
         coordinator_expert_id=coordinator_expert_id,
         members=tuple(members),
+        brief=str(raw.get("brief") or "").strip(),
         source_dir=root,
     )
 
@@ -168,6 +170,7 @@ def build_expert_team_catalog(team_registry: ExpertTeamRegistry | None, expert_r
         items.append({
             "team_id": team.team_id,
             "name": team.name,
+            "brief": team.brief,
             "description": _team_summary(team.rules_markdown),
             "topology": "team",
             "coordinator_expert_id": team.coordinator_expert_id,

@@ -92,6 +92,16 @@ export type SseV2State = {
   session_created: boolean;
   profile_switched: boolean;
   context_activation: "auto" | "none" | string;
+  configuration_changed: boolean;
+  configuration: {
+    code?: "CONFIGURATION_UPDATED" | string;
+    previous_deployment_id?: string | null;
+    previous_package_hash?: string | null;
+    deployment_id: string | null;
+    package_hash: string | null;
+    expert_team_id?: string | null;
+    active_expert_id?: string | null;
+  } | Record<string, never>;
   expert_context: {
     expert_team_id: string | null;
     expert_id: string | null;
@@ -107,8 +117,8 @@ export type SseV2State = {
   team_handoff: TeamHandoff | Record<string, never>;
   expert: {
     mode: "none" | "single" | "team" | string;
-    team: { team_id?: string; name?: string; coordinator_expert_id?: string } | Record<string, never>;
-    active: { expert_id?: string; name?: string; mention_name?: string; is_coordinator?: boolean } | Record<string, never>;
+    team: { team_id?: string; name?: string; brief?: string; coordinator_expert_id?: string } | Record<string, never>;
+    active: { expert_id?: string; name?: string; brief?: string; mention_name?: string; is_coordinator?: boolean } | Record<string, never>;
     activation: {
       source?: "team_default_coordinator" | "explicit_or_restored" | string;
       is_default?: boolean;

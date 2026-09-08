@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  Archive,
+  ArchiveRestore,
   Boxes,
   Braces,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleUserRound,
   CloudUpload,
   Code2,
@@ -13,6 +17,7 @@ import {
   GitCompareArrows,
   History,
   Layers3,
+  MoonStar,
   PackageCheck,
   Plus,
   RefreshCcw,
@@ -21,6 +26,7 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  SunMedium,
   Trash2,
   UsersRound,
   Wrench,
@@ -31,6 +37,7 @@ import { getRuntimeWorkbenchApiBaseUrl } from "@/config/runtime";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { MessageBlocksRenderer } from "@/components/message-blocks/MessageBlocksRenderer";
 import { TeamHandoffCard } from "@/components/message-blocks/TeamHandoffCard";
+import { useChatStore } from "@/store/useChatStore";
 import { presentationFromSseState } from "@/utils/conversationPresentation";
 import type { FactFormField, MessageBlock } from "@/types/messageBlocks";
 import type { MessageInteractionState, MessagePresentation, TeamHandoff } from "@/utils/api";
@@ -95,6 +102,7 @@ const emptyPayload = (type: WorkbenchObjectType): Record<string, unknown> => {
   if (type === "expert")
     return {
       rules_markdown: "# 专家规则\n\n请填写专家角色、边界和决策原则。",
+      brief: "",
       budget: { max_iters: 4, max_skill_calls: 3 },
       capabilities: [
         "execute_skill",
@@ -104,6 +112,7 @@ const emptyPayload = (type: WorkbenchObjectType): Record<string, unknown> => {
     };
   return {
     rules_markdown: "# 专家团规则\n\n请填写协同、转交与兜底原则。",
+    brief: "",
     coordinator_expert_id: "",
     members: [],
   };
@@ -121,6 +130,54 @@ function formatTime(value: string | undefined): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+type ReleaseGroup = {
+  object_id: string;
+  object_type: WorkbenchObjectType;
+  object_key: string;
+  name: string;
+  releases: ObjectRelease[];
+};
+
+export function groupReleasesByObject(releaseItems: ObjectRelease[]): ReleaseGroup[] {
+  const groups = new Map<string, ReleaseGroup>();
+  for (const release of releaseItems) {
+    const existing = groups.get(release.object_id);
+    if (existing) {
+      existing.releases.push(release);
+      continue;
+    }
+    groups.set(release.object_id, {
+      object_id: release.object_id,
+      object_type: release.object_type,
+      object_key: release.object_key,
+      name: release.name,
+      releases: [release],
+    });
+  }
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      releases: [...group.releases].sort(
+        (left, right) => Number(right.is_current) - Number(left.is_current) || right.release_no - left.release_no,
+      ),
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name, "zh-CN") || left.object_key.localeCompare(right.object_key));
+}
+
+/**
+ * Candidate-test stream IDs are browser-local correlation values. Some of the
+ * embedded browsers used by the workbench expose Web Crypto but not
+ * `randomUUID`, so do not make sending a test message depend on that optional
+ * API.
+ */
+function makeCandidateStreamId(): string {
+  const webCrypto = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+  if (typeof webCrypto?.randomUUID === "function") {
+    return `candidate-stream-${webCrypto.randomUUID()}`;
+  }
+  return `candidate-stream-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 type CandidateTraceEntity = {
@@ -247,6 +304,7 @@ function StatusBadge({
 
 export default function Workbench() {
   const apiBaseUrl = getRuntimeWorkbenchApiBaseUrl();
+  const { themeMode, setThemeMode } = useChatStore();
   const [actor, setActor] = useState<WorkbenchActor | null>(() =>
     readWorkbenchActor(),
   );
@@ -270,6 +328,8 @@ export default function Workbench() {
   const [payload, setPayload] = useState<Record<string, unknown>>({});
   const [runtimeContractText, setRuntimeContractText] = useState("{}");
   const [selectedReleaseIds, setSelectedReleaseIds] = useState<string[]>([]);
+  const [expandedDependencyObjectIds, setExpandedDependencyObjectIds] = useState<string[]>([]);
+  const [expandedPublishedObjectIds, setExpandedPublishedObjectIds] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<WorkbenchObjectType | "all">(
     "all",
@@ -280,6 +340,9 @@ export default function Workbench() {
     text: string;
   } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [archiveTarget, setArchiveTarget] = useState<WorkbenchObject | null>(null);
+  const [archiveConfirmation, setArchiveConfirmation] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<WorkbenchObject | null>(
     null,
   );
@@ -299,6 +362,11 @@ export default function Workbench() {
     name: "",
     description: "",
   });
+
+  useEffect(() => {
+    document.body.dataset.theme = themeMode;
+    document.documentElement.dataset.theme = themeMode;
+  }, [themeMode]);
   const [debugEvidenceId, setDebugEvidenceId] = useState("");
   const [debugComplete, setDebugComplete] = useState(false);
   const [manualConfirmed, setManualConfirmed] = useState(false);
@@ -337,7 +405,7 @@ export default function Workbench() {
     try {
       const [objectResult, releaseResult, deploymentResult, auditResult] =
         await Promise.all([
-          workbenchApi.listObjects(apiBaseUrl),
+          workbenchApi.listObjects(apiBaseUrl, showArchived),
           workbenchApi.listReleases(apiBaseUrl),
           workbenchApi.listDeployments(apiBaseUrl),
           workbenchApi.listAudit(apiBaseUrl),
@@ -354,7 +422,7 @@ export default function Workbench() {
         text: error instanceof Error ? error.message : "工作台数据加载失败",
       });
     }
-  }, [apiBaseUrl]);
+  }, [apiBaseUrl, showArchived]);
 
   useEffect(() => {
     void loadAll();
@@ -425,8 +493,18 @@ export default function Workbench() {
       selectedObject.object_type === "expert" ? "skill" : "expert";
     return releases.filter(
       (item) => item.object_type === expected && !item.archived,
-    );
+    ).sort((left, right) => Number(right.is_current) - Number(left.is_current));
   }, [releases, selectedObject]);
+
+  const dependencyReleaseGroups = useMemo(
+    () => groupReleasesByObject(dependencyReleases),
+    [dependencyReleases],
+  );
+
+  const publishedReleaseGroups = useMemo(
+    () => groupReleasesByObject(releases),
+    [releases],
+  );
 
   const selectedLocks = useMemo<DependencyLock[]>(
     () =>
@@ -442,6 +520,63 @@ export default function Workbench() {
         })),
     [dependencyReleases, selectedReleaseIds],
   );
+
+  const duplicateDependencyObjectIds = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const lock of selectedLocks) {
+      counts.set(lock.object_id, (counts.get(lock.object_id) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([objectId]) => objectId);
+  }, [selectedLocks]);
+
+  const uniqueSelectedLocks = useMemo(() => {
+    const seen = new Set<string>();
+    return selectedLocks.filter((lock) => {
+      if (seen.has(lock.object_id)) return false;
+      seen.add(lock.object_id);
+      return true;
+    });
+  }, [selectedLocks]);
+
+  // Team membership is stored on the revision payload, while its concrete
+  // Expert releases live in dependency locks. Keep the presentation/routing
+  // fields beside the member instead of dropping them every time a revision
+  // is saved.
+  const teamMemberSettings = useMemo(() => {
+    const savedMembers = Array.isArray(payload.members)
+      ? payload.members.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      : [];
+    return uniqueSelectedLocks.map((lock) => {
+      const saved = savedMembers.find((item) => String(item.expert_id ?? "") === lock.object_key) ?? {};
+      const release = dependencyReleases.find((item) => item.release_id === lock.release_id);
+      return {
+        expert_id: lock.object_key,
+        mention_name: String(saved.mention_name ?? release?.name ?? lock.object_key),
+        routing_brief: String(saved.routing_brief ?? ""),
+        name: release?.name ?? lock.object_key,
+      };
+    });
+  }, [dependencyReleases, payload.members, uniqueSelectedLocks]);
+
+  function updateTeamMember(expertId: string, patch: Partial<{ mention_name: string; routing_brief: string }>) {
+    setPayload({
+      ...payload,
+      members: teamMemberSettings.map((member) =>
+        member.expert_id === expertId ? { ...member, ...patch } : member,
+      ),
+    });
+  }
+
+  function selectDependencyRelease(objectId: string, releaseId: string | null) {
+    setSelectedReleaseIds((current) => {
+      const retained = current.filter(
+        (id) => dependencyReleases.find((release) => release.release_id === id)?.object_id !== objectId,
+      );
+      return releaseId ? [...retained, releaseId] : retained;
+    });
+  }
 
   const latestRevision = selectedObject?.revisions?.[0] ?? null;
   const latestRelease = selectedObject?.releases?.[0] ?? null;
@@ -467,14 +602,20 @@ export default function Workbench() {
   const candidateTeamMembers = useMemo(() => {
     if (debugObject?.object_type !== "expert_team" || !selectedTestRevision) return [];
     const coordinatorObjectId = String(selectedTestRevision.payload.coordinator_expert_id ?? "");
+    const configuredMembers = Array.isArray(selectedTestRevision.payload.members)
+      ? selectedTestRevision.payload.members.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      : [];
     return selectedTestRevision.dependency_locks
       .filter((item) => item.object_type === "expert")
-      .map((item) => ({
-        expert_id: item.object_key,
-        mention_name: objects.find((object) => object.object_id === item.object_id)?.name || item.object_key,
-        routing_brief: "",
-        is_coordinator: item.object_id === coordinatorObjectId,
-      }));
+      .map((item) => {
+        const configured = configuredMembers.find((member) => String(member.expert_id ?? "") === item.object_key);
+        return {
+          expert_id: item.object_key,
+          mention_name: String(configured?.mention_name ?? objects.find((object) => object.object_id === item.object_id)?.name ?? item.object_key),
+          routing_brief: String(configured?.routing_brief ?? ""),
+          is_coordinator: item.object_id === coordinatorObjectId,
+        };
+      });
   }, [debugObject?.object_type, objects, selectedTestRevision]);
   const candidateTargetExpert = candidateTeamMembers.find((item) => item.expert_id === candidateTargetExpertId) ?? null;
 
@@ -712,6 +853,42 @@ export default function Workbench() {
     }
   }
 
+  async function archiveObject() {
+    if (!actor || !archiveTarget || archiveConfirmation !== archiveTarget.name) return;
+    setBusy(true);
+    try {
+      await workbenchApi.archiveObject(apiBaseUrl, archiveTarget.object_id, actor.actor_id);
+      const archivedName = archiveTarget.name;
+      setArchiveTarget(null);
+      setArchiveConfirmation("");
+      setSelectedId("");
+      setSelectedObject(null);
+      setPayload({});
+      setPendingAssets([]);
+      await loadAll();
+      setNotice({ tone: "ok", text: `“${archivedName}”已归档，历史修订和发布版本均已保留。` });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "归档失败" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unarchiveObject(target: WorkbenchObject) {
+    if (!actor) return;
+    setBusy(true);
+    try {
+      await workbenchApi.unarchiveObject(apiBaseUrl, target.object_id, actor.actor_id);
+      await loadAll();
+      await openObject(target.object_id);
+      setNotice({ tone: "ok", text: `“${target.name}”已恢复到对象库。` });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "恢复归档失败" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function migrateObjectId() {
     if (!actor || !idMigrationTarget || idMigrationConfirmation !== idMigrationTarget.name || !nextObjectKey.trim()) return;
     setBusy(true);
@@ -756,6 +933,13 @@ export default function Workbench() {
 
   async function saveRevision() {
     if (!actor || !selectedObject) return;
+    if (duplicateDependencyObjectIds.length) {
+      setNotice({
+        tone: "error",
+        text: "同一依赖对象锁定了多个版本，请在展开的对象版本列表中保留一个版本后再保存。",
+      });
+      return;
+    }
     let nextPayload = { ...payload };
     if (selectedObject.object_type === "skill") {
       try {
@@ -774,7 +958,11 @@ export default function Workbench() {
     if (selectedObject.object_type === "expert_team") {
       nextPayload = {
         ...nextPayload,
-        members: selectedLocks.map((item) => ({ expert_id: item.object_key })),
+        members: teamMemberSettings.map(({ expert_id, mention_name, routing_brief }) => ({
+          expert_id,
+          mention_name: mention_name.trim(),
+          routing_brief: routing_brief.trim(),
+        })),
       };
     }
     setBusy(true);
@@ -873,7 +1061,7 @@ export default function Workbench() {
         : formSubmission
           ? "已提交表单"
           : message;
-      const optimisticAssistantId = `candidate-stream-${crypto.randomUUID()}`;
+      const optimisticAssistantId = makeCandidateStreamId();
       streamAbortController = new AbortController();
       candidateStreamAbortRef.current = streamAbortController;
       let streamError = "";
@@ -966,28 +1154,45 @@ export default function Workbench() {
         text: `已按 r${selectedTestRevision.revision_no} 的候选快照完成测试。`,
       });
     } catch (error) {
+      // Stopping a candidate turn intentionally aborts this browser-side SSE
+      // reader. It is not a user-visible request failure.
+      if (streamAbortController?.signal.aborted) return;
       setNotice({
         tone: "error",
         text: error instanceof Error ? error.message : "候选修订测试失败",
       });
     } finally {
-      if (candidateStreamAbortRef.current === streamAbortController) {
+      const ownsStream = candidateStreamAbortRef.current === streamAbortController;
+      if (ownsStream) {
         candidateStreamAbortRef.current = null;
+        setBusy(false);
       }
-      setBusy(false);
     }
   }
 
   async function stopCandidateRevisionTest() {
     if (!actor || !revisionTestSession || !candidateConversationState?.run_id || !busy) return;
     try {
-      await workbenchApi.stopRevisionTestTurn(
+      const stopped = await workbenchApi.stopRevisionTestTurn(
         apiBaseUrl,
         revisionTestSession.debug_session_id,
         candidateConversationState.run_id,
         actor.actor_id,
       );
-      setNotice({ tone: "ok", text: "已请求停止候选修订回复，正在保留已生成内容与当前专家状态。" });
+      if (stopped.state?.protocol === "hailiang.sse.v2") {
+        setCandidateConversationState(stopped.state as unknown as SseV2State);
+      }
+      // The server has recorded the cancellation marker. Release the editor
+      // immediately instead of waiting for a slow upstream model connection
+      // to return. The old reader is intentionally aborted; its finally block
+      // is ownership-guarded so it cannot clear a newer turn's loading state.
+      const stream = candidateStreamAbortRef.current;
+      if (stream) {
+        candidateStreamAbortRef.current = null;
+        stream.abort();
+      }
+      setBusy(false);
+      setNotice({ tone: "ok", text: "已停止本轮候选测试，可以继续编辑并发送下一条问题。" });
     } catch (error) {
       setNotice({
         tone: "error",
@@ -1218,6 +1423,26 @@ export default function Workbench() {
     }
   }
 
+  async function changeRelease(release: ObjectRelease, draft: boolean) {
+    if (!actor) return;
+    setBusy(true);
+    try {
+      if (draft) {
+        await workbenchApi.draftFromRelease(apiBaseUrl, release.release_id, actor.actor_id);
+      } else {
+        const current = releases.find((item) => item.object_id === release.object_id && item.is_current);
+        await workbenchApi.makeCurrent(apiBaseUrl, release.release_id, current?.release_id ?? null, actor.actor_id);
+      }
+      await loadAll();
+      await openObject(release.object_id);
+      setNotice({tone: "ok", text: draft ? "已创建待调试草稿。" : "已切换当前发布版本，生产部署需单独激活。"});
+    } catch (error) {
+      setNotice({tone: "error", text: error instanceof Error ? error.message : "版本操作失败"});
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function importPackage(file: File) {
     if (!actor) return;
     setBusy(true);
@@ -1246,7 +1471,7 @@ export default function Workbench() {
       await loadAll();
       setNotice({
         tone: "ok",
-        text: `已导入 ${result.created_objects} 个新对象，新增 ${result.created_revisions} 个修订、${result.created_releases} 个发布；复用 ${result.reused_releases} 个已有发布版本。`,
+        text: `已导入 ${result.created_objects} 个新对象，新增 ${result.created_revisions} 个修订、${result.created_releases} 个发布；复用 ${result.reused_releases} 个已有发布版本${result.unarchived_objects ? `，并恢复 ${result.unarchived_objects} 个此前归档的依赖对象` : ""}。`,
       });
     } catch (error) {
       setNotice({
@@ -1322,7 +1547,7 @@ export default function Workbench() {
 
   if (!actor) {
     return (
-      <main className="min-h-screen bg-[#08111f] px-4 py-12 text-white">
+      <main className="workbench-shell min-h-screen bg-[#08111f] px-4 py-12 text-white">
         <div className="mx-auto flex min-h-[75vh] max-w-5xl items-center justify-center">
           <section className="grid w-full overflow-hidden rounded-[32px] border border-white/10 bg-slate-950/70 shadow-2xl lg:grid-cols-[1.1fr_0.9fr]">
             <div className="bg-[radial-gradient(circle_at_top_left,_rgba(14,165,233,0.28),_transparent_42%),linear-gradient(145deg,#0f2743,#101827)] p-10 lg:p-14">
@@ -1379,9 +1604,9 @@ export default function Workbench() {
   }
 
   return (
-    <main className="min-h-screen bg-[#07101d] text-slate-100">
+    <main className="workbench-shell min-h-screen bg-[#07101d] text-slate-100">
       <div className="flex min-h-screen">
-        <aside className="hidden w-[248px] shrink-0 border-r border-white/10 bg-[#091422] p-5 lg:flex lg:flex-col">
+        <aside className="workbench-sidebar hidden w-[248px] shrink-0 border-r border-white/10 bg-[#091422] p-5 lg:flex lg:flex-col">
           <div className="flex items-center gap-3 px-2">
             <div className="grid h-10 w-10 place-items-center rounded-xl bg-sky-400 text-slate-950">
               <Sparkles size={20} />
@@ -1437,7 +1662,7 @@ export default function Workbench() {
         </aside>
 
         <div className="min-w-0 flex-1">
-          <header className="sticky top-0 z-20 border-b border-white/10 bg-[#07101d]/90 px-5 py-4 backdrop-blur-xl lg:px-8">
+          <header className="workbench-header sticky top-0 z-20 border-b border-white/10 bg-[#07101d]/90 px-5 py-4 backdrop-blur-xl lg:px-8">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <p className="text-xs uppercase tracking-[0.2em] text-sky-400">
@@ -1460,6 +1685,26 @@ export default function Workbench() {
                   <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-emerald-300" />
                   内核已对齐
                 </StatusBadge>
+                <div className="flex items-center rounded-xl border border-white/10 bg-slate-950/70 p-1" aria-label="主题模式">
+                  {[
+                    { value: "dark", label: "夜间", icon: MoonStar },
+                    { value: "light", label: "白天", icon: SunMedium },
+                  ].map((mode) => {
+                    const Icon = mode.icon;
+                    return (
+                      <button
+                        key={mode.value}
+                        type="button"
+                        onClick={() => setThemeMode(mode.value as "dark" | "light")}
+                        className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition ${themeMode === mode.value ? "bg-sky-400/20 text-sky-100" : "text-slate-400 hover:text-white"}`}
+                        aria-label={`切换${mode.label}模式`}
+                      >
+                        <Icon size={14} />
+                        <span className="hidden sm:inline">{mode.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
                 <button
                   type="button"
                   onClick={() => void loadAll()}
@@ -1534,6 +1779,15 @@ export default function Workbench() {
                     <Plus size={18} />
                   </button>
                 </div>
+                <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-slate-400">
+                  <input
+                    type="checkbox"
+                    checked={showArchived}
+                    onChange={(event) => setShowArchived(event.target.checked)}
+                    className="h-4 w-4 rounded border-white/15 bg-slate-950 text-sky-400"
+                  />
+                  显示已归档对象
+                </label>
                 <div className="mt-4 space-y-2">
                   {filteredObjects.map((item) => {
                     const meta = TYPE_META[item.object_type];
@@ -1562,7 +1816,11 @@ export default function Workbench() {
                             <p className="mt-1 truncate font-mono text-[11px] text-slate-500">
                               {item.object_key}
                             </p>
+                            {item.object_type !== "skill" && item.brief ? (
+                              <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-400">{item.brief}</p>
+                            ) : null}
                             <div className="mt-3 flex gap-2">
+                              {item.archived ? <StatusBadge tone="slate">已归档</StatusBadge> : null}
                               <StatusBadge>
                                 r{item.latest_revision_no}
                               </StatusBadge>
@@ -1618,6 +1876,30 @@ export default function Workbench() {
                         </p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
+                        {selectedObject.archived ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void unarchiveObject(selectedObject)}
+                            className="inline-flex items-center gap-2 rounded-xl border border-emerald-400/25 bg-emerald-400/[0.06] px-4 py-2.5 text-sm font-medium text-emerald-100 hover:bg-emerald-400/10 disabled:opacity-40"
+                          >
+                            <ArchiveRestore size={16} />
+                            恢复归档
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => {
+                              setArchiveTarget(selectedObject);
+                              setArchiveConfirmation("");
+                            }}
+                            className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 hover:bg-white/5 disabled:opacity-40"
+                          >
+                            <Archive size={16} />
+                            归档
+                          </button>
+                        )}
                         <button
                           type="button"
                           disabled={busy}
@@ -1680,6 +1962,22 @@ export default function Workbench() {
                       </div>
                     ) : null}
                     <div className="mt-8 grid gap-6">
+                      {selectedObject.object_type !== "skill" ? (
+                        <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-5">
+                          <label className="block text-sm font-medium text-slate-200">
+                            Brief <span className="text-rose-300">*</span>
+                            <span className="ml-2 text-xs font-normal text-slate-500">面向使用者的一行摘要，1–120 字；不用于专家团分流。</span>
+                            <input
+                              value={String(payload.brief ?? "")}
+                              onChange={(event) => setPayload({ ...payload, brief: event.target.value })}
+                              maxLength={120}
+                              placeholder={selectedObject.object_type === "expert" ? "例如：为学生提供学习方法与提分规划支持" : "例如：整合升学、学习与成长咨询的协同专家团"}
+                              className="mt-3 w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-200 outline-none focus:border-sky-400/40"
+                            />
+                            <span className="mt-2 block text-right text-xs font-normal text-slate-500">{String(payload.brief ?? "").trim().length}/120</span>
+                          </label>
+                        </div>
+                      ) : null}
                       <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-5">
                         <div className="mb-4 flex items-center gap-2">
                           <Code2 size={17} className="text-sky-300" />
@@ -1743,7 +2041,7 @@ export default function Workbench() {
                             </div>
                             <StatusBadge
                               tone={
-                                selectedLocks.length >=
+                                uniqueSelectedLocks.length >=
                                 (selectedObject.object_type === "expert_team"
                                   ? 2
                                   : 1)
@@ -1751,72 +2049,118 @@ export default function Workbench() {
                                   : "amber"
                               }
                             >
-                              已选 {selectedLocks.length}
+                              已选 {uniqueSelectedLocks.length}
                             </StatusBadge>
                           </div>
-                          <div className="mt-5 grid gap-3 md:grid-cols-2">
-                            {dependencyReleases.map((release) => (
-                              <label
-                                key={release.release_id}
-                                className={`flex cursor-pointer items-start gap-3 rounded-2xl border p-4 ${selectedReleaseIds.includes(release.release_id) ? "border-sky-400/35 bg-sky-400/[0.08]" : "border-white/10 bg-slate-950/40"}`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={selectedReleaseIds.includes(
-                                    release.release_id,
-                                  )}
-                                  onChange={() =>
-                                    setSelectedReleaseIds((current) =>
-                                      current.includes(release.release_id)
-                                        ? current.filter(
-                                            (id) => id !== release.release_id,
-                                          )
-                                        : [...current, release.release_id],
-                                    )
-                                  }
-                                  className="mt-1 accent-sky-400"
-                                />
-                                <div>
-                                  <p className="text-sm font-medium">
-                                    {release.name}{" "}
-                                    <span className="ml-1 text-sky-300">
-                                      {release.version}
-                                    </span>
-                                  </p>
-                                  <p className="mt-1 font-mono text-[11px] text-slate-500">
-                                    {shortHash(release.content_hash)}
-                                  </p>
+                          {duplicateDependencyObjectIds.length ? (
+                            <div className="mt-5 rounded-2xl border border-amber-400/30 bg-amber-400/[0.08] p-4 text-sm text-amber-100">
+                              当前草稿中有同一对象锁定多个历史版本。请展开对应对象并保留一个版本后再保存；系统不会自动替换既有锁定。
+                            </div>
+                          ) : null}
+                          <div className="mt-5 space-y-3">
+                            {dependencyReleaseGroups.map((group) => {
+                              const selected = selectedLocks.filter((lock) => lock.object_id === group.object_id);
+                              const expanded = expandedDependencyObjectIds.includes(group.object_id);
+                              const selectedLabel = selected.length === 1
+                                ? `已锁定 v${selected[0].release_no}`
+                                : selected.length > 1
+                                  ? `冲突：已锁定 ${selected.map((lock) => `v${lock.release_no}`).join("、")}`
+                                  : "未选择版本";
+                              return (
+                                <div key={group.object_id} className="rounded-2xl border border-white/10 bg-slate-950/40">
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedDependencyObjectIds((current) => current.includes(group.object_id) ? current.filter((id) => id !== group.object_id) : [...current, group.object_id])}
+                                    className="flex w-full items-center justify-between gap-4 p-4 text-left"
+                                    aria-expanded={expanded}
+                                  >
+                                    <div>
+                                      <p className="text-sm font-medium">{group.name}</p>
+                                      <p className="mt-1 font-mono text-[11px] text-slate-500">{TYPE_META[group.object_type].label} · {group.object_key} · {group.releases.length} 个发布版本</p>
+                                    </div>
+                                    <div className="flex items-center gap-2"><StatusBadge tone={selected.length === 1 ? "blue" : selected.length > 1 ? "amber" : "slate"}>{selectedLabel}</StatusBadge>{expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</div>
+                                  </button>
+                                  {expanded ? (
+                                    <div className="border-t border-white/10 p-3">
+                                      <div className="space-y-2">
+                                        {group.releases.map((release) => (
+                                          <label key={release.release_id} className={`flex cursor-pointer items-center justify-between gap-3 rounded-xl border p-3 ${selectedReleaseIds.includes(release.release_id) ? "border-sky-400/35 bg-sky-400/[0.08]" : "border-white/10"}`}>
+                                            <span className="flex items-center gap-3"><input type="radio" name={`dependency-${group.object_id}`} checked={selectedReleaseIds.includes(release.release_id)} onChange={() => selectDependencyRelease(group.object_id, release.release_id)} className="accent-sky-400" /><span><strong className="text-sm">{release.version}</strong>{release.is_current ? <span className="ml-2 text-xs text-emerald-200">当前发布</span> : null}<span className="mt-1 block font-mono text-[11px] text-slate-500">{shortHash(release.content_hash)}</span></span></span>
+                                          </label>
+                                        ))}
+                                      </div>
+                                      {selected.length ? <button type="button" onClick={() => selectDependencyRelease(group.object_id, null)} className="mt-3 text-xs text-slate-400 hover:text-white">取消选择此对象</button> : null}
+                                    </div>
+                                  ) : null}
                                 </div>
-                              </label>
-                            ))}
+                              );
+                            })}
                           </div>
                           {selectedObject.object_type === "expert_team" &&
-                          selectedLocks.length ? (
-                            <label className="mt-5 block text-sm text-slate-300">
-                              主协调专家
-                              <select
-                                value={String(
-                                  payload.coordinator_expert_id ?? "",
-                                )}
-                                onChange={(event) =>
-                                  setPayload({
-                                    ...payload,
-                                    coordinator_expert_id: event.target.value,
-                                  })
-                                }
-                                className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none"
-                              >
-                                <option value="">请选择主协调专家</option>
-                                {selectedLocks.map((item) => (
-                                  <option
-                                    key={item.object_id}
-                                    value={item.object_id}
-                                  >
-                                    {item.object_key} · v{item.release_no}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
+                          uniqueSelectedLocks.length ? (
+                            <div className="mt-5 space-y-5">
+                              <label className="block text-sm text-slate-300">
+                                主协调专家
+                                <select
+                                  value={String(
+                                    payload.coordinator_expert_id ?? "",
+                                  )}
+                                  onChange={(event) =>
+                                    setPayload({
+                                      ...payload,
+                                      coordinator_expert_id: event.target.value,
+                                    })
+                                  }
+                                  className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none"
+                                >
+                                  <option value="">请选择主协调专家</option>
+                                  {uniqueSelectedLocks.map((item) => {
+                                    const expertRelease = dependencyReleases.find(
+                                      (release) => release.release_id === item.release_id,
+                                    );
+                                    const expertName = expertRelease?.name || item.object_key;
+                                    return (
+                                      <option
+                                        key={item.object_id}
+                                        value={item.object_id}
+                                      >
+                                        {expertName}（{item.object_key}）· v{item.release_no}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                              </label>
+                              <div>
+                                <p className="text-sm text-slate-300">成员展示名称与分流职责</p>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  主协调专家会用展示名称、ID 与职责摘要生成受控移交确认卡；名称在当前专家团内必须唯一。
+                                </p>
+                                <div className="mt-3 grid gap-3">
+                                  {teamMemberSettings.map((member) => (
+                                    <div key={member.expert_id} className="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/40 p-4 md:grid-cols-2">
+                                      <label className="text-xs text-slate-400">
+                                        展示名称 · {member.name}（{member.expert_id}）
+                                        <input
+                                          value={member.mention_name}
+                                          onChange={(event) => updateTeamMember(member.expert_id, { mention_name: event.target.value })}
+                                          placeholder={member.name}
+                                          className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400/40"
+                                        />
+                                      </label>
+                                      <label className="text-xs text-slate-400">
+                                        职责摘要（用于分流）
+                                        <input
+                                          value={member.routing_brief}
+                                          onChange={(event) => updateTeamMember(member.expert_id, { routing_brief: event.target.value })}
+                                          placeholder="例如：学习提分、学习方法与学科问题"
+                                          className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400/40"
+                                        />
+                                      </label>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
                           ) : null}
                         </div>
                       ) : null}
@@ -1926,6 +2270,19 @@ export default function Workbench() {
                           </div>
                         ),
                       )}
+                      <div className="rounded-2xl border border-white/10 p-4">
+                        <p className="text-sm font-medium">已发布版本</p>
+                        <div className="mt-3 space-y-2">
+                          {(selectedObject.releases ?? []).length ? [...(selectedObject.releases ?? [])]
+                            .sort((left, right) => Number(right.is_current) - Number(left.is_current) || right.release_no - left.release_no)
+                            .map((release) => (
+                              <div key={release.release_id} className="flex items-center justify-between rounded-xl bg-slate-950/50 px-3 py-2 text-xs">
+                                <span>{release.version}{release.is_current ? " · 当前发布" : ""}</span>
+                                <span className="font-mono text-slate-500">{shortHash(release.content_hash)}</span>
+                              </div>
+                            )) : <p className="text-xs text-slate-500">尚未发布版本</p>}
+                        </div>
+                      </div>
                     </div>
                   ) : (
                     <p className="mt-4 text-sm text-slate-500">
@@ -2355,34 +2712,24 @@ export default function Workbench() {
                     </div>
                   </div>
                   <div className="mt-6 space-y-3">
-                    {releases.map((release) => (
-                      <div
-                        key={release.release_id}
-                        className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/10 bg-slate-950/40 p-4"
-                      >
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="font-medium">{release.name}</p>
-                            <StatusBadge tone="green">
-                              {release.version}
-                            </StatusBadge>
-                          </div>
-                          <p className="mt-2 text-xs text-slate-500">
-                            {TYPE_META[release.object_type].label} ·{" "}
-                            {release.dependency_locks.length} 个锁定依赖 ·{" "}
-                            {shortHash(release.content_hash)}
-                          </p>
+                    {publishedReleaseGroups.map((group) => {
+                      const expanded = expandedPublishedObjectIds.includes(group.object_id);
+                      const current = group.releases.find((release) => release.is_current);
+                      return (
+                        <div key={group.object_id} className="rounded-2xl border border-white/10 bg-slate-950/40">
+                          <button type="button" onClick={() => setExpandedPublishedObjectIds((items) => items.includes(group.object_id) ? items.filter((id) => id !== group.object_id) : [...items, group.object_id])} className="flex w-full items-center justify-between gap-4 p-4 text-left" aria-expanded={expanded}>
+                            <div><p className="font-medium">{group.name}</p><p className="mt-1 text-xs text-slate-500">{TYPE_META[group.object_type].label} · {group.object_key} · {group.releases.length} 个发布版本</p></div>
+                            <div className="flex items-center gap-2"><StatusBadge tone={current ? "green" : "slate"}>{current ? `${current.version} · 当前发布` : "无当前发布"}</StatusBadge>{expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</div>
+                          </button>
+                          {expanded ? <div className="space-y-3 border-t border-white/10 p-4">{group.releases.map((release) => (
+                            <div key={release.release_id} className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/10 p-3">
+                              <div><p className="text-sm font-medium">{release.version}{release.is_current ? <span className="ml-2 text-xs text-emerald-200">当前发布</span> : null}</p><p className="mt-1 text-xs text-slate-500">{release.dependency_locks.length} 个锁定依赖 · {shortHash(release.content_hash)}</p></div>
+                              <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void exportRelease(release)} className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm text-slate-300 hover:text-white"><Download size={15} />导出</button><button type="button" disabled={busy || release.is_current} onClick={() => void changeRelease(release, false)} className="rounded-xl border border-amber-400/25 px-3 py-2 text-sm text-amber-100 hover:bg-amber-400/10 disabled:cursor-not-allowed disabled:opacity-40">设为当前发布</button><button type="button" disabled={busy} onClick={() => void changeRelease(release, true)} className="rounded-xl border border-sky-400/25 px-3 py-2 text-sm text-sky-100 hover:bg-sky-400/10 disabled:cursor-not-allowed disabled:opacity-40">从此版本创建草稿</button></div>
+                            </div>
+                          ))}</div> : null}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => void exportRelease(release)}
-                          className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm text-slate-300 hover:text-white"
-                        >
-                          <Download size={15} />
-                          导出
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
                 <div className="space-y-6">
@@ -2623,6 +2970,30 @@ export default function Workbench() {
           </div>
         </div>
       ) : null}
+      {archiveTarget ? (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
+          <div role="alertdialog" aria-modal="true" aria-labelledby="archive-object-title" className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#151923] p-6 shadow-2xl shadow-black/50">
+            <div className="flex items-start justify-between gap-5">
+              <div className="flex items-start gap-3">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-700/40 text-slate-200"><Archive size={19} /></div>
+                <div><p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">保留历史版本</p><h2 id="archive-object-title" className="mt-1 text-xl font-semibold">归档“{archiveTarget.name}”？</h2></div>
+              </div>
+              <button type="button" aria-label="关闭归档确认" onClick={() => { setArchiveTarget(null); setArchiveConfirmation(""); }} className="rounded-xl p-2 text-slate-500 hover:bg-white/5 hover:text-white"><X size={18} /></button>
+            </div>
+            <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm leading-6 text-slate-300">
+              归档不会删除修订、发布版本或资产。对象将从默认列表隐藏；勾选“显示已归档对象”后可以恢复。若它是数据库运行时正在使用的当前对象，请先切换上游依赖或生效专家团。
+            </div>
+            <label className="mt-5 block text-sm text-slate-300">请输入对象名称 <strong className="text-white">{archiveTarget.name}</strong> 以确认
+              <input autoFocus value={archiveConfirmation} onChange={(event) => setArchiveConfirmation(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && archiveConfirmation === archiveTarget.name && !busy) void archiveObject(); }} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none focus:border-slate-400/50" />
+            </label>
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <button type="button" disabled={busy} onClick={() => { setArchiveTarget(null); setArchiveConfirmation(""); }} className="rounded-xl border border-white/10 px-4 py-3 text-sm text-slate-300 hover:bg-white/5 disabled:opacity-40">取消</button>
+              <button type="button" disabled={busy || archiveConfirmation !== archiveTarget.name} onClick={() => void archiveObject()} className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-200 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-white disabled:opacity-35"><Archive size={16} />确认归档</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {deleteTarget ? (
         <div className="fixed inset-0 z-[60] grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
           <div
@@ -2730,7 +3101,7 @@ export default function Workbench() {
 
       {showCreate ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#101b2b] p-6 shadow-2xl">
+          <div className="workbench-modal w-full max-w-xl rounded-3xl border border-white/10 bg-[#101b2b] p-6 shadow-2xl">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-semibold">新建业务对象</h2>

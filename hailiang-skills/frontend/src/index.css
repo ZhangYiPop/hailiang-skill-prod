@@ -59,6 +59,54 @@ body[data-theme="light"]::before {
     linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px);
 }
 
+body[data-theme="light"] .workbench-shell {
+  background: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+body[data-theme="light"] .workbench-sidebar {
+  background: #eef6ff !important;
+}
+
+body[data-theme="light"] .workbench-header {
+  background: rgba(248, 250, 252, 0.92) !important;
+}
+
+body[data-theme="light"] .workbench-shell input:not([type="checkbox"]),
+body[data-theme="light"] .workbench-shell textarea,
+body[data-theme="light"] .workbench-shell select {
+  color: #0f172a !important;
+  background: #ffffff !important;
+  border-color: #cbd5e1 !important;
+}
+
+body[data-theme="light"] .workbench-shell input::placeholder,
+body[data-theme="light"] .workbench-shell textarea::placeholder {
+  color: #64748b !important;
+}
+
+body[data-theme="light"] .workbench-shell input[type="checkbox"] {
+  background: #ffffff !important;
+  border-color: #94a3b8 !important;
+}
+
+body[data-theme="light"] .workbench-shell .bg-slate-950,
+body[data-theme="light"] .workbench-shell .bg-slate-950\/40,
+body[data-theme="light"] .workbench-shell .bg-slate-950\/45,
+body[data-theme="light"] .workbench-shell .bg-slate-950\/50,
+body[data-theme="light"] .workbench-shell .bg-slate-950\/70 {
+  background-color: rgba(255, 255, 255, 0.88) !important;
+  border-color: #dbeafe !important;
+}
+
+body[data-theme="light"] [role="dialog"],
+body[data-theme="light"] [role="alertdialog"],
+body[data-theme="light"] .workbench-modal {
+  color: #0f172a !important;
+  background: #ffffff !important;
+  border-color: #cbd5e1 !important;
+}
+
 button,
 input,
 textarea {

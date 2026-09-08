@@ -42,6 +42,7 @@ export type RevisionAsset = {
 };
 
 export type ObjectRelease = {
+  is_current: boolean;
   release_id: string;
   object_id: string;
   object_type: WorkbenchObjectType;
@@ -58,11 +59,13 @@ export type ObjectRelease = {
 };
 
 export type WorkbenchObject = {
+  current_release_id: string | null;
   object_id: string;
   object_type: WorkbenchObjectType;
   object_key: string;
   name: string;
   description: string;
+  brief?: string;
   archived: boolean;
   latest_revision_no: number;
   latest_release_no: number;
@@ -117,6 +120,7 @@ export type WorkbenchObjectImportResult = {
   reused_objects: number;
   reused_revisions: number;
   reused_releases: number;
+  unarchived_objects: number;
   entries: Array<{
     object_id: string;
     object_type: WorkbenchObjectType;
@@ -129,6 +133,7 @@ export type WorkbenchObjectImportResult = {
     local_release_id: string;
     local_release_no: number;
     status: string;
+    unarchived: boolean;
   }>;
 };
 
@@ -355,8 +360,11 @@ export const workbenchApi = {
         device_token: deviceToken || null,
       }),
     }),
-  listObjects: (baseUrl: string) =>
-    request<{ objects: WorkbenchObject[] }>(baseUrl, "/workbench/v1/objects"),
+  listObjects: (baseUrl: string, includeArchived = false) =>
+    request<{ objects: WorkbenchObject[] }>(
+      baseUrl,
+      `/workbench/v1/objects?include_archived=${includeArchived ? "true" : "false"}`,
+    ),
   getObject: (baseUrl: string, objectId: string) =>
     request<WorkbenchObject>(baseUrl, `/workbench/v1/objects/${objectId}`),
   listRevisionAssets: (baseUrl: string, revisionId: string) =>
@@ -369,6 +377,18 @@ export const workbenchApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  archiveObject: (baseUrl: string, objectId: string, actorId: string) =>
+    request<{ object_id: string; archived: true }>(
+      baseUrl,
+      `/workbench/v1/objects/${objectId}/archive`,
+      { method: "POST", body: JSON.stringify({ actor_id: actorId }) },
+    ),
+  unarchiveObject: (baseUrl: string, objectId: string, actorId: string) =>
+    request<{ object_id: string; archived: false }>(
+      baseUrl,
+      `/workbench/v1/objects/${objectId}/unarchive`,
+      { method: "POST", body: JSON.stringify({ actor_id: actorId }) },
+    ),
   deleteObject: (
     baseUrl: string,
     objectId: string,
@@ -556,7 +576,7 @@ export const workbenchApi = {
   listDeployments: (baseUrl: string) =>
     request<{ deployments: Deployment[] }>(
       baseUrl,
-      "/deployment/v1/deployments?environment=prod",
+      "/deployment/v1/deployments",
     ),
   activateDeployment: (
     baseUrl: string,
@@ -603,6 +623,21 @@ export const workbenchApi = {
     releaseId: string,
     actorId: string,
   ): Promise<Blob> {
+    return this.downloadRelease(baseUrl, releaseId, actorId);
+  },
+  makeCurrent: (baseUrl: string, releaseId: string, currentId: string | null, actorId: string) =>
+    request<ObjectRelease>(baseUrl, `/workbench/v1/releases/${releaseId}/make-current`, {
+      method: "POST", body: JSON.stringify({expected_current_release_id: currentId, actor_id: actorId}),
+    }),
+  draftFromRelease: (baseUrl: string, releaseId: string, actorId: string) =>
+    request<ObjectRevision>(baseUrl, `/workbench/v1/releases/${releaseId}/drafts`, {
+      method: "POST", body: JSON.stringify({actor_id: actorId}),
+    }),
+  async downloadRelease(
+    baseUrl: string,
+    releaseId: string,
+    actorId: string,
+  ): Promise<Blob> {
     const response = await fetch(
       `${normalizeBaseUrl(baseUrl)}/workbench/v1/exports`,
       {
@@ -620,7 +655,7 @@ export const workbenchApi = {
     actorId: string,
   ): Promise<Deployment> {
     const response = await fetch(
-      `${normalizeBaseUrl(baseUrl)}/deployment/v1/imports?environment=prod&actor_id=${encodeURIComponent(actorId)}`,
+      `${normalizeBaseUrl(baseUrl)}/deployment/v1/imports?actor_id=${encodeURIComponent(actorId)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/zip" },

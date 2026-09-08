@@ -1144,6 +1144,30 @@ def _json_object(value: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def unwrap_questionnaire_assistant_message(value: str) -> str:
+    """Return questionnaire envelope prose without touching ordinary content.
+
+    Native-questionnaire models use ``assistant_message`` inside a JSON-only
+    control envelope.  This helper intentionally accepts *only* a complete
+    JSON object (or a complete fenced JSON object), so an ordinary response
+    that happens to mention ``assistant_message`` is never truncated.
+    """
+    original = str(value or "")
+    text = original.strip()
+    if not text:
+        return original
+    candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I)
+    try:
+        payload = json.loads(candidate)
+    except (TypeError, ValueError):
+        return original
+    if not isinstance(payload, dict) or not isinstance(payload.get("assistant_message"), str):
+        return original
+    message = payload["assistant_message"].strip()
+    # An empty control value must never erase an otherwise visible response.
+    return message or original
+
+
 def _fact_value(value: Any, value_type: str) -> Any | None:
     try:
         if value_type == "integer":

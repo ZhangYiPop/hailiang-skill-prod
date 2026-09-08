@@ -65,6 +65,8 @@ def empty_message_state(*, session_id: str, run_id: str) -> dict[str, Any]:
         "context_notice": {},
         "branch_version": 0,
         "profile_context_status": "matched",
+        "configuration_changed": False,
+        "configuration": {},
         "session_created": False,
         "profile_switched": False,
         "context_activation": "none",
@@ -431,6 +433,8 @@ class SseEnvelopeBuilder:
                 "session_created",
                 "profile_switched",
                 "context_activation",
+                "configuration_changed",
+                "configuration",
             ):
                 if key in data:
                     changed |= self._set(key, data[key])

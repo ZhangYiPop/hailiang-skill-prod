@@ -16,6 +16,7 @@ from hailiang_skills.api.routes.chat import build_chat_router
 from hailiang_skills.api.routes.chat_stream import build_chat_stream_router
 from hailiang_skills.api.routes.external_chat import build_external_chat_router
 from hailiang_skills.api.routes.token_usage import build_token_usage_router
+from hailiang_skills.api.routes.diagnostics import build_diagnostics_router
 from hailiang_skills.api.routes.facts import build_facts_router
 from hailiang_skills.api.routes.profiles import build_profiles_router
 from hailiang_skills.core.fact_service import FactService
@@ -62,6 +63,7 @@ from hailiang_skills.core.deployment import deployment_environment, node_name, r
 from hailiang_skills.storage.event_store import configure_event_store
 from hailiang_skills.storage.repositories.postgres_repo import SessionVersionConflict
 from hailiang_skills.workbench.factory import build_workbench_service
+from hailiang_skills.workbench.catalog import load_current_release_entries
 from pathlib import Path
 import os
 import json
@@ -109,6 +111,7 @@ _HTTP_ERROR_MESSAGES = {
     "EXPERT_CONTEXT_STALE": "专家上下文已更新，请使用服务端返回的最新状态继续。",
     "EXPERT_CONTEXT_OPERATION_INVALID": "expert_context.operation 与当前操作不匹配。",
     "CONTEXT_ACTIVATION_REQUIRED": "当前请求会切换孩子上下文；请使用 context_activation=auto，或先完成当前操作。",
+    "CONFIGURATION_UPDATED": "专家团配置已更新，旧交互已失效，请刷新后重试。",
 }
 
 
@@ -266,12 +269,26 @@ def create_app() -> FastAPI:
         quarantine_store=quarantine_store,
     )
     app.state.moderation_service = moderation_service
-    orchestrator = MainPlannerOrchestrator(registry, llm_config, moderation_service=moderation_service)
-    workbench_service = build_workbench_service(storage, orchestrator=orchestrator)
+    business_config_source = os.getenv("HAILIANG_BUSINESS_CONFIG_SOURCE", "filesystem").strip().lower()
+    if business_config_source not in {"filesystem", "database"}:
+        raise RuntimeError("HAILIANG_BUSINESS_CONFIG_SOURCE 仅支持 filesystem 或 database")
+    # Workbench owns the local SQLite session factory in development, so it
+    # must exist before a database-only runtime catalog can be read.
+    workbench_service = build_workbench_service(storage, orchestrator=None)
+    database_entries = load_current_release_entries(workbench_service.session_factory) if business_config_source == "database" else None
+    orchestrator = MainPlannerOrchestrator(
+        registry,
+        llm_config,
+        moderation_service=moderation_service,
+        business_config_entries=database_entries,
+    )
+    workbench_service.orchestrator = orchestrator
     app.state.workbench_service = workbench_service
-    if os.getenv("HAILIANG_WORKBENCH_BOOTSTRAP", "true").lower() in {"1", "true", "yes", "on"}:
+    if business_config_source == "filesystem" and os.getenv("HAILIANG_WORKBENCH_BOOTSTRAP", "false").lower() in {"1", "true", "yes", "on"}:
         workbench_service.bootstrap_from_runtime()
-    workbench_service.install_runtime_catalog()
+    if business_config_source == "database":
+        workbench_service.install_runtime_catalog()
+        workbench_service.install_active_deployment_runtime(deployment_environment())
     configured_origins = [item.strip() for item in os.getenv("HAILIANG_CORS_ORIGINS", "").split(",") if item.strip()]
     cors_origins = configured_origins or [
         "http://127.0.0.1:4174",
@@ -469,7 +486,13 @@ def create_app() -> FastAPI:
             return PlainTextResponse("prometheus-client is not installed", status_code=503)
         return PlainTextResponse(payload.decode("utf-8"), media_type="text/plain; version=0.0.4")
 
-    app.include_router(build_chat_router(repository, orchestrator, fact_service, storage.user_metadata_repository), prefix="/api/v1")
+    app.include_router(build_chat_router(
+        repository,
+        orchestrator,
+        fact_service,
+        storage.user_metadata_repository,
+        configuration_snapshot_resolver=lambda: workbench_service.active_deployment_snapshot(deployment_environment()),
+    ), prefix="/api/v1")
     app.include_router(
         build_chat_stream_router(
             repository,
@@ -493,6 +516,7 @@ def create_app() -> FastAPI:
     app.include_router(build_workbench_router(workbench_service), prefix="/workbench/v1")
     app.include_router(build_deployment_router(workbench_service), prefix="/deployment/v1")
     app.include_router(build_token_usage_router(storage.engine), prefix="/deployment/v1")
+    app.include_router(build_diagnostics_router(repository, storage.engine), prefix="/api/v1")
     app.include_router(
         build_security_quarantine_router(quarantine_store),
         prefix="/api/v1",

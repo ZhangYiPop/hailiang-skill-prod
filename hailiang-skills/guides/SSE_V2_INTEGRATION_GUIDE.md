@@ -34,7 +34,7 @@
 9. 收到任何 `state` 后断线，不自动重放原请求；通过会话历史恢复，再由用户决定是否重试。
 10. `run_id` 是一次执行，`message_id` 是一条消息，两者不能互换。
 
-普通 `chat` 不传 `expert_team_id`、`expert_id` 时，固定由通用对话 Runtime 承接：**大模型 + 当前 Soul**。它不是默认专家团，也不会隐式激活专家。专家团或专家只能由客户端明确选择后才进入该模式。
+新会话的普通 `chat` 不传 `expert_team_id`、`expert_id` 时，由通用对话 Runtime 承接：**大模型 + 当前 Soul**。但已在该 session 中显式选择专家团或专家后，后续 `chat + continue` 可省略两个 ID，服务端会沿用最近选择；只有工具栏显式切换和专家转交卡操作需要前端提供专家身份。
 
 ## 2. 调用链与职责边界
 
@@ -163,24 +163,25 @@ X-SSE-Protocol: hailiang.sse.v2
 
 ### 3.4 `input` 动作总表
 
-以下字段是 `input` JSON 字符串解码后的内容。除 `stop` 外，所有动作都带 `context_scope`；省略时，为兼容旧调用，携带 `profile_id` 的请求按 `profile` 处理。
+以下字段是 `input` JSON 字符串解码后的内容。除 `stop` 外，所有动作都带 `context_scope` 和
+`expert_context`。孩子只由顶层 `context_data.profile_id` 表示，`input.profile_id` 已禁止。
 
 | action | source | 必填业务字段 | run_id 规则 |
 | --- | --- | --- | --- |
-| `chat` | `chat` | `content`；`profile` 范围的孩子 ID 由 `context_data` 提供；可选 `expert_team_id`、`expert_id` | 新 run |
-| `switch_team_member` | `toolbar` | `target_expert_id`、`content`；孩子 ID 由 `context_data` 提供 | 新 run |
-| `confirm_team_handoff` | `team_handoff` | `source_message_id`、`target_expert_id`；孩子 ID 由 `context_data` 提供 | 新 run |
+| `chat` | `chat` / `toolbar` | `content`；`profile` 范围的孩子 ID 由 `context_data` 提供；`expert_context` 内选择或续用专家 | 新 run |
+| `switch_team_member` | `toolbar` | `target_expert_id`、`content`；`expert_context` 必须回传当前团队和当前专家 | 新 run |
+| `confirm_team_handoff` | `team_handoff` | `source_message_id`、`target_expert_id`；`expert_context` 必须回传当前团队和当前专家 | 新 run |
 | `enter_skill` | `toolbar` | `target_skill_id`；孩子 ID 由 `context_data` 提供 | 新 run |
 | `enter_skill` | `route_suggestion` | 上述字段加 `source_message_id`、`source_interaction_id` | 新 run |
-| `quit_skill` | `toolbar` / `exit_button` | `profile_id`、当前 `target_skill_id` | 新 run |
+| `quit_skill` | `toolbar` / `exit_button` | 当前 `target_skill_id`；孩子 ID 由 `context_data` 提供 | 新 run |
 | `stop` | `composer` | 无 | 复用活动 run |
 
 #### 专家团与专家字段的中文业务含义
 
 | 字段 | 使用动作 | 中文业务含义 | 校验与使用规则 |
 | --- | --- | --- | --- |
-| `expert_team_id` | `chat` | 本轮开始时用户**指定要由哪个专家团承接**；它会成为当前上下文范围持续使用的专家团。 | 必须是可用专家团。指定后先激活该团主协调专家；不要在每一轮重复传，否则会重新回到协调专家并清除待确认转交。 |
-| `expert_id` | `chat` | 用户在输入框中显式点选或“@”的**当前回答专家**。这里的“@”是前端交互的展示方式，真正传给后端的是 ID。 | 必须是可用专家；若当前已有专家团，还必须属于该团。未选专家团时可直接进入单专家模式。服务端不从 `content` 的 `@专家名称` 文本猜测专家。 |
+| `expert_context.expert_team_id` | `chat` | 本轮开始时用户**指定要由哪个专家团承接**；它会成为当前上下文范围持续使用的专家团。 | `select_team` 时必传，`expert_id` 必须为 `null`；指定后激活该团主协调专家。 |
+| `expert_context.expert_id` | `chat` | `select_expert` 时是用户点选的**目标回答专家**；`continue` 时是当前专家断言。 | 必须是可用专家；选择团内成员时还必须属于该团队。服务端不从 `content` 的 `@专家名称` 文本猜测专家。 |
 | `target_expert_id` | `switch_team_member`、`confirm_team_handoff` | 用户要切换或确认接管的**目标专家**。 | 工具栏切换时必须是当前团队成员；确认转交卡时还必须是该卡的有效候选。 |
 | `source_message_id` | `confirm_team_handoff` | 产生专家转交卡的那条助手消息 ID，用来证明用户确认的是哪一张卡。 | 必须指向当前范围仍有效的 `team_handoff` 卡；不能自行生成、跨上下文范围或重复使用。 |
 | `source` | 所有动作 | 动作来源，用于服务端校验、审计和前端解释。 | 普通对话为 `chat`，工具栏指定专家为 `toolbar`，确认专家转交卡为 `team_handoff`。 |
@@ -220,7 +221,7 @@ X-SSE-Protocol: hailiang.sse.v2
 {
   "session_id": "sess_001",
   "run_id": "run_chat_001",
-  "input": "{\"action\":\"chat\",\"context_scope\":\"profile\",\"profile_id\":\"profile_001\",\"content\":\"我想了解孩子适合什么方向\",\"source\":\"chat\",\"enable_thinking\":false,\"return_reasoning\":false}",
+  "input": "{\"action\":\"chat\",\"context_scope\":\"profile\",\"context_activation\":\"auto\",\"content\":\"我想了解孩子适合什么方向\",\"source\":\"chat\",\"expert_context\":{\"operation\":\"continue\"},\"enable_thinking\":false,\"return_reasoning\":false}",
   "context_data": {
     "student_name": "小海",
     "user_id": "user_001",
@@ -237,10 +238,14 @@ X-SSE-Protocol: hailiang.sse.v2
 {
   "action": "chat",
   "context_scope": "profile",
-  "profile_id": "profile_001",
-  "expert_team_id": "student_growth_expert_team",
+  "context_activation": "auto",
   "content": "帮我分析一下选科方向",
-  "source": "chat"
+  "source": "chat",
+  "expert_context": {
+    "expert_team_id": "student_growth_expert_team",
+    "expert_id": null,
+    "operation": "select_team"
+  }
 }
 ```
 
@@ -251,10 +256,14 @@ X-SSE-Protocol: hailiang.sse.v2
 {
   "action": "chat",
   "context_scope": "profile",
-  "profile_id": "profile_001",
-  "expert_id": "career_plan_expert",
+  "context_activation": "auto",
   "content": "继续分析刚才的问题",
-  "source": "chat"
+  "source": "toolbar",
+  "expert_context": {
+    "expert_team_id": "student_growth_expert_team",
+    "expert_id": "academic_coach",
+    "operation": "select_expert"
+  }
 }
 ```
 
@@ -266,10 +275,14 @@ X-SSE-Protocol: hailiang.sse.v2
 {
   "action": "switch_team_member",
   "context_scope": "profile",
-  "profile_id": "profile_001",
-  "target_expert_id": "family_education_expert",
+  "target_expert_id": "academic_coach",
   "content": "孩子最近不愿意和我沟通，怎么办？",
-  "source": "toolbar"
+  "source": "toolbar",
+  "expert_context": {
+    "expert_team_id": "student_growth_expert_team",
+    "expert_id": "e_career_planner",
+    "operation": "continue"
+  }
 }
 ```
 
@@ -281,16 +294,38 @@ X-SSE-Protocol: hailiang.sse.v2
 {
   "action": "confirm_team_handoff",
   "context_scope": "profile",
-  "profile_id": "profile_001",
   "source_message_id": "msg_001",
-  "target_expert_id": "family_education_expert",
-  "source": "team_handoff"
+  "target_expert_id": "academic_coach",
+  "source": "team_handoff",
+  "expert_context": {
+    "expert_team_id": "student_growth_expert_team",
+    "expert_id": "e_career_planner",
+    "operation": "continue"
+  }
 }
 ```
 
 `source_message_id` 必须来自当前有效 `team_handoff` 卡片，目标专家必须在卡片候选和当前团队成员中。
 
-### 4.5 普通聊天模式下进入和退出 Skill
+### 4.5 专家转交卡未点击时的边界
+
+专家转交卡是建议，不是强制切换。用户没有点击卡片时，前端只发送普通 `chat`，**绝不能**自行补
+`source_message_id` 或改写当前专家。服务端根据当前孩子范围内的卡片和用户文本作如下处理：
+
+| 用户后续行为 | 应发送的动作 | 服务端结果 |
+| --- | --- | --- |
+| 单候选卡后只发精确短确认，如“好的”“继续”“确认” | `chat + continue` | 服务端可把它识别为确认，自动转交给唯一候选；前端以新 `state.expert.active` 为准。 |
+| 多候选卡后只发短确认 | `chat + continue` | 不猜测目标专家；卡片保持有效并随状态重发，用户仍须点击具体候选。 |
+| 不点卡，而是提出新问题或带有犹豫的内容 | `chat + continue` | 当前专家继续回答；原未确认卡过期，之后不能再确认。 |
+| 切换到孩子 B，不指定专家 | `chat + continue + context_activation:"auto"`，顶层 `context_data.profile_id=B` | 切入 B 并继承 session 当前专家选择；A 的卡片不作为 B 的操作依据。 |
+| 切换到孩子 B，并选专家团 | `chat + select_team + context_activation:"auto"` | 切入 B 后由目标团队协调专家接待；不传 A 的 `source_message_id`。 |
+| 切换到孩子 B，并指定团内专家 | `chat + select_expert + context_activation:"auto"` | 切入 B 后直接选择目标成员；不使用 `switch_team_member` 或 `confirm_team_handoff`。 |
+
+`switch_team_member` 与 `confirm_team_handoff` 都要求请求所带的 `context_data.profile_id` 已是当前激活
+孩子，不能顺便切孩子；跨孩子会返回 `409 CONTEXT_ACTIVATION_REQUIRED`。先用上表的 `chat` 切入 B，
+收到 B 的权威 `state` 后，才能在 B 内点击工具栏或 B 自己的有效转交卡。
+
+### 4.6 普通聊天模式下进入和退出 Skill
 
 工具栏进入：
 
@@ -332,7 +367,9 @@ X-SSE-Protocol: hailiang.sse.v2
 
 本节的 `enter_skill` / `quit_skill` 只适用于**通用对话模式**的工具栏或推荐卡操作。当前处于专家团模式时，直接 `enter_skill` 会返回 `409 SKILL_ENTRY_BLOCKED_IN_EXPERT_TEAM`；专家团内由当前专家在其锁定范围内自动选择、进入、切换或结束 Skill，前端/BFF 不发送这两个动作，也不展示普通模式的 Skill 进入/退出按钮。
 
-### 4.6 停止生成
+当前专家若只锁定了一个 Skill，服务端会在每个普通对话轮次直接进入该 Skill，不再额外调用专家 Runtime 做同一层的 Skill 选择；这不会跳过 Skill 内的能力选择，RAG、MCP、Web Search、脚本、资料和表单仍由该 Skill 的运行契约与工具策略决定。多成员专家团的主协调专家例外：即使它只锁定一个 Skill，仍会保留专家团内的专家转交/协调判断。前端无需为这条优化增加请求字段，应始终以 SSE `state.context.active_skill` 为准展示当前实际执行的 Skill。
+
+### 4.7 停止生成
 
 停止动作不需要 `context_data`，并复用目标活动 run：
 
@@ -663,7 +700,25 @@ SSE 不提供 `Last-Event-ID` 断点续传。页面打开、刷新或流中断�
 - [ ] 刷新/断线通过历史接口恢复，不重放旧 run。
 - [ ] 风控拦截时只显示 `risk.message`。
 
-## 12. 实现权威来源
+## 12. 配置版本切换
+
+正式会话绑定当前专家团部署的 `deployment_id + package_hash`。激活、回退、恢复或下线不会中断正在生成的回答；已有会话在下一次非停止操作时切换。该次 SSE 的 `profile_context` 事件增加：
+
+```json
+{
+  "configuration_changed": true,
+  "configuration": {
+    "code": "CONFIGURATION_UPDATED",
+    "previous_deployment_id": "dep_old",
+    "deployment_id": "dep_new",
+    "package_hash": "sha256"
+  }
+}
+```
+
+切换保留历史消息、已确认 Facts 和已提交答案；未完成表单、候选路径、转交卡及旧执行状态失效。提交旧表单或确认旧转交卡返回 HTTP `409 CONFIGURATION_UPDATED`，前端必须结束 loading、刷新 `/api/v1/expert-teams` 与会话状态，并提示用户重新操作。
+
+## 13. 实现权威来源
 
 协议发生争议时，按以下顺序核对：
 

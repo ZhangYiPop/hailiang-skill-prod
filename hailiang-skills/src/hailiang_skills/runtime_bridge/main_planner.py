@@ -50,6 +50,7 @@ from hailiang_skills.runtime_bridge.native_questionnaire import (
     questionnaire_reply_is_valid,
     resolve_questionnaire_continuation,
     stage_questionnaire_form,
+    unwrap_questionnaire_assistant_message,
 )
 from hailiang_skills.runtime_bridge.native_path_options import resolve_native_path_options
 from hailiang_skills.runtime_bridge.agentscope_expert_runtime import (
@@ -64,7 +65,6 @@ from hailiang_skills.runtime_bridge.runtime_config import load_runtime_bridge_co
 from hailiang_skills.llm.test_routing import TestLLMRoutingConfig
 from hailiang_skills.core.deployment import deployment_environment
 from hailiang_skills.skills.base import SkillResult
-from hailiang_skills.workbench.runtime_overlay import configured_skill_bundle
 
 ensure_skill_runtime_importable()
 
@@ -256,6 +256,11 @@ class _QuestionnaireContinuationExtractor:
         self._value_start: int | None = None
         self._decoded = ""
         self.complete = False
+
+    @property
+    def assistant_message(self) -> str:
+        """The safely decoded prose, retained even if later JSON is malformed."""
+        return self._decoded
 
     def feed(self, chunk: str) -> str:
         if not chunk or self.complete:
@@ -1023,7 +1028,7 @@ def _looks_like_planning_request(text: str) -> bool:
 class MainPlannerOrchestrator:
     """Hailiang API orchestrator backed by the career/general-chat route model."""
 
-    def __init__(self, registry, llm_config, moderation_service=None) -> None:
+    def __init__(self, registry, llm_config, moderation_service=None, *, business_config_entries=None) -> None:
         self.registry = registry
         self.llm_config = llm_config
         self.test_llm_routing = TestLLMRoutingConfig.from_environment()
@@ -1031,20 +1036,24 @@ class MainPlannerOrchestrator:
         self.runtime_bridge_config = load_runtime_bridge_config()
         self.scenario_engine = ScenarioEngine()
         self.loop_defense = LoopDefense()
-        self.runtime_registry = self._load_runtime_registry()
-        # Expert Bundles are validated at boot. They reference this registry
-        # only; no Skill from an expert package is ever loaded or installed.
-        self.expert_registry = load_local_expert_registry(
-            PROJECT_RUNTIME_AGENTS_ROOT,
-            self.runtime_registry,
-        )
-        self.expert_team_registry = load_local_expert_team_registry(
-            PROJECT_RUNTIME_AGENT_TEAMS_ROOT,
-            self.expert_registry,
-        )
+        if business_config_entries is None:
+            self.runtime_registry = self._load_runtime_registry()
+            self.expert_registry = load_local_expert_registry(PROJECT_RUNTIME_AGENTS_ROOT, self.runtime_registry)
+            self.expert_team_registry = load_local_expert_team_registry(PROJECT_RUNTIME_AGENT_TEAMS_ROOT, self.expert_registry)
+            self.business_config_source = "filesystem"
+        else:
+            from hailiang_skills.workbench.catalog import build_runtime_registries
+
+            self.runtime_registry, self.expert_registry, self.expert_team_registry = build_runtime_registries(
+                list(business_config_entries),
+                enabled_by_id=self.runtime_bridge_config.skill_enabled_by_id,
+            )
+            self.business_config_source = "database"
         self.main_bundle = self.runtime_registry.get_raw(MAIN_PLANNER_ID)
         if self.main_bundle is None:
-            raise RuntimeError("skill-runtime career_plan_entity skill is not available")
+            raise RuntimeError(f"数据库当前发布缺少必需 Skill: {MAIN_PLANNER_ID}" if business_config_entries is not None else "skill-runtime career_plan_entity skill is not available")
+        if business_config_entries is not None and self.runtime_registry.get_raw(GENERAL_CHAT_ID) is None:
+            raise RuntimeError(f"数据库当前发布缺少必需 Skill: {GENERAL_CHAT_ID}")
         self.runtime_client = self._build_runtime_client(llm_config)
         self.route_suggestion_monitor_every_turn = bool(
             getattr(getattr(llm_config, "route_suggestions", None), "monitor_every_turn", False)
@@ -1110,9 +1119,7 @@ class MainPlannerOrchestrator:
 
     @staticmethod
     def _configured_bundle(context, bundle):
-        """Overlay the immutable business Prompt while retaining core code/tools."""
-        if bundle is None:
-            return None
+        """Resolve the exact immutable Skill entry without inheriting another version."""
         snapshot = (getattr(context, "session_meta", {}) or {}).get("configuration_snapshot")
         entries = snapshot.get("entries", []) if isinstance(snapshot, dict) else []
         skill_id = str(getattr(getattr(bundle, "contract", None), "skill_id", "") or getattr(bundle, "root_name", ""))
@@ -1126,7 +1133,11 @@ class MainPlannerOrchestrator:
             ),
             None,
         )
-        return configured_skill_bundle(bundle, entry)
+        if entry is not None:
+            from hailiang_skills.workbench.runtime_overlay import skill_bundle_from_entry
+
+            return skill_bundle_from_entry(entry)
+        return bundle
 
     def _load_runtime_registry(self) -> RuntimeSkillRegistry:
         project_registry = load_local_skill_registry(
@@ -1555,21 +1566,45 @@ class MainPlannerOrchestrator:
         return self.runtime_client
 
     def _llm_config_for_context(self, context):
-        if not self.test_llm_routing.matches(
+        selected_config = self.llm_config
+        if self.test_llm_routing.matches(
             str(getattr(context, "user_id", "") or ""),
             environment=deployment_environment(),
         ):
-            return self.llm_config
-        return replace(
-            self.llm_config,
-            provider="test_openai_compatible",
-            base_url=self.test_llm_routing.base_url,
-            model=self.test_llm_routing.model,
-            api_key_env="HAILIANG_TEST_LLM_API_KEY",
-            timeout_s=self.test_llm_routing.timeout_s,
-            temperature=self.test_llm_routing.temperature,
-            max_tokens=self.test_llm_routing.max_tokens,
-        )
+            selected_config = replace(
+                self.llm_config,
+                provider="test_openai_compatible",
+                base_url=self.test_llm_routing.base_url,
+                model=self.test_llm_routing.model,
+                api_key_env="HAILIANG_TEST_LLM_API_KEY",
+                timeout_s=self.test_llm_routing.timeout_s,
+                temperature=self.test_llm_routing.temperature,
+                max_tokens=self.test_llm_routing.max_tokens,
+            )
+        # Workbench candidate conversations are interactive diagnostics. Their
+        # stream has a bounded deadline so an unhealthy upstream model cannot
+        # leave the tester's page permanently loading.
+        raw_candidate_timeout = (getattr(context, "session_meta", {}) or {}).get("workbench_candidate_llm_timeout_s")
+        try:
+            candidate_timeout = int(raw_candidate_timeout or 0)
+        except (TypeError, ValueError):
+            candidate_timeout = 0
+        if candidate_timeout > 0:
+            selected_config = replace(
+                selected_config,
+                timeout_s=min(selected_config.timeout_s, candidate_timeout),
+            )
+        raw_candidate_max_tokens = (getattr(context, "session_meta", {}) or {}).get("workbench_candidate_llm_max_tokens")
+        try:
+            candidate_max_tokens = int(raw_candidate_max_tokens or 0)
+        except (TypeError, ValueError):
+            candidate_max_tokens = 0
+        if candidate_max_tokens > 0:
+            selected_config = replace(
+                selected_config,
+                max_tokens=min(selected_config.max_tokens, candidate_max_tokens),
+            )
+        return selected_config
 
     def _auxiliary_client_for_context(self, context, default_client, options):
         selected_config = self._llm_config_for_context(context)
@@ -2794,6 +2829,8 @@ class MainPlannerOrchestrator:
                 turn_result.final_text,
                 response_policy=bundle.runtime_metadata.response_policy,
             )
+            if questionnaire_enabled(bundle):
+                reply = unwrap_questionnaire_assistant_message(reply)
             duration_ms = int((time.perf_counter() - started) * 1000)
             self._emit_reply_delta(context, reply)
             logger.log("turn.resolve.final_text.timing", phase=phase, duration_ms=duration_ms)
@@ -2836,6 +2873,10 @@ class MainPlannerOrchestrator:
             return reply, ""
         reply_parts: list[str] = []
         reasoning_parts: list[str] = []
+        questionnaire_extractor = (
+            _QuestionnaireContinuationExtractor(set()) if questionnaire_enabled(bundle) else None
+        )
+        streamed_visible_reply = False
         active_generation = str((context.session_meta or {}).get("active_stream_generation") or "")
         stream_kwargs = {"logger": logger}
         # Keep injected/fake clients used by existing integrations backward
@@ -2869,11 +2910,22 @@ class MainPlannerOrchestrator:
                 reply_parts.append(chunk.content_delta)
                 callback = (context.session_meta or {}).get("reply_delta_callback")
                 if (context.session_meta or {}).get("stream_final_reply") and callable(callback):
-                    callback(chunk.content_delta)
+                    visible_delta = (
+                        questionnaire_extractor.feed(chunk.content_delta)
+                        if questionnaire_extractor is not None
+                        else chunk.content_delta
+                    )
+                    if visible_delta:
+                        callback(visible_delta)
+                        streamed_visible_reply = True
         reply = _sanitize_assistant_reply(
             "".join(reply_parts),
             response_policy=bundle.runtime_metadata.response_policy,
         )
+        if questionnaire_extractor is not None and questionnaire_extractor.assistant_message:
+            reply = questionnaire_extractor.assistant_message
+        elif questionnaire_enabled(bundle):
+            reply = unwrap_questionnaire_assistant_message(reply)
         reasoning = "".join(reasoning_parts).strip()
         duration_ms = int((time.perf_counter() - started) * 1000)
         empty_stream_retry = False
@@ -2904,10 +2956,16 @@ class MainPlannerOrchestrator:
                     retry_result.final_text,
                     response_policy=bundle.runtime_metadata.response_policy,
                 )
+                if questionnaire_enabled(bundle):
+                    reply = unwrap_questionnaire_assistant_message(reply)
             except Exception as exc:  # pragma: no cover - defensive fallback
                 logger.log("turn.resolve.final_text.empty_retry_failed", phase=phase, error=str(exc))
             if not reply.strip():
                 reply = "刚才这轮回复生成不完整，我没有拿到可展示的正文。你可以再发一次，我会基于当前信息继续回答。"
+            self._emit_reply_delta(context, reply)
+        elif questionnaire_extractor is not None and not streamed_visible_reply:
+            # A non-conforming/plain response cannot be safely exposed until
+            # the full turn is available. Emit the preserved final text once.
             self._emit_reply_delta(context, reply)
         logger.log(
             "turn.resolve.final_text.stream",
@@ -3314,7 +3372,14 @@ class MainPlannerOrchestrator:
                 )
 
         self._emit_runtime_status(context, "intent", "意图判断")
-        if self.runtime_registry.is_enabled(MAIN_PLANNER_ID):
+        # An Expert's locked-Skill handoff is already authorized and must not
+        # depend on whether the optional main planner bundle is enabled. This
+        # matters for isolated workbench candidate tests as well as deployed
+        # database snapshots that intentionally omit the legacy main bundle.
+        has_expert_skill_selection = bool(
+            str(context.session_meta.get("expert_requested_skill_id") or "").strip()
+        )
+        if has_expert_skill_selection or self.runtime_registry.is_enabled(MAIN_PLANNER_ID):
             active_skill_id = self._route_with_main_planner(runtime_state, context)
         else:
             # A disabled main Skill must not invoke keyword, embedding or LLM
@@ -3479,6 +3544,8 @@ class MainPlannerOrchestrator:
                 logger,
                 context,
             )
+        if questionnaire_enabled(current_bundle):
+            reply = unwrap_questionnaire_assistant_message(reply)
         native_path_items = resolve_native_path_options(
             runtime_state.active_skill_id,
             runtime_state.stage,
@@ -3796,17 +3863,17 @@ class MainPlannerOrchestrator:
         # request outside the active Expert Bundle.
         expert_state = context.skill_states.get(AGENT_RUNTIME_STATE_KEY, {})
         expert_selected = str(context.session_meta.pop("expert_requested_skill_id", "") or "")
+        selection_source = str(context.session_meta.pop("expert_skill_selection_source", "") or "agentscope")
         expert_id = str(expert_state.get("expert_id") or DEFAULT_EXPERT_ID)
-        expert_definition = self.expert_registry.get(expert_id)
-        authorized = bool(expert_definition) and expert_selected in set(expert_definition.authorized_skill_ids)
+        authorized = self._expert_authorizes_skill(context, expert_id, expert_selected)
         if authorized and self.runtime_registry.is_enabled(expert_selected):
             state.active_skill_id = expert_selected
             state.status_flags["expert_selected_skill_id"] = expert_selected
             context.skill_states.setdefault(MAIN_PLANNER_ID, {})["intent_route"] = {
                 "route_mode": "expert",
                 "target_skill_id": expert_selected,
-                "reason": "AgentScope 专家已在授权范围内选择该 Skill。",
-                "source": "agentscope",
+                "reason": "专家已在授权范围内选择该 Skill。",
+                "source": selection_source,
             }
             self._record_events(
                 context,
@@ -3942,6 +4009,32 @@ class MainPlannerOrchestrator:
         self._apply_intent_route_decision(state, context, route_decision)
         self._split_multi_path_skill_by_stage(state, context)
         return state.active_skill_id or GENERAL_CHAT_ID
+
+    def _expert_authorizes_skill(self, context, expert_id: str, skill_id: str) -> bool:
+        """Verify an Expert-selected Skill against registry or immutable snapshot locks."""
+        if not expert_id or not skill_id:
+            return False
+        expert_definition = self.expert_registry.get(expert_id)
+        if expert_definition is not None and skill_id in set(expert_definition.authorized_skill_ids):
+            return True
+        snapshot = (getattr(context, "session_meta", {}) or {}).get("configuration_snapshot")
+        entries = snapshot.get("entries", []) if isinstance(snapshot, dict) else []
+        expert_entry = next(
+            (
+                item for item in entries
+                if isinstance(item, dict)
+                and item.get("object_type") == "expert"
+                and str(item.get("object_key") or "") == expert_id
+            ),
+            None,
+        )
+        locks = expert_entry.get("dependency_locks", []) if isinstance(expert_entry, dict) else []
+        return any(
+            isinstance(lock, dict)
+            and lock.get("object_type") == "skill"
+            and str(lock.get("object_key") or "") == skill_id
+            for lock in locks
+        )
 
     def _apply_explicit_scene_route_if_present(
         self,

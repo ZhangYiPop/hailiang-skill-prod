@@ -1050,10 +1050,12 @@ export function useChatActions() {
       const currentExpertTeamId = branch?.activeExpertTeamId
         ?? (requestState.activeExpertTeam?.team_id || "");
       const currentExpertId = branch?.activeExpertId ?? requestState.activeExpertId ?? "";
-      // A newly opened scope begins at version 1 on the server.  There is no
-      // separate "first message" branch in the client contract.
-      const expectedBranchVersion = branch?.branchVersion ?? 1;
-      const expectedSelectionVersion = branch?.selectionVersion ?? 0;
+      // An uncached profile may be either new or an existing branch restored
+      // by the server. Omit optimistic versions in that case so an explicit
+      // selection can atomically activate the target branch without a
+      // first/second-switch preflight.
+      const expectedBranchVersion = branch?.branchVersion;
+      const expectedSelectionVersion = branch?.selectionVersion;
 
       const trimmed = content.trim();
       if (!trimmed) {
@@ -1220,7 +1222,7 @@ export function useChatActions() {
                 expert_id: requestedExpertId,
                 expected_branch_version: expectedBranchVersion,
                 expected_selection_version: expectedSelectionVersion,
-                operation: "select_team_member" as const,
+                operation: "select_expert" as const,
               }
             : requestedExpertTeamId
             ? {
@@ -1361,6 +1363,7 @@ export function useChatActions() {
                       ? {
                           team_id: catalogTeam.team_id,
                           name: catalogTeam.name,
+                          brief: state.expert.team.brief ?? catalogTeam.brief ?? "",
                           coordinator_expert_id: catalogTeam.coordinator_expert_id,
                           coordinator_mention_name:
                             catalogTeam.members.find((item) => item.is_coordinator)?.mention_name ?? "",
@@ -1373,6 +1376,7 @@ export function useChatActions() {
                     const member = baseTeam.members.find((item) => item.expert_id === authoritativeExpertId);
                     store.setActiveExpertTeam({
                       ...baseTeam,
+                      brief: state.expert.team.brief ?? baseTeam.brief ?? "",
                       active_expert_id: authoritativeExpertId,
                       active_mention_name: member?.mention_name ?? state.expert.active.mention_name ?? "",
                     });

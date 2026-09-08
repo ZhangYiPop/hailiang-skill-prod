@@ -109,13 +109,16 @@ export default function Home() {
     return scenarioMap[currentScenario] ?? currentScenario ?? "";
   }, [currentScenario]);
   const activeSkillLabel = useMemo(
-    () => skillCatalog.find((skill) => skill.skill_id === activeSkill)?.label || activeSkill,
+    () => activeSkill === "expert_direct"
+      ? "专家直接回复（未调用独立 Skill）"
+      : skillCatalog.find((skill) => skill.skill_id === activeSkill)?.label || activeSkill,
     [activeSkill, skillCatalog],
   );
   const activeExpert = useMemo(
     () => expertCatalog.find((expert) => expert.expert_id === activeExpertId) ?? null,
     [activeExpertId, expertCatalog],
   );
+  const activeExpertLabel = activeExpert?.name || activeExpertTeam?.active_mention_name || "";
 
   useEffect(() => {
     if (hasBootstrappedRef.current) {
@@ -455,13 +458,22 @@ export default function Home() {
                 </div>
                 {headerControlsCard}
                 {!isChatMode ? (
-                  <div className="grid gap-3 sm:grid-cols-4">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                     <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
                       <div className="flex items-center gap-3">
                         <MessagesSquare size={16} className="text-cyan-200" />
                         <span className="text-xs uppercase tracking-[0.18em] text-slate-400">消息数</span>
                       </div>
                       <p className="mt-3 text-2xl font-semibold text-white">{messages.length}</p>
+                    </div>
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <Bot size={16} className="text-cyan-200" />
+                        <span className="text-xs uppercase tracking-[0.18em] text-slate-400">当前专家</span>
+                      </div>
+                      <p className="mt-3 truncate text-lg font-semibold text-white">
+                        {activeExpertLabel || "--"}
+                      </p>
                     </div>
                     <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
                       <div className="flex items-center gap-3">
@@ -478,7 +490,7 @@ export default function Home() {
                         <span className="text-xs uppercase tracking-[0.18em] text-slate-400">Scenario</span>
                       </div>
                       <p className="mt-3 truncate text-lg font-semibold text-white">
-                        {scenarioLabel || "--"}
+                        {scenarioLabel || (activeSkill === "expert_direct" ? "专家团直答（无 Skill 场景）" : "--")}
                       </p>
                     </div>
                     <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">

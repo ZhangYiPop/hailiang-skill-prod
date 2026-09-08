@@ -181,6 +181,46 @@ describe("ChatMessageList", () => {
     expect(screen.queryByText("你")).not.toBeInTheDocument();
   });
 
+  it("shows the expert and actual execution mode on every expert-team reply", () => {
+    render(
+      <ChatMessageList
+        messages={[
+          makeMessage({
+            id: "assistant-expert-direct",
+            role: "assistant",
+            content: "我先帮你梳理情况。",
+            presentation: {
+              assistant: { content: "我先帮你梳理情况。", status: "completed" },
+              intent: {}, form: {}, path_options: {}, skill_rooms: [], skill_transition: {},
+              expert: { mode: "team", team: {}, active: { expert_id: "e_career_planner", mention_name: "e生涯规划助手" }, activation: {}, transition: {} },
+              session: { active_skill: { skill_id: "expert_direct", title: "e生涯规划助手" } },
+              risk: { status: "idle", stage: "", blocked: false, message: "" },
+              error: { code: "", message: "", upstream_detail: "", retryable: false, terminal: false },
+            },
+          }),
+          makeMessage({
+            id: "assistant-skill",
+            role: "assistant",
+            content: "下面是提分计划。",
+            presentation: {
+              assistant: { content: "下面是提分计划。", status: "completed" },
+              intent: {}, form: {}, path_options: {}, skill_rooms: [], skill_transition: {},
+              expert: { mode: "team", team: {}, active: { expert_id: "academic_coach", mention_name: "学习指导师" }, activation: {}, transition: {} },
+              session: { active_skill: { skill_id: "score_improve", title: "提分技能" } },
+              risk: { status: "idle", stage: "", blocked: false, message: "" },
+              error: { code: "", message: "", upstream_detail: "", retryable: false, terminal: false },
+            },
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("本轮专家：e生涯规划助手")).toBeInTheDocument();
+    expect(screen.getByText("执行方式：专家直接回复（未调用独立 Skill）")).toBeInTheDocument();
+    expect(screen.getByText("本轮专家：学习指导师")).toBeInTheDocument();
+    expect(screen.getByText("本轮 Skill：提分技能")).toBeInTheDocument();
+  });
+
   it("hides historical route suggestions after entering a specialist skill", () => {
     render(
       <ChatMessageList

@@ -187,6 +187,7 @@ class WorkbenchObjectRow(Base):
     object_id: Mapped[str] = mapped_column(String(80), primary_key=True)
     object_type: Mapped[str] = mapped_column(String(32), index=True)
     object_key: Mapped[str] = mapped_column(String(160), index=True)
+    current_release_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     name: Mapped[str] = mapped_column(String(256))
     description: Mapped[str] = mapped_column(Text, default="")
     archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

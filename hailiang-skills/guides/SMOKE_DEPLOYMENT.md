@@ -6,8 +6,8 @@
 
 ## 首次准备
 
-1. 在已有 PostgreSQL 容器中创建一个独立的角色和空数据库，例如 `hailiang_smoke_411` 与 `hailiang_skills_test_multi_profile_v1_smoke_411`。不要对旧的 `hailiang_skills_test` 或持久测试库执行冒烟迁移。
-2. 复制 `deploy/env/smoke.env.example` 为项目根目录的私有文件，例如 `env.8015.sh`；填写真实值后执行 `chmod 600 env.8015.sh`。
+1. 先确保 PostgreSQL 和 Redis 已运行。脚本不会启动容器；使用当前 Docker 初始化配置时，冒烟环境复用 `hailiang_test` 账号并使用专用数据库 `hailiang_skills_test_multi_profile_v1_smoke`，不要对常规测试库或生产库执行冒烟迁移。
+2. 复制 `deploy/env/smoke.env.example` 为私有文件，例如 `/etc/hailiang-skills/smoke-8015.env`；填写真实值后执行 `chmod 600 /etc/hailiang-skills/smoke-8015.env`。其中 `HAILIANG_SECURITY_ADMIN_TOKEN` 必须为该冒烟实例单独生成的随机值。
 3. 两把加密密钥分别生成，不能复用：
 
 ```bash
@@ -47,7 +47,7 @@ python3.11 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.tok
 ./deploy-smoke.sh --env ./env.8015.sh --replace-port --with-frontend
 ```
 
-脚本会将浏览器运行时 API 地址写入 `frontend/dist/runtime-config.js`，并自动把前端 Origin 追加到 `HAILIANG_CORS_ORIGINS`。前端监听端口若已被占用，脚本会安全退出；请手动停止旧前端或更换 `FRONTEND_PORT`。
+脚本会将浏览器运行时 API 地址写入 `frontend/dist/runtime-config.js`，并自动把前端 Origin 追加到 `HAILIANG_CORS_ORIGINS`。带 `--replace-port` 时，脚本也会向监听 `FRONTEND_PORT` 的既有 `scripts/static_frontend_server.py` 发送 `SIGTERM` 后再启动新前端；若该端口属于其他程序，脚本仍会拒绝停止，避免误杀服务。
 
 成功后检查：
 

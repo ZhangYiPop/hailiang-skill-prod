@@ -23,6 +23,24 @@ import type {
 import type { MessageBlock, RuntimeStatusItem } from "@/types/messageBlocks";
 
 const DEBUG_IDENTITY_STORAGE_KEY = "hailiang.debug_identity";
+const THEME_STORAGE_KEY = "hailiang.theme_mode";
+
+function readStoredThemeMode(): "dark" | "light" {
+  if (typeof window === "undefined") return "dark";
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+function persistThemeMode(value: "dark" | "light"): void {
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, value);
+  } catch {
+    // Keep the current in-memory preference when storage is unavailable.
+  }
+}
 
 function readStoredDebugIdentity(): DebugIdentity | null {
   if (typeof window === "undefined") {
@@ -357,7 +375,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   userId: readStoredDebugIdentity()?.user_id ?? getRuntimeUserId(),
   currentScenario: "",
   viewMode: "debug",
-  themeMode: "dark",
+  themeMode: readStoredThemeMode(),
   enableThinking: false,
   returnReasoning: false,
   profiles: [],
@@ -412,7 +430,10 @@ export const useChatStore = create<ChatStore>((set) => ({
   setUserId: (value) => set({ userId: value }),
   setCurrentScenario: (value) => set({ currentScenario: value }),
   setViewMode: (value) => set({ viewMode: value }),
-  setThemeMode: (value) => set({ themeMode: value }),
+  setThemeMode: (value) => {
+    persistThemeMode(value);
+    set({ themeMode: value });
+  },
   setEnableThinking: (value) => {
     set({
       enableThinking: value,

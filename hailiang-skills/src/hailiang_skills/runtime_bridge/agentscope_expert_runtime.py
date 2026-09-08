@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import replace
 from typing import Any
 from uuid import uuid4
@@ -23,6 +24,17 @@ _FRAMEWORK_FAILURE_REPLY_MARKERS = (
     "maximum reasoning acting iterations",
     "max iterations",
 )
+
+# These are deliberately narrow business-domain hints for the currently
+# supported student-growth expert team. Other teams still use their saved
+# routing briefs and the coordinator's model decision.
+_STUDENT_GROWTH_HANDOFF_HINTS: dict[str, tuple[str, ...]] = {
+    "academic_coach": ("提分", "学习方法", "数学", "语文", "英语", "物理", "化学", "备考", "成绩", "学习习惯"),
+    "talent_dev_specialist": ("绘画", "画画", "美术", "特长", "才艺", "兴趣班", "艺术", "音乐", "舞蹈"),
+    "career_explore_mentor": ("职业", "专业方向", "未来方向", "生涯", "做什么工作"),
+    "study_abroad_consultant": ("留学", "出国", "海外院校", "国外大学", "国际学校"),
+    "admission_specialist": ("升学", "志愿", "报考", "院校", "综评", "高考", "中考", "录取"),
+}
 
 
 class _AgentScopeParameters(BaseModel):
@@ -127,26 +139,49 @@ class AgentScopeExpertRuntime:
             self._event(context, "team_coordinator_started" if definition.agent_id == team.coordinator_expert_id else "team_member_started", event_payload)
         self._event(context, "expert_started", event_payload)
 
-        client = self.client_factory(context) if self.client_factory else None
-        if self._is_supported_client(client) and self._available:
-            try:
-                self._run_agent(
-                    definition,
-                    user_message,
-                    context,
-                    client,
-                    state,
-                    team=team,
-                    routing_instruction=self._active_skill_routing_instruction(context, definition),
-                )
-            except Exception as exc:
-                # Do not silently use the old orchestrator as the operational
-                # fallback. Keep the existing native route as the controlled
-                # executor, but expose an explicit degraded expert event.
-                state["agent_scope_error"] = str(exc)
-                self._event(context, "expert_runtime_degraded", {"expert_id": definition.agent_id, "error": str(exc)})
+        client = None
+        single_skill_id = self._single_skill_dispatch_target(definition, team)
+        if single_skill_id:
+            # A one-Skill Expert is an authorization boundary, not a second
+            # router. The native Skill still owns its RAG/MCP/web/script/form
+            # decisions after this deterministic handoff.
+            context.session_meta["expert_requested_skill_id"] = single_skill_id
+            context.session_meta["expert_skill_selection_source"] = "single_skill_dispatch"
+            state["selected_skill_id"] = single_skill_id
+            state["execution_mode"] = "single_skill_dispatch"
+            self._event(
+                context,
+                "expert_single_skill_selected",
+                {"expert_id": definition.agent_id, "skill_id": single_skill_id},
+            )
         else:
-            self._event(context, "expert_decision_deferred", {"reason": "llm_client_unavailable"})
+            client = self.client_factory(context) if self.client_factory else None
+            if self._is_supported_client(client) and self._available:
+                try:
+                    self._run_agent(
+                        definition,
+                        user_message,
+                        context,
+                        client,
+                        state,
+                        team=team,
+                        routing_instruction=self._active_skill_routing_instruction(context, definition),
+                    )
+                except Exception as exc:
+                    # Do not silently use the old orchestrator as the operational
+                    # fallback. Keep the existing native route as the controlled
+                    # executor, but expose an explicit degraded expert event.
+                    state["agent_scope_error"] = str(exc)
+                    self._event(context, "expert_runtime_degraded", {"expert_id": definition.agent_id, "error": str(exc)})
+            else:
+                self._event(context, "expert_decision_deferred", {"reason": "llm_client_unavailable"})
+
+        # A coordinator must not silently turn a clearly-specialist request
+        # into an unstructured direct reply merely because a ReAct tool call
+        # was malformed or omitted. Reuse the same controlled handoff record
+        # consumed by formal chat and candidate tests.
+        if team is not None and self._can_propose_team_handoff(team, definition.agent_id):
+            self._ensure_controlled_team_handoff(definition, team, user_message, context, state)
 
         # If the expert can answer within its own role boundary, its reply is
         # authoritative.  The legacy planner is only an executor for a Skill
@@ -173,8 +208,39 @@ class AgentScopeExpertRuntime:
             state["agent_reply"] = agent_reply
         elif not agent_reply and state.get("agent_reply_error"):
             # Preserve the Expert boundary on a framework-only failure rather
-            # than accidentally falling through to legacy general_chat.
-            agent_reply = "抱歉，我这轮没有完成处理。请重试一次，或补充更具体的情况，我会继续协助你。"
+            # than accidentally falling through to legacy general_chat.  A
+            # coordinator failure must also not expose the framework's generic
+            # apology: it remains responsible for obtaining enough routing
+            # information from the user.
+            if team is not None and self._can_propose_team_handoff(team, definition.agent_id):
+                agent_reply = self._generate_team_clarification_reply(
+                    definition,
+                    team,
+                    user_message,
+                    context,
+                    client,
+                )
+                self._event(context, "team_handoff_clarification", {
+                    "team_id": team.team_id,
+                    "expert_id": definition.agent_id,
+                    "reason": "framework_iteration_limit_without_specialist_match",
+                })
+            else:
+                agent_reply = "抱歉，我这轮没有完成处理。请重试一次，或补充更具体的情况，我会继续协助你。"
+            state["agent_reply"] = agent_reply
+        # Do not expose a half-completed routing suggestion.  The UI can only
+        # confirm a structured intent, never a name mentioned in prose.
+        if (
+            agent_reply
+            and handoff is None
+            and team is not None
+            and self._can_propose_team_handoff(team, definition.agent_id)
+            and self._contains_unstructured_team_routing_text(agent_reply, team)
+        ):
+            self._event(context, "team_handoff_text_suppressed", {
+                "team_id": team.team_id, "expert_id": definition.agent_id,
+            })
+            agent_reply = self._generate_team_clarification_reply(definition, team, user_message, context, client)
             state["agent_reply"] = agent_reply
         has_native_handoff = bool(
             context.session_meta.get("expert_requested_skill_id")
@@ -268,6 +334,22 @@ class AgentScopeExpertRuntime:
         runtime = getattr(context, "skill_states", {}).get("skill_runtime", {})
         return str(runtime.get("active_skill_id") or "") if isinstance(runtime, dict) else ""
 
+    @staticmethod
+    def _single_skill_dispatch_target(
+        definition: ExpertDefinition,
+        team: ExpertTeamDefinition | None,
+    ) -> str | None:
+        """Return the sole Skill when no team coordination decision is needed."""
+        skills = definition.authorized_skill_ids
+        if len(skills) != 1:
+            return None
+        # A coordinator of a multi-member team must retain the opportunity to
+        # offer a member handoff. Members and standalone Experts can dispatch
+        # their sole locked Skill deterministically.
+        if team is not None and definition.agent_id == team.coordinator_expert_id and len(team.members) > 1:
+            return None
+        return skills[0]
+
     def _active_skill_routing_instruction(self, context, definition: ExpertDefinition) -> str:
         """Shared production/candidate policy for an Expert's Skill handoff."""
         active_skill_id = self._active_skill_id(context)
@@ -296,6 +378,36 @@ class AgentScopeExpertRuntime:
             ),
             None,
         )
+
+    def _snapshot_expert_name(self, context, expert_id: str) -> str:
+        entry = self._snapshot_entry(context, "expert", expert_id)
+        return str((entry or {}).get("name") or "").strip()
+
+    @staticmethod
+    def _expert_history_messages(context, *, limit: int = 12) -> list[dict[str, str]]:
+        """Return bounded visible dialogue for an Expert model invocation."""
+        history: list[dict[str, str]] = []
+        for item in getattr(context, "messages", []) or []:
+            if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            if metadata.get("hidden") or metadata.get("message_type") in {
+                "skill_transition_command",
+                "team_handoff_confirmation",
+            }:
+                continue
+            content = str(item.get("content") or "").strip()
+            if content:
+                history.append({"role": str(item["role"]), "content": content[:1500]})
+        return history[-max(1, limit):]
+
+    def _expert_conversation_history(self, context) -> str:
+        history = self._expert_history_messages(context)
+        if not history:
+            return "（暂无历史对话）"
+        labels = {"user": "用户", "assistant": "助手"}
+        rendered = "\n".join(f"{labels[item['role']]}：{item['content']}" for item in history)
+        return rendered[-6000:]
 
     def _configured_expert(self, context, definition: ExpertDefinition) -> ExpertDefinition:
         entry = self._snapshot_entry(context, "expert", definition.agent_id)
@@ -334,6 +446,7 @@ class AgentScopeExpertRuntime:
             name=str(entry.get("name") or expert_id),
             rules_markdown=str(payload.get("rules_markdown") or ""),
             skills=locks,
+            brief=str(payload.get("brief") or "").strip(),
             max_iters=max(1, min(int(budget.get("max_iters", 4)), 4)),
             max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 3)),
             capabilities=tuple(str(item) for item in payload.get("capabilities", []) if str(item)) or (
@@ -359,7 +472,12 @@ class AgentScopeExpertRuntime:
         members = tuple(
             ExpertTeamMember(
                 expert_id=str(item.get("object_key") or ""),
-                mention_name=str((by_expert.get(str(item.get("object_key") or "")) or {}).get("mention_name") or item.get("object_key") or ""),
+                mention_name=str(
+                    (by_expert.get(str(item.get("object_key") or "")) or {}).get("mention_name")
+                    or self._snapshot_expert_name(context, str(item.get("object_key") or ""))
+                    or item.get("object_key")
+                    or ""
+                ),
                 routing_brief=str((by_expert.get(str(item.get("object_key") or "")) or {}).get("routing_brief") or ""),
             )
             for item in locks
@@ -367,6 +485,7 @@ class AgentScopeExpertRuntime:
         )
         return replace(
             team,
+            brief=str(payload.get("brief") or team.brief).strip(),
             rules_markdown=str(payload.get("rules_markdown") or team.rules_markdown),
             coordinator_expert_id=coordinator_expert_id,
             members=members or team.members,
@@ -435,6 +554,7 @@ class AgentScopeExpertRuntime:
             ensure_ascii=False,
             default=str,
         )
+        conversation_history = self._expert_conversation_history(context)
         team_prompt = ""
         if team is not None:
             roster = "\n".join(
@@ -448,7 +568,7 @@ class AgentScopeExpertRuntime:
                     "每次收到新的用户消息，都必须重新判断当前问题是否更适合团内成员；上一轮转交卡未点击，"
                     "也不能跳过本轮判断。只要某个成员比你更适合处理，必须调用 propose_member_handoff，"
                     "只给团内候选和简短原因，不得自动转交、不得调用成员的 Skill。调用后必须立即输出简短的用户说明，"
-                    "请用户点击本轮转交卡确认；不要再次调用该工具或继续推理。未调用该工具时，禁止在正文中输出"
+                    "请用户确认由哪位候选专家承接；不要描述任何卡片或控件的位置，也不要再次调用该工具或继续推理。未调用该工具时，禁止在正文中输出"
                     "@专家名称、建议由某专家承接或已经转交等表达。"
                 )
             else:
@@ -463,6 +583,7 @@ class AgentScopeExpertRuntime:
             "先根据业务规则和下方已注入的有效事实判断；需要专项能力时调用 execute_skill。"
             "不得重复询问下方已经有明确值的资料（例如年级、学年）；只有资料缺失或存在冲突时才追问。\n"
             f"\n# 当前孩子的有效事实（本轮可信上下文）\n{effective_facts}\n"
+            f"\n# 最近对话（按时间顺序，仅用于保持上下文）\n{conversation_history}\n"
             "每次 execute_skill 必须传已选 Skill ID 和用户任务，且不得超过预算。\n\n"
             f"# 专家规则\n{definition.rules_markdown}\n\n# 授权 Skill 目录\n{catalog}{team_prompt}{routing_instruction}"
         )
@@ -529,26 +650,70 @@ class AgentScopeExpertRuntime:
 
     def _propose_member_handoff(self, team: ExpertTeamDefinition, state: dict[str, Any], context, candidate_expert_ids: list[str], reason: str) -> dict[str, Any]:
         state["handoff_tool_calls"] = int(state.get("handoff_tool_calls") or 0) + 1
+        original_ids = [str(item or "").strip() for item in candidate_expert_ids]
         ids: list[str] = []
-        for item in candidate_expert_ids:
-            expert_id = str(item or "").strip()
+        rejected: list[dict[str, str]] = []
+        for item in original_ids:
+            expert_id, rejection = self._normalize_team_member_id(team, item, context=context)
+            if rejection:
+                rejected.append({"candidate": item, "reason": rejection})
+                continue
             if expert_id and expert_id not in ids:
                 ids.append(expert_id)
-        if not ids or len(ids) > 3:
+        if rejected or not ids or len(ids) > 3:
+            details = {
+                "team_id": team.team_id,
+                "candidates": original_ids,
+                "normalized_candidate_ids": ids,
+                "rejected": rejected,
+            }
+            self._event(context, "team_handoff_rejected", details)
             raise ValueError("每次必须推荐一至三位专家")
         if any(expert_id not in team.member_expert_ids for expert_id in ids):
+            self._event(context, "team_handoff_rejected", {
+                "team_id": team.team_id, "candidates": original_ids,
+                "normalized_candidate_ids": ids, "rejected": [{"reason": "not_team_member"}],
+            })
             raise ValueError("候选专家必须属于当前专家团")
         if team.coordinator_expert_id in ids:
+            self._event(context, "team_handoff_rejected", {
+                "team_id": team.team_id, "candidates": original_ids,
+                "normalized_candidate_ids": ids, "rejected": [{"reason": "coordinator_not_transfer_target"}],
+            })
             raise ValueError("主协调专家应直接回答，不能作为转交候选")
         candidates = []
         for expert_id in ids:
             member = team.member_for_expert(expert_id)
-            definition = self.expert_registry.require(expert_id)
+            definition = self.expert_registry.get(expert_id) or self._expert_from_snapshot(context, expert_id)
+            if definition is None:
+                self._event(context, "team_handoff_rejected", {
+                    "team_id": team.team_id,
+                    "candidates": original_ids,
+                    "normalized_candidate_ids": ids,
+                    "rejected": [{"candidate": expert_id, "reason": "expert_definition_missing_from_current_configuration"}],
+                })
+                raise ValueError(f"当前配置快照缺少专家定义: {expert_id}")
+            card_brief = next(
+                (
+                    value
+                    for value in (
+                        str(definition.brief or "").strip(),
+                        str(member.routing_brief or "").strip() if member else "",
+                        str(reason or "").strip(),
+                    )
+                    if value
+                ),
+                "",
+            )
             candidates.append({
                 "expert_id": expert_id,
                 "name": definition.name,
                 "mention_name": member.mention_name if member else definition.name,
-                "brief": member.routing_brief if member else "",
+                # Object brief is the user-facing expert introduction. The
+                # member routing brief remains a routing-only configuration
+                # but is a useful card fallback for legacy/incomplete expert
+                # records; the coordinator's reason is the final fallback.
+                "brief": card_brief,
             })
         handoff = {
             "handoff_id": f"handoff_{uuid4().hex[:16]}",
@@ -560,17 +725,126 @@ class AgentScopeExpertRuntime:
             "proposal_turn_id": str(state.get("turn_id") or ""),
             "proposed_by_expert_id": team.coordinator_expert_id,
         }
+        # Persist the routing decision before attempting any presentation.
+        # A callback/SSE failure must never turn a valid specialist decision
+        # into an unanswerable piece of coordinator prose.
+        for message in reversed(getattr(context, "messages", [])):
+            if isinstance(message, dict) and message.get("role") == "user" and not (message.get("metadata") or {}).get("hidden"):
+                handoff["original_user_message"] = str(message.get("content") or "").strip()
+                break
+        handoff["presentation_status"] = "pending"
         state["team_handoff"] = handoff
         context.session_meta["pending_team_handoff"] = handoff
+        context.session_meta["pending_team_handoff_intent"] = handoff
         callback = (context.session_meta or {}).get("team_handoff_callback")
         if callable(callback):
-            callback(self._public_team_handoff(handoff))
+            try:
+                callback(self._public_team_handoff(handoff))
+            except Exception as exc:  # presentation is recoverable, routing is not
+                handoff["presentation_status"] = "callback_failed"
+                self._event(context, "team_handoff_presentation_deferred", {
+                    "team_id": team.team_id, "handoff_id": handoff["handoff_id"], "reason": type(exc).__name__,
+                })
         self._event(context, "team_handoff_proposed", {
             "team_id": team.team_id,
             "candidate_expert_ids": ids,
             "reason": handoff["reason"],
         })
         return {**handoff, "status": "awaiting_user_confirmation"}
+
+    def _ensure_controlled_team_handoff(
+        self,
+        definition: ExpertDefinition,
+        team: ExpertTeamDefinition,
+        user_message: str,
+        context,
+        state: dict[str, Any],
+    ) -> None:
+        if isinstance(state.get("team_handoff"), dict):
+            return
+        candidates = self._controlled_team_handoff_candidates(team, user_message)
+        if not candidates:
+            return
+        try:
+            self._propose_member_handoff(
+                team,
+                state,
+                context,
+                candidates,
+                "主协调专家已识别到该问题更适合由专项专家继续处理。",
+            )
+        except ValueError as exc:
+            self._event(context, "team_handoff_controlled_fallback", {
+                "team_id": team.team_id, "expert_id": definition.agent_id,
+                "reason": "controlled_handoff_rejected", "error": str(exc),
+            })
+            return
+        # Never let a previous direct answer or ReAct limit diagnostic replace
+        # a valid confirmation card.
+        state["agent_reply"] = ""
+        state.pop("agent_reply_error", None)
+        self._event(context, "team_handoff_controlled_selected", {
+            "team_id": team.team_id,
+            "expert_id": definition.agent_id,
+            "candidate_expert_ids": candidates,
+        })
+
+    def _normalize_team_member_id(
+        self,
+        team: ExpertTeamDefinition,
+        candidate: str,
+        *,
+        context=None,
+    ) -> tuple[str, str]:
+        """Resolve only a unique persisted member identity, never fuzzy text.
+
+        Models frequently emit a user-facing Chinese name instead of the
+        documented ID.  Accepting the exact saved mention, exact expert name,
+        and either form with one leading ``@`` keeps the tool ergonomic while
+        refusing an ambiguous alias rather than silently choosing a member.
+        """
+        value = str(candidate or "").strip().lstrip("@").strip()
+        if not value:
+            return "", "empty_candidate"
+        normalized_value = value.casefold()
+        matches: set[str] = set()
+        for member in team.members:
+            expert = self.expert_registry.get(member.expert_id)
+            if expert is None and context is not None:
+                expert = self._expert_from_snapshot(context, member.expert_id)
+            aliases = {member.expert_id, member.mention_name}
+            if expert is not None:
+                aliases.add(expert.name)
+            if any(normalized_value == str(alias or "").strip().casefold() for alias in aliases):
+                matches.add(member.expert_id)
+        if len(matches) == 1:
+            return next(iter(matches)), ""
+        if len(matches) > 1:
+            return "", "ambiguous_member_alias"
+        return "", "unknown_member_alias"
+
+    @staticmethod
+    def _controlled_team_handoff_candidates(team: ExpertTeamDefinition, user_message: str) -> list[str]:
+        text = str(user_message or "").lower()
+        scores: dict[str, int] = {}
+        for member in team.members:
+            if member.expert_id == team.coordinator_expert_id:
+                continue
+            hints = list(_STUDENT_GROWTH_HANDOFF_HINTS.get(member.expert_id, ()))
+            hints.extend(
+                token
+                for token in re.split(r"[，,、；;\\n\\s]+", str(member.routing_brief or "").lower())
+                if len(token) >= 2
+            )
+            scores[member.expert_id] = sum(1 for hint in hints if hint and hint.lower() in text)
+        ranked = sorted((expert_id for expert_id, score in scores.items() if score > 0), key=lambda expert_id: (-scores[expert_id], expert_id))
+        if not ranked:
+            return []
+        # A user may name more than one concrete domain in one sentence. Do
+        # not let a richer routing brief for one member hide another explicit
+        # domain: every positively matched member is a real candidate, bounded
+        # by the card contract's three choices.
+        return ranked[:3]
 
     @staticmethod
     def _is_framework_failure_reply(reply: str) -> bool:
@@ -588,7 +862,51 @@ class AgentScopeExpertRuntime:
         names = [name for name in names if name]
         target = "、".join(names) or "合适的团内专家"
         reason = str(handoff.get("reason") or "这个问题更适合由专项专家继续处理。").strip()
-        return f"我建议由{target}继续协助。{reason} 请点击下方转交卡确认后，由该专家接管回答。"
+        return f"我建议由{target}继续协助。{reason} 请确认是否由该专家接管回答。"
+
+    def _generate_team_clarification_reply(
+        self,
+        definition: ExpertDefinition,
+        team: ExpertTeamDefinition,
+        user_message: str,
+        context,
+        client,
+    ) -> str:
+        """Let the coordinator produce a contextual no-tool clarification.
+
+        This is a second, bounded model pass used only when the ReAct loop
+        ended without a valid handoff. It deliberately has no tools, so it
+        cannot repeat the malformed call and must either clarify or answer
+        within the coordinator's own boundary.
+        """
+        if not self._is_supported_client(client):
+            raise AgentScopeRuntimeUnavailable("主协调专家无法生成兜底回复：模型客户端不可用")
+        from hailiang_skills.skill_runtime.models import ChatMessage
+
+        roster = "\n".join(
+            f"- {member.mention_name}（{member.expert_id}）：{member.routing_brief or '未填写职责摘要'}"
+            for member in team.members
+            if member.expert_id != team.coordinator_expert_id
+        )
+        prompt = (
+            f"你是“{team.name}”的主协调专家“{definition.name}”。\n"
+            f"专家团规则：\n{team.rules_markdown}\n\n"
+            f"团内专项专家：\n{roster}\n\n"
+            "上一次受控分流没有完成。请根据最近对话和用户当前消息，亲自生成一条自然、简短、"
+            "承接上下文的回复。如果专项方向仍不明确，只追问当前真正缺失的一项信息；"
+            "不要机械罗列所有专家类别，不要声称已经转交，不要输出专家卡片或工具调用。"
+        )
+        messages = [ChatMessage(role="system", content=prompt)]
+        for item in self._expert_history_messages(context):
+            messages.append(ChatMessage(role=item["role"], content=item["content"]))
+        messages.append(ChatMessage(role="user", content=str(user_message or "")))
+        try:
+            reply = str(client.complete(messages, request_purpose="team_coordinator_clarification") or "").strip()
+        except Exception as exc:
+            raise AgentScopeRuntimeUnavailable(f"主协调专家生成兜底回复失败: {exc}") from exc
+        if not reply:
+            raise AgentScopeRuntimeUnavailable("主协调专家生成兜底回复失败：模型返回为空")
+        return reply[:1000]
 
     @staticmethod
     def _can_propose_team_handoff(team: ExpertTeamDefinition, expert_id: str) -> bool:
@@ -599,6 +917,13 @@ class AgentScopeExpertRuntime:
         state, SSE, or bundle-facing handoff contracts.
         """
         return expert_id == team.coordinator_expert_id
+
+    @staticmethod
+    def _contains_unstructured_team_routing_text(reply: str, team: ExpertTeamDefinition) -> bool:
+        text = str(reply or "")
+        if not any(token in text for token in ("转交", "交给", "由", "建议您找", "请咨询")):
+            return False
+        return any(member.mention_name and member.mention_name in text for member in team.members)
 
     @staticmethod
     def _public_team_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
@@ -616,10 +941,12 @@ class AgentScopeExpertRuntime:
         team_id = str(getattr(context, "session_meta", {}).get("expert_team_id") or "").strip()
         if not team_id:
             return None
-        registered = self.team_registry.get(team_id)
+        # Deployment snapshots are immutable per session. They must win over
+        # a same-ID filesystem/global registration left in this process.
+        entry = self._snapshot_entry(context, "expert_team", team_id)
+        registered = None if entry is not None else self.team_registry.get(team_id)
         if registered is not None:
             return registered
-        entry = self._snapshot_entry(context, "expert_team", team_id)
         if entry is None:
             raise ValueError(f"专家团不存在: {team_id}")
         payload = entry["payload"]
@@ -634,7 +961,12 @@ class AgentScopeExpertRuntime:
         members = tuple(
             ExpertTeamMember(
                 expert_id=str(item.get("object_key") or ""),
-                mention_name=str((by_key.get(str(item.get("object_key") or "")) or {}).get("mention_name") or item.get("object_key") or ""),
+                mention_name=str(
+                    (by_key.get(str(item.get("object_key") or "")) or {}).get("mention_name")
+                    or self._snapshot_expert_name(context, str(item.get("object_key") or ""))
+                    or item.get("object_key")
+                    or ""
+                ),
                 routing_brief=str((by_key.get(str(item.get("object_key") or "")) or {}).get("routing_brief") or ""),
             )
             for item in locks if str(item.get("object_key") or "")
@@ -645,6 +977,7 @@ class AgentScopeExpertRuntime:
             rules_markdown=str(payload.get("rules_markdown") or ""),
             coordinator_expert_id=coordinator,
             members=members,
+            brief=str(payload.get("brief") or "").strip(),
         )
 
     def _apply_structured_team_switch(self, context, team: ExpertTeamDefinition | None, user_message: str) -> str:
@@ -662,6 +995,7 @@ class AgentScopeExpertRuntime:
         context.session_meta["active_expert_id"] = member.expert_id
         context.session_meta["expert_id"] = member.expert_id
         context.session_meta.pop("pending_team_handoff", None)
+        context.session_meta.pop("pending_team_handoff_intent", None)
         source = str(switch.get("source") or "toolbar")
         # A confirmed handoff/tool-bar selection is a user-visible Agent
         # choice. Preserve it at session scope so entering another child's
@@ -672,12 +1006,13 @@ class AgentScopeExpertRuntime:
             set_selection(
                 expert_team_id=team.team_id,
                 expert_id=member.expert_id,
-                selection_source="handoff_card" if source == "team_handoff" else "manual",
+                selection_source="handoff_card" if source in {"team_handoff", "team_handoff_ack", "team_handoff_ack_recovered"} else "manual",
             )
         context.session_meta["team_handoff_visible_user_message"] = str(
             switch.get("visible_user_message") or f"@{member.mention_name}"
         )
-        if source == "team_handoff":
+        is_handoff_source = source in {"team_handoff", "team_handoff_ack", "team_handoff_ack_recovered"}
+        if is_handoff_source:
             # This is a timeline/audit event, not a new semantic question.
             # Keep it visible for history restoration while the planner
             # filters it out of subsequent model prompts.
@@ -686,7 +1021,7 @@ class AgentScopeExpertRuntime:
                 "source_message_id": str(switch.get("source_message_id") or ""),
                 "target_expert_id": member.expert_id,
                 "expert_team_id": team.team_id,
-                "source": "team_handoff",
+                "source": source,
             }
         state = context.skill_states.setdefault(AGENT_RUNTIME_STATE_KEY, {})
         if isinstance(state, dict):
@@ -698,7 +1033,7 @@ class AgentScopeExpertRuntime:
             "from_expert_id": str(switch.get("from_expert_id") or ""),
         })
         excerpt = str(switch.get("conversation_excerpt") or "").strip()
-        if source == "team_handoff":
+        if is_handoff_source:
             source_question = str(switch.get("source_user_message") or "").strip()
             reason = str(switch.get("coordinator_reason") or "").strip()
             return (
@@ -714,7 +1049,7 @@ class AgentScopeExpertRuntime:
         )
 
     @staticmethod
-    def _attach_team_handoff(context, handoff: dict[str, Any]) -> None:
+    def _attach_team_handoff(context, handoff: dict[str, Any]) -> bool:
         for message in reversed(getattr(context, "messages", [])):
             if message.get("role") != "assistant":
                 continue
@@ -726,7 +1061,24 @@ class AgentScopeExpertRuntime:
                 metadata["team_handoff"] = handoff
             from hailiang_skills.core.message_interactions import ensure_message_interactions
             ensure_message_interactions(message)
-            return
+            pending = context.session_meta.get("pending_team_handoff_intent")
+            if isinstance(pending, dict):
+                pending["source_message_id"] = handoff["source_message_id"]
+                pending["presentation_status"] = "attached"
+            legacy_pending = context.session_meta.get("pending_team_handoff")
+            if isinstance(legacy_pending, dict):
+                legacy_pending["source_message_id"] = handoff["source_message_id"]
+                legacy_pending["presentation_status"] = "attached"
+            return True
+        pending = context.session_meta.get("pending_team_handoff_intent")
+        if isinstance(pending, dict):
+            pending["presentation_status"] = "attach_failed"
+        from hailiang_skills.core.logging import make_event
+        if isinstance(getattr(context, "event_trace", None), list):
+            context.event_trace.append(make_event("team_handoff_presentation_deferred", {
+                "handoff_id": str(handoff.get("handoff_id") or ""), "reason": "assistant_message_missing",
+            }))
+        return False
 
     @staticmethod
     def _read_effective_facts(context) -> dict[str, Any]:

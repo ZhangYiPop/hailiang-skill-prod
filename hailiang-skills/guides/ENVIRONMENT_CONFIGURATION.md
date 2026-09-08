@@ -24,6 +24,7 @@ sudo nano /etc/hailiang-skills/test.env
 | `HAILIANG_TEST_LLM_MODEL` | 测试模型名称 | `qwen3.7-plus` | 不配置 |
 | `HAILIANG_AUDIT_ENCRYPTION_KEY` | 审计加密密钥 | 独立密钥 | 独立密钥 |
 | `HAILIANG_SECURITY_QUARANTINE_KEY` | 风控拦截证据加密密钥 | 独立密钥 | 独立密钥 |
+| `HAILIANG_SECURITY_ADMIN_TOKEN` | 受保护的诊断、风控隔离库与用量查询令牌 | 独立随机令牌 | 独立随机令牌，不能复用测试值 |
 | `HAILIANG_DATABASE_URL` | PostgreSQL 连接串（多孩子新基线） | `hailiang_skills_test_multi_profile_v1` | `hailiang_skills_multi_profile_v1` |
 | `HAILIANG_STORAGE_BACKEND` | 会话、事实和审计的持久化后端 | 固定 `postgres` | 固定 `postgres` |
 | `HAILIANG_BIND_HOST` | API 监听地址 | `127.0.0.1` | BFF 可访问的私网 IP |
@@ -75,3 +76,13 @@ HAILIANG_AUDIT_RAW_CONTENT_ENABLED=false
 ```
 
 不要将输出发到聊天、提交到代码仓库或写入普通日志。
+
+诊断令牌可用如下命令单独生成；测试、正式与每个冒烟环境必须使用不同值：
+
+```bash
+openssl rand -hex 32
+```
+
+令牌仅配置在 `/etc/hailiang-skills/test.env`、`prod.env` 或对应的私有
+smoke 环境文件中。BFF 不应把它下发给浏览器；只有受信任的运维工具可以在
+`X-Security-Admin-Token` 请求头中使用它。

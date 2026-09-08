@@ -137,7 +137,7 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
                   key={team.team_id}
                   type="button"
                   disabled={disabled || selected || !onSelectExpertTeam}
-                  title={team.description}
+                  title={team.brief || team.description}
                   onClick={() => void onSelectExpertTeam?.(team.team_id)}
                   className={[
                     "rounded-full border px-3 py-2 text-xs transition disabled:cursor-not-allowed disabled:opacity-40",
@@ -178,7 +178,7 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
                   key={expert.expert_id}
                   type="button"
                   disabled={disabled || selected || !onSelectExpert}
-                  title={`${expert.description}\n已锁定 Skill：${skillLabels || expert.skill_ids.join("、")}`}
+                  title={`${expert.brief || expert.description}\n已锁定 Skill：${skillLabels || expert.skill_ids.join("、")}`}
                   onClick={() => {
                     if (onSelectExpert) {
                       void onSelectExpert(expert.expert_id);

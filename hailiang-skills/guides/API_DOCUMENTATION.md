@@ -19,6 +19,20 @@
 
 ## 接入约定
 
+### 工作台发布指向与历史恢复
+
+对象返回 `current_release_id`，发布列表返回 `is_current`。`latest_release_no` 仍表示已创建的最大发布序号；当前发布以 `current_release_id`/`is_current` 为准，回退不会重编号。
+
+- `POST /workbench/v1/releases/{release_id}/make-current`：请求为 `{"actor_id":"…","expected_current_release_id":"…"}`。可回退或恢复历史发布；期望指向不匹配返回 `409 CURRENT_RELEASE_CONFLICT`。目标依赖闭包必须仍完整可用。
+- `POST /workbench/v1/releases/{release_id}/drafts`：请求为 `{"actor_id":"…"}`，返回复制的新草稿修订。复制依赖锁与资产，不复制发布和调试证据。
+- 当前发布不可直接归档，返回 `CURRENT_RELEASE_ARCHIVE_FORBIDDEN`；应先选择另一发布版本。
+- 发布指向切换不会改写上游依赖锁，也不会改变生产部署。导入对象库得到的发布需显式设为当前版本；生产导入仍需确认激活。
+- 永久删除会删除对象、修订、发布版本与资产；同类型 ID 随后可由创建或 ZIP 导入重新使用。删除审计仅用于追溯，不作为 ID 墓碑或后续创建/导入的拦截条件。
+
+专家与专家团的修订 `payload.brief` 是必填的一行用户摘要（规范化后 1–120 字）。它在对象列表、运行目录、发布 ZIP 与 SSE v2 的 `expert.team.brief` / `expert.active.brief` 中返回；专家团成员的 `members[].routing_brief` 仅用于分流和转交卡，不能代替 `brief`。缺失 `brief` 的旧 Schema v1 包可作为历史版本导入，但需在工作台补齐后才可保存为可发布的新修订。
+
+数据库升级需执行 Alembic 迁移 `0005_current_release`，将既有对象的最新未归档发布设为初始当前发布。迁移前备份数据库。完整迁移和运行来源切换见 [业务配置数据库迁移与回退](BUSINESS_CONFIGURATION_MIGRATION.md)。
+
 - BFF 是鉴权与资源归属校验边界。`user_id` 由 BFF 从登录态注入，不能信任浏览器传入的值。
 - 路径中的 `profile_id`、`session_id` 均须由 BFF 校验属于当前用户后再转发。
 - JSON 接口使用 `Content-Type: application/json`；流接口额外使用 `Accept: text/event-stream` 与 `X-SSE-Protocol: hailiang.sse.v2`。
@@ -53,6 +67,8 @@
 
 工作台发布仅产生可调试的本地版本。正式 `hailiang-skills` 对话测试台只有在配置包进入生产暂存区并被激活后，才会让**新建会话**绑定新的 ZIP 快照；已有会话持续使用创建时的快照。
 
+部署接口始终使用运行中服务的 `HAILIANG_DEPLOY_ENV`（测试为 `test`、正式为 `prod`）；前端不再传入固定环境值。若请求显式传入不同环境，返回 `409 DEPLOYMENT_ENVIRONMENT_MISMATCH`，避免配置包被写入正式对话不会读取的命名空间。
+
 当前每个生产环境只允许一个活跃根专家团。激活专家团部署时以 `expert_team_id`（而非名称）标识部署身份；同 ID 的新版本替换旧版本，激活不同 ID 的专家团则切换当前全局专家团。名称来自新 ZIP 快照，因此改名后按“发布 → 导入 → 激活”即可在新会话中生效。
 
 `POST /deployment/v1/deployments/{deployment_id}/deactivate` 接收：
@@ -66,6 +82,8 @@
 ### 永久删除的引用判定
 
 工作台永久删除仅检查其他未归档对象的**当前最新未归档发布版本**。历史发布版本、全部草稿修订和未发布对象的引用均不阻止删除；阻塞响应会返回实际引用对象及其当前发布版本号。生产暂存和已激活部署保存独立 ZIP 快照，不阻止本地对象删除，也不会因工作台删除而被改写。
+
+对象归档使用 `POST /workbench/v1/objects/{object_id}/archive`，只隐藏对象并保留修订、发布版本和资产；恢复使用 `POST /workbench/v1/objects/{object_id}/unarchive`。工作台可勾选“显示已归档对象”后执行恢复。两者请求体均为 `{ "actor_id": "..." }`，并分别记录 `object.archived` 与 `object.unarchived` 审计事件。
 
 工作台的 `object_key` 分别对应 Skill 的 `skill_id`、专家的 `expert_id` 和专家团的 `expert_team_id`。为避免篡改已发布配置包、调试快照和生产部署，修改 ID 不会原地更新历史对象，而是创建一个带新 ID 的后继对象及其最新修订副本；后继修订必须重新调试、人工确认并发布。
 
@@ -635,6 +653,7 @@ curl -X POST "$ALGORITHM_BASE/api/v1/users/$USER_ID/facts:clear-by-source" \
 | 409 | `QUIT_SKILL_TARGET_MISMATCH` | 退出目标不是当前活动 Skill。 | 刷新状态后 |
 | 409 | `TARGET_SKILL_ALREADY_ACTIVE` | `enter_skill` 的目标已经是当前活动 Skill。 | 不重试；保持当前 Skill。 |
 | 409 | `SESSION_UPDATE_CONFLICT` | 并发更新冲突。 | 短暂退避后 |
+| 409 | `CONFIGURATION_UPDATED` | 部署已激活、回退、恢复或下线，旧表单/转交卡失效。 | 刷新专家团及表单后重新操作 |
 | 404 | `SESSION_NOT_FOUND`、`PROFILE_NOT_FOUND` | 资源不存在。 | 否 |
 | 429 | `SSE_CAPACITY_EXCEEDED` | 流式并发已满。 | 是，按 `Retry-After`（当前 5 秒） |
 | 500 | `HTTP_ERROR` | 未处理服务端异常。 | 有限重试并记录请求 ID |
@@ -657,3 +676,48 @@ curl -G 'http://127.0.0.1:8015/deployment/v1/token-usage' \
 ```
 
 返回总计及按日明细：`request_count`、`input_tokens`、`output_tokens`、`total_tokens`。查询只读使用已有 `created_at` 索引，不读取对话原文；应在低频运维场景调用，避免连续大范围查询。
+
+# 请求、会话与 Run 诊断（运维接口）
+
+以下接口只读，使用 `HAILIANG_SECURITY_ADMIN_TOKEN` 对应的
+`X-Security-Admin-Token` 或 Bearer 凭证。它们仅应由受信任的运维/BFF
+排障工具调用，不能暴露给浏览器终端用户。
+
+| 已知信息 | 查询接口 | 用途 |
+| --- | --- | --- |
+| `session_id` | `POST /api/v1/operations/diagnostics/sessions/query` | 聚合该会话的运行账本、领域事件、HTTP 请求记录和可选 SSE 记录。 |
+| `run_id` | `POST /api/v1/operations/diagnostics/runs/query` | 先从持久化 Run 找到所属会话，再返回该轮的事件、HTTP 与 SSE 记录。 |
+| `request_id` | `POST /api/v1/operations/diagnostics/requests/query` | 定位鉴权、参数校验、网关转发等尚未生成 session/run 的失败。 |
+
+所有 API 响应（包括 4xx/5xx）都会返回 `X-Request-Id`；BFF 必须透传并在
+日志中保存它。前端发生“没有 session_id/run_id 的接口问题”时，优先收集
+HTTP 状态、响应体、`X-Request-Id` 与 `X-Trace-Id`，再查询 request 接口。
+
+```bash
+# 会话全部诊断元数据；默认隐藏对话正文、SSE 原文与工具输入输出。
+curl -X POST 'http://127.0.0.1:8015/api/v1/operations/diagnostics/sessions/query' \
+  -H 'X-Security-Admin-Token: <运维令牌>' \
+  -H 'Content-Type: application/json' \
+  --data '{"session_id":"session_001","limit":200}'
+
+# 仅查看某一轮；run 可反查到所属 session。
+curl -X POST 'http://127.0.0.1:8015/api/v1/operations/diagnostics/runs/query' \
+  -H 'X-Security-Admin-Token: <运维令牌>' \
+  -H 'Content-Type: application/json' \
+  --data '{"run_id":"run_001"}'
+
+# 在参数校验失败、认证失败或网关尚未创建 session 时使用。
+curl -X POST 'http://127.0.0.1:8015/api/v1/operations/diagnostics/requests/query' \
+  -H 'X-Security-Admin-Token: <运维令牌>' \
+  -H 'Content-Type: application/json' \
+  --data '{"request_id":"req_0123456789abcdef"}'
+```
+
+响应中的 `found=false` 表示当前节点的可查询记录不存在；排查多实例部署时，
+还应根据响应/请求中的 `X-App-Node` 去对应节点查询，或将 `HAILIANG_LOG_DIR`
+放在集中式日志采集范围内。SSE 原始事件仅在
+`HAILIANG_SSE_RECORDING_ENABLED=true` 时存在。
+
+若经过合规授权、确需查看会话正文或 SSE 原文，可额外传
+`include_content=true`。该参数仍会遮蔽密码、令牌、API Key 等敏感字段；不得
+把查询结果粘贴到工单、群聊或普通前端日志。
