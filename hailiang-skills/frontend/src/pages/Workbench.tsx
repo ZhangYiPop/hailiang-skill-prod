@@ -28,6 +28,7 @@ import {
   Sparkles,
   SunMedium,
   Trash2,
+  Upload,
   UsersRound,
   Wrench,
   X,
@@ -393,6 +394,15 @@ export default function Workbench() {
   const [revisionTestInput, setRevisionTestInput] = useState("");
   const [candidateTargetExpertId, setCandidateTargetExpertId] = useState("");
   const [candidateConversationState, setCandidateConversationState] = useState<SseV2State | null>(null);
+  const candidateTeamName = candidateConversationState?.expert.team.name || "未选择";
+  const candidateExpertName = candidateConversationState?.expert.active.name || "未选择";
+  const candidateActiveSkill = candidateConversationState?.session.active_skill;
+  // expert_direct is an execution-source marker, not a Skill selection. The
+  // title intentionally contains the Expert's name, so rendering it here as
+  // a Skill would make a direct Expert reply look like an invisible Skill run.
+  const candidateSkillName = candidateActiveSkill?.skill_id === "expert_direct"
+    ? "未选择"
+    : candidateActiveSkill?.title || "未选择";
   const [evaluationInputs, setEvaluationInputs] = useState(
     "我想了解适合自己的升学路径\n请根据当前信息给出下一步建议",
   );
@@ -1004,7 +1014,87 @@ export default function Workbench() {
     }
   }
 
-  async function addAssets(files: FileList | null) {
+  function questionnaireConfigFromSkill(): Record<string, unknown> | null {
+    try {
+      const configuration = payload.configuration && typeof payload.configuration === "object"
+        ? payload.configuration as Record<string, unknown>
+        : {};
+      let questionnaire = configuration.questionnaire && typeof configuration.questionnaire === "object"
+        ? configuration.questionnaire
+        : null;
+      if (!questionnaire) {
+        try {
+          const contract = JSON.parse(runtimeContractText) as Record<string, unknown>;
+          questionnaire = contract.questionnaire && typeof contract.questionnaire === "object"
+            ? contract.questionnaire
+            : null; // legacy revision compatibility
+        } catch {
+          questionnaire = null;
+        }
+      }
+      const config = questionnaire && typeof questionnaire === "object"
+        ? (questionnaire as Record<string, unknown>).config_json
+        : null;
+      if (config && typeof config === "object") return config as Record<string, unknown>;
+      const configPath = questionnaire && typeof questionnaire === "object"
+        ? String((questionnaire as Record<string, unknown>).config_path || "assets/questionnaire.json")
+        : "assets/questionnaire.json";
+      const asset = pendingAssets.find((item) => item.relative_path === configPath);
+      if (!asset) return null;
+      const binary = atob(asset.content_base64);
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      const parsed = JSON.parse(new TextDecoder().decode(bytes));
+      return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function exportQuestionnaireConfig() {
+    const config = questionnaireConfigFromSkill();
+    if (!config) {
+      setNotice({ tone: "error", text: "当前 Skill 没有有效的 assets/questionnaire.json。" });
+      return;
+    }
+    const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+    const anchor = document.createElement("a");
+    anchor.href = URL.createObjectURL(blob);
+    anchor.download = "questionnaire.config.json";
+    anchor.click();
+    URL.revokeObjectURL(anchor.href);
+  }
+
+  function importQuestionnaireConfig(file: File | undefined) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const config = JSON.parse(String(reader.result || ""));
+        const configuration = payload.configuration && typeof payload.configuration === "object"
+          ? payload.configuration as Record<string, unknown>
+          : {};
+        const questionnaire: Record<string, unknown> = configuration.questionnaire && typeof configuration.questionnaire === "object"
+          ? { ...(configuration.questionnaire as Record<string, unknown>) }
+          : { enabled: true };
+        delete questionnaire.config_json;
+        questionnaire.config_path = "assets/questionnaire.json";
+        const encoded = new TextEncoder().encode(JSON.stringify(config, null, 2));
+        let binary = "";
+        for (let index = 0; index < encoded.length; index += 0x8000) binary += String.fromCharCode(...encoded.subarray(index, index + 0x8000));
+        setPendingAssets((current) => [
+          ...current.filter((item) => item.relative_path !== "assets/questionnaire.json"),
+          { relative_path: "assets/questionnaire.json", media_type: "application/json", content_base64: btoa(binary), size: encoded.length },
+        ]);
+        setPayload({ ...payload, configuration: { ...configuration, questionnaire } });
+        setNotice({ tone: "ok", text: "问卷配置已导入，请预览并保存为新修订。" });
+      } catch {
+        setNotice({ tone: "error", text: "问卷配置必须是合法 JSON。" });
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  async function addAssets(files: FileList | null, kind: "reference" | "asset") {
     if (!files) return;
     const next = await Promise.all(
       Array.from(files).map(async (file) => {
@@ -1017,7 +1107,7 @@ export default function Workbench() {
           );
         }
         return {
-          relative_path: `references/${file.name}`,
+          relative_path: `${kind === "asset" ? "assets" : "references"}/${file.name}`,
           media_type: file.type || "application/octet-stream",
           content_base64: btoa(binary),
           size: file.size,
@@ -2016,7 +2106,7 @@ export default function Workbench() {
                               <Braces size={17} className="text-violet-300" />
                               <h3 className="font-medium">Runtime Contract</h3>
                               <span className="text-xs text-slate-500">
-                                声明路由、状态与能力契约
+                                仅声明允许读写的事实字段
                               </span>
                             </div>
                             <textarea
@@ -2027,6 +2117,42 @@ export default function Workbench() {
                               rows={10}
                               className="w-full rounded-2xl border border-white/10 bg-slate-950/70 p-4 font-mono text-xs leading-6 text-slate-300 outline-none focus:border-violet-400/40"
                             />
+                          </div>
+                          <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-5">
+                            <div className="mb-4 flex items-center gap-2">
+                              <Braces size={17} className="text-sky-300" />
+                              <h3 className="font-medium">问卷配置</h3>
+                              <span className="text-xs text-slate-500">
+                                保存到 assets/questionnaire.json，并写回 SKILL.md 声明
+                              </span>
+                            </div>
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              <label className="cursor-pointer rounded-xl border border-white/10 px-3 py-2 text-xs text-slate-300 hover:text-white">
+                                <Upload className="mr-1.5 inline" size={14} />导入问卷 JSON
+                                <input type="file" accept="application/json,.json" className="hidden" onChange={(event) => { importQuestionnaireConfig(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+                              </label>
+                              <button type="button" onClick={exportQuestionnaireConfig} className="rounded-xl border border-white/10 px-3 py-2 text-xs text-slate-300 hover:text-white">
+                                <Download className="mr-1.5 inline" size={14} />导出问卷 JSON
+                              </button>
+                            </div>
+                            {(() => {
+                              const config = questionnaireConfigFromSkill();
+                              const questions = Array.isArray(config?.questions) ? config.questions : [];
+                              return config ? (
+                                <div className="mt-4 rounded-2xl border border-violet-300/15 bg-violet-300/[0.04] p-4">
+                                  <div className="flex items-center justify-between gap-3 text-xs">
+                                    <span className="font-medium text-violet-100">问卷预览 · {String(config.title || "未命名")}</span>
+                                    <span className="text-slate-500">{questions.length} 个问题</span>
+                                  </div>
+                                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                                    {questions.map((question, index) => {
+                                      const item = question && typeof question === "object" ? question as Record<string, unknown> : {};
+                                      return <div key={`${String(item.id || "question")}-${index}`} className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 text-xs text-slate-300"><span className="text-slate-500">{index + 1}. </span>{String(item.label || item.id || "未命名问题")}<span className="ml-2 text-violet-200/70">{String(item.input_type || "text")}</span></div>;
+                                    })}
+                                  </div>
+                                </div>
+                              ) : null;
+                            })()}
                           </div>
                         </>
                       ) : null}
@@ -2085,7 +2211,7 @@ export default function Workbench() {
                                       <div className="space-y-2">
                                         {group.releases.map((release) => (
                                           <label key={release.release_id} className={`flex cursor-pointer items-center justify-between gap-3 rounded-xl border p-3 ${selectedReleaseIds.includes(release.release_id) ? "border-sky-400/35 bg-sky-400/[0.08]" : "border-white/10"}`}>
-                                            <span className="flex items-center gap-3"><input type="radio" name={`dependency-${group.object_id}`} checked={selectedReleaseIds.includes(release.release_id)} onChange={() => selectDependencyRelease(group.object_id, release.release_id)} className="accent-sky-400" /><span><strong className="text-sm">{release.version}</strong>{release.is_current ? <span className="ml-2 text-xs text-emerald-200">当前发布</span> : null}<span className="mt-1 block font-mono text-[11px] text-slate-500">{shortHash(release.content_hash)}</span></span></span>
+                                            <span className="flex items-center gap-3"><input type="radio" name={`dependency-${group.object_id}`} checked={selectedReleaseIds.includes(release.release_id)} onChange={() => selectDependencyRelease(group.object_id, release.release_id)} className="accent-sky-400" /><span><strong className="text-sm">{release.version}</strong>{release.is_current ? <span className="ml-2 text-xs text-emerald-200">当前发布</span> : null}<span className="mt-1 block text-[11px] text-slate-500">发布人：{release.published_by_display_name || release.published_by || "未知"}</span><span className="mt-1 block font-mono text-[11px] text-slate-500">{shortHash(release.content_hash)}</span></span></span>
                                           </label>
                                         ))}
                                       </div>
@@ -2257,6 +2383,9 @@ export default function Workbench() {
                             <p className="mt-2 text-xs text-slate-500">
                               {formatTime(revision.created_at)}
                             </p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              变更人：{revision.created_by_display_name || revision.created_by || "未知"}
+                            </p>
                             <button
                               type="button"
                               onClick={() => {
@@ -2276,8 +2405,8 @@ export default function Workbench() {
                           {(selectedObject.releases ?? []).length ? [...(selectedObject.releases ?? [])]
                             .sort((left, right) => Number(right.is_current) - Number(left.is_current) || right.release_no - left.release_no)
                             .map((release) => (
-                              <div key={release.release_id} className="flex items-center justify-between rounded-xl bg-slate-950/50 px-3 py-2 text-xs">
-                                <span>{release.version}{release.is_current ? " · 当前发布" : ""}</span>
+                              <div key={release.release_id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-950/50 px-3 py-2 text-xs">
+                                <span><span className="block">{release.version}{release.is_current ? " · 当前发布" : ""}</span><span className="mt-1 block text-[11px] text-slate-500">发布人：{release.published_by_display_name || release.published_by || "未知"} · {formatTime(release.published_at)}</span></span>
                                 <span className="font-mono text-slate-500">{shortHash(release.content_hash)}</span>
                               </div>
                             )) : <p className="text-xs text-slate-500">尚未发布版本</p>}
@@ -2351,7 +2480,7 @@ export default function Workbench() {
                     <option value="">请选择一个修订版本</option>
                     {(debugObject?.revisions ?? []).map((revision) => (
                       <option key={revision.revision_id} value={revision.revision_id}>
-                        r{revision.revision_no} · {formatTime(revision.created_at)} · {revision.validation.valid ? "校验通过" : "待修复"} · {shortHash(revision.content_hash)}
+                        r{revision.revision_no} · {revision.created_by_display_name || revision.created_by || "未知"} · {formatTime(revision.created_at)} · {revision.validation.valid ? "校验通过" : "待修复"} · {shortHash(revision.content_hash)}
                       </option>
                     ))}
                   </select>
@@ -2360,8 +2489,9 @@ export default function Workbench() {
                       <summary className="cursor-pointer text-sm font-medium text-slate-200">
                         查看 r{selectedTestRevision.revision_no} 修订记录 · {shortHash(selectedTestRevision.content_hash)}
                       </summary>
-                      <div className="mt-4 grid gap-2 text-xs text-slate-400 sm:grid-cols-3">
+                      <div className="mt-4 grid gap-2 text-xs text-slate-400 sm:grid-cols-4">
                         <span>创建：{formatTime(selectedTestRevision.created_at)}</span>
+                        <span>变更人：{selectedTestRevision.created_by_display_name || selectedTestRevision.created_by || "未知"}</span>
                         <span>{selectedTestRevision.validation.valid ? "校验通过" : "校验待修复"}</span>
                         <span>{selectedTestRevision.dependency_locks.length} 个锁定依赖</span>
                       </div>
@@ -2412,11 +2542,11 @@ export default function Workbench() {
                     <div className="mt-3 rounded-xl border border-sky-300/15 bg-sky-300/[0.05] px-3 py-2 text-xs leading-5 text-slate-300">
                       <span className="text-slate-500">候选上下文：</span>未绑定孩子
                       <span className="mx-2 text-slate-600">·</span>
-                      <span className="text-slate-500">专家团：</span>{candidateConversationState?.expert_context.expert_team_id || "未选择"}
+                      <span className="text-slate-500">专家团：</span>{candidateTeamName}
                       <span className="mx-2 text-slate-600">·</span>
-                      <span className="text-slate-500">专家：</span>{candidateConversationState?.expert_context.expert_id || "未选择"}
+                      <span className="text-slate-500">专家：</span>{candidateExpertName}
                       <span className="mx-2 text-slate-600">·</span>
-                      <span className="text-slate-500">Skill：</span>{candidateConversationState?.session.active_skill.title || "等待路由"}
+                      <span className="text-slate-500">Skill：</span>{candidateSkillName}
                     </div>
                     {revisionTestSession?.transcript?.length && revisionTestSession.status === "active" ? (
                       <button
@@ -2504,7 +2634,7 @@ export default function Workbench() {
                               <button
                                 key={member.expert_id}
                                 type="button"
-                                disabled={busy || activeCandidateForm || activeCandidateHandoff}
+                                disabled={busy || activeCandidateHandoff}
                                 title={member.routing_brief || `下一条消息交由 ${member.mention_name} 处理`}
                                 onClick={() => setCandidateTargetExpertId(selected ? "" : member.expert_id)}
                                 className={`rounded-full border px-3 py-1.5 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 ${selected ? "border-violet-200/60 bg-violet-200/15 text-violet-100" : "border-white/10 bg-slate-950/50 text-slate-300 hover:border-violet-400/30 hover:text-violet-100"}`}
@@ -2517,6 +2647,11 @@ export default function Workbench() {
                         <p className="mt-2 text-[11px] leading-5 text-slate-500">
                           {candidateTargetExpert ? `下一条消息将由 @${candidateTargetExpert.mention_name} 接管。` : "选择团内专家后发送问题；选择会绑定本次匿名候选会话。"}
                         </p>
+                        {activeCandidateForm ? (
+                          <p className="mt-2 text-[11px] leading-5 text-amber-200/80">
+                            切换专家并发送新问题会自动结束当前未提交表单；原表单会保留在记录中但不能再提交。
+                          </p>
+                        ) : null}
                       </div>
                     ) : null}
                     <p className="mt-3 text-[11px] leading-5 text-slate-500">
@@ -2527,12 +2662,12 @@ export default function Workbench() {
                       onChange={(event) => setRevisionTestInput(event.target.value)}
                       placeholder={selectedTestRevision ? `向 r${selectedTestRevision.revision_no} 输入测试问题…` : "请先选择要测试的修订"}
                       rows={3}
-                      disabled={!selectedTestRevision || busy || activeCandidateForm || activeCandidateHandoff}
+                      disabled={!selectedTestRevision || busy || activeCandidateHandoff}
                       className="mt-4 w-full rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 outline-none focus:border-sky-400/40 disabled:opacity-40"
                     />
                     <button
                       type="button"
-                      disabled={!selectedTestRevision || !revisionTestInput.trim() || busy || activeCandidateForm || activeCandidateHandoff}
+                      disabled={!selectedTestRevision || !revisionTestInput.trim() || busy || activeCandidateHandoff}
                       onClick={() => void runRevisionTestTurn(undefined, undefined, undefined, candidateTargetExpert ? { target_expert_id: candidateTargetExpert.expert_id } : undefined)}
                       className="mt-4 inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-40"
                     >
@@ -2723,7 +2858,7 @@ export default function Workbench() {
                           </button>
                           {expanded ? <div className="space-y-3 border-t border-white/10 p-4">{group.releases.map((release) => (
                             <div key={release.release_id} className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/10 p-3">
-                              <div><p className="text-sm font-medium">{release.version}{release.is_current ? <span className="ml-2 text-xs text-emerald-200">当前发布</span> : null}</p><p className="mt-1 text-xs text-slate-500">{release.dependency_locks.length} 个锁定依赖 · {shortHash(release.content_hash)}</p></div>
+                              <div><p className="text-sm font-medium">{release.version}{release.is_current ? <span className="ml-2 text-xs text-emerald-200">当前发布</span> : null}</p><p className="mt-1 text-xs text-slate-500">发布人：{release.published_by_display_name || release.published_by || "未知"} · {formatTime(release.published_at)}</p><p className="mt-1 text-xs text-slate-500">{release.dependency_locks.length} 个锁定依赖 · {shortHash(release.content_hash)}</p></div>
                               <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void exportRelease(release)} className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm text-slate-300 hover:text-white"><Download size={15} />导出</button><button type="button" disabled={busy || release.is_current} onClick={() => void changeRelease(release, false)} className="rounded-xl border border-amber-400/25 px-3 py-2 text-sm text-amber-100 hover:bg-amber-400/10 disabled:cursor-not-allowed disabled:opacity-40">设为当前发布</button><button type="button" disabled={busy} onClick={() => void changeRelease(release, true)} className="rounded-xl border border-sky-400/25 px-3 py-2 text-sm text-sky-100 hover:bg-sky-400/10 disabled:cursor-not-allowed disabled:opacity-40">从此版本创建草稿</button></div>
                             </div>
                           ))}</div> : null}

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from hailiang_skills.core.fact_service import FactService
+from hailiang_skills.schemas.questionnaire import validate_questionnaire_config
 from hailiang_skills.runtime_bridge.native_path_options import MULTI_PATH_SKILL_ID, path_catalog
 from hailiang_skills.skills.common import extract_explicit_exam_province
 
@@ -92,6 +93,19 @@ def build_questionnaire_protocol(bundle: Any, state: Any) -> str:
 
 def question_specs(bundle: Any) -> list[dict[str, Any]]:
     config = questionnaire_config(bundle)
+    config_path = str(config.get("config_path") or "").strip()
+    if config_path:
+        path = Path(bundle.root_dir) / config_path
+        if path.is_file():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                value = None
+            if isinstance(value, dict):
+                return _parse_config_json(value)
+    config_json = config.get("config_json")
+    if isinstance(config_json, dict):
+        return _parse_config_json(config_json)
     catalog_path = str(config.get("question_catalog_path") or "").strip()
     if catalog_path:
         path = Path(bundle.root_dir) / catalog_path
@@ -677,6 +691,7 @@ def _parse_rule_table(content: str) -> list[dict[str, Any]]:
             "display_condition": _display_condition(question_id, rule),
             "option_conditions": _option_conditions(rule),
             "rule": rule,
+            "legacy_rule_table": True,
         })
     if any(item["question_id"] == "升学诉求" for item in specs):
         # The source row explicitly defines the secondary choices.  Expose it
@@ -693,6 +708,7 @@ def _parse_rule_table(content: str) -> list[dict[str, Any]]:
             "display_condition": "当升学诉求包含稳就业时显示；选项由升学诉求规则行的二级选项定义",
             "option_conditions": {},
             "rule": "来源：升学诉求行的“稳就业下二级选项为军警、师范、农科、医学、飞行员”。",
+            "legacy_rule_table": True,
         })
     return specs
 
@@ -798,6 +814,12 @@ def _pending_field(field: dict[str, Any]) -> dict[str, Any]:
             "max_selections",
             "value_type",
             "decimal_places",
+            "required",
+            "placeholder",
+            "example",
+            "unit",
+            "min",
+            "max",
         )
     }
 
@@ -826,18 +848,37 @@ def _normalize_spec(field: dict[str, Any]) -> dict[str, Any] | None:
                 value = text = str(option).strip()
             if value:
                 options.append({"label": text, "value": value})
+    input_type = str(field.get("input_type") or "text")
+    declared_value_type = str(field.get("value_type") or "")
+    value_type = declared_value_type or (input_type if input_type in {"integer", "number"} else "string")
     return {
         "question_id": question_id,
         "label": label,
-        "input_type": str(field.get("input_type") or "text"),
-        "value_type": _value_type(str(field.get("value_type") or "string")),
+        "input_type": input_type,
+        "value_type": _value_type(value_type),
         "options": options,
         "max_selections": _positive_int(field.get("max_selections")),
         "decimal_places": _positive_int(field.get("decimal_places")),
-        "display_condition": str(field.get("display_condition") or ""),
+        "display_condition": field.get("display_condition") if isinstance(field.get("display_condition"), dict) else str(field.get("display_condition") or ""),
         "option_conditions": field.get("option_conditions") if isinstance(field.get("option_conditions"), dict) else {},
         "rule": str(field.get("rule") or ""),
+        "required": bool(field.get("required", True)),
+        "placeholder": str(field.get("placeholder") or ""),
+        "example": str(field.get("example") or ""),
+        "unit": str(field.get("unit") or ""),
+        "min": field.get("min"),
+        "max": field.get("max"),
     }
+
+
+def _parse_config_json(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse the generic business questionnaire format into runtime specs."""
+    if validate_questionnaire_config(config):
+        return []
+    questions = config.get("questions")
+    if not isinstance(questions, list):
+        return []
+    return [spec for question in questions if isinstance(question, dict) and (spec := _normalize_spec(question))]
 
 
 def _options(rule: str) -> list[dict[str, str]]:
@@ -883,7 +924,7 @@ def _materialize_spec(spec: dict[str, Any], answers: dict[str, Any], tier: str) 
         if not isinstance(option_conditions.get(str(option.get("value"))), dict)
         or all(answers.get(key) == expected for key, expected in option_conditions[str(option.get("value"))].items())
     ]
-    if spec.get("question_id") == "升学诉求":
+    if spec.get("legacy_rule_table") and spec.get("question_id") == "升学诉求":
         if tier in {"特控线上", "一段本科线上"}:
             result["options"] = [{"label": item, "value": item} for item in ("冲院校", "稳就业", "无明确需求")]
         elif tier == "二段专科线上本科线下":
@@ -892,6 +933,11 @@ def _materialize_spec(spec: dict[str, Any], answers: dict[str, Any], tier: str) 
 
 
 def _question_visible(spec: dict[str, Any], answers: dict[str, Any], tier: str) -> bool:
+    condition = spec.get("display_condition")
+    if isinstance(condition, dict) and not _condition_matches(condition, answers):
+        return False
+    if not spec.get("legacy_rule_table"):
+        return True
     question_id = spec.get("question_id")
     if question_id == "升学诉求":
         return tier in {"特控线上", "一段本科线上", "二段专科线上本科线下"}
@@ -906,6 +952,32 @@ def _question_visible(spec: dict[str, Any], answers: dict[str, Any], tier: str) 
     if question_id == "竞赛情况":
         return tier == "特控线上"
     return True
+
+
+def _condition_matches(condition: dict[str, Any], answers: dict[str, Any]) -> bool:
+    if isinstance(condition.get("all"), list) and not all(
+        _condition_matches(item, answers) for item in condition["all"] if isinstance(item, dict)
+    ):
+        return False
+    if isinstance(condition.get("any"), list) and not any(
+        _condition_matches(item, answers) for item in condition["any"] if isinstance(item, dict)
+    ):
+        return False
+    question_id = str(condition.get("question_id") or "").strip()
+    if not question_id:
+        return True
+    actual = answers.get(question_id)
+    expected = condition.get("value")
+    operator = str(condition.get("operator") or "equals")
+    values = actual if isinstance(actual, list) else [actual]
+    if operator == "contains":
+        return expected in values
+    if operator == "in":
+        expected_values = expected if isinstance(expected, list) else [expected]
+        return any(item in expected_values for item in values)
+    if operator == "not_equals":
+        return actual != expected
+    return actual == expected
 
 
 def _derive_tier(bundle: Any, answers: dict[str, Any]) -> str:
@@ -975,14 +1047,20 @@ def _form_field(skill_id: str, spec: dict[str, Any]) -> dict[str, Any]:
         "question_id": spec["question_id"],
         "label": spec["label"],
         "input_type": spec["input_type"],
-        "required": True,
-        "placeholder": "请输入" if spec["input_type"] == "text" else "请选择",
-        "example": "",
+        "required": bool(spec.get("required", True)),
+        "placeholder": spec.get("placeholder") or ("请输入" if spec["input_type"] in {"text", "integer", "number"} else "请选择"),
+        "example": spec.get("example", ""),
         "options": spec["options"],
         "submit_mode": "auto" if spec["input_type"] == "single_select" else "manual",
         "scope": "skill_session",
         "value_type": spec["value_type"],
     }
+    if spec.get("unit"):
+        field["unit"] = spec["unit"]
+    if spec.get("min") is not None:
+        field["min"] = spec["min"]
+    if spec.get("max") is not None:
+        field["max"] = spec["max"]
     if spec.get("max_selections"):
         field["max_selections"] = spec["max_selections"]
     if spec.get("decimal_places") is not None:
@@ -1027,7 +1105,14 @@ def _normalize_answer(raw: str, pending: dict[str, Any]) -> Any | None:
         return None
     try:
         if pending.get("value_type") == "integer":
-            return int(normalized_raw) if re.fullmatch(r"[+-]?\d+", normalized_raw) else None
+            if not re.fullmatch(r"[+-]?\d+", normalized_raw):
+                return None
+            value = int(normalized_raw)
+            if pending.get("min") is not None and value < int(pending["min"]):
+                return None
+            if pending.get("max") is not None and value > int(pending["max"]):
+                return None
+            return value
         if pending.get("value_type") == "number":
             normalized = normalized_raw
             decimal_places = _positive_int(pending.get("decimal_places"))
@@ -1035,7 +1120,12 @@ def _normalize_answer(raw: str, pending: dict[str, Any]) -> Any | None:
                 pattern = rf"[+-]?\d+(?:\.\d{{1,{decimal_places}}})?"
                 if not re.fullmatch(pattern, normalized):
                     return None
-            return float(normalized)
+            value = float(normalized)
+            if pending.get("min") is not None and value < float(pending["min"]):
+                return None
+            if pending.get("max") is not None and value > float(pending["max"]):
+                return None
+            return value
     except ValueError:
         return None
     return normalized_raw

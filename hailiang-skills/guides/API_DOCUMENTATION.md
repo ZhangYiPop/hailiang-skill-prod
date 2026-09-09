@@ -685,13 +685,19 @@ curl -G 'http://127.0.0.1:8015/deployment/v1/token-usage' \
 
 | 已知信息 | 查询接口 | 用途 |
 | --- | --- | --- |
-| `session_id` | `POST /api/v1/operations/diagnostics/sessions/query` | 聚合该会话的运行账本、领域事件、HTTP 请求记录和可选 SSE 记录。 |
+| `session_id` | `POST /api/v1/operations/diagnostics/sessions/query` | 聚合该会话的运行账本、领域事件、HTTP 请求记录、可选 SSE 记录，以及已归并的 `errors` 失败时间线。 |
 | `run_id` | `POST /api/v1/operations/diagnostics/runs/query` | 先从持久化 Run 找到所属会话，再返回该轮的事件、HTTP 与 SSE 记录。 |
 | `request_id` | `POST /api/v1/operations/diagnostics/requests/query` | 定位鉴权、参数校验、网关转发等尚未生成 session/run 的失败。 |
 
 所有 API 响应（包括 4xx/5xx）都会返回 `X-Request-Id`；BFF 必须透传并在
 日志中保存它。前端发生“没有 session_id/run_id 的接口问题”时，优先收集
 HTTP 状态、响应体、`X-Request-Id` 与 `X-Trace-Id`，再查询 request 接口。
+
+会话和 Run 查询的 `errors` 是按时间归并的可诊断失败摘要。HTTP 失败会返回
+`status_code`、`code`、`message`、`detail`，以及存在时的 `error`、`upstream_detail`；
+运行中或 SSE 内失败也会返回其对应状态与错误摘要。即使旧日志没有保存具体错误码，仍会以
+`HTTP_422` 这类回退代码明确标示失败。请求正文、Prompt、令牌和密钥继续受 `include_content`
+和脱敏规则保护，不会在该摘要中回显。
 
 ```bash
 # 会话全部诊断元数据；默认隐藏对话正文、SSE 原文与工具输入输出。

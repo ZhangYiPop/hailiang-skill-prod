@@ -60,6 +60,18 @@ def test_session_diagnostics_redacts_content_by_default(monkeypatch, tmp_path) -
     assert payload["runs"] == [{"run_id": "run_001", "status": "completed"}]
     assert payload["events"][0]["payload"]["content"] == "[OMITTED: set include_content=true]"
     assert payload["http_requests"][0]["request_id"] == "req_001"
+    assert payload["errors"] == [{
+        "source": "http_request",
+        "timestamp": None,
+        "request_id": "req_001",
+        "run_id": "run_001",
+        "status_code": 422,
+        "code": "HTTP_422",
+        "message": None,
+        "detail": None,
+        "error": None,
+        "upstream_detail": None,
+    }]
 
 
 def test_request_diagnostics_handles_pre_session_failure(monkeypatch, tmp_path) -> None:

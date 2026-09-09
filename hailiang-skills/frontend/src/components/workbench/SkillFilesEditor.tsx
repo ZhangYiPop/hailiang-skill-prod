@@ -16,10 +16,12 @@ export type EditableSkillFile = {
   size: number;
 };
 
+type SkillFileKind = "reference" | "asset" | "script";
+
 type Props = {
   files: EditableSkillFile[];
   onChange: (files: EditableSkillFile[]) => void;
-  onUpload: (files: FileList | null) => Promise<void>;
+  onUpload: (files: FileList | null, kind: "reference" | "asset") => Promise<void>;
 };
 
 function decodeText(value: string): string {
@@ -59,13 +61,14 @@ export function SkillFilesEditor({ files, onChange, onUpload }: Props) {
       files.filter(
         (file) =>
           file.relative_path.startsWith("references/") ||
+          file.relative_path.startsWith("assets/") ||
           file.relative_path.startsWith("scripts/"),
       ),
     [files],
   );
   const [selectedPath, setSelectedPath] = useState("");
   const [newName, setNewName] = useState("");
-  const [newKind, setNewKind] = useState<"reference" | "script">("reference");
+  const [newKind, setNewKind] = useState<SkillFileKind>("reference");
   const selected =
     managedFiles.find((file) => file.relative_path === selectedPath) ?? null;
 
@@ -82,8 +85,8 @@ export function SkillFilesEditor({ files, onChange, onUpload }: Props) {
   function addTextFile() {
     const raw = newName.trim().replace(/^\/+/, "").replace(/\\/g, "/");
     if (!raw || raw.includes("..")) return;
-    const prefix = newKind === "script" ? "scripts/" : "references/";
-    const extension = newKind === "script" ? ".py" : ".md";
+    const prefix = newKind === "script" ? "scripts/" : newKind === "asset" ? "assets/" : "references/";
+    const extension = newKind === "script" ? ".py" : newKind === "asset" ? ".json" : ".md";
     const leaf = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
     const relativePath = `${prefix}${leaf.includes(".") ? leaf : `${leaf}${extension}`}`;
     if (files.some((file) => file.relative_path === relativePath)) {
@@ -93,10 +96,12 @@ export function SkillFilesEditor({ files, onChange, onUpload }: Props) {
     const initial =
       newKind === "script"
         ? 'from __future__ import annotations\n\n\ndef main(payload: dict) -> dict:\n    return {"ok": True, "payload": payload}\n'
-        : `# ${leaf.replace(/\.[^.]+$/, "")}\n\n`;
+        : newKind === "asset"
+          ? "{}\n"
+          : `# ${leaf.replace(/\.[^.]+$/, "")}\n\n`;
     const next = {
       relative_path: relativePath,
-      media_type: newKind === "script" ? "text/x-python" : "text/markdown",
+      media_type: newKind === "script" ? "text/x-python" : newKind === "asset" ? "application/json" : "text/markdown",
       content_base64: encodeText(initial),
       size: new TextEncoder().encode(initial).length,
     };
@@ -147,22 +152,21 @@ export function SkillFilesEditor({ files, onChange, onUpload }: Props) {
         <div>
           <div className="flex items-center gap-2">
             <Code2 size={17} className="text-cyan-300" />
-            <h3 className="font-medium">Python 脚本与引用文档</h3>
+            <h3 className="font-medium">Python 脚本、引用文档与本地 assets</h3>
           </div>
           <p className="mt-1 text-sm text-slate-500">
-            文件随修订保存。Python
-            发布前会检查语法、依赖和危险调用，并只在沙箱执行。
+            文件随修订保存。assets 用于 Skill 本地数据；Python 发布前会检查语法、依赖和危险调用，并只在沙箱执行。
           </p>
         </div>
         <label className="cursor-pointer rounded-xl border border-white/10 px-3 py-2 text-xs text-slate-300 hover:text-white">
           <Upload className="mr-1.5 inline" size={14} />
-          上传引用文档
+          {newKind === "asset" ? "上传本地 asset" : "上传引用文档"}
           <input
             type="file"
             multiple
             className="hidden"
             onChange={(event) => {
-              void onUpload(event.target.files);
+              void onUpload(event.target.files, newKind === "asset" ? "asset" : "reference");
               event.currentTarget.value = "";
             }}
           />
@@ -175,11 +179,12 @@ export function SkillFilesEditor({ files, onChange, onUpload }: Props) {
             <select
               value={newKind}
               onChange={(event) =>
-                setNewKind(event.target.value as "reference" | "script")
+                setNewKind(event.target.value as SkillFileKind)
               }
               className="rounded-lg border border-white/10 bg-slate-900 px-2 text-xs outline-none"
             >
               <option value="reference">引用</option>
+              <option value="asset">本地 asset</option>
               <option value="script">Python</option>
             </select>
             <input
@@ -188,7 +193,7 @@ export function SkillFilesEditor({ files, onChange, onUpload }: Props) {
               onKeyDown={(event) => {
                 if (event.key === "Enter") addTextFile();
               }}
-              placeholder={newKind === "script" ? "score.py" : "规则说明.md"}
+              placeholder={newKind === "script" ? "score.py" : newKind === "asset" ? "题库.json" : "规则说明.md"}
               className="min-w-0 rounded-lg border border-white/10 bg-slate-900 px-2.5 py-2 text-xs outline-none focus:border-cyan-400/40"
             />
             <button
@@ -204,6 +209,7 @@ export function SkillFilesEditor({ files, onChange, onUpload }: Props) {
           <div className="mt-3 max-h-[430px] space-y-1 overflow-auto">
             {managedFiles.map((file) => {
               const script = file.relative_path.startsWith("scripts/");
+              const asset = file.relative_path.startsWith("assets/");
               return (
                 <button
                   key={file.relative_path}
@@ -214,7 +220,7 @@ export function SkillFilesEditor({ files, onChange, onUpload }: Props) {
                   {script ? (
                     <Code2 size={14} className="shrink-0 text-violet-300" />
                   ) : (
-                    <FileText size={14} className="shrink-0 text-sky-300" />
+                    <FileText size={14} className={`shrink-0 ${asset ? "text-amber-300" : "text-sky-300"}`} />
                   )}
                   <span className="min-w-0 truncate">{file.relative_path}</span>
                 </button>
@@ -222,7 +228,7 @@ export function SkillFilesEditor({ files, onChange, onUpload }: Props) {
             })}
             {!managedFiles.length ? (
               <p className="px-2 py-6 text-center text-xs text-slate-600">
-                还没有脚本或引用文档
+                还没有脚本、引用文档或本地 assets
               </p>
             ) : null}
           </div>

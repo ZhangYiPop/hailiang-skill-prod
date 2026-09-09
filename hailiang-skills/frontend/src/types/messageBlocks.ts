@@ -36,7 +36,7 @@ export type FactFormOption = {
 export type FactFormField = {
   fact_key: string;
   label: string;
-  input_type: "text" | "single_select" | "multi_select" | string;
+  input_type: "text" | "single_select" | "multi_select" | "integer" | "number" | string;
   required?: boolean;
   placeholder?: string;
   example?: string;
@@ -45,6 +45,10 @@ export type FactFormField = {
   scope: "user" | "session" | string;
   value_type?: string;
   max_selections?: number;
+  min?: number;
+  max?: number;
+  decimal_places?: number;
+  unit?: string;
 };
 
 export type FactFormBlock = {

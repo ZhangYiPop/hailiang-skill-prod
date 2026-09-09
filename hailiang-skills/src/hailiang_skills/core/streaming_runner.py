@@ -559,10 +559,20 @@ class StreamingRunner:
                 continue
         return previous
 
-    def stream_stop(self, session_id: str, user_id: str, *, run_id: str, source_endpoint: str) -> Iterator[str]:
+    def stream_stop(
+        self,
+        session_id: str,
+        user_id: str,
+        *,
+        run_id: str,
+        source_endpoint: str,
+        already_cancelled: bool = False,
+    ) -> Iterator[str]:
         """Stop an active run and return its immediate v2 terminal snapshot."""
         context = self.repository.get(session_id)
-        if str(context.user_id or "") != str(user_id or "") or not self.cancel_run(session_id, user_id, run_id):
+        if str(context.user_id or "") != str(user_id or "") or (
+            not already_cancelled and not self.cancel_run(session_id, user_id, run_id)
+        ):
             raise RuntimeError("RUN_NOT_ACTIVE")
         with self._active_stream_queues_lock:
             live_snapshot = self._active_run_snapshots.get((session_id, run_id))

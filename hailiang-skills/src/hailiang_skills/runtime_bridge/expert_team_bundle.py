@@ -151,7 +151,21 @@ def load_expert_team_bundle(
     )
 
 
-def build_expert_team_catalog(team_registry: ExpertTeamRegistry | None, expert_registry: ExpertRegistry | None) -> list[dict[str, Any]]:
+def build_expert_team_catalog(
+    team_registry: ExpertTeamRegistry | None,
+    expert_registry: ExpertRegistry | None,
+    *,
+    metadata_by_team_id: dict[str, dict[str, Any]] | None = None,
+    metadata_by_expert_id: dict[str, dict[str, Any]] | None = None,
+    metadata_by_skill_id: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build the public active-team catalog.
+
+    Runtime definitions deliberately contain only executable configuration.  The
+    optional metadata is supplied by the active immutable deployment snapshot,
+    so callers can show the exact release/revision and audit actor without
+    teaching runtime objects about database persistence.
+    """
     if team_registry is None:
         return []
     items: list[dict[str, Any]] = []
@@ -160,14 +174,41 @@ def build_expert_team_catalog(team_registry: ExpertTeamRegistry | None, expert_r
         members = []
         for member in team.members:
             expert = expert_registry.get(member.expert_id) if expert_registry else None
-            members.append({
+            expert_metadata = (metadata_by_expert_id or {}).get(member.expert_id, {})
+            member_item = {
                 "expert_id": member.expert_id,
                 "name": expert.name if expert else member.expert_id,
                 "mention_name": member.mention_name,
                 "routing_brief": member.routing_brief,
                 "is_coordinator": member.expert_id == team.coordinator_expert_id,
-            })
-        items.append({
+                "skills": [],
+            }
+            if expert is not None:
+                for locked_skill in expert.skills:
+                    skill_metadata = (metadata_by_skill_id or {}).get(locked_skill.skill_id, {})
+                    skill_item = {
+                        "skill_id": locked_skill.skill_id,
+                        # The lock is the runtime authority.  Metadata only
+                        # adds audit detail and must never change this version.
+                        "version": locked_skill.version,
+                    }
+                    if skill_metadata:
+                        skill_item["release"] = skill_metadata.get("release")
+                        skill_item["revision"] = skill_metadata.get("revision")
+                        skill_item["modified_by"] = skill_metadata.get("modified_by")
+                        skill_item["modified_by_display_name"] = skill_metadata.get("modified_by_display_name")
+                        skill_item["modified_at"] = skill_metadata.get("modified_at")
+                    member_item["skills"].append(skill_item)
+            if expert_metadata:
+                member_item["version"] = expert_metadata.get("version")
+                member_item["release"] = expert_metadata.get("release")
+                member_item["revision"] = expert_metadata.get("revision")
+                member_item["modified_by"] = expert_metadata.get("modified_by")
+                member_item["modified_by_display_name"] = expert_metadata.get("modified_by_display_name")
+                member_item["modified_at"] = expert_metadata.get("modified_at")
+            members.append(member_item)
+        metadata = (metadata_by_team_id or {}).get(team.team_id, {})
+        item = {
             "team_id": team.team_id,
             "name": team.name,
             "brief": team.brief,
@@ -176,7 +217,16 @@ def build_expert_team_catalog(team_registry: ExpertTeamRegistry | None, expert_r
             "coordinator_expert_id": team.coordinator_expert_id,
             "coordinator_name": coordinator.name if coordinator else team.coordinator_expert_id,
             "members": members,
-        })
+        }
+        if metadata:
+            item["version"] = metadata.get("version")
+            item["release"] = metadata.get("release")
+            item["revision"] = metadata.get("revision")
+            item["modified_by"] = metadata.get("modified_by")
+            item["modified_by_display_name"] = metadata.get("modified_by_display_name")
+            item["modified_at"] = metadata.get("modified_at")
+            item["deployment"] = metadata.get("deployment")
+        items.append(item)
     return items
 
 

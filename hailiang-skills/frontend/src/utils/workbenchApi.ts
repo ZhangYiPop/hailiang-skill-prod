@@ -28,6 +28,8 @@ export type ObjectRevision = {
   validation: { valid: boolean; errors?: string[]; warnings?: string[] };
   content_hash: string;
   created_by: string;
+  /** Display name resolved from the business actor directory; falls back to ID for historical records. */
+  created_by_display_name?: string;
   created_at: string;
 };
 
@@ -55,6 +57,8 @@ export type ObjectRelease = {
   content_hash: string;
   archived: boolean;
   published_by: string;
+  /** Display name resolved from the business actor directory; falls back to ID for historical records. */
+  published_by_display_name?: string;
   published_at: string;
 };
 

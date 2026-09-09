@@ -385,6 +385,8 @@ def test_input_contract_and_external_run_id() -> None:
         _parse_input('{"action":"chat","profile_id":"p1","content":"你好","source":"chat","expert_context":' + expert_context + '}')
     with pytest.raises(HTTPException, match="EXPERT_CONTEXT_REQUIRED"):
         _parse_input('{"action":"chat","content":"你好","source":"chat"}')
+    with pytest.raises(HTTPException, match="EXPERT_CONTEXT_FIELDS_REQUIRED"):
+        _parse_input('{"action":"chat","content":"你好","source":"chat","expert_context":{"operation":"continue"}}')
     with pytest.raises(HTTPException, match="INVALID_INPUT_JSON"):
         _parse_input("not-json")
     with pytest.raises(HTTPException, match="requires source_message_id"):
@@ -1057,7 +1059,7 @@ def test_team_selection_uses_bound_deployment_snapshot_not_stale_global_registry
     assert context.session_meta["active_expert_id"] == "e_career_planner"
 
 
-def test_chat_continue_inherits_current_expert_when_ids_are_omitted() -> None:
+def test_chat_continue_requires_the_current_expert_identity() -> None:
     context = SessionContext()
     context.session_meta.update({
         "expert_team_id": "student_growth_expert_team",
@@ -1074,7 +1076,11 @@ def test_chat_continue_inherits_current_expert_when_ids_are_omitted() -> None:
         "action": "chat",
         "content": "继续说说怎么沟通",
         "source": "chat",
-        "expert_context": {"operation": "continue"},
+        "expert_context": {
+            "expert_team_id": "student_growth_expert_team",
+            "expert_id": "e_career_planner",
+            "operation": "continue",
+        },
     })
 
     normalized = chat_stream._normalize_expert_context_versions(context, input_data)

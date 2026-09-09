@@ -20,6 +20,23 @@ def _safe_path(value: str) -> str:
     return path.as_posix()
 
 
+def skill_markdown_with_metadata(markdown: str, metadata: dict[str, Any] | None) -> str:
+    """Merge Workbench metadata back into SKILL.md frontmatter for export/runtime."""
+    text = str(markdown or "")
+    merged = copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
+    body = text
+    if text.startswith("---\n"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            original = yaml.safe_load(parts[1]) or {}
+            if isinstance(original, dict):
+                merged = {**original, **merged}
+            body = parts[2].lstrip("\n")
+    if not merged:
+        return text
+    return "---\n" + yaml.safe_dump(merged, allow_unicode=True, sort_keys=False) + "---\n" + body
+
+
 def materialize_entry_files(entry: dict[str, Any]) -> dict[str, Any]:
     """Materialize immutable revision files under their content hash."""
     prepared = copy.deepcopy(entry)
@@ -54,7 +71,11 @@ def materialize_entry_files(entry: dict[str, Any]) -> dict[str, Any]:
             "content_hash": str(item.get("content_hash") or ""),
         })
     if prompt:
-        (root / "SKILL.md").write_text(prompt, encoding="utf-8")
+        source_metadata = payload.get("source_metadata") or payload.get("configuration") or {}
+        (root / "SKILL.md").write_text(
+            skill_markdown_with_metadata(prompt, source_metadata),
+            encoding="utf-8",
+        )
     if isinstance(runtime_contract, dict):
         # Revision assets intentionally exclude this reserved file, so write
         # the immutable payload contract beside SKILL.md. Native Runtime
@@ -81,11 +102,15 @@ def configured_skill_bundle(bundle: Any, entry: dict[str, Any] | None) -> Any:
         return bundle
     configured = copy.copy(bundle)
     configured.metadata = copy.deepcopy(getattr(bundle, "metadata", {}) or {})
+    source_metadata = payload.get("source_metadata") or payload.get("configuration") or {}
+    if isinstance(source_metadata, dict):
+        configured.metadata.update(copy.deepcopy(source_metadata))
     runtime_contract = payload.get("runtime_contract") if isinstance(payload.get("runtime_contract"), dict) else {}
-    if isinstance(runtime_contract.get("questionnaire"), dict):
+    if "questionnaire" not in configured.metadata and isinstance(runtime_contract.get("questionnaire"), dict):
+        # Read compatibility for old Workbench revisions.
         configured.metadata["questionnaire"] = copy.deepcopy(runtime_contract["questionnaire"])
     if prompt:
-        configured._skill_markdown = prompt
+        configured._skill_markdown = skill_markdown_with_metadata(prompt, source_metadata)
         configured._skill_markdown_loader = None
     if runtime_root and runtime_root.is_dir():
         configured.root_dir = runtime_root
@@ -101,6 +126,23 @@ def configured_skill_bundle(bundle: Any, entry: dict[str, Any] | None) -> Any:
                     continue
         configured._references = references
         configured._references_loader = None
+        local_assets: dict[str, str] = {} if managed_files else dict(getattr(bundle, "local_assets", {}) or {})
+        assets_root = runtime_root / "assets"
+        if assets_root.is_dir():
+            for path in sorted(item for item in assets_root.rglob("*") if item.is_file()):
+                local_assets[path.relative_to(runtime_root).as_posix()] = path.read_text(
+                    encoding="utf-8", errors="replace",
+                )
+        configured._local_assets = local_assets
+        configured._local_assets_loader = None
+        asset_config = source_metadata.get("assets") if isinstance(source_metadata, dict) else {}
+        local_assets_enabled = not isinstance(asset_config, dict) or asset_config.get("local_enabled") is not False
+        runtime_metadata = getattr(configured, "runtime_metadata", None)
+        if local_assets and local_assets_enabled and runtime_metadata is not None and hasattr(runtime_metadata, "assets"):
+            configured.runtime_metadata = replace(
+                runtime_metadata,
+                assets=replace(runtime_metadata.assets, local_enabled=True, local_dir="assets"),
+            )
         scripts_root = runtime_root / "scripts"
         overlay_scripts = {
             path.relative_to(runtime_root).as_posix(): path
@@ -128,8 +170,13 @@ def skill_bundle_from_entry(entry: dict[str, Any]) -> Any:
             metadata = {**(original if isinstance(original, dict) else {}), **metadata}
             prompt = parts[2].lstrip("\n")
     metadata["skill_id"] = str(entry["object_key"])
+    has_local_assets = (root / "assets").is_dir() and any(path.is_file() for path in (root / "assets").rglob("*"))
+    assets_metadata = metadata.get("assets") if isinstance(metadata.get("assets"), dict) else {}
+    if has_local_assets and "local_enabled" not in assets_metadata:
+        metadata["assets"] = {**assets_metadata, "local_enabled": True, "local_dir": "assets"}
     questionnaire = (payload.get("runtime_contract") or {}).get("questionnaire")
-    if isinstance(questionnaire, dict):
+    if "questionnaire" not in metadata and isinstance(questionnaire, dict):
+        # Read compatibility for old Workbench revisions.
         metadata["questionnaire"] = copy.deepcopy(questionnaire)
     (root / "SKILL.md").write_text(
         "---\n" + yaml.safe_dump(metadata, allow_unicode=True) + "---\n" + prompt,
@@ -137,7 +184,7 @@ def skill_bundle_from_entry(entry: dict[str, Any]) -> Any:
     )
     bundle = load_skill_bundle_from_directory(root)
     bundle.contract = replace(bundle.contract, skill_id=str(entry["object_key"]))
-    bundle._skill_markdown = str(payload.get("prompt_markdown") or "")
+    bundle._skill_markdown = (root / "SKILL.md").read_text(encoding="utf-8")
     bundle._skill_markdown_loader = None
     bundle._scripts = {path.relative_to(root).as_posix(): path for path in bundle.scripts.values()}
     return bundle

@@ -27,11 +27,14 @@ class StrictInput(BaseModel):
 
 
 class ExpertContextInput(StrictInput):
-    expert_team_id: str | None = Field(default=None, min_length=1)
-    expert_id: str | None = Field(default=None, min_length=1)
+    # These three keys are an intentionally fixed client contract.  ``null``
+    # is meaningful (no team / no expert), whereas a missing key means the
+    # client did not send a complete view of its current expert state.
+    expert_team_id: str | None = Field(..., min_length=1)
+    expert_id: str | None = Field(..., min_length=1)
     expected_branch_version: int | None = Field(default=None, ge=0)
     expected_selection_version: int | None = Field(default=None, ge=0)
-    operation: Literal["continue", "select_team", "select_team_member", "select_expert"]
+    operation: Literal["continue", "select_team", "select_team_member", "select_expert"] = Field(...)
 
 
 class ProfileBoundInput(StrictInput):
@@ -123,6 +126,11 @@ def _parse_input(raw: str) -> StreamInput:
                 raise HTTPException(status_code=422, detail="LEGACY_EXPERT_FIELDS_FORBIDDEN")
             if "expert_context" not in payload:
                 raise HTTPException(status_code=422, detail="EXPERT_CONTEXT_REQUIRED")
+            expert_context = payload.get("expert_context")
+            if not isinstance(expert_context, dict) or {
+                "expert_team_id", "expert_id", "operation",
+            } - set(expert_context):
+                raise HTTPException(status_code=422, detail="EXPERT_CONTEXT_FIELDS_REQUIRED")
         if action == "chat":
             result = ChatInput.model_validate(payload)
             if result.source == "toolbar" and result.expert_context.operation not in {
@@ -262,16 +270,15 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
         if has_team_id != has_expert_id:
             raise _expert_context_error(
                 "EXPERT_CONTEXT_OPERATION_INVALID",
-                "继续对话时 expert_team_id 与 expert_id 必须同时提供，或同时省略。",
+                "继续对话时 expert_team_id 与 expert_id 必须同时为具体值，或同时为 null。",
             )
-        # Ordinary follow-up messages inherit the session's current expert
-        # selection.  This lets a client send the minimal chat payload while
-        # toolbar selections and handoff-card actions remain explicit and
-        # protected by their full identity assertion below.
+        # A fixed expert_context always asserts the exact client-rendered
+        # state.  This prevents a stale tab from silently continuing under a
+        # different expert after a toolbar selection or handoff.
         _assert_expert_context_current(
             context,
             input_data,
-            require_exact_identity=has_team_id,
+            require_exact_identity=True,
         )
         return False
 
@@ -296,6 +303,12 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
         selected_expert_id = team.coordinator_expert_id
         if selected_expert_id not in team.member_expert_ids:
             raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
+        if (actual["expert_team_id"], actual["expert_id"]) != (team.team_id, selected_expert_id):
+            context.abandon_active_interactions_for_expert_change(
+                reason="select_team",
+                from_expert_id=actual["expert_id"],
+                target_expert_id=selected_expert_id,
+            )
         context.session_meta["expert_team_id"] = team.team_id
         context.session_meta["expert_id"] = selected_expert_id
         context.session_meta["active_expert_id"] = selected_expert_id
@@ -330,6 +343,12 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
             raise HTTPException(status_code=422, detail="EXPERT_NOT_FOUND")
         if team is not None and definition.agent_id not in team.member_expert_ids:
             raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
+        if (actual["expert_team_id"], actual["expert_id"]) != (team_id or None, definition.agent_id):
+            context.abandon_active_interactions_for_expert_change(
+                reason="select_expert",
+                from_expert_id=actual["expert_id"],
+                target_expert_id=definition.agent_id,
+            )
         context.session_meta["expert_team_id"] = team_id or None
         context.session_meta["expert_id"] = definition.agent_id
         context.session_meta["active_expert_id"] = definition.agent_id
@@ -344,7 +363,6 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
     context.session_meta.pop("expert_requested_skill_id", None)
     context.session_meta.pop("pending_team_handoff", None)
     context.session_meta.pop("pending_team_handoff_intent", None)
-    expire_active_interactions(context.messages)
     return True
 
 
@@ -584,8 +602,6 @@ def _conversation_excerpt(context, *, end_index: int | None = None) -> str:
 
 
 def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffInput) -> dict:
-    if _pending_native_form(context):
-        raise HTTPException(status_code=409, detail="TEAM_SWITCH_BLOCKED_BY_PENDING_FORM")
     team_id = str(context.session_meta.get("expert_team_id") or "").strip()
     _experts, teams = _snapshot_expert_registries(context, orchestrator)
     team = teams.get(team_id) if teams is not None else None
@@ -610,6 +626,12 @@ def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffI
     interaction = ensure_message_interactions(source).get("team_handoff")
     if not isinstance(interaction, dict) or interaction.get("status") != ACTIVE:
         raise HTTPException(status_code=409, detail="TEAM_HANDOFF_NOT_ACTIVE")
+    from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
+    context.abandon_active_interactions_for_expert_change(
+        reason="confirm_team_handoff",
+        from_expert_id=from_expert_id,
+        target_expert_id=input_data.target_expert_id,
+    )
     try:
         interaction = update_interaction(source, "team_handoff", status=SELECTED, selected_target_skill_id=input_data.target_expert_id)
         interaction["selected_target_expert_id"] = input_data.target_expert_id
@@ -623,7 +645,6 @@ def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffI
             "status": "selected",
             "selected_target_expert_id": input_data.target_expert_id,
         })
-    from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
     context.session_meta["active_expert_id"] = input_data.target_expert_id
     context.session_meta["expert_id"] = input_data.target_expert_id
     context.session_meta["expert_selection_source"] = "handoff_card"
@@ -659,8 +680,6 @@ def _acknowledge_team_handoff_text(context, orchestrator, acknowledgement: str) 
     Returns ``(switch, replay_handoff)``.  The latter is used for a multiple
     candidate card: it stays active and is emitted again instead of expiring.
     """
-    if _pending_native_form(context):
-        return None, None
     team_id = str(context.session_meta.get("expert_team_id") or "").strip()
     if not team_id:
         return None, None
@@ -694,6 +713,12 @@ def _acknowledge_team_handoff_text(context, orchestrator, acknowledgement: str) 
         if isinstance(metadata.get("team_handoff"), dict):
             metadata["team_handoff"].update({"status": "selected", "selected_target_expert_id": target_expert_id})
     from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
+    if from_expert_id != target_expert_id:
+        context.abandon_active_interactions_for_expert_change(
+            reason="confirm_team_handoff_text",
+            from_expert_id=from_expert_id,
+            target_expert_id=target_expert_id,
+        )
     context.session_meta["active_expert_id"] = target_expert_id
     context.session_meta["expert_id"] = target_expert_id
     context.session_meta["expert_selection_source"] = "handoff_text_confirmation"
@@ -720,8 +745,6 @@ def _acknowledge_team_handoff_text(context, orchestrator, acknowledgement: str) 
 
 
 def _switch_team_member(context, orchestrator, input_data: SwitchTeamMemberInput) -> dict:
-    if _pending_native_form(context):
-        raise HTTPException(status_code=409, detail="TEAM_SWITCH_BLOCKED_BY_PENDING_FORM")
     team_id = str(context.session_meta.get("expert_team_id") or "").strip()
     _experts, teams = _snapshot_expert_registries(context, orchestrator)
     team = teams.get(team_id) if teams is not None else None
@@ -734,6 +757,12 @@ def _switch_team_member(context, orchestrator, input_data: SwitchTeamMemberInput
     if member is None:
         raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
     from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
+    if from_expert_id != member.expert_id:
+        context.abandon_active_interactions_for_expert_change(
+            reason="switch_team_member",
+            from_expert_id=from_expert_id,
+            target_expert_id=member.expert_id,
+        )
     context.session_meta["active_expert_id"] = member.expert_id
     context.session_meta["expert_id"] = member.expert_id
     context.session_meta["expert_selection_source"] = "manual"
@@ -743,7 +772,6 @@ def _switch_team_member(context, orchestrator, input_data: SwitchTeamMemberInput
         selection_source="manual",
     )
     context.session_meta.pop("pending_team_handoff", None)
-    expire_active_interactions(context.messages)
     return {
         "source": "toolbar",
         "from_expert_id": from_expert_id,
@@ -787,6 +815,7 @@ def build_chat_stream_router(
                 context.user_id,
                 run_id=request.run_id,
                 source_endpoint="sessions/chat/stream",
+                already_cancelled=True,
             )
             return StreamingResponse(
                 _with_done_event(stream, session_id=request.session_id, run_id=request.run_id),
@@ -1093,6 +1122,12 @@ def build_chat_stream_router(
                 # standalone debug action.  Leave expert mode first so this
                 # direct selection cannot accidentally bypass an expert's
                 # locked Skill set.
+                from_expert_id = str(context.session_meta.get("active_expert_id") or context.session_meta.get("expert_id") or "")
+                context.abandon_active_interactions_for_expert_change(
+                    reason="enter_direct_skill",
+                    from_expert_id=from_expert_id,
+                    target_expert_id=None,
+                )
                 context.session_meta.pop("expert_id", None)
                 context.session_meta.pop("active_expert_id", None)
                 context.session_meta.pop("expert_requested_skill_id", None)

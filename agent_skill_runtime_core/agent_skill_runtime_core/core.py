@@ -810,6 +810,14 @@ def _sandbox_result_success(result: Any) -> bool:
 
 
 def _script_args_from_payload(payload: dict[str, Any]) -> list[str]:
+    # The standard Skill contract uses stdin JSON as the complete request.
+    # In particular, an action-oriented script may use argparse subcommands;
+    # appending the generic ``--query`` argument makes argparse reject the
+    # request before the script gets a chance to read stdin.  Preserve the
+    # command-line bridge only for legacy action-less scripts.
+    if str(payload.get("action") or "").strip():
+        return []
+
     args: list[str] = []
     cli_keys = {
         "query": "query",

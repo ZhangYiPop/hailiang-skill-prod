@@ -5,7 +5,10 @@ import unittest
 from hailiang_skills.skill_runtime.cli import _sanitize_assistant_reply
 from hailiang_skills.runtime_bridge.main_planner import PROJECT_RUNTIME_SKILLS_ROOT
 from hailiang_skills.skill_runtime.models import ChatMessage, SessionState
-from hailiang_skills.skill_runtime.session import build_prompt_assembly
+from hailiang_skills.skill_runtime.session import (
+    _sanitize_ms_agent_runtime_for_prompt,
+    build_prompt_assembly,
+)
 from hailiang_skills.skill_runtime.skill_registry import load_local_skill_registry
 from hailiang_skills.core.skill_display import build_runtime_skill_catalog
 
@@ -190,6 +193,32 @@ class PromptProgressiveLoadingTest(unittest.TestCase):
         self.assertNotIn("参考文献02", sanitized)
         self.assertNotIn("06_用户画像&规划策略&可探索场景.md", sanitized)
         self.assertIn("平台内", sanitized)
+
+    def test_script_process_io_is_not_exposed_to_runtime_prompt(self) -> None:
+        sanitized = _sanitize_ms_agent_runtime_for_prompt(
+            {
+                "runtime": "ms_agent_single_skill",
+                "execution_outputs": [
+                    {
+                        "script": "scripts/private_calculator.py",
+                        "ok": True,
+                        "args": ["resolve", "secret"],
+                        "stdin_payload": {"private": "value"},
+                        "stdout": '{"score": 88}',
+                        "stderr": "debug details",
+                        "json_output": {"score": 88},
+                    }
+                ],
+            }
+        )
+
+        serialized = str(sanitized)
+        self.assertNotIn("private_calculator.py", serialized)
+        self.assertNotIn("stdout", serialized)
+        self.assertNotIn("stderr", serialized)
+        self.assertNotIn("stdin_payload", serialized)
+        self.assertNotIn("secret", serialized)
+        self.assertEqual(sanitized["execution_outputs"], [{"ok": True, "result": {"score": 88}, "error_code": ""}])
 
 
 if __name__ == "__main__":

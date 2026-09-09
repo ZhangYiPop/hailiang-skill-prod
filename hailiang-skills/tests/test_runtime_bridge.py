@@ -38,6 +38,7 @@ from hailiang_skills.runtime_bridge.main_planner import (
     _IncrementalAssistantMessageExtractor,
     _QuestionnaireContinuationExtractor,
     _RuntimePlannerLLM,
+    _normalize_runtime_planner_response,
     _authorize_requested_tool_specs,
     _tool_intent_label,
 )
@@ -696,6 +697,15 @@ class RuntimeBridgeTest(unittest.TestCase):
             },
         )
 
+    def test_response_error_metadata_keeps_header_code_when_body_is_streamed(self) -> None:
+        class StreamWrappedResponse:
+            headers = {"X-Hailiang-Error-Code": "EXPERT_CONTEXT_FIELDS_REQUIRED"}
+
+        self.assertEqual(
+            _response_error_metadata(StreamWrappedResponse()),
+            {"response_error_code": "EXPERT_CONTEXT_FIELDS_REQUIRED"},
+        )
+
     def test_runtime_planner_llm_normalizes_nonstandard_json_plan(self) -> None:
         class NonstandardPlannerClient(FakeRuntimeClient):
             def complete(self, messages, *, logger=None) -> str:
@@ -759,6 +769,53 @@ class RuntimeBridgeTest(unittest.TestCase):
             self.assertEqual(planner.last_combined_response, "这是同一次规划调用生成的正文。")
             self.assertIn("references/rule.md", client.prompts[0])
             self.assertNotIn("本地规则资料", client.prompts[0])
+
+    def test_runtime_planner_uses_skill_semantics_for_on_demand_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            skill_dir = Path(directory)
+            scripts_dir = skill_dir / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "state.py").write_text("print('{}')", encoding="utf-8")
+
+            class SemanticPlannerClient:
+                def __init__(self) -> None:
+                    self.prompt = ""
+
+                def complete(self, messages, *, logger=None) -> str:
+                    del logger
+                    self.prompt = str(messages[-1].content)
+                    return json.dumps(
+                        {
+                            "can_handle": True,
+                            "required_scripts": ["state.py"],
+                            "required_references": [],
+                            "required_resources": [],
+                            "required_packages": [],
+                            "assistant_message": "",
+                        },
+                        ensure_ascii=False,
+                    )
+
+            client = SemanticPlannerClient()
+            planner = _RuntimePlannerLLM(client, skill_dir=skill_dir)
+            payload = json.loads(planner.generate([SimpleNamespace(content="plan")]).content)
+
+            self.assertEqual(payload["required_scripts"], ["state.py"])
+            self.assertIn("每个用户回合", client.prompt)
+            self.assertIn("特定阶段或意图", client.prompt)
+            self.assertIn("scripts/state.py", client.prompt)
+
+    def test_invalid_combined_plan_preserves_earlier_dependency_selections(self) -> None:
+        payload = json.loads(
+            _normalize_runtime_planner_response(
+                '{"can_handle":true,"required_scripts":["pick_profession.py"],'
+                '"required_references":["copywriting.md"],"assistant_message":"未闭合'
+            )
+        )
+
+        self.assertEqual(payload["required_scripts"], ["pick_profession.py"])
+        self.assertEqual(payload["required_references"], ["copywriting.md"])
+        self.assertEqual(payload["plan_summary"], "recovered partial lazy load plan")
 
     def test_incremental_assistant_message_extractor_handles_fragmented_json_escapes(self) -> None:
         extractor = _IncrementalAssistantMessageExtractor()

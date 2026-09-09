@@ -349,6 +349,11 @@ class _RuntimePlannerLLM:
             "plan_summary_short 必须是最多 12 个中文字符，并以‘正在’开头，用来展示当前执行动作。\n"
             "steps[].action 会直接作为用户看到的 intent.label：必须是最多 12 个中文字符，并以‘正在’开头，用‘正在+动宾短语’总结当前思考步骤，不要输出句号、编号或内部文件名。\n"
             "如果没有明确需要加载的文件，对应数组返回 []。\n\n"
+            "依赖选择必须服从当前 SKILL.md 的语义约束：先判断其中描述的执行时机，再决定本轮是否加载。"
+            "如果 Skill 明确要求‘每个用户回合’、‘每次回复前’或其他当前已满足的条件执行某脚本，"
+            "即使本轮只是问候、开始指令或简短追问，也必须把该脚本放入 required_scripts；"
+            "如果 Skill 只要求在特定阶段或意图下执行，则仅在条件满足时加载，不能因为脚本存在就一律执行。"
+            "不得用模型自行记忆或推测的结果替代 Skill 指定的事实来源。\n\n"
             "tool_routing 必须是对象："
             '{"required":false,"candidates":[],"allow_web_search":false,'
             '"candidate_domains":[],"query_focus":"","reason":""}。'
@@ -368,6 +373,9 @@ class _RuntimePlannerLLM:
         reference_catalog = self._reference_catalog()
         if reference_catalog:
             enhanced_prompt += f"\n\n# Available Local Reference Paths\n{reference_catalog}"
+        script_catalog = self._script_catalog()
+        if script_catalog:
+            enhanced_prompt += f"\n\n# Available Local Script Paths\n{script_catalog}"
         if self.tool_routing_context:
             enhanced_prompt += f"\n\n# Tool Routing Policy And Catalog\n{self.tool_routing_context}"
         try:
@@ -468,6 +476,19 @@ class _RuntimePlannerLLM:
             paths.append(f"- {path.relative_to(self.skill_dir)}")
         return "\n".join(paths)
 
+    def _script_catalog(self) -> str:
+        if not self.skill_dir:
+            return ""
+        scripts_dir = self.skill_dir / "scripts"
+        if not scripts_dir.is_dir():
+            return ""
+        paths: list[str] = []
+        for path in sorted(item for item in scripts_dir.rglob("*") if item.is_file()):
+            if path.name.startswith(".") or path.suffix.lower() != ".py":
+                continue
+            paths.append(f"- {path.relative_to(self.skill_dir)}")
+        return "\n".join(paths)
+
     @staticmethod
     def _extract_combined_response(value: str) -> str:
         payload = _try_parse_json(value) or _extract_json_object(value)
@@ -494,16 +515,22 @@ def _normalize_runtime_planner_response(value: str) -> str:
     if not isinstance(payload, dict):
         payload = _extract_json_object(value)
     if not isinstance(payload, dict):
+        recovered_dependencies = _extract_partial_planner_dependencies(value)
         payload = {
             "can_handle": True,
-            "plan_summary": "fallback empty lazy load plan",
+            "plan_summary": (
+                "recovered partial lazy load plan"
+                if any(recovered_dependencies.values())
+                else "fallback empty lazy load plan"
+            ),
             "steps": [{"step": 1, "action": "continue with SKILL.md only", "type": "code"}],
-            "required_scripts": [],
-            "required_references": [],
-            "required_resources": [],
-            "required_packages": [],
+            **recovered_dependencies,
             "parameters": {},
-            "reasoning": "planner response was not valid JSON; fallback used",
+            "reasoning": (
+                "planner response was not valid JSON; dependency selections were recovered"
+                if any(recovered_dependencies.values())
+                else "planner response was not valid JSON; fallback used"
+            ),
             "plan_summary_short": "继续规划",
         }
     normalized = {
@@ -521,6 +548,27 @@ def _normalize_runtime_planner_response(value: str) -> str:
     if not normalized["steps"]:
         normalized["steps"] = [{"step": 1, "action": "continue with SKILL.md only", "type": "code"}]
     return json.dumps(normalized, ensure_ascii=False)
+
+
+def _extract_partial_planner_dependencies(value: str) -> dict[str, list[str]]:
+    """Keep dependency choices that precede a truncated planner response.
+
+    The combined planner intentionally emits dependency arrays before the
+    user-visible message. A later malformed/truncated field must not silently
+    turn a semantically selected script into an empty lazy-load plan.
+    """
+    text = str(value or "")
+    recovered: dict[str, list[str]] = {}
+    for field in (
+        "required_scripts",
+        "required_references",
+        "required_resources",
+        "required_packages",
+    ):
+        match = re.search(rf'"{field}"\s*:\s*(\[[^\]]*\])', text)
+        parsed = _try_parse_json(match.group(1)) if match else None
+        recovered[field] = _normalize_planner_list(parsed)
+    return recovered
 
 
 def _extract_json_object(value: str) -> dict[str, Any] | None:
@@ -573,6 +621,49 @@ def _truncate_debug_text(value: str, *, limit: int) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}...(truncated)"
+
+
+def _sanitize_script_execution_reply(value: str) -> str:
+    """Remove internal script narration/result dumps from user-visible text."""
+    text = str(value or "")
+    text = re.sub(r"```(?:json)?\s*[\[{].*?[\]}]\s*```", "", text, flags=re.IGNORECASE | re.DOTALL)
+    decoder = json.JSONDecoder()
+    cursor = 0
+    cleaned_parts: list[str] = []
+    while cursor < len(text):
+        next_positions = [position for token in ("{", "[") if (position := text.find(token, cursor)) >= 0]
+        if not next_positions:
+            cleaned_parts.append(text[cursor:])
+            break
+        start = min(next_positions)
+        cleaned_parts.append(text[cursor:start])
+        try:
+            parsed, consumed = decoder.raw_decode(text[start:])
+        except ValueError:
+            cleaned_parts.append(text[start])
+            cursor = start + 1
+            continue
+        if isinstance(parsed, (dict, list)):
+            cursor = start + consumed
+            continue
+        cleaned_parts.append(text[start : start + consumed])
+        cursor = start + consumed
+    text = "".join(cleaned_parts)
+    text = re.sub(r"[（(]\s*脚本(?:正在)?执行中[^）)]*[）)]", "", text)
+    lines = [
+        line for line in text.splitlines()
+        if not re.search(r"(?:我来|正在|开始|已经|将要)?执行脚本|脚本(?:返回|输出|执行结果)", line)
+    ]
+    return "\n".join(lines).strip()
+
+
+def _state_has_script_execution(state: SessionState) -> bool:
+    runtime_trace = state.status_flags.get("ms_agent_runtime")
+    return bool(
+        isinstance(runtime_trace, dict)
+        and isinstance(runtime_trace.get("execution_outputs"), list)
+        and runtime_trace.get("execution_outputs")
+    )
 
 
 def _compact_skill_entry_context(value: Any, *, depth: int = 0) -> Any:
@@ -1690,7 +1781,9 @@ class MainPlannerOrchestrator:
             state.status_flags.pop("ms_agent_require_tool_routing_gate", False)
         )
         stream_reply_callback = None
-        if stream_combined_response and not questionnaire_enabled(bundle):
+        scripts_dir = bundle.root_dir / "scripts"
+        has_declared_scripts = scripts_dir.is_dir() and any(scripts_dir.glob("*.py"))
+        if stream_combined_response and not questionnaire_enabled(bundle) and not has_declared_scripts:
             callback = (context.session_meta or {}).get("reply_delta_callback")
             if (context.session_meta or {}).get("stream_final_reply") and callable(callback):
                 stream_reply_callback = callback
@@ -2174,6 +2267,8 @@ class MainPlannerOrchestrator:
                 raw_reply=combined_response or None,
             )
 
+        redact_script_execution = _state_has_script_execution(state)
+
         tool_results: tuple[ToolCallResult, ...] = ()
         transient_messages: tuple[ChatMessage, ...] = ()
         preferred_mode = "native"
@@ -2231,6 +2326,7 @@ class MainPlannerOrchestrator:
                     logger,
                     context,
                     phase="runtime_final_response_after_tools",
+                    redact_script_execution=redact_script_execution,
                 )
 
             tool_specs = _authorize_requested_tool_specs(
@@ -2264,6 +2360,7 @@ class MainPlannerOrchestrator:
                     logger,
                     context,
                     phase="runtime_final_response",
+                    redact_script_execution=redact_script_execution,
                 )
 
             self._record_runtime_prompt(
@@ -2285,6 +2382,10 @@ class MainPlannerOrchestrator:
                     turn_result.final_text,
                     response_policy=current_bundle.runtime_metadata.response_policy,
                 )
+                if redact_script_execution:
+                    final_text = _sanitize_script_execution_reply(final_text)
+                    if not final_text:
+                        final_text = "已完成本轮处理，但没有生成可安全展示的正文。请换一种说法再试一次。"
                 self._emit_runtime_status(context, "response", "正在生成回复")
                 self._emit_reply_delta(context, final_text)
                 self._record_runtime_prompt(
@@ -2770,6 +2871,10 @@ class MainPlannerOrchestrator:
             reply,
             response_policy=bundle.runtime_metadata.response_policy,
         )
+        if _state_has_script_execution(state):
+            reply = _sanitize_script_execution_reply(reply)
+            if not reply:
+                reply = "已完成本轮处理，但没有生成可安全展示的正文。请换一种说法再试一次。"
         stage_questionnaire_form(state, bundle, block)
         deferred_promotions = flush_deferred_questionnaire_promotions(state, context, bundle) if block is None else []
         self._emit_reply_delta(context, reply)
@@ -2812,6 +2917,7 @@ class MainPlannerOrchestrator:
         context,
         *,
         phase: str,
+        redact_script_execution: bool = False,
     ) -> tuple[str, str]:
         self._emit_runtime_status(context, "response", "正在生成回复")
         self._record_runtime_prompt(
@@ -2831,6 +2937,10 @@ class MainPlannerOrchestrator:
             )
             if questionnaire_enabled(bundle):
                 reply = unwrap_questionnaire_assistant_message(reply)
+            if redact_script_execution:
+                reply = _sanitize_script_execution_reply(reply)
+                if not reply:
+                    reply = "已完成本轮处理，但没有生成可安全展示的正文。请换一种说法再试一次。"
             duration_ms = int((time.perf_counter() - started) * 1000)
             self._emit_reply_delta(context, reply)
             logger.log("turn.resolve.final_text.timing", phase=phase, duration_ms=duration_ms)
@@ -2909,7 +3019,11 @@ class MainPlannerOrchestrator:
             if chunk.content_delta:
                 reply_parts.append(chunk.content_delta)
                 callback = (context.session_meta or {}).get("reply_delta_callback")
-                if (context.session_meta or {}).get("stream_final_reply") and callable(callback):
+                if (
+                    not redact_script_execution
+                    and (context.session_meta or {}).get("stream_final_reply")
+                    and callable(callback)
+                ):
                     visible_delta = (
                         questionnaire_extractor.feed(chunk.content_delta)
                         if questionnaire_extractor is not None
@@ -2926,6 +3040,8 @@ class MainPlannerOrchestrator:
             reply = questionnaire_extractor.assistant_message
         elif questionnaire_enabled(bundle):
             reply = unwrap_questionnaire_assistant_message(reply)
+        if redact_script_execution:
+            reply = _sanitize_script_execution_reply(reply)
         reasoning = "".join(reasoning_parts).strip()
         duration_ms = int((time.perf_counter() - started) * 1000)
         empty_stream_retry = False
@@ -2958,10 +3074,16 @@ class MainPlannerOrchestrator:
                 )
                 if questionnaire_enabled(bundle):
                     reply = unwrap_questionnaire_assistant_message(reply)
+                if redact_script_execution:
+                    reply = _sanitize_script_execution_reply(reply)
             except Exception as exc:  # pragma: no cover - defensive fallback
                 logger.log("turn.resolve.final_text.empty_retry_failed", phase=phase, error=str(exc))
             if not reply.strip():
                 reply = "刚才这轮回复生成不完整，我没有拿到可展示的正文。你可以再发一次，我会基于当前信息继续回答。"
+            self._emit_reply_delta(context, reply)
+        elif redact_script_execution:
+            # Script-backed replies are buffered so internal narration or raw
+            # process output can never escape through an earlier stream chunk.
             self._emit_reply_delta(context, reply)
         elif questionnaire_extractor is not None and not streamed_visible_reply:
             # A non-conforming/plain response cannot be safely exposed until

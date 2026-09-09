@@ -139,42 +139,39 @@ class AgentScopeExpertRuntime:
             self._event(context, "team_coordinator_started" if definition.agent_id == team.coordinator_expert_id else "team_member_started", event_payload)
         self._event(context, "expert_started", event_payload)
 
-        client = None
-        single_skill_id = self._single_skill_dispatch_target(definition, team)
-        if single_skill_id:
-            # A one-Skill Expert is an authorization boundary, not a second
-            # router. The native Skill still owns its RAG/MCP/web/script/form
-            # decisions after this deterministic handoff.
-            context.session_meta["expert_requested_skill_id"] = single_skill_id
-            context.session_meta["expert_skill_selection_source"] = "single_skill_dispatch"
-            state["selected_skill_id"] = single_skill_id
-            state["execution_mode"] = "single_skill_dispatch"
-            self._event(
+        # An Expert owns the decision on *every* turn, including Experts with
+        # only one locked Skill.  A unique dependency is an authorization
+        # boundary, never proof that the Skill is appropriate for the message:
+        # AGENT.md may require a direct answer, a clarification, or a bounded
+        # Skill handoff.
+        client = self.client_factory(context) if self.client_factory else None
+        if not self._is_supported_client(client):
+            self._event(context, "expert_decision_unavailable", {
+                "expert_id": definition.agent_id,
+                "reason": "llm_client_unavailable",
+            })
+            raise AgentScopeRuntimeUnavailable("专家决策暂不可用，请稍后重试")
+        try:
+            self._run_agent(
+                definition,
+                user_message,
                 context,
-                "expert_single_skill_selected",
-                {"expert_id": definition.agent_id, "skill_id": single_skill_id},
+                client,
+                state,
+                team=team,
+                routing_instruction=self._active_skill_routing_instruction(context, definition),
             )
-        else:
-            client = self.client_factory(context) if self.client_factory else None
-            if self._is_supported_client(client) and self._available:
-                try:
-                    self._run_agent(
-                        definition,
-                        user_message,
-                        context,
-                        client,
-                        state,
-                        team=team,
-                        routing_instruction=self._active_skill_routing_instruction(context, definition),
-                    )
-                except Exception as exc:
-                    # Do not silently use the old orchestrator as the operational
-                    # fallback. Keep the existing native route as the controlled
-                    # executor, but expose an explicit degraded expert event.
-                    state["agent_scope_error"] = str(exc)
-                    self._event(context, "expert_runtime_degraded", {"expert_id": definition.agent_id, "error": str(exc)})
-            else:
-                self._event(context, "expert_decision_deferred", {"reason": "llm_client_unavailable"})
+        except Exception as exc:
+            # Never bypass AGENT.md by silently falling back to a unique or
+            # previously active Skill.  The caller can surface this as a
+            # retryable turn failure while the trace remains auditable.
+            state["agent_scope_error"] = str(exc)
+            self._event(context, "expert_decision_unavailable", {
+                "expert_id": definition.agent_id,
+                "reason": "agent_execution_failed",
+                "error": str(exc),
+            })
+            raise AgentScopeRuntimeUnavailable("专家决策暂不可用，请稍后重试") from exc
 
         # A coordinator must not silently turn a clearly-specialist request
         # into an unstructured direct reply merely because a ReAct tool call
@@ -247,6 +244,16 @@ class AgentScopeExpertRuntime:
             or state.get("pending_form")
             or self._has_pending_native_questionnaire(context)
         )
+        if not agent_reply and not has_native_handoff:
+            # A completed ReAct call that neither answered nor selected an
+            # authorized native action is not a decision.  Letting the legacy
+            # planner continue here would reintroduce the bypass this runtime
+            # exists to prevent.
+            self._event(context, "expert_decision_unavailable", {
+                "expert_id": definition.agent_id,
+                "reason": "empty_agent_decision",
+            })
+            raise AgentScopeRuntimeUnavailable("专家决策暂不可用，请稍后重试")
         if agent_reply and not has_native_handoff:
             state["execution_mode"] = "expert_direct"
             context.session_meta["expert_direct_reply"] = {
@@ -334,34 +341,19 @@ class AgentScopeExpertRuntime:
         runtime = getattr(context, "skill_states", {}).get("skill_runtime", {})
         return str(runtime.get("active_skill_id") or "") if isinstance(runtime, dict) else ""
 
-    @staticmethod
-    def _single_skill_dispatch_target(
-        definition: ExpertDefinition,
-        team: ExpertTeamDefinition | None,
-    ) -> str | None:
-        """Return the sole Skill when no team coordination decision is needed."""
-        skills = definition.authorized_skill_ids
-        if len(skills) != 1:
-            return None
-        # A coordinator of a multi-member team must retain the opportunity to
-        # offer a member handoff. Members and standalone Experts can dispatch
-        # their sole locked Skill deterministically.
-        if team is not None and definition.agent_id == team.coordinator_expert_id and len(team.members) > 1:
-            return None
-        return skills[0]
-
     def _active_skill_routing_instruction(self, context, definition: ExpertDefinition) -> str:
-        """Shared production/candidate policy for an Expert's Skill handoff."""
+        """Inject the active Skill's resumable state into Expert policy."""
         active_skill_id = self._active_skill_id(context)
         if not active_skill_id or active_skill_id not in definition.authorized_skill_ids:
             return ""
         return (
             "\n# 当前会话的 Skill 路由规则\n"
             f"当前正在执行的已授权 Skill 是：{active_skill_id}。先判断用户本轮消息的业务意图。"
-            "如果仍是当前任务的答题、追问或补充信息，调用 execute_skill 并传入当前 Skill。"
-            "如果用户的新任务明显更匹配另一个授权 Skill，调用 execute_skill 并传入那个 Skill，"
-            "以便系统自动切换后由目标 Skill 作答。不得要求用户点击按钮，也不得自行用通用文本替代目标 Skill。"
-            "只能从上方授权 Skill 目录中选择；若没有匹配的授权 Skill，说明边界并请用户调整问题。"
+            "AGENT.md 是本轮选择的最高业务策略。若当前 Skill 的表单、阶段或上下文仍能处理本轮，"
+            "调用 execute_skill 并传入当前 Skill；短选项、追问和补充资料通常属于这一类。"
+            "若另一已授权 Skill 更适合本轮，即使问题与当前 Skill 有部分重叠，也可调用 execute_skill "
+            "选择该 Skill，系统会自动完成内部切换，不得要求用户点击按钮。"
+            "如 AGENT.md 要求由专家直接回答，则不要调用 Skill。只能从上方授权 Skill 目录中选择。"
         )
 
     @staticmethod
@@ -605,10 +597,16 @@ class AgentScopeExpertRuntime:
     def _execute_skill(self, definition: ExpertDefinition, state: dict[str, Any], context, skill_id: str, task: str, handoff_context: dict[str, Any] | None) -> dict[str, Any]:
         skill_id = str(skill_id or "").strip()
         if skill_id not in definition.authorized_skill_ids:
+            self._event(context, "expert_skill_handoff_rejected", {
+                "expert_id": definition.agent_id,
+                "skill_id": skill_id,
+                "reason": "not_authorized",
+            })
             raise ValueError(f"未授权 Skill: {skill_id}")
         budget = state["budget"]
         if budget["skill_calls"] >= budget["max_skill_calls"]:
             raise ValueError("已达到本轮 Skill 调用上限")
+        previous_skill_id = self._active_skill_id(context)
         observation: SkillObservation = self.native_executor.observe(skill_id, str(task or ""), handoff_context)
         budget["skill_calls"] += 1
         state["selected_skill_id"] = skill_id
@@ -619,7 +617,18 @@ class AgentScopeExpertRuntime:
         # Existing session state remains authoritative. This is only an
         # ephemeral routing hint consumed by MainPlannerOrchestrator.
         context.session_meta["expert_requested_skill_id"] = skill_id
-        self._event(context, "expert_skill_executed", {"expert_id": definition.agent_id, "skill_id": skill_id})
+        self._event(context, "expert_skill_executed", {
+            "expert_id": definition.agent_id,
+            "skill_id": skill_id,
+            "source_skill_id": previous_skill_id or None,
+        })
+        if previous_skill_id and previous_skill_id != skill_id:
+            self._event(context, "expert_skill_handoff_confirmed", {
+                "expert_id": definition.agent_id,
+                "from_skill_id": previous_skill_id,
+                "to_skill_id": skill_id,
+                "handoff_summary": state["handoff_summary"][:500],
+            })
         return {"status": "scheduled", "skill_id": skill_id, "summary": observation.summary}
 
     def _request_declared_form(self, definition: ExpertDefinition, state: dict[str, Any], context, skill_id: str, question_ids: list[str]) -> dict[str, Any]:

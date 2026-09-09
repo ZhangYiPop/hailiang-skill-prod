@@ -12,9 +12,10 @@ from fastapi.testclient import TestClient
 from hailiang_skills.api.routes.chat import build_chat_router
 from hailiang_skills.api.routes.chat_stream import SwitchTeamMemberInput, _switch_team_member
 from hailiang_skills.core.context import SessionContext
+from hailiang_skills.core.message_interactions import EXPIRED, ensure_message_interactions
 from hailiang_skills.core.skill_display import build_skill_display
 from hailiang_skills.core.skill_ids import EXPERT_DIRECT_EXECUTION_ID
-from hailiang_skills.runtime_bridge.agentscope_expert_runtime import AgentScopeExpertRuntime
+from hailiang_skills.runtime_bridge.agentscope_expert_runtime import AgentScopeExpertRuntime, AgentScopeRuntimeUnavailable
 from hailiang_skills.runtime_bridge.expert_bundle import (
     ExpertBundleError,
     ExpertDefinition,
@@ -28,6 +29,7 @@ from hailiang_skills.runtime_bridge.expert_team_bundle import (
     ExpertTeamDefinition,
     ExpertTeamMember,
     ExpertTeamRegistry,
+    build_expert_team_catalog,
     load_expert_team_bundle,
     load_local_expert_team_registry,
 )
@@ -112,16 +114,17 @@ def test_shared_expert_runtime_instructs_agent_to_route_or_continue_active_skill
     runtime._is_supported_client = lambda _client: True
     instructions: list[str] = []
 
-    def capture_agent(_definition, _message, _context, _client, _state, **kwargs):
+    def capture_agent(_definition, _message, _context, _client, state, **kwargs):
         instructions.append(str(kwargs.get("routing_instruction") or ""))
+        state["agent_reply"] = "我会先结合你的亲子沟通目标给出建议。"
 
     runtime._run_agent = capture_agent
     runtime.handle_message("我更想解决亲子冲突", context, lambda _message, _context: "legacy-result")
 
     assert instructions
     assert "mbti_self_exploration" in instructions[0]
-    assert "另一个授权 Skill" in instructions[0]
-    assert "自动切换后由目标 Skill 作答" in instructions[0]
+    assert "另一已授权 Skill" in instructions[0]
+    assert "AGENT.md 是本轮选择的最高业务策略" in instructions[0]
 
 
 def test_team_handoff_replaces_agentscope_iteration_error_with_user_message():
@@ -228,6 +231,71 @@ def test_expert_catalog_has_no_out_of_band_session_mutation_api():
     assert "expert_id" not in repository.get("expert-selection").session_meta
 
 
+def test_expert_team_catalog_exposes_active_release_and_revision_audit_metadata():
+    team = ExpertTeamDefinition(
+        team_id="catalog_team",
+        name="目录测试专家团",
+        rules_markdown="团队规则",
+        coordinator_expert_id="catalog_expert",
+        members=(ExpertTeamMember("catalog_expert", "目录专家"),),
+    )
+    teams = ExpertTeamRegistry(definitions={team.team_id: team})
+    experts = ExpertRegistry(definitions={
+        "catalog_expert": ExpertDefinition("catalog_expert", "目录专家", "规则", (LockedSkill("catalog_skill", "v5"),)),
+    })
+
+    catalog = build_expert_team_catalog(
+        teams,
+        experts,
+        metadata_by_team_id={
+            "catalog_team": {
+                "version": "v3",
+                "release": {"release_id": "rel_3", "version": "v3"},
+                "revision": {"revision_id": "rev_7", "version": "r7", "modified_by": "actor_1"},
+                "modified_by": "actor_1",
+                "modified_by_display_name": "业务修改人",
+                "modified_at": "2026-09-08T00:00:00+00:00",
+                "deployment": {"deployment_id": "deploy_1", "activated_by": "ops_1"},
+            },
+        },
+        metadata_by_expert_id={
+            "catalog_expert": {
+                "version": "v4",
+                "release": {"release_id": "rel_expert_4", "version": "v4"},
+                "revision": {"revision_id": "rev_expert_9", "version": "r9"},
+                "modified_by": "actor_2",
+                "modified_by_display_name": "专家修改人",
+                "modified_at": "2026-09-08T00:00:00+00:00",
+            },
+        },
+        metadata_by_skill_id={
+            "catalog_skill": {
+                "release": {"release_id": "rel_skill_5", "version": "v5", "published_by": "actor_3"},
+                "revision": {"revision_id": "rev_skill_11", "version": "r11"},
+                "modified_by": "actor_3",
+                "modified_by_display_name": "Skill 修改人",
+                "modified_at": "2026-09-08T00:00:00+00:00",
+            },
+        },
+    )
+
+    item = catalog[0]
+    assert item["version"] == "v3"
+    assert item["revision"]["version"] == "r7"
+    assert item["modified_by_display_name"] == "业务修改人"
+    assert item["deployment"]["activated_by"] == "ops_1"
+    assert item["members"][0]["version"] == "v4"
+    assert item["members"][0]["skills"] == [{
+        "skill_id": "catalog_skill",
+        "version": "v5",
+        "release": {"release_id": "rel_skill_5", "version": "v5", "published_by": "actor_3"},
+        "revision": {"revision_id": "rev_skill_11", "version": "r11"},
+        "modified_by": "actor_3",
+        "modified_by_display_name": "Skill 修改人",
+        "modified_at": "2026-09-08T00:00:00+00:00",
+    }]
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
@@ -278,12 +346,12 @@ def test_expert_tool_rejects_unauthorized_skill_and_persists_handoff():
     assert state["budget"]["skill_calls"] == 1
 
 
-def test_single_skill_expert_bypasses_react_and_dispatches_its_only_skill():
+def test_single_skill_expert_still_uses_agent_rules_for_a_direct_reply():
     skill_registry = _runtime_registry()
     definition = ExpertDefinition(
         agent_id="single_skill_expert",
         name="单技能专家",
-        rules_markdown="所有问题交给唯一技能。",
+        rules_markdown="普通咨询由专家直接回答，提分计划才调用技能。",
         skills=(LockedSkill("score_improve", "v1"),),
     )
     runtime = AgentScopeExpertRuntime(
@@ -293,21 +361,47 @@ def test_single_skill_expert_bypasses_react_and_dispatches_its_only_skill():
     context = SessionContext()
     context.session_meta["active_expert_id"] = definition.agent_id
     runtime._available = True
-    runtime._run_agent = lambda *_args, **_kwargs: pytest.fail("单技能专家不应进入 ReAct 选 Skill")
+    runtime.client_factory = lambda _context: object()
+    runtime._is_supported_client = lambda _client: True
+    calls: list[str] = []
+
+    def decide(_definition, _message, _context, _client, state, **_kwargs):
+        calls.append("agent")
+        state["agent_reply"] = "美国和英国各有优势，建议先看你的专业和预算。"
+
+    runtime._run_agent = decide
 
     result = runtime.handle_message(
-        "我想要提分",
+        "去美国好还是英国好？",
         context,
-        lambda _message, received_context: received_context.session_meta["expert_requested_skill_id"],
+        lambda _message, received_context: received_context.session_meta["expert_direct_reply"]["reply"],
     )
 
-    assert result == "score_improve"
-    assert context.skill_states["agent_runtime"]["execution_mode"] == "single_skill_dispatch"
-    assert any(
-        event["event_type"] == "expert_single_skill_selected"
-        and event["payload"]["skill_id"] == "score_improve"
-        for event in context.event_trace
+    assert result.startswith("美国和英国")
+    assert calls == ["agent"]
+    assert context.skill_states["agent_runtime"]["execution_mode"] == "expert_direct"
+    assert not any(event["event_type"] == "expert_skill_executed" for event in context.event_trace)
+
+
+def test_expert_does_not_bypass_agent_when_decision_client_is_unavailable():
+    skill_registry = _runtime_registry()
+    definition = ExpertDefinition(
+        agent_id="single_skill_expert",
+        name="单技能专家",
+        rules_markdown="仅在必要时调用技能。",
+        skills=(LockedSkill("score_improve", "v1"),),
     )
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={definition.agent_id: definition}), skill_registry)
+    context = SessionContext()
+    context.session_meta["active_expert_id"] = definition.agent_id
+    runtime._available = True
+    runtime.client_factory = lambda _context: None
+
+    with pytest.raises(AgentScopeRuntimeUnavailable, match="专家决策暂不可用"):
+        runtime.handle_message("我想提分", context, lambda *_args: pytest.fail("不得执行唯一 Skill"))
+
+    assert any(event["event_type"] == "expert_decision_unavailable" for event in context.event_trace)
+    assert not any(event["event_type"] == "expert_skill_executed" for event in context.event_trace)
 
 
 def test_coordinator_can_propose_team_handoff_but_member_cannot_route():
@@ -609,6 +703,17 @@ def test_toolbar_switch_request_validates_team_member_by_id():
         "active_expert_id": team.coordinator_expert_id,
         "expert_id": team.coordinator_expert_id,
     })
+    context.messages.append({
+        "role": "assistant",
+        "message_id": "msg_pending_form",
+        "content": "请先填写这份表单。",
+        "blocks": [{"type": "fact_form", "payload": {"form_id": "family_context", "fields": []}}],
+    })
+    context.skill_states["skill_runtime"] = {
+        "active_skill_id": "family_education",
+        "skill_facts": {"family_education": {"_pending_questionnaire": {"form_id": "family_context"}}},
+        "status_flags": {"native_questionnaire_form": {"payload": {"form_id": "family_context"}}},
+    }
     switch = _switch_team_member(
         context,
         SimpleNamespace(expert_team_registry=teams),
@@ -630,6 +735,12 @@ def test_toolbar_switch_request_validates_team_member_by_id():
     assert switch["target_expert_id"] == "family_education_expert"
     assert switch["content"] == "孩子沉迷手机怎么办"
     assert switch["visible_user_message"] == "@家庭教育专家 孩子沉迷手机怎么办"
+    assert ensure_message_interactions(context.messages[0])["fact_form:family_context"]["status"] == EXPIRED
+    assert "_pending_questionnaire" not in context.skill_states["skill_runtime"]["skill_facts"]["family_education"]
+    assert context.skill_states["skill_runtime"]["active_skill_id"] == ""
+    assert "native_questionnaire_form" not in context.skill_states["skill_runtime"]["status_flags"]
+    abandoned = [event for event in context.event_trace if event["event_type"] == "form_abandoned"]
+    assert abandoned and abandoned[-1]["payload"]["reason"] == "switch_team_member"
 
 
 def test_team_handoff_sse_state_is_direct_and_fixed_shape():
