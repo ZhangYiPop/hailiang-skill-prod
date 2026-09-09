@@ -444,20 +444,12 @@ def test_conversation_memory_updates_summary_facts_and_contract_hash(tmp_path: P
         {"role": "assistant", "content": "接下来结合浙江政策分析。"},
     ]
     assert result.context["questionnaire_evidence_messages"] == [
-        {
-            "role": "user",
-            "content": "孩子高一，想选科",
-            "source_skill_id": "main_planner",
-        },
-        {
-            "role": "user",
-            "content": "我在浙江",
-            "source_skill_id": "main_planner",
-        },
+        {"role": "user", "content": "我在浙江", "source_skill_id": "main_planner"},
     ]
-    assert result.context["status"]["questionnaire_evidence_messages"] == 2
+    assert result.context["status"]["questionnaire_evidence_messages"] == 1
     assert result.context["status"]["runtime_contract_hash"]
-    assert result.context["status"]["summary_updated_through_message_index"] == 2
+    assert result.context["status"]["summary_updated_through_message_index"] == 0
+    assert result.context["status"]["archived_message_count"] == 2
     assert result.step.status == "success"
 
 
@@ -687,9 +679,10 @@ def test_deferred_conversation_memory_preserves_turn_appended_while_job_runs(tmp
         time.sleep(0.01)
 
     assert memory["memory_update_status"] == "success"
-    assert len(memory["messages"]) == 6
+    assert len(memory["messages"]) == 4
     assert memory["conversation_summary"] == "上一轮确认孩子高一。"
-    assert memory["summary_updated_through_message_index"] == 2
+    assert memory["summary_updated_through_message_index"] == 0
+    assert memory["archived_message_count"] == 2
 
 
 def test_prompt_includes_soul_and_conversation_memory(tmp_path: Path) -> None:

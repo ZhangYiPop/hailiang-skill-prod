@@ -30,6 +30,7 @@ class RuntimeBridgeConfig:
     local_fast_path_enabled: bool = True
     active_window_messages: int = 16
     context_window_tokens: int = 32_000
+    working_context_tokens: int = 160_000
     async_checkpoint_ratio: float = 0.60
     sync_compression_ratio: float = 0.80
     expert_history_messages: int = 12
@@ -128,6 +129,13 @@ def load_runtime_bridge_config(path: Path | None = None) -> RuntimeBridgeConfig:
             data.get("context_window_tokens"),
             default=32_000,
             minimum=4_000,
+            maximum=1_000_000,
+        ),
+        working_context_tokens=_read_int(
+            os.getenv("HAILIANG_WORKING_CONTEXT_TOKENS"),
+            data.get("working_context_tokens"),
+            default=160_000,
+            minimum=8_000,
             maximum=1_000_000,
         ),
         async_checkpoint_ratio=_read_float(

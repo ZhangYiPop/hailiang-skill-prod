@@ -74,6 +74,8 @@ class AgentScopeExpertRuntime:
         history_message_chars: int = 1_500,
         history_max_chars: int = 6_000,
         reply_max_chars: int = 1_000,
+        profile_memory_repository=None,
+        context_composer=None,
     ) -> None:
         self.expert_registry = expert_registry
         self.team_registry = team_registry or ExpertTeamRegistry(definitions={})
@@ -85,6 +87,8 @@ class AgentScopeExpertRuntime:
         self.history_message_chars = max(1, int(history_message_chars))
         self.history_max_chars = max(1, int(history_max_chars))
         self.reply_max_chars = max(1_000, int(reply_max_chars))
+        self.profile_memory_repository = profile_memory_repository
+        self.context_composer = context_composer
         self.native_executor = NativeSkillExecutor(runtime_registry)
         self._available, self._availability_error = agentscope_available()
 
@@ -573,10 +577,29 @@ class AgentScopeExpertRuntime:
         # before this method runs, so this snapshot is both safe to inject and
         # authoritative for the current turn.
         from hailiang_skills.core.profile_candidate_archive import candidate_archive
+        composed_memory = {}
+        runtime_state = getattr(context, "skill_states", {}).get("career_plan_entity", {})
+        if isinstance(runtime_state, dict):
+            composed_memory = runtime_state.get("composed_context") if isinstance(runtime_state.get("composed_context"), dict) else {}
+        archive = candidate_archive(
+            context,
+            repository=self.profile_memory_repository,
+            query_text=user_message,
+            skill_id=definition.agent_id,
+        )
+        if self.context_composer is not None:
+            composed_memory, _budget = self.context_composer.compose_memory(
+                composed_memory,
+                confirmed_facts=self._read_effective_facts(context),
+                archive=archive,
+                current_message=user_message,
+                activity_state={"expert_id": definition.agent_id},
+            )
         effective_facts = json.dumps(
             {
                 "confirmed_facts": self._read_effective_facts(context),
-                "profile_candidate_archive": candidate_archive(context),
+                "profile_candidate_archive": composed_memory.get("profile_candidate_archive", archive),
+                "conversation_summary": composed_memory.get("summary", ""),
             },
             ensure_ascii=False,
             default=str,
@@ -611,7 +634,7 @@ class AgentScopeExpertRuntime:
             "当用户表达了与孩子相关、可在未来复用但尚不应视为确定结论的特质、偏好或倾向时，可调用 record_candidate_fact 保存候选观察；"
             "必须使用简短语义键、忠实的证据摘要和 0 到 1 的置信度，不得把候选当作已确认事实。"
             "不得重复询问下方已经有明确值的资料（例如年级、学年）；只有资料缺失或存在冲突时才追问。\n"
-            f"\n# 当前孩子的上下文事实\n{effective_facts}\n"
+            f"\n# 当前孩子的有效事实与候选档案\n{effective_facts}\n"
             "候选档案不是已确认事实；请只在当前问题确实相关时，以自然方式决定是否确认、更新或忽略，"
             "不得把候选内容直接当成结论，也不得照抄固定确认话术。\n"
             f"\n# 最近对话（按时间顺序，仅用于保持上下文）\n{conversation_history}\n"
@@ -678,6 +701,7 @@ class AgentScopeExpertRuntime:
             source_turn_id=source_turn_id,
             evidence_summary=summary[:500],
             confidence=normalized_confidence,
+            repository=self.profile_memory_repository,
         )
         self._event(context, "expert_candidate_fact_recorded", {
             "expert_id": definition.agent_id,
@@ -968,7 +992,7 @@ class AgentScopeExpertRuntime:
         names = [name for name in names if name]
         target = "、".join(names) or "合适的团内专家"
         reason = str(handoff.get("reason") or "这个问题更适合由专项专家继续处理。").strip()
-        return f"我建议由{target}继续协助。{reason} 请确认是否由该专家接管回答。"
+        return f"我建议由{target}继续协助。{reason} 已为你准备转交卡，请确认是否由该专家接管回答。"
 
     def _generate_team_clarification_reply(
         self,

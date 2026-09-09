@@ -11,7 +11,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.types import JSON
@@ -73,6 +73,46 @@ class ProfileRow(Base):
     facts: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class ProfileMemoryRow(Base):
+    """Durable, profile-scoped archive evidence separate from business facts."""
+
+    __tablename__ = "profile_memories"
+
+    memory_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(80), ForeignKey("application_profile_projections.profile_id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="candidate", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    fact_key: Mapped[str] = mapped_column(String(160), index=True)
+    value: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    domain: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    skill_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    confidence: Mapped[float] = mapped_column(default=0.5)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    source_session_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    source_turn_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    evidence_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    history: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    superseded_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    __table_args__ = (
+        Index("ix_profile_memories_profile_status_observed", "profile_id", "status", "observed_at"),
+        Index("ix_profile_memories_profile_fact", "profile_id", "fact_key"),
+    )
+
+
+class ConversationMemoryCheckpointRow(Base):
+    """Short-term compressed state keyed by session and child branch."""
+
+    __tablename__ = "conversation_memory_checkpoints"
+
+    session_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 

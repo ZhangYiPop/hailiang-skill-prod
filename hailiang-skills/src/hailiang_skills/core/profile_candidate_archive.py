@@ -1,38 +1,39 @@
-"""Branch-safe durable candidate evidence for child profile conversations."""
+"""Profile-scoped, durable candidate archive facade.
+
+Candidates deliberately no longer live in ``profile_facts``: that projection
+contains only confirmed business facts.  The small in-memory fallback keeps
+local/unit-test usage functional while production injects the PostgreSQL repo.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 from hailiang_skills.core.logging import make_event
-from hailiang_skills.schemas.provenance import Provenance
+from hailiang_skills.storage.repositories.profile_memory_repo import InMemoryProfileMemoryRepository
 
 
-def candidate_archive(context) -> list[dict[str, Any]]:
-    """Compact profile-only candidate evidence, safe to inject into prompts."""
-    if getattr(context, "context_scope", "unbound") != "profile":
+_fallback_repository = InMemoryProfileMemoryRepository()
+
+
+def candidate_archive(
+    context,
+    *,
+    repository=None,
+    query_text: str = "",
+    skill_id: str = "",
+    domain: str = "",
+    limit: int = 12,
+    token_budget: int = 24_000,
+) -> list[dict[str, Any]]:
+    """Retrieve only current-child evidence; legacy JSON candidates stay inert."""
+    if getattr(context, "context_scope", "unbound") != "profile" or not getattr(context, "profile_id", None):
         return []
-    records = getattr(getattr(context, "profile_facts", None), "facts", {}) or {}
-    items: list[dict[str, Any]] = []
-    for key, record in records.items():
-        if getattr(record, "status", "confirmed") != "candidate":
-            continue
-        # Hydration normally replaces profile_facts on every switch. This
-        # guard also prevents a stale in-memory profile object from leaking a
-        # candidate into another child's prompt between switch and hydration.
-        source_id = str(getattr(record, "source_id", "") or "")
-        if source_id and not source_id.startswith(f"{context.profile_id}:"):
-            continue
-        items.append({
-            "key": str(key),
-            "value": record.value,
-            "confidence": record.confidence,
-            "observed_at": record.observed_at,
-            "source_turn_id": record.source_turn_id,
-            "evidence_summary": record.evidence_summary,
-            "history": list(record.observation_history or [])[-3:],
-        })
-    return items
+    repo = repository or _fallback_repository
+    return repo.retrieve(
+        str(context.profile_id), query_text,
+        skill_id=skill_id, domain=domain, limit=limit, token_budget=token_budget,
+    )
 
 
 def archive_candidate(
@@ -44,32 +45,29 @@ def archive_candidate(
     source_turn_id: str | None,
     evidence_summary: str,
     confidence: float,
+    repository=None,
+    domain: str = "",
 ) -> bool:
-    """Persist an inferred fact only on the current child's profile archive."""
+    """Persist inferred evidence without promoting it to an effective fact."""
     if getattr(context, "context_scope", "unbound") != "profile" or not getattr(context, "profile_id", None):
         return False
-    context.update_fact(
-        key,
-        value,
-        source_skill=source_skill,
-        source_type="conversation_inference",
-        source_id=f"{context.profile_id}:{getattr(context, 'session_id', '')}",
-        source_label="对话上下文推断",
+    repo = repository or _fallback_repository
+    recorded = repo.record_candidate(
+        profile_id=str(context.profile_id),
+        fact_key=str(key),
+        value=value,
+        skill_id=source_skill,
+        domain=domain or source_skill,
+        source_session_id=str(getattr(context, "session_id", "") or "") or None,
         source_turn_id=source_turn_id,
-        scope="profile",
+        evidence_summary=str(evidence_summary or "")[:500],
         confidence=max(0.0, min(1.0, float(confidence))),
-        status="candidate",
-        evidence_summary=evidence_summary,
-        provenance=Provenance(
-            source_type="conversation_inference",
-            source_id=f"{context.profile_id}:{getattr(context, 'session_id', '')}",
-            turn_id=source_turn_id,
-        ),
     )
     trace = getattr(context, "event_trace", None)
     if isinstance(trace, list):
-        trace.append(make_event("profile_candidate_archived", {
+        trace.append(make_event("profile_memory_recorded", {
             "profile_id": context.profile_id,
+            "memory_id": recorded.get("memory_id"),
             "fact_key": key,
             "confidence": confidence,
             "source_turn_id": source_turn_id,

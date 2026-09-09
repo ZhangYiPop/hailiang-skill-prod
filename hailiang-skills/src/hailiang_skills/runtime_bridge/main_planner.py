@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from hailiang_skills.core.loop_defense import LoopDefense
 from hailiang_skills.core.logging import make_event
+from hailiang_skills.core.context_composer import ContextComposer
 from hailiang_skills.core.scenario_engine import ScenarioEngine
 from hailiang_skills.core.session_logging import append_session_events
 from hailiang_skills.core.telemetry import current_telemetry
@@ -1119,12 +1120,15 @@ def _looks_like_planning_request(text: str) -> bool:
 class MainPlannerOrchestrator:
     """Hailiang API orchestrator backed by the career/general-chat route model."""
 
-    def __init__(self, registry, llm_config, moderation_service=None, *, business_config_entries=None) -> None:
+    def __init__(self, registry, llm_config, moderation_service=None, *, business_config_entries=None, profile_memory_repository=None, conversation_memory_repository=None) -> None:
         self.registry = registry
         self.llm_config = llm_config
         self.test_llm_routing = TestLLMRoutingConfig.from_environment()
         self.moderation_service = moderation_service
         self.runtime_bridge_config = load_runtime_bridge_config()
+        self.context_composer = ContextComposer(self.runtime_bridge_config.working_context_tokens)
+        self.profile_memory_repository = profile_memory_repository
+        self.conversation_memory_repository = conversation_memory_repository
         self.scenario_engine = ScenarioEngine()
         self.loop_defense = LoopDefense()
         if business_config_entries is None:
@@ -1189,6 +1193,7 @@ class MainPlannerOrchestrator:
             context_window_tokens=self.runtime_bridge_config.context_window_tokens,
             async_checkpoint_ratio=self.runtime_bridge_config.async_checkpoint_ratio,
             sync_compression_ratio=self.runtime_bridge_config.sync_compression_ratio,
+            checkpoint_repository=conversation_memory_repository,
         )
         self.embedding_client = self._build_embedding_client(llm_config)
         self.intent_router = IntentRouter(
@@ -1210,6 +1215,8 @@ class MainPlannerOrchestrator:
             history_message_chars=self.runtime_bridge_config.expert_history_message_chars,
             history_max_chars=self.runtime_bridge_config.expert_history_max_chars,
             reply_max_chars=self.runtime_bridge_config.expert_reply_max_chars,
+            profile_memory_repository=profile_memory_repository,
+            context_composer=self.context_composer,
         )
 
     @staticmethod
@@ -2672,8 +2679,7 @@ class MainPlannerOrchestrator:
         )
         return reply, ""
 
-    @staticmethod
-    def _archive_questionnaire_context(context, bundle, decision: dict[str, Any], user_message: str) -> None:
+    def _archive_questionnaire_context(self, context, bundle, decision: dict[str, Any], user_message: str) -> None:
         """Store declared-option observations as profile-scoped durable evidence."""
         from hailiang_skills.core.profile_candidate_archive import archive_candidate
 
@@ -2697,6 +2703,7 @@ class MainPlannerOrchestrator:
                 source_turn_id=turn_id,
                 evidence_summary=str(item.get("evidence") or user_message)[:500],
                 confidence=float(item.get("confidence") or 1.0),
+                repository=self.profile_memory_repository,
             )
             if archived:
                 self._record_events(context, [make_event("questionnaire_context_archived", {
@@ -3266,7 +3273,37 @@ class MainPlannerOrchestrator:
         # Candidates are intentionally not merged into effective Facts. They
         # are evidence for the model to confirm naturally when relevant.
         from hailiang_skills.core.profile_candidate_archive import candidate_archive
-        memory_context["profile_candidate_archive"] = candidate_archive(context)
+        latest_user_message = next(
+            (str(item.get("content") or "") for item in reversed(getattr(context, "messages", [])) if item.get("role") == "user"),
+            "",
+        )
+        memory_context["profile_candidate_archive"] = candidate_archive(
+            context,
+            repository=self.profile_memory_repository,
+            query_text=latest_user_message,
+            skill_id=active_skill_id,
+        )
+        self._record_events(context, [make_event("profile_memory_retrieved", {
+            "profile_id": getattr(context, "profile_id", None),
+            "skill_id": active_skill_id,
+            "result_count": len(memory_context["profile_candidate_archive"]),
+            "token_budget": self.context_composer.budget.archive_tokens,
+        })])
+        memory_context, budget_status = self.context_composer.compose_memory(
+            memory_context,
+            confirmed_facts={key: record.value for key, record in getattr(context.known_facts, "facts", {}).items()},
+            archive=memory_context["profile_candidate_archive"],
+            current_message=latest_user_message,
+            activity_state={"active_skill_id": active_skill_id, "stage": getattr(state, "stage", "")},
+        )
+        memory_context["context_budget"] = budget_status
+        event_type = "context_budget_trimmed" if budget_status["trimmed_sections"] else "context_budget_composed"
+        self._record_events(context, [make_event(event_type, {
+            "working_context_tokens": budget_status["working_context_tokens"],
+            "estimated_prompt_tokens": budget_status["estimated_prompt_tokens"],
+            "trimmed_sections": budget_status["trimmed_sections"],
+            "current_message_rejected": budget_status["current_message_rejected"],
+        })])
         if bool((getattr(context, "session_meta", {}) or {}).get("resume_recap_pending")):
             memory_context["continuity_instruction"] = (
                 "This child branch was just resumed. Begin the next answer with a concise one- or two-sentence Chinese recap "
@@ -3300,6 +3337,7 @@ class MainPlannerOrchestrator:
             "status",
             {},
         )
+        context.skill_states.setdefault(MAIN_PLANNER_ID, {})["composed_context"] = memory_context
         self._record_events(
             context,
             [
@@ -3314,6 +3352,12 @@ class MainPlannerOrchestrator:
                 )
             ],
         )
+        checkpoint_mode = str((memory_result.step.payload or {}).get("checkpoint_mode") or "")
+        if checkpoint_mode in {"sync_compression", "async_checkpoint"}:
+            self._record_events(context, [make_event(
+                "context_compaction_completed" if memory_result.step.status in {"success", "skipped"} else "context_compaction_degraded",
+                {"checkpoint_mode": checkpoint_mode, "status": memory_result.step.status},
+            )])
 
     def _append_turn_memory(
         self,
@@ -3379,6 +3423,16 @@ class MainPlannerOrchestrator:
         """
         meta = getattr(context, "session_meta", {}) or {}
         if meta.get("expert_team_id") or meta.get("expert_id") or meta.get("active_expert_id"):
+            self.context_composer.assert_current_message_fits(user_message)
+            # Experts use the same compact, profile-scoped working memory as
+            # Skills. Prepare it before AgentScope receives this turn; the
+            # current user message remains a separate non-trimmable input.
+            expert_memory_state = self._load_runtime_state(context)
+            self._prepare_turn_long_context(
+                context,
+                expert_memory_state,
+                str(expert_memory_state.active_skill_id or GENERAL_CHAT_ID),
+            )
             return self.expert_runtime.handle_message(
                 user_message,
                 context,
@@ -3388,6 +3442,7 @@ class MainPlannerOrchestrator:
 
     def _handle_message_legacy(self, user_message: str, context) -> SkillResult:
         self._normalize_planner_state_alias(context)
+        self.context_composer.assert_current_message_fits(user_message)
         turn_id = f"turn_{uuid4().hex[:12]}"
         context.session_meta["active_turn_id"] = turn_id
         context.session_meta.pop("skill_intro", None)

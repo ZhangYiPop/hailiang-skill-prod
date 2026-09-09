@@ -452,6 +452,7 @@ def _build_conversation_memory_text(memory: dict[str, Any]) -> str:
     facts = memory.get("facts") if isinstance(memory.get("facts"), dict) else {}
     status = memory.get("status") if isinstance(memory.get("status"), dict) else {}
     reference_messages = memory.get("reference_messages") if isinstance(memory.get("reference_messages"), list) else []
+    archive = memory.get("profile_candidate_archive") if isinstance(memory.get("profile_candidate_archive"), list) else []
     reference_text = json.dumps(reference_messages, ensure_ascii=False, indent=2) if reference_messages else "(none)"
     continuity_instruction = str(memory.get("continuity_instruction") or "").strip()
     return (
@@ -469,6 +470,8 @@ def _build_conversation_memory_text(memory: dict[str, Any]) -> str:
         f"{summary}\n\n"
         "Structured facts:\n"
         f"{json.dumps(facts or {}, ensure_ascii=False, indent=2)}\n\n"
+        "Retrieved profile archive evidence (candidate evidence only; never treat it as confirmed business fact):\n"
+        f"{json.dumps(archive, ensure_ascii=False, indent=2)}\n\n"
         "Reference-only history from other Skills (grouped by source_skill_id):\n"
         f"{reference_text}\n\n"
         "Status:\n"

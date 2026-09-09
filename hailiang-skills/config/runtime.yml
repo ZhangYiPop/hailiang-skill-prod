@@ -10,6 +10,10 @@ local_fast_path_enabled: true
 # 100 user/assistant turns verbatim, then summarize older complete pairs.
 active_window_messages: 200
 context_window_tokens: 1000000
+# Keep normal working prompts much smaller than the model's hard 1M input
+# ceiling. The composer accounts for instructions, state, archive evidence and
+# messages before dispatching a model call.
+working_context_tokens: 160000
 async_checkpoint_ratio: 0.60
 sync_compression_ratio: 0.80
 # Expert routing is a separate model pass. These bounds prevent it from

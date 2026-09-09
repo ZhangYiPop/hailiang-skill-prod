@@ -62,6 +62,12 @@ from hailiang_skills.core.rate_limit import get_llm_rate_limiter
 from hailiang_skills.core.deployment import deployment_environment, node_name, release_version, state_root
 from hailiang_skills.storage.event_store import configure_event_store
 from hailiang_skills.storage.repositories.postgres_repo import SessionVersionConflict
+from hailiang_skills.storage.repositories.profile_memory_repo import (
+    InMemoryConversationMemoryRepository,
+    InMemoryProfileMemoryRepository,
+    PostgresConversationMemoryRepository,
+    PostgresProfileMemoryRepository,
+)
 from hailiang_skills.workbench.factory import build_workbench_service
 from hailiang_skills.workbench.catalog import load_current_release_entries
 from pathlib import Path
@@ -252,6 +258,16 @@ def create_app() -> FastAPI:
         storage.user_fact_repository,
         storage.profile_repository,
     )
+    profile_memory_repository = (
+        PostgresProfileMemoryRepository(storage.session_factory)
+        if storage.session_factory is not None
+        else InMemoryProfileMemoryRepository()
+    )
+    conversation_memory_repository = (
+        PostgresConversationMemoryRepository(storage.session_factory)
+        if storage.session_factory is not None
+        else InMemoryConversationMemoryRepository()
+    )
 
     app = FastAPI(title="hailiang-skills")
 
@@ -306,6 +322,8 @@ def create_app() -> FastAPI:
         llm_config,
         moderation_service=moderation_service,
         business_config_entries=database_entries,
+        profile_memory_repository=profile_memory_repository,
+        conversation_memory_repository=conversation_memory_repository,
     )
     workbench_service.orchestrator = orchestrator
     app.state.workbench_service = workbench_service
