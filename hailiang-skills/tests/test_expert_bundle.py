@@ -13,6 +13,7 @@ from hailiang_skills.api.routes.chat import build_chat_router
 from hailiang_skills.api.routes.chat_stream import SwitchTeamMemberInput, _switch_team_member
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.core.message_interactions import EXPIRED, ensure_message_interactions
+from hailiang_skills.core.profile_candidate_archive import candidate_archive
 from hailiang_skills.core.skill_display import build_skill_display
 from hailiang_skills.core.skill_ids import EXPERT_DIRECT_EXECUTION_ID
 from hailiang_skills.runtime_bridge.agentscope_expert_runtime import AgentScopeExpertRuntime, AgentScopeRuntimeUnavailable
@@ -344,6 +345,38 @@ def test_expert_tool_rejects_unauthorized_skill_and_persists_handoff():
     assert result["status"] == "scheduled"
     assert context.session_meta["expert_requested_skill_id"] == "score_improve"
     assert state["budget"]["skill_calls"] == 1
+
+
+def test_expert_candidate_fact_is_profile_scoped_and_not_effective_fact():
+    skill_registry = _runtime_registry()
+    definition = ExpertDefinition(
+        agent_id="interest_expert",
+        name="兴趣探索专家",
+        rules_markdown="记录长期可复用的兴趣倾向。",
+        skills=(),
+    )
+    runtime = AgentScopeExpertRuntime(
+        ExpertRegistry(definitions={definition.agent_id: definition}),
+        skill_registry,
+    )
+    context = SessionContext(session_id="candidate_session", user_id="user_1", profile_id="child_a")
+
+    result = runtime._record_candidate_fact(
+        context,
+        definition,
+        source_turn_id="expert_turn_1",
+        fact_key="sport_preference",
+        value="爱运动",
+        confidence=0.74,
+        evidence_summary="用户描述孩子喜欢运动并愿意尝试新活动。",
+    )
+
+    assert result["status"] == "candidate_archived"
+    assert context.known_facts.get_value("conversation.interest_expert.sport_preference") is None
+    archive = candidate_archive(context)
+    assert archive[0]["source_turn_id"] == "expert_turn_1"
+    assert archive[0]["observed_at"]
+    assert any(event["event_type"] == "expert_candidate_fact_recorded" for event in context.event_trace)
 
 
 def test_single_skill_expert_still_uses_agent_rules_for_a_direct_reply():

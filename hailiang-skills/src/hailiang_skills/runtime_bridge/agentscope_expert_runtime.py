@@ -524,6 +524,18 @@ class AgentScopeExpertRuntime:
             """Read the current session's effective facts; this tool never writes facts."""
             return runtime._read_effective_facts(context)
 
+        def record_candidate_fact(fact_key: str, value: str, confidence: float, evidence_summary: str) -> dict[str, Any]:
+            """Store a tentative, current-child-only profile observation for later natural confirmation."""
+            return runtime._record_candidate_fact(
+                context,
+                definition,
+                source_turn_id=str(state.get("turn_id") or "") or None,
+                fact_key=fact_key,
+                value=value,
+                confidence=confidence,
+                evidence_summary=evidence_summary,
+            )
+
         def propose_member_handoff(candidate_expert_ids: list[str], reason: str) -> dict[str, Any]:
             """Ask the user to choose one to three team members; never transfers automatically."""
             if team is None or not runtime._can_propose_team_handoff(team, definition.agent_id):
@@ -535,8 +547,10 @@ class AgentScopeExpertRuntime:
             "execute_skill": TrustedFunctionTool(execute_skill, is_concurrency_safe=False),
             "request_declared_form": TrustedFunctionTool(request_declared_form, is_read_only=True),
             "read_effective_facts": TrustedFunctionTool(read_effective_facts, is_read_only=True),
+            "record_candidate_fact": TrustedFunctionTool(record_candidate_fact, is_concurrency_safe=False),
         }
         enabled_capabilities = set(definition.capabilities)
+        enabled_capabilities.add("record_candidate_fact")
         if team is not None and self._can_propose_team_handoff(team, definition.agent_id):
             all_tools["propose_member_handoff"] = TrustedFunctionTool(propose_member_handoff, is_concurrency_safe=False)
             enabled_capabilities.add("propose_member_handoff")
@@ -592,8 +606,10 @@ class AgentScopeExpertRuntime:
                     "不要提示用户在输入框中手动 @ 专家。"
                 )
         system_prompt = (
-            f"你是 {definition.name}。只能使用受控工具，不能读取文件、执行 Shell、安装工具或修改事实。\n"
+            f"你是 {definition.name}。只能使用受控工具，不能读取文件、执行 Shell 或安装工具；只有 record_candidate_fact 可写入候选档案。\n"
             "先根据业务规则和下方已注入的有效事实判断；需要专项能力时调用 execute_skill。"
+            "当用户表达了与孩子相关、可在未来复用但尚不应视为确定结论的特质、偏好或倾向时，可调用 record_candidate_fact 保存候选观察；"
+            "必须使用简短语义键、忠实的证据摘要和 0 到 1 的置信度，不得把候选当作已确认事实。"
             "不得重复询问下方已经有明确值的资料（例如年级、学年）；只有资料缺失或存在冲突时才追问。\n"
             f"\n# 当前孩子的上下文事实\n{effective_facts}\n"
             "候选档案不是已确认事实；请只在当前问题确实相关时，以自然方式决定是否确认、更新或忽略，"
@@ -622,6 +638,58 @@ class AgentScopeExpertRuntime:
             expert_turn_id=str(state.get("turn_id") or ""),
         )
         self._event(context, "expert_agent_completed", {"expert_id": definition.agent_id, "tool_calls": state["budget"]["skill_calls"], "handoff_tool_calls": int(state.get("handoff_tool_calls") or 0), "structured_handoff": isinstance(state.get("team_handoff"), dict)})
+
+    def _record_candidate_fact(
+        self,
+        context,
+        definition: ExpertDefinition,
+        *,
+        source_turn_id: str | None,
+        fact_key: str,
+        value: str,
+        confidence: float,
+        evidence_summary: str,
+    ) -> dict[str, Any]:
+        """Store model-inferred evidence without promoting it to a business fact."""
+        key = str(fact_key or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key):
+            raise ValueError("候选事实键必须是 1 到 64 位的小写字母、数字或下划线，且以字母开头")
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("候选事实值不能为空")
+        try:
+            normalized_confidence = float(confidence)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("候选事实置信度必须是 0 到 1 的数字") from exc
+        if not 0 <= normalized_confidence <= 1:
+            raise ValueError("候选事实置信度必须在 0 到 1 之间")
+        summary = str(evidence_summary or "").strip()
+        if not summary:
+            raise ValueError("候选事实必须提供简短证据摘要")
+
+        from hailiang_skills.core.profile_candidate_archive import archive_candidate
+
+        archive_key = f"conversation.{definition.agent_id}.{key}"
+        archived = archive_candidate(
+            context,
+            key=archive_key,
+            value=text[:500],
+            source_skill=definition.agent_id,
+            source_turn_id=source_turn_id,
+            evidence_summary=summary[:500],
+            confidence=normalized_confidence,
+        )
+        self._event(context, "expert_candidate_fact_recorded", {
+            "expert_id": definition.agent_id,
+            "fact_key": archive_key,
+            "archived": archived,
+            "confidence": normalized_confidence,
+        })
+        return {
+            "status": "candidate_archived" if archived else "not_archived_unbound_context",
+            "fact_key": archive_key,
+            "confidence": normalized_confidence,
+        }
 
     def _execute_skill(self, definition: ExpertDefinition, state: dict[str, Any], context, skill_id: str, task: str, handoff_context: dict[str, Any] | None) -> dict[str, Any]:
         skill_id = str(skill_id or "").strip()
