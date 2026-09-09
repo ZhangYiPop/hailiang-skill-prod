@@ -682,6 +682,23 @@ export default function Workbench() {
           ...(event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {}),
         }));
     });
+    const contextArchiveEvents = trace.flatMap((turn) => {
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return events
+        .filter((event) => event && typeof event === "object")
+        .map((event) => event as Record<string, unknown>)
+        .filter((event) => [
+          "profile_candidate_archived",
+          "questionnaire_context_archived",
+          "form_abandoned",
+        ].includes(String(event.event_type ?? "")))
+        .map((event) => ({
+          turn: turn.turn ?? null,
+          event_type: event.event_type,
+          timestamp: event.timestamp ?? event.created_at ?? null,
+          ...(event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {}),
+        }));
+    });
     const url = URL.createObjectURL(new Blob([JSON.stringify({
       revision_id: revisionId,
       debug_session_id: debugSessionId,
@@ -693,6 +710,7 @@ export default function Workbench() {
       // provider reported a terminal reason and, when confirmed, why output
       // was cut so the same session can be looked up in diagnostics.
       output_diagnostics: outputDiagnostics,
+      context_archive_events: contextArchiveEvents,
     }, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
