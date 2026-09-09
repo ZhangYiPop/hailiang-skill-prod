@@ -31,7 +31,16 @@ _CONTENT_KEYS = {
     "content", "input", "output", "raw_sse", "reasoning", "messages",
     "payload", "prompt", "response", "tool_input", "tool_output",
 }
-_SECRET_MARKERS = ("authorization", "password", "secret", "api_key", "token", "cookie")
+_SECRET_MARKERS = ("authorization", "password", "secret", "api_key", "cookie")
+
+
+def _is_secret_key(key_lower: str) -> bool:
+    if any(marker in key_lower for marker in _SECRET_MARKERS):
+        return True
+    # Token counters (for example ``output_tokens``) are diagnostic metadata,
+    # not credentials. Keep them visible while still protecting actual token
+    # fields such as access_token and refresh_token.
+    return key_lower == "token" or key_lower.endswith("_token")
 
 
 class SessionDiagnosticsInput(BaseModel):
@@ -74,9 +83,12 @@ def _redact(value: Any, *, include_content: bool) -> Any:
         for raw_key, item in value.items():
             key = str(raw_key)
             key_lower = key.lower()
-            if any(marker in key_lower for marker in _SECRET_MARKERS):
+            if _is_secret_key(key_lower):
                 result[key] = "[REDACTED]"
-            elif not include_content and key_lower in _CONTENT_KEYS:
+            # Event ``payload`` is a structured envelope, not response body
+            # content itself. Preserve its safe fields so operators can see
+            # finish/truncation reasons while nested content stays redacted.
+            elif not include_content and key_lower in _CONTENT_KEYS and key_lower != "payload":
                 result[key] = "[OMITTED: set include_content=true]"
             else:
                 result[key] = _redact(item, include_content=include_content)
@@ -229,6 +241,78 @@ def _diagnostic_errors(
     return errors[-limit:]
 
 
+def _output_truncations(
+    *,
+    events: list[dict[str, Any]],
+    sse_records: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Return explicit output-limit evidence separately from general events.
+
+    The raw event trail remains available for full audit. This projection makes
+    an intermittent cut-off diagnosable without parsing a response body or
+    guessing from punctuation. Only runtime-confirmed truncations are listed.
+    """
+    records: list[dict[str, Any]] = []
+    for source, items in (("session_event", events), ("sse", sse_records)):
+        for item in items:
+            event_type = str(item.get("event_type") or item.get("event") or "")
+            payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+            if event_type != "model_output_truncated" and not bool(payload.get("truncated")):
+                continue
+            reason_code = payload.get("truncation_reason_code")
+            if not reason_code:
+                continue
+            records.append({
+                "source": source,
+                "timestamp": item.get("timestamp_utc") or item.get("timestamp") or item.get("created_at"),
+                "run_id": item.get("run_id") or payload.get("run_id") or None,
+                "expert_id": payload.get("expert_id"),
+                "expert_turn_id": payload.get("expert_turn_id"),
+                "model": payload.get("model"),
+                "request_purpose": payload.get("request_purpose"),
+                "reason_code": reason_code,
+                "reason": payload.get("truncation_reason"),
+                "finish_reason": payload.get("finish_reason"),
+                "configured_max_tokens": payload.get("configured_max_tokens"),
+                "configured_reply_max_chars": payload.get("configured_reply_max_chars"),
+                "output_tokens": payload.get("output_tokens"),
+                "received_chars": payload.get("received_chars"),
+                "returned_chars": payload.get("returned_chars"),
+            })
+    records.sort(key=lambda item: str(item.get("timestamp") or ""))
+    return records[-limit:]
+
+
+def _output_diagnostics(*, events: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """Expose completion evidence, including an explicit unknown state."""
+    records: list[dict[str, Any]] = []
+    for item in events:
+        if str(item.get("event_type") or "") != "model_output_completion":
+            continue
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        records.append({
+            "timestamp": item.get("timestamp_utc") or item.get("timestamp") or item.get("created_at"),
+            "run_id": item.get("run_id") or payload.get("run_id") or None,
+            "source": payload.get("source"),
+            "expert_id": payload.get("expert_id"),
+            "expert_turn_id": payload.get("expert_turn_id"),
+            "model": payload.get("model"),
+            "request_purpose": payload.get("request_purpose"),
+            "finish_reason": payload.get("finish_reason"),
+            "finish_reason_reported": payload.get("finish_reason_reported"),
+            "truncated": payload.get("truncated"),
+            "truncation_status": payload.get("truncation_status"),
+            "diagnostic_reason": payload.get("diagnostic_reason"),
+            "configured_max_tokens": payload.get("configured_max_tokens"),
+            "input_tokens": payload.get("input_tokens"),
+            "output_tokens": payload.get("output_tokens"),
+            "returned_chars": payload.get("returned_chars"),
+        })
+    records.sort(key=lambda item: str(item.get("timestamp") or ""))
+    return records[-limit:]
+
+
 def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, limit: int, include_content: bool) -> dict[str, Any]:
     try:
         context = repository.get(session_id)
@@ -272,6 +356,12 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
             sse_records=sse_records,
             limit=limit,
         ),
+        "output_truncations": _output_truncations(
+            events=events,
+            sse_records=sse_records,
+            limit=limit,
+        ),
+        "output_diagnostics": _output_diagnostics(events=events, limit=limit),
     }
 
 

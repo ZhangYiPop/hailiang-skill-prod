@@ -74,6 +74,50 @@ def test_session_diagnostics_redacts_content_by_default(monkeypatch, tmp_path) -
     }]
 
 
+def test_session_diagnostics_projects_confirmed_output_truncation(monkeypatch, tmp_path) -> None:
+    client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(diagnostics, "read_events", lambda session_id: [{
+        "event_id": "evt_truncated",
+        "event_type": "model_output_truncated",
+        "timestamp": "2026-09-09T10:00:00+08:00",
+        "payload": {
+            "source": "expert_agent",
+            "expert_id": "study_abroad_consultant",
+            "truncation_reason_code": "upstream_finish_reason_length",
+            "truncation_reason": "上游模型以输出长度上限结束",
+            "finish_reason": "length",
+            "configured_max_tokens": 384000,
+            "output_tokens": 384000,
+            "returned_chars": 1000,
+        },
+    }])
+
+    response = client.post(
+        "/api/v1/operations/diagnostics/sessions/query",
+        json={"session_id": "sess_001"},
+        headers={"X-Security-Admin-Token": "diagnostic-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["output_truncations"] == [{
+        "source": "session_event",
+        "timestamp": "2026-09-09T10:00:00+08:00",
+        "run_id": None,
+        "expert_id": "study_abroad_consultant",
+        "expert_turn_id": None,
+        "model": None,
+        "request_purpose": None,
+        "reason_code": "upstream_finish_reason_length",
+        "reason": "上游模型以输出长度上限结束",
+        "finish_reason": "length",
+        "configured_max_tokens": 384000,
+        "configured_reply_max_chars": None,
+        "output_tokens": 384000,
+        "received_chars": None,
+        "returned_chars": 1000,
+    }]
+
+
 def test_request_diagnostics_handles_pre_session_failure(monkeypatch, tmp_path) -> None:
     client = _client(monkeypatch, tmp_path)
     response = client.post(

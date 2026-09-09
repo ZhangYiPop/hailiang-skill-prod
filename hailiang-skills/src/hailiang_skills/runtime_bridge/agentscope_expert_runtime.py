@@ -540,7 +540,17 @@ class AgentScopeExpertRuntime:
         if team is not None and self._can_propose_team_handoff(team, definition.agent_id):
             all_tools["propose_member_handoff"] = TrustedFunctionTool(propose_member_handoff, is_concurrency_safe=False)
             enabled_capabilities.add("propose_member_handoff")
-        model = _HailiangChatModel(client)
+        model = _HailiangChatModel(
+            client,
+            completion_recorder=lambda result, metrics: runtime._record_model_completion(
+                context,
+                result=result,
+                metrics=metrics,
+                source="expert_agent",
+                expert_id=definition.agent_id,
+                expert_turn_id=str(state.get("turn_id") or ""),
+            ),
+        )
         catalog = self._catalog(definition)
         # AgentScope does not implicitly receive SessionContext. Previously
         # the expert was merely given a tool *capable* of reading Facts, which
@@ -598,7 +608,13 @@ class AgentScopeExpertRuntime:
             return await agent.reply(UserMsg("user", user_message))
 
         reply = _run_async(run_agent())
-        state["agent_reply"] = self._limit_reply(reply.get_text_content())
+        state["agent_reply"] = self._limit_reply(
+            reply.get_text_content(),
+            context=context,
+            source="expert_agent_reply",
+            expert_id=definition.agent_id,
+            expert_turn_id=str(state.get("turn_id") or ""),
+        )
         self._event(context, "expert_agent_completed", {"expert_id": definition.agent_id, "tool_calls": state["budget"]["skill_calls"], "handoff_tool_calls": int(state.get("handoff_tool_calls") or 0), "structured_handoff": isinstance(state.get("team_handoff"), dict)})
 
     def _execute_skill(self, definition: ExpertDefinition, state: dict[str, Any], context, skill_id: str, task: str, handoff_context: dict[str, Any] | None) -> dict[str, Any]:
@@ -922,11 +938,91 @@ class AgentScopeExpertRuntime:
             raise AgentScopeRuntimeUnavailable(f"主协调专家生成兜底回复失败: {exc}") from exc
         if not reply:
             raise AgentScopeRuntimeUnavailable("主协调专家生成兜底回复失败：模型返回为空")
-        return self._limit_reply(reply)
+        self._record_model_completion(
+            context,
+            result=None,
+            metrics=client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {},
+            source="team_coordinator_clarification",
+            expert_id=definition.agent_id,
+            returned_chars=len(reply),
+        )
+        return self._limit_reply(
+            reply,
+            context=context,
+            source="team_coordinator_clarification",
+            expert_id=definition.agent_id,
+        )
 
-    def _limit_reply(self, reply: str) -> str:
+    def _limit_reply(
+        self,
+        reply: str,
+        *,
+        context=None,
+        source: str = "expert_reply",
+        expert_id: str = "",
+        expert_turn_id: str = "",
+    ) -> str:
         """Keep a configurable emergency ceiling without silently using 1k chars."""
-        return str(reply or "")[:self.reply_max_chars]
+        text = str(reply or "")
+        limited = text[:self.reply_max_chars]
+        if context is not None and len(limited) < len(text):
+            self._event(context, "model_output_truncated", {
+                "source": source,
+                "expert_id": expert_id or None,
+                "expert_turn_id": expert_turn_id or None,
+                "truncation_reason_code": "application_reply_char_limit",
+                "truncation_reason": "应用层专家回复保护上限截断",
+                "configured_reply_max_chars": self.reply_max_chars,
+                "received_chars": len(text),
+                "returned_chars": len(limited),
+            })
+        return limited
+
+    def _record_model_completion(
+        self,
+        context,
+        *,
+        result,
+        metrics: dict[str, Any] | None,
+        source: str,
+        expert_id: str,
+        expert_turn_id: str = "",
+        returned_chars: int | None = None,
+    ) -> None:
+        """Persist provider completion evidence without recording reply content."""
+        metrics = metrics if isinstance(metrics, dict) else {}
+        finish_reason = str(metrics.get("finish_reason") or "").strip() or None
+        final_text = str(getattr(result, "final_text", "") or "")
+        limit_reasons = {"length", "max_tokens", "max_token", "token_limit"}
+        truncated = bool(finish_reason and finish_reason.lower() in limit_reasons)
+        truncation_status = "confirmed" if truncated else ("not_reported" if finish_reason is None else "not_truncated")
+        payload = {
+            "source": source,
+            "expert_id": expert_id or None,
+            "expert_turn_id": expert_turn_id or None,
+            "model": metrics.get("model"),
+            "request_purpose": metrics.get("request_purpose"),
+            "finish_reason": finish_reason,
+            "finish_reason_reported": finish_reason is not None,
+            "configured_max_tokens": metrics.get("configured_max_tokens"),
+            "input_tokens": metrics.get("input_tokens"),
+            "output_tokens": metrics.get("output_tokens"),
+            "returned_chars": len(final_text) if returned_chars is None else returned_chars,
+            "truncated": truncated,
+            "truncation_status": truncation_status,
+            "diagnostic_reason": (
+                "上游模型未提供 finish_reason，无法仅凭正文确认是否截断"
+                if finish_reason is None
+                else None
+            ),
+        }
+        self._event(context, "model_output_completion", payload)
+        if truncated:
+            self._event(context, "model_output_truncated", {
+                **payload,
+                "truncation_reason_code": "upstream_finish_reason_length",
+                "truncation_reason": "上游模型以输出长度上限结束",
+            })
 
     @staticmethod
     def _can_propose_team_handoff(team: ExpertTeamDefinition, expert_id: str) -> bool:
@@ -1178,7 +1274,7 @@ class AgentScopeExpertRuntime:
 class _HailiangChatModel:
     """A small AgentScope model adapter reusing Hailiang's LLM client/rate limits."""
 
-    def __new__(cls, client):
+    def __new__(cls, client, completion_recorder=None):
         from agentscope.credential import OpenAICredential
         from agentscope.model import ChatModelBase
 
@@ -1218,6 +1314,9 @@ class _HailiangChatModel:
                     function = tool.get("function", {}) if isinstance(tool, dict) else {}
                     specs.append(ToolSpec(name=str(function.get("name") or ""), description=str(function.get("description") or ""), parameters_schema=function.get("parameters") or {}, enabled=True))
                 result = await asyncio.to_thread(client.complete_with_tools, translated, specs, preferred_mode="native", request_purpose="agentscope_expert")
+                if callable(completion_recorder):
+                    metrics = client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {}
+                    completion_recorder(result, metrics)
                 if result.tool_calls:
                     return ChatResponse(content=[ToolCallBlock(id=item.id, name=item.name, input=json.dumps(item.arguments, ensure_ascii=False)) for item in result.tool_calls], is_last=True)
                 return ChatResponse(content=[TextBlock(text=result.final_text or "")], is_last=True)

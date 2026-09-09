@@ -665,9 +665,23 @@ export default function Workbench() {
   function downloadTranscript(
     revisionId: string,
     transcript: RevisionTestSession["transcript"],
+    trace: RevisionTestSession["trace"],
     sessionId: string,
     debugSessionId: string,
   ) {
+    const outputDiagnostics = trace.flatMap((turn) => {
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return events
+        .filter((event) => event && typeof event === "object")
+        .map((event) => event as Record<string, unknown>)
+        .filter((event) => ["model_output_completion", "model_output_truncated"].includes(String(event.event_type ?? "")))
+        .map((event) => ({
+          turn: turn.turn ?? null,
+          event_type: event.event_type,
+          timestamp: event.timestamp ?? event.created_at ?? null,
+          ...(event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {}),
+        }));
+    });
     const url = URL.createObjectURL(new Blob([JSON.stringify({
       revision_id: revisionId,
       debug_session_id: debugSessionId,
@@ -675,6 +689,10 @@ export default function Workbench() {
       // /api/v1/operations/diagnostics/sessions/query.
       session_id: sessionId,
       messages: transcript,
+      // No response content is duplicated here. These records say whether the
+      // provider reported a terminal reason and, when confirmed, why output
+      // was cut so the same session can be looked up in diagnostics.
+      output_diagnostics: outputDiagnostics,
     }, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -2572,6 +2590,7 @@ export default function Workbench() {
                     {revisionTestSession?.transcript?.length && selectedTestRevision ? <button type="button" onClick={() => downloadTranscript(
                       selectedTestRevision.revision_id,
                       revisionTestSession.transcript,
+                      revisionTestSession.trace,
                       candidateConversationState?.session_id || `revision_test_${revisionTestSession.debug_session_id}`,
                       revisionTestSession.debug_session_id,
                     )} className="mt-3 rounded-xl border border-white/10 px-3 py-2 text-xs text-sky-200">导出纯对话 JSON</button> : null}

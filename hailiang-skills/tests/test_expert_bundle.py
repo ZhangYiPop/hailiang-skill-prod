@@ -430,6 +430,44 @@ def test_expert_history_and_reply_bounds_are_configurable():
     assert len(runtime._limit_reply("x" * 2_001)) == 2_000
 
 
+def test_expert_reply_limit_records_confirmed_application_truncation():
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry(), reply_max_chars=1_000)
+    context = SessionContext()
+
+    reply = runtime._limit_reply(
+        "x" * 1_001,
+        context=context,
+        source="expert_agent_reply",
+        expert_id="study_abroad_consultant",
+        expert_turn_id="expert_turn_001",
+    )
+
+    assert len(reply) == 1_000
+    event = context.event_trace[-1]
+    assert event["event_type"] == "model_output_truncated"
+    assert event["payload"]["truncation_reason_code"] == "application_reply_char_limit"
+    assert event["payload"]["received_chars"] == 1_001
+
+
+def test_expert_model_completion_records_upstream_length_reason():
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
+    context = SessionContext()
+
+    runtime._record_model_completion(
+        context,
+        result=AssistantTurnResult(final_text="未完成的回答"),
+        metrics={"finish_reason": "length", "configured_max_tokens": 384000, "output_tokens": 384000},
+        source="expert_agent",
+        expert_id="study_abroad_consultant",
+        expert_turn_id="expert_turn_001",
+    )
+
+    assert [event["event_type"] for event in context.event_trace] == [
+        "model_output_completion", "model_output_truncated",
+    ]
+    assert context.event_trace[-1]["payload"]["truncation_reason_code"] == "upstream_finish_reason_length"
+
+
 def test_coordinator_can_propose_team_handoff_but_member_cannot_route():
     skill_registry = _runtime_registry()
     experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
