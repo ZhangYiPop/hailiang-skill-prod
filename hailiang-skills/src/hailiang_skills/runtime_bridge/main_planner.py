@@ -1206,6 +1206,10 @@ class MainPlannerOrchestrator:
             default_expert_id=DEFAULT_EXPERT_ID,
             client_factory=self._runtime_client_for_context,
             event_recorder=self._record_events,
+            history_messages=self.runtime_bridge_config.expert_history_messages,
+            history_message_chars=self.runtime_bridge_config.expert_history_message_chars,
+            history_max_chars=self.runtime_bridge_config.expert_history_max_chars,
+            reply_max_chars=self.runtime_bridge_config.expert_reply_max_chars,
         )
 
     @staticmethod

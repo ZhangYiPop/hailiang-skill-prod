@@ -404,6 +404,32 @@ def test_expert_does_not_bypass_agent_when_decision_client_is_unavailable():
     assert not any(event["event_type"] == "expert_skill_executed" for event in context.event_trace)
 
 
+def test_expert_history_and_reply_bounds_are_configurable():
+    runtime = AgentScopeExpertRuntime(
+        ExpertRegistry(definitions={}),
+        _runtime_registry(),
+        history_messages=2,
+        history_message_chars=4,
+        history_max_chars=10,
+        reply_max_chars=2_000,
+    )
+    context = SessionContext()
+    context.messages = [
+        {"role": "user", "content": "第一轮用户消息"},
+        {"role": "assistant", "content": "第一轮专家回复"},
+        {"role": "user", "content": "第二轮用户消息"},
+    ]
+
+    history = runtime._expert_history_messages(context)
+
+    assert history == [
+        {"role": "assistant", "content": "第一轮专"},
+        {"role": "user", "content": "第二轮用"},
+    ]
+    assert len(runtime._expert_conversation_history(context)) <= 10
+    assert len(runtime._limit_reply("x" * 2_001)) == 2_000
+
+
 def test_coordinator_can_propose_team_handoff_but_member_cannot_route():
     skill_registry = _runtime_registry()
     experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)

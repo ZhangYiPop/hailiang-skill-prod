@@ -69,11 +69,11 @@ MAX_PACKAGE_BYTES = int(os.getenv("HAILIANG_WORKBENCH_MAX_PACKAGE_BYTES", str(10
 # for the much longer general test-model timeout. It remains configurable for
 # slow, intentionally long-running test environments.
 WORKBENCH_CANDIDATE_LLM_TIMEOUT_S = max(
-    int(os.getenv("HAILIANG_WORKBENCH_CANDIDATE_LLM_TIMEOUT_S", "60") or 60),
+    int(os.getenv("HAILIANG_WORKBENCH_CANDIDATE_LLM_TIMEOUT_S", "900") or 900),
     1,
 )
 WORKBENCH_CANDIDATE_LLM_MAX_TOKENS = max(
-    int(os.getenv("HAILIANG_WORKBENCH_CANDIDATE_LLM_MAX_TOKENS", "2000") or 2000),
+    int(os.getenv("HAILIANG_WORKBENCH_CANDIDATE_LLM_MAX_TOKENS", "384000") or 384000),
     1,
 )
 

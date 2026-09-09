@@ -70,6 +70,10 @@ class AgentScopeExpertRuntime:
         default_expert_id: str = DEFAULT_EXPERT_ID,
         client_factory=None,
         event_recorder=None,
+        history_messages: int = 12,
+        history_message_chars: int = 1_500,
+        history_max_chars: int = 6_000,
+        reply_max_chars: int = 1_000,
     ) -> None:
         self.expert_registry = expert_registry
         self.team_registry = team_registry or ExpertTeamRegistry(definitions={})
@@ -77,6 +81,10 @@ class AgentScopeExpertRuntime:
         self.default_expert_id = default_expert_id
         self.client_factory = client_factory
         self.event_recorder = event_recorder
+        self.history_messages = max(1, int(history_messages))
+        self.history_message_chars = max(1, int(history_message_chars))
+        self.history_max_chars = max(1, int(history_max_chars))
+        self.reply_max_chars = max(1_000, int(reply_max_chars))
         self.native_executor = NativeSkillExecutor(runtime_registry)
         self._available, self._availability_error = agentscope_available()
 
@@ -375,8 +383,7 @@ class AgentScopeExpertRuntime:
         entry = self._snapshot_entry(context, "expert", expert_id)
         return str((entry or {}).get("name") or "").strip()
 
-    @staticmethod
-    def _expert_history_messages(context, *, limit: int = 12) -> list[dict[str, str]]:
+    def _expert_history_messages(self, context) -> list[dict[str, str]]:
         """Return bounded visible dialogue for an Expert model invocation."""
         history: list[dict[str, str]] = []
         for item in getattr(context, "messages", []) or []:
@@ -390,8 +397,8 @@ class AgentScopeExpertRuntime:
                 continue
             content = str(item.get("content") or "").strip()
             if content:
-                history.append({"role": str(item["role"]), "content": content[:1500]})
-        return history[-max(1, limit):]
+                history.append({"role": str(item["role"]), "content": content[:self.history_message_chars]})
+        return history[-self.history_messages :]
 
     def _expert_conversation_history(self, context) -> str:
         history = self._expert_history_messages(context)
@@ -399,7 +406,7 @@ class AgentScopeExpertRuntime:
             return "（暂无历史对话）"
         labels = {"user": "用户", "assistant": "助手"}
         rendered = "\n".join(f"{labels[item['role']]}：{item['content']}" for item in history)
-        return rendered[-6000:]
+        return rendered[-self.history_max_chars :]
 
     def _configured_expert(self, context, definition: ExpertDefinition) -> ExpertDefinition:
         entry = self._snapshot_entry(context, "expert", definition.agent_id)
@@ -591,7 +598,7 @@ class AgentScopeExpertRuntime:
             return await agent.reply(UserMsg("user", user_message))
 
         reply = _run_async(run_agent())
-        state["agent_reply"] = reply.get_text_content()[:1000]
+        state["agent_reply"] = self._limit_reply(reply.get_text_content())
         self._event(context, "expert_agent_completed", {"expert_id": definition.agent_id, "tool_calls": state["budget"]["skill_calls"], "handoff_tool_calls": int(state.get("handoff_tool_calls") or 0), "structured_handoff": isinstance(state.get("team_handoff"), dict)})
 
     def _execute_skill(self, definition: ExpertDefinition, state: dict[str, Any], context, skill_id: str, task: str, handoff_context: dict[str, Any] | None) -> dict[str, Any]:
@@ -915,7 +922,11 @@ class AgentScopeExpertRuntime:
             raise AgentScopeRuntimeUnavailable(f"主协调专家生成兜底回复失败: {exc}") from exc
         if not reply:
             raise AgentScopeRuntimeUnavailable("主协调专家生成兜底回复失败：模型返回为空")
-        return reply[:1000]
+        return self._limit_reply(reply)
+
+    def _limit_reply(self, reply: str) -> str:
+        """Keep a configurable emergency ceiling without silently using 1k chars."""
+        return str(reply or "")[:self.reply_max_chars]
 
     @staticmethod
     def _can_propose_team_handoff(team: ExpertTeamDefinition, expert_id: str) -> bool:
