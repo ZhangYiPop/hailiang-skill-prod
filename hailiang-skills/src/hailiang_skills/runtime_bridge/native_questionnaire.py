@@ -321,7 +321,11 @@ def resolve_questionnaire_continuation(
         return text.strip(), None, {"valid": True, "collection_complete": True, "fallback_used": False}
 
     reconciliation = continuation.get("answer_reconciliation", {})
-    resolved = _apply_reconciled_answers(bundle, state, payload, reconciliation)
+    # A well-formed model envelope already contains reviewed evidence. The
+    # deterministic matcher is a resilience path for malformed/empty output,
+    # not a second competing extractor.
+    resolved = [] if isinstance(payload, dict) and isinstance(payload.get("resolved_answers"), list) else _apply_explicit_message_answers(bundle, state, reconciliation)
+    resolved.extend(_apply_reconciled_answers(bundle, state, payload, reconciliation))
     refreshed = questionnaire_continuation_context(bundle, state)
     if refreshed is None:
         text = str(payload.get("assistant_message") or "").strip() if isinstance(payload, dict) else ""
@@ -377,6 +381,58 @@ def resolve_questionnaire_continuation(
         "resolved_answers": resolved,
         "rejected_resolved_answers": _rejected_resolved_answers(payload, resolved),
     }
+
+
+def _apply_explicit_message_answers(bundle: Any, state: Any, reconciliation: Any) -> list[dict[str, Any]]:
+    """Deterministically consume exact declared option values before LLM fallback.
+
+    This handles a message such as “我想去美国留学” without relying on the
+    model to return a perfect questionnaire envelope. Semantic inferences are
+    deliberately left to the model as candidates, never silently promoted.
+    """
+    if not isinstance(reconciliation, dict) or not reconciliation.get("enabled"):
+        return []
+    sources = reconciliation.get("message_sources")
+    if not isinstance(sources, list):
+        return []
+    skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
+    answers = state.skill_facts.setdefault(skill_id, {}).setdefault("answers", {})
+    resolved: list[dict[str, Any]] = []
+    for source in reversed(sources):
+        if not isinstance(source, dict):
+            continue
+        text = str(source.get("content") or "")
+        normalized = re.sub(r"\s+", "", text)
+        if not normalized:
+            continue
+        for spec in available_question_specs(bundle, state):
+            question_id = str(spec.get("question_id") or "")
+            if not question_id or question_id in answers:
+                continue
+            options = spec.get("options") if isinstance(spec.get("options"), list) else []
+            matches = []
+            for option in options:
+                if not isinstance(option, dict):
+                    continue
+                value = str(option.get("value") or "").strip()
+                label = str(option.get("label") or "").strip()
+                aliases = option.get("aliases") if isinstance(option.get("aliases"), list) else []
+                candidates = [value, label, *(str(item).strip() for item in aliases)]
+                if any(candidate and re.sub(r"\s+", "", candidate) in normalized for candidate in candidates):
+                    matches.append(value)
+            matches = list(dict.fromkeys(matches))
+            if len(matches) != 1:
+                continue
+            answers[question_id] = matches[0]
+            resolved.append({
+                "question_id": question_id,
+                "value": matches[0],
+                "source_id": source.get("source_id"),
+                "evidence": text[:160],
+                "confidence": 1.0,
+                "resolution": "declared_option_exact_match",
+            })
+    return resolved
 
 
 def _apply_reconciled_answers(
@@ -847,7 +903,11 @@ def _normalize_spec(field: dict[str, Any]) -> dict[str, Any] | None:
             else:
                 value = text = str(option).strip()
             if value:
-                options.append({"label": text, "value": value})
+                normalized_option = {"label": text, "value": value}
+                aliases = option.get("aliases") if isinstance(option, dict) else None
+                if isinstance(aliases, list):
+                    normalized_option["aliases"] = [str(alias).strip() for alias in aliases if str(alias).strip()]
+                options.append(normalized_option)
     input_type = str(field.get("input_type") or "text")
     declared_value_type = str(field.get("value_type") or "")
     value_type = declared_value_type or (input_type if input_type in {"integer", "number"} else "string")

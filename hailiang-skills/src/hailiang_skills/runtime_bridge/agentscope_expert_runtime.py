@@ -558,8 +558,12 @@ class AgentScopeExpertRuntime:
         # child's already-known grade. The active profile branch is isolated
         # before this method runs, so this snapshot is both safe to inject and
         # authoritative for the current turn.
+        from hailiang_skills.core.profile_candidate_archive import candidate_archive
         effective_facts = json.dumps(
-            self._read_effective_facts(context),
+            {
+                "confirmed_facts": self._read_effective_facts(context),
+                "profile_candidate_archive": candidate_archive(context),
+            },
             ensure_ascii=False,
             default=str,
         )
@@ -591,7 +595,9 @@ class AgentScopeExpertRuntime:
             f"你是 {definition.name}。只能使用受控工具，不能读取文件、执行 Shell、安装工具或修改事实。\n"
             "先根据业务规则和下方已注入的有效事实判断；需要专项能力时调用 execute_skill。"
             "不得重复询问下方已经有明确值的资料（例如年级、学年）；只有资料缺失或存在冲突时才追问。\n"
-            f"\n# 当前孩子的有效事实（本轮可信上下文）\n{effective_facts}\n"
+            f"\n# 当前孩子的上下文事实\n{effective_facts}\n"
+            "候选档案不是已确认事实；请只在当前问题确实相关时，以自然方式决定是否确认、更新或忽略，"
+            "不得把候选内容直接当成结论，也不得照抄固定确认话术。\n"
             f"\n# 最近对话（按时间顺序，仅用于保持上下文）\n{conversation_history}\n"
             "每次 execute_skill 必须传已选 Skill ID 和用户任务，且不得超过预算。\n\n"
             f"# 专家规则\n{definition.rules_markdown}\n\n# 授权 Skill 目录\n{catalog}{team_prompt}{routing_instruction}"

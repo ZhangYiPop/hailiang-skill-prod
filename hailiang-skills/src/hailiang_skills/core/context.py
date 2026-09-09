@@ -385,6 +385,15 @@ class SessionContext:
             if profile_name:
                 self.profile_name = profile_name
             return False
+        # A form belongs to the currently visible child. Preserve confirmed
+        # facts/state, but expire live UI work before it is serialized so a
+        # return to this child rebuilds the smallest valid next question.
+        if current:
+            self.abandon_active_interactions_for_expert_change(
+                reason="profile_switch",
+                from_expert_id=str(self.session_meta.get("active_expert_id") or "") or None,
+                target_expert_id=None,
+            )
         # The active branch may be the unbound branch (whose public profile
         # id is ``None``), so it must be persisted before entering a child as
         # well.
@@ -425,6 +434,11 @@ class SessionContext:
         if self.context_scope == "unbound":
             return False
         if self.profile_id:
+            self.abandon_active_interactions_for_expert_change(
+                reason="profile_switch",
+                from_expert_id=str(self.session_meta.get("active_expert_id") or "") or None,
+                target_expert_id=None,
+            )
             self.sync_active_branch()
         global_meta = self._global_session_meta()
         branch = self.profile_branches.get(UNBOUND_CONTEXT_BRANCH_ID)
@@ -558,9 +572,11 @@ class SessionContext:
     def refresh_effective_facts(self) -> None:
         merged = KnownFacts()
         for key, record in self.shared_facts.facts.items():
-            merged.facts[key] = record
+            if record.status != "candidate":
+                merged.facts[key] = record
         for key, record in self.profile_facts.facts.items():
-            merged.facts[key] = record
+            if record.status != "candidate":
+                merged.facts[key] = record
         for key, record in self.session_facts.facts.items():
             merged.facts[key] = record
         self.known_facts = merged
@@ -577,6 +593,8 @@ class SessionContext:
         scope: str | None = None,
         source_turn_id: str | None = None,
         provenance: Provenance | None = None,
+        status: str = "confirmed",
+        evidence_summary: str | None = None,
     ) -> FactRecord:
         fact_scope = resolve_fact_scope(key, scope)
         # Unbound conversations may collect information, but it must stay in
@@ -601,6 +619,8 @@ class SessionContext:
             scope=fact_scope,
             source_turn_id=source_turn_id,
             provenance=provenance,
+            status=status,
+            evidence_summary=evidence_summary,
         )
         self.refresh_effective_facts()
         return record

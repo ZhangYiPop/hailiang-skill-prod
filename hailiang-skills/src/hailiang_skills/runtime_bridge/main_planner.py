@@ -2518,6 +2518,7 @@ class MainPlannerOrchestrator:
             "conversation": {
                 "summary": str(memory.get("summary") or ""),
                 "facts": memory_facts,
+                "profile_candidate_archive": memory.get("profile_candidate_archive", []),
                 # The evidence list below already carries the same user turns
                 # with stable source IDs during first-form reconciliation.
                 "recent_messages": [] if reconciliation_enabled else recent_messages,
@@ -2540,6 +2541,8 @@ class MainPlannerOrchestrator:
                     "每项严格使用 {question_id,value,source_id,evidence,confidence}，source_id 必须来自给定来源。"
                     "fact 来源只能匹配 eligible_question_ids，value 必须忠实等于 fact 值；"
                     "message 来源的 evidence 必须是用户原话中的短句，并明确包含答案值。不得从助手消息、旧总结或常识猜测答案。"
+                    "profile_candidate_archive 是当前孩子的长期候选档案，不是已确认事实；仅在当前问题相关时自然确认或忽略，"
+                    "绝不把它直接当作已经确定的答案或业务前提。"
                     "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题，"
                     "并先给出简短、有依据的阶段性说明和自然引导；说明可以自然确认本轮识别到的答案。"
                     "不得虚构、改写或直接在正文中提问；不得给出最终专业结论。"
@@ -2627,6 +2630,7 @@ class MainPlannerOrchestrator:
             reply,
             response_policy=bundle.runtime_metadata.response_policy,
         )
+        self._archive_questionnaire_context(context, bundle, decision, user_message)
         stage_questionnaire_form(state, bundle, block)
         if not streamed:
             self._emit_reply_delta(context, reply)
@@ -2667,6 +2671,40 @@ class MainPlannerOrchestrator:
             ],
         )
         return reply, ""
+
+    @staticmethod
+    def _archive_questionnaire_context(context, bundle, decision: dict[str, Any], user_message: str) -> None:
+        """Store declared-option observations as profile-scoped durable evidence."""
+        from hailiang_skills.core.profile_candidate_archive import archive_candidate
+
+        skill_id = str(bundle.contract.skill_id or bundle.root_name)
+        latest_user = next(
+            (item for item in reversed(getattr(context, "messages", [])) if item.get("role") == "user"),
+            {},
+        )
+        turn_id = str((latest_user.get("metadata") or {}).get("turn_id") or "") or None
+        for item in decision.get("resolved_answers", []):
+            if not isinstance(item, dict) or item.get("resolution") != "declared_option_exact_match":
+                continue
+            question_id = str(item.get("question_id") or "").strip()
+            if not question_id:
+                continue
+            archived = archive_candidate(
+                context,
+                key=f"conversation.{skill_id}.{question_id}",
+                value=item.get("value"),
+                source_skill=skill_id,
+                source_turn_id=turn_id,
+                evidence_summary=str(item.get("evidence") or user_message)[:500],
+                confidence=float(item.get("confidence") or 1.0),
+            )
+            if archived:
+                self._record_events(context, [make_event("questionnaire_context_archived", {
+                    "skill_id": skill_id,
+                    "question_id": question_id,
+                    "profile_id": context.profile_id,
+                    "resolution": item.get("resolution"),
+                })])
 
     def _skill_entry_messages(
         self,
@@ -3225,6 +3263,10 @@ class MainPlannerOrchestrator:
             memory_result.context,
             list(getattr(context, "messages", []) or []),
         )
+        # Candidates are intentionally not merged into effective Facts. They
+        # are evidence for the model to confirm naturally when relevant.
+        from hailiang_skills.core.profile_candidate_archive import candidate_archive
+        memory_context["profile_candidate_archive"] = candidate_archive(context)
         if bool((getattr(context, "session_meta", {}) or {}).get("resume_recap_pending")):
             memory_context["continuity_instruction"] = (
                 "This child branch was just resumed. Begin the next answer with a concise one- or two-sentence Chinese recap "
@@ -3252,6 +3294,7 @@ class MainPlannerOrchestrator:
             unsummarized_chars=sum(len(str(item.get("content") or "")) for item in memory_recent if isinstance(item, dict)),
             questionnaire_evidence_message_count=len(questionnaire_evidence),
             active_window_messages=self.runtime_bridge_config.active_window_messages,
+            profile_candidate_fact_count=len(memory_context["profile_candidate_archive"]),
         )
         context.skill_states.setdefault(MAIN_PLANNER_ID, {})["conversation_memory"] = memory_context.get(
             "status",
