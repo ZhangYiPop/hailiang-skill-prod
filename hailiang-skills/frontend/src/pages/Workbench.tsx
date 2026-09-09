@@ -662,8 +662,20 @@ export default function Workbench() {
     URL.revokeObjectURL(url);
   }
 
-  function downloadTranscript(revisionId: string, transcript: RevisionTestSession["transcript"]) {
-    const url = URL.createObjectURL(new Blob([JSON.stringify({ revision_id: revisionId, messages: transcript }, null, 2)], { type: "application/json" }));
+  function downloadTranscript(
+    revisionId: string,
+    transcript: RevisionTestSession["transcript"],
+    sessionId: string,
+    debugSessionId: string,
+  ) {
+    const url = URL.createObjectURL(new Blob([JSON.stringify({
+      revision_id: revisionId,
+      debug_session_id: debugSessionId,
+      // This is the exact session identifier accepted by
+      // /api/v1/operations/diagnostics/sessions/query.
+      session_id: sessionId,
+      messages: transcript,
+    }, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
     link.download = `candidate-conversation-${revisionId}.json`;
@@ -2557,7 +2569,12 @@ export default function Workbench() {
                         记录为候选修订测试证据
                       </button>
                     ) : null}
-                    {revisionTestSession?.transcript?.length && selectedTestRevision ? <button type="button" onClick={() => downloadTranscript(selectedTestRevision.revision_id, revisionTestSession.transcript)} className="mt-3 rounded-xl border border-white/10 px-3 py-2 text-xs text-sky-200">导出纯对话 JSON</button> : null}
+                    {revisionTestSession?.transcript?.length && selectedTestRevision ? <button type="button" onClick={() => downloadTranscript(
+                      selectedTestRevision.revision_id,
+                      revisionTestSession.transcript,
+                      candidateConversationState?.session_id || `revision_test_${revisionTestSession.debug_session_id}`,
+                      revisionTestSession.debug_session_id,
+                    )} className="mt-3 rounded-xl border border-white/10 px-3 py-2 text-xs text-sky-200">导出纯对话 JSON</button> : null}
                     <div className="mt-5 max-h-[520px] min-h-[360px] space-y-3 overflow-auto rounded-2xl border border-white/10 bg-slate-950/50 p-4 xl:max-h-none xl:min-h-0 xl:flex-1">
                       {revisionTestSession?.transcript?.length ? (
                         revisionTestSession.transcript.map((item, index) => {
