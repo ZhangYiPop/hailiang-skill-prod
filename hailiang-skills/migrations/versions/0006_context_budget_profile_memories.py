@@ -4,7 +4,9 @@ from alembic import op
 from hailiang_skills.storage.database import Base
 
 
-revision = "0006_context_budget_profile_memories"
+# Alembic's baseline creates ``alembic_version.version_num`` as VARCHAR(32).
+# Keep revision IDs within that compatibility limit.
+revision = "0006_profile_memory_context"
 down_revision = "0005_current_release"
 branch_labels = None
 depends_on = None
