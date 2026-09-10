@@ -338,6 +338,7 @@ def test_hard_context_threshold_compresses_synchronously_and_keeps_recent_turns(
             assistant_message=f"{index}:{long_text}",
         )
 
+    sync_notifications: list[str] = []
     result = store.prepare_for_turn(
         user_id="user_1",
         session_id="sess__profile__profile_a",
@@ -345,9 +346,11 @@ def test_hard_context_threshold_compresses_synchronously_and_keeps_recent_turns(
         skill_dir=None,
         llm_client=None,
         defer_update=True,
+        on_sync_compression=lambda: sync_notifications.append("started"),
     )
 
     assert result.context["status"]["checkpoint_mode"] == "sync_compression"
     assert result.context["status"]["memory_update_status"] == "degraded_success"
+    assert sync_notifications == ["started"]
     assert len(result.context["recent_messages"]) == 16
     assert result.context["summary"]

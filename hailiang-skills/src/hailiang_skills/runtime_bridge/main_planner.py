@@ -1369,11 +1369,11 @@ class MainPlannerOrchestrator:
         record["timestamp"] = datetime.now(timezone.utc).isoformat()
         self._record_events(context, [make_event("prompt_assembly", record)])
 
-    def _emit_runtime_status(self, context, stage: str, label: str) -> None:
+    def _emit_runtime_status(self, context, stage: str, label: str, *, detail: str = "") -> None:
         callback = (context.session_meta or {}).get("status_callback")
         display_label = normalize_status_label(label)
         if callable(callback) and display_label:
-            callback({"stage": stage, "label": display_label})
+            callback({"stage": stage, "label": display_label, "detail": detail})
 
     def _emit_tool_status(
         self,
@@ -3265,6 +3265,12 @@ class MainPlannerOrchestrator:
             llm_client=self._runtime_client_for_context(context),
             logger=memory_logger,
             defer_update=self.runtime_bridge_config.memory_async_update,
+            on_sync_compression=lambda: self._emit_runtime_status(
+                context,
+                "context_compression",
+                "正在压缩上下文",
+                detail="正在整理较早对话，保留当前问题和近期上下文",
+            ),
         )
         memory_context = supplement_questionnaire_evidence(
             memory_result.context,

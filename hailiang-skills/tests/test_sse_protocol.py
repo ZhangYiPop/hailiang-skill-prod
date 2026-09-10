@@ -11,6 +11,24 @@ def decode_sse(raw: str) -> tuple[str, dict]:
     return lines[0].split(":", 1)[1].strip(), json.loads(lines[1].split(":", 1)[1].strip())
 
 
+def test_v2_intent_exposes_sync_context_compression_label_and_detail() -> None:
+    builder = SseEnvelopeBuilder(run_id="run_compress", session_id="sess_compress")
+    builder.encode("run_started", {"risk_stage": "input"})
+    raw = builder.encode(
+        "synthetic_progress",
+        {
+            "stage": "context_compression",
+            "label": "正在压缩上下文",
+            "detail": "正在整理较早对话，保留当前问题和近期上下文",
+        },
+    )
+    assert raw is not None
+    _event, payload = decode_sse(raw)
+    steps = payload["intent"]["steps"]
+    assert steps[-1]["label"] == "正在压缩上下文"
+    assert steps[-1]["detail"] == "正在整理较早对话，保留当前问题和近期上下文"
+
+
 def test_v2_frames_have_one_event_name_and_fixed_shape() -> None:
     builder = SseEnvelopeBuilder(run_id="run_1", session_id="sess_1")
     frames = [

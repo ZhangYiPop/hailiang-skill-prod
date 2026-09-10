@@ -56,6 +56,7 @@ class ConversationMemoryStore:
         llm_client: Any | None = None,
         logger: Any | None = None,
         defer_update: bool = False,
+        on_sync_compression=None,
     ) -> MemoryTurnResult:
         if not self.enabled:
             memory = self._default_memory(user_id, session_id, active_skill_id)
@@ -132,6 +133,8 @@ class ConversationMemoryStore:
 
         if llm_client is None:
             if usage_ratio >= self.sync_compression_ratio:
+                if callable(on_sync_compression):
+                    on_sync_compression()
                 return self._apply_extract_checkpoint(
                     user_id=user_id,
                     session_id=session_id,
@@ -157,6 +160,8 @@ class ConversationMemoryStore:
 
         # At the hard threshold, compaction happens in this request so the
         # prompt cannot continue growing while a background job is pending.
+        if usage_ratio >= self.sync_compression_ratio and callable(on_sync_compression):
+            on_sync_compression()
         if defer_update and usage_ratio < self.sync_compression_ratio:
             return self._schedule_memory_update(
                 user_id=user_id,
