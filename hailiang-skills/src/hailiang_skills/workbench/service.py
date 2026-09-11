@@ -10,6 +10,7 @@ import secrets
 import tempfile
 import uuid
 from dataclasses import replace
+from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from threading import RLock
@@ -791,6 +792,7 @@ class WorkbenchService:
         dependency_locks: list[dict[str, Any]] | None,
         assets: list[dict[str, Any]] | None,
         actor_id: str,
+        change_summary: str = "",
     ) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise WorkbenchError("payload 必须是对象")
@@ -847,6 +849,7 @@ class WorkbenchService:
                 object_id=object_id,
                 revision_no=revision_no,
                 base_revision_id=base_revision_id,
+                change_summary=str(change_summary or "").strip(),
                 payload=payload,
                 dependency_locks=canonical_locks,
                 validation=validation,
@@ -880,7 +883,7 @@ class WorkbenchService:
                     content=content,
                 ))
             obj.updated_at = utc_now()
-            self._audit(db, actor_id, "revision.saved", obj.object_type, revision.revision_id, {"revision_no": revision_no})
+            self._audit(db, actor_id, "revision.saved", obj.object_type, revision.revision_id, {"revision_no": revision_no, "change_summary": revision.change_summary})
             try:
                 db.commit()
             except IntegrityError as exc:
@@ -2209,10 +2212,27 @@ class WorkbenchService:
                 (item.get("object_key") for item in root_entry.get("dependency_locks", []) if item.get("object_id") == coordinator_object_id),
                 None,
             )
-            if coordinator:
-                context.session_meta["expert_id"] = coordinator
-                context.session_meta["active_expert_id"] = coordinator
-                context.skill_states.setdefault("agent_runtime", {})["expert_id"] = coordinator
+            allowed_members = {
+                str(item.get("object_key") or "")
+                for item in root_entry.get("dependency_locks", [])
+                if isinstance(item, dict) and item.get("object_type") == "expert"
+            }
+            persisted_expert = str(
+                context.session_meta.get("active_expert_id")
+                or context.session_meta.get("expert_id")
+                or ""
+            ).strip()
+            # A candidate team starts with its coordinator, but this helper
+            # also runs when a subsequent test turn restores persisted state.
+            # Do not reset a member chosen through a validated handoff card or
+            # the @ toolbar on every restore.  Keep the immutable snapshot as
+            # the authority: an absent or no-longer-locked member falls back
+            # to the coordinator.
+            selected_expert = persisted_expert if persisted_expert in allowed_members else coordinator
+            if selected_expert:
+                context.session_meta["expert_id"] = selected_expert
+                context.session_meta["active_expert_id"] = selected_expert
+                context.skill_states.setdefault("agent_runtime", {})["expert_id"] = selected_expert
 
     def _execute_snapshot_message(self, snapshot: dict[str, Any], message: str, context: SessionContext) -> str:
         root_entry = self._snapshot_root_entry(snapshot)
@@ -2699,21 +2719,47 @@ class WorkbenchService:
 
     def list_releases(self, *, object_type: str | None = None, include_archived: bool = False) -> list[dict[str, Any]]:
         with self.session_factory() as db:
-            query = select(WorkbenchReleaseRow, WorkbenchObjectRow).join(
+            query = select(WorkbenchReleaseRow, WorkbenchObjectRow, WorkbenchRevisionRow).join(
                 WorkbenchObjectRow, WorkbenchObjectRow.object_id == WorkbenchReleaseRow.object_id
-            )
+            ).join(WorkbenchRevisionRow, WorkbenchRevisionRow.revision_id == WorkbenchReleaseRow.revision_id)
             if object_type:
                 query = query.where(WorkbenchObjectRow.object_type == object_type)
             if not include_archived:
                 query = query.where(WorkbenchReleaseRow.archived.is_(False), WorkbenchObjectRow.archived.is_(False))
             rows = list(db.execute(query.order_by(WorkbenchReleaseRow.published_at.desc())))
-            actor_names = self._actor_display_names(db, [release.published_by for release, _obj in rows])
-            return [self._release_dict(release, obj, actor_names) for release, obj in rows]
+            actor_names = self._actor_display_names(db, [release.published_by for release, _obj, _revision in rows])
+            result = []
+            for release, obj, revision in rows:
+                item = self._release_dict(release, obj, actor_names)
+                item["revision_no"] = revision.revision_no
+                item["revision_change_summary"] = str(getattr(revision, "change_summary", "") or "")
+                result.append(item)
+            return result
 
-    def export_release(self, release_id: str, *, actor_id: str) -> tuple[bytes, dict[str, Any]]:
+    def export_configuration(self, *, release_id: str | None, revision_id: str | None, actor_id: str) -> tuple[bytes, dict[str, Any]]:
+        if bool(release_id) == bool(revision_id):
+            raise WorkbenchError("必须且只能指定一个正式版本或修订版本", code="EXPORT_TARGET_REQUIRED")
         with self.session_factory() as db:
-            root_release = self._require_release(db, release_id)
-            entries = self._release_closure(db, root_release)
+            package_kind = "release"
+            if release_id:
+                root_release = self._require_release(db, release_id)
+                entries = self._release_closure(db, root_release)
+            else:
+                package_kind = "candidate_revision"
+                revision = self._require_revision(db, str(revision_id))
+                root_obj = self._require_object(db, revision.object_id)
+                root_release = SimpleNamespace(
+                    release_id=f"revision:{revision.revision_id}", object_id=root_obj.object_id,
+                    release_no=None, revision_id=revision.revision_id, dependency_locks=revision.dependency_locks,
+                    content_hash=revision.content_hash, published_by="", published_at=None,
+                )
+                entries = [(root_release, root_obj, revision)]
+                seen = {root_release.release_id}
+                for lock in revision.dependency_locks or []:
+                    for dependency in self._release_closure(db, self._require_release(db, str(lock["release_id"]))) :
+                        if dependency[0].release_id not in seen:
+                            entries.append(dependency)
+                            seen.add(dependency[0].release_id)
             actor_names = self._actor_display_names(
                 db,
                 [
@@ -2726,7 +2772,8 @@ class WorkbenchService:
             manifest_objects: list[dict[str, Any]] = []
             files: dict[str, bytes] = {}
             for release, obj, revision in entries:
-                prefix = f"objects/{obj.object_type}/{obj.object_key}/v{release.release_no}"
+                version_label = f"v{release.release_no}" if release.release_no else f"r{revision.revision_no}"
+                prefix = f"objects/{obj.object_type}/{obj.object_key}/{version_label}"
                 object_payload = {
                     "object_id": obj.object_id,
                     "object_type": obj.object_type,
@@ -2737,6 +2784,7 @@ class WorkbenchService:
                     "release_no": release.release_no,
                     "revision_id": revision.revision_id,
                     "revision_no": revision.revision_no,
+                    "change_summary": str(getattr(revision, "change_summary", "") or ""),
                     "revision_created_by": revision.created_by,
                     "revision_created_by_display_name": actor_names.get(revision.created_by, revision.created_by),
                     "revision_created_at": _iso(revision.created_at),
@@ -2767,6 +2815,7 @@ class WorkbenchService:
                     "release_no": release.release_no,
                     "revision_id": revision.revision_id,
                     "revision_no": revision.revision_no,
+                    "change_summary": str(getattr(revision, "change_summary", "") or ""),
                     "revision_created_by": revision.created_by,
                     "revision_created_by_display_name": actor_names.get(revision.created_by, revision.created_by),
                     "revision_created_at": _iso(revision.created_at),
@@ -2779,7 +2828,8 @@ class WorkbenchService:
                 })
             root_obj = self._require_object(db, root_release.object_id)
             manifest = {
-                "schema_version": 1,
+                "schema_version": 2,
+                "package_kind": package_kind,
                 "package_id": package_id,
                 "root": {
                     "object_id": root_obj.object_id,
@@ -2787,6 +2837,9 @@ class WorkbenchService:
                     "object_key": root_obj.object_key,
                     "release_id": root_release.release_id,
                     "release_no": root_release.release_no,
+                    "revision_id": root_release.revision_id,
+                    "revision_no": entries[0][2].revision_no,
+                    "change_summary": str(getattr(entries[0][2], "change_summary", "") or ""),
                 },
                 "objects": manifest_objects,
                 "kernel_fingerprint": self.kernel_fingerprint,
@@ -2798,9 +2851,12 @@ class WorkbenchService:
             archive = self._zip(files)
             if len(archive) > MAX_PACKAGE_BYTES:
                 raise WorkbenchError("配置包超过大小限制", code="PACKAGE_TOO_LARGE")
-            self._audit(db, actor_id, "package.exported", "release", release_id, {"package_id": package_id, "package_sha256": hashlib.sha256(archive).hexdigest()})
+            self._audit(db, actor_id, "package.exported", package_kind, release_id or revision_id, {"package_id": package_id, "package_sha256": hashlib.sha256(archive).hexdigest()})
             db.commit()
             return archive, manifest
+
+    def export_release(self, release_id: str, *, actor_id: str) -> tuple[bytes, dict[str, Any]]:
+        return self.export_configuration(release_id=release_id, revision_id=None, actor_id=actor_id)
 
     def import_package(self, package_bytes: bytes, *, environment: str, actor_id: str) -> dict[str, Any]:
         validated = self._validated_package_contents(package_bytes)
@@ -2856,6 +2912,7 @@ class WorkbenchService:
         validated = self._validated_package_contents(package_bytes, materialize_entries=False)
         manifest = validated["manifest"]
         package_hash = validated["package_hash"]
+        root_source_release_id = str((manifest.get("root") or {}).get("release_id") or "")
         ordered_entries = sorted(
             validated["entries"],
             key=lambda item: {"skill": 0, "expert": 1, "expert_team": 2}.get(str(item.get("object_type") or ""), 9),
@@ -2898,6 +2955,23 @@ class WorkbenchService:
                     package_hash=package_hash,
                     actor_id=actor_id,
                 )
+                # A package is an exchange artifact, never an implicit
+                # publication. Keep the root as a candidate revision so the
+                # receiving environment must run its own tests and publish
+                # decision. Dependency releases remain available for the
+                # root Agent/Team's immutable locks.
+                if source_release_id == root_source_release_id and result["created_releases"]:
+                    local_release_id = str(result["release"]["release_id"])
+                    local_release = self._require_release(db, local_release_id)
+                    local_object = self._require_object(db, local_release.object_id)
+                    if local_object.current_release_id == local_release_id:
+                        local_object.current_release_id = None
+                    db.delete(local_release)
+                    result["created_releases"] = 0
+                    result["runtime_entry"] = None
+                    result["entry"]["local_release_id"] = None
+                    result["entry"]["local_release_no"] = None
+                    result["entry"]["status"] = "created_candidate_revision"
                 source_release_map[source_release_id] = result["release"]
                 imported_entries.append(result["entry"])
                 runtime_entry = result.get("runtime_entry")
@@ -4106,7 +4180,7 @@ class WorkbenchService:
             raise WorkbenchError("manifest.json 无法解析", code="INVALID_PACKAGE") from exc
         if not isinstance(manifest, dict):
             raise WorkbenchError("manifest.json 必须是对象", code="INVALID_PACKAGE")
-        if manifest.get("schema_version") != 1:
+        if manifest.get("schema_version") not in {1, 2}:
             raise WorkbenchError("不支持的配置包 Schema", code="PACKAGE_SCHEMA_MISMATCH")
         claimed_hash = str(manifest.get("manifest_hash") or "")
         unsigned = dict(manifest)
@@ -4429,7 +4503,7 @@ class WorkbenchService:
                     "valid": False,
                     "errors": [*validation.get("errors", []), *questionnaire_errors, *script_errors],
                 }
-        if not validation.get("valid", False):
+        if not validation.get("valid", False) and not str(entry.get("release_id") or "").startswith("revision:"):
             raise WorkbenchError(
                 "导入包中的对象校验未通过",
                 code="REVISION_VALIDATION_FAILED",
@@ -4464,6 +4538,7 @@ class WorkbenchService:
                 object_id=obj.object_id,
                 revision_no=(latest.revision_no if latest else 0) + 1,
                 base_revision_id=latest.revision_id if latest else None,
+                change_summary=str(entry.get("change_summary") or "").strip(),
                 payload=payload,
                 dependency_locks=local_dependency_locks,
                 validation=validation,
@@ -4681,7 +4756,7 @@ class WorkbenchService:
     def _revision_dict(row, actor_names: dict[str, str] | None = None) -> dict[str, Any]:
         return {
             "revision_id": row.revision_id, "object_id": row.object_id, "revision_no": row.revision_no,
-            "base_revision_id": row.base_revision_id, "payload": row.payload,
+            "base_revision_id": row.base_revision_id, "change_summary": str(getattr(row, "change_summary", "") or ""), "payload": row.payload,
             "dependency_locks": row.dependency_locks, "validation": row.validation,
             "content_hash": row.content_hash, "created_by": row.created_by,
             "created_by_display_name": (actor_names or {}).get(row.created_by, row.created_by),

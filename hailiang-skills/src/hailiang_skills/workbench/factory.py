@@ -33,6 +33,10 @@ def build_workbench_service(storage, *, orchestrator=None) -> WorkbenchService:
                         ORDER BY release_no DESC LIMIT 1
                     ) WHERE current_release_id IS NULL
                 """))
+        revision_columns = {item["name"] for item in inspect(engine).get_columns("workbench_revisions")}
+        if "change_summary" not in revision_columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE workbench_revisions ADD COLUMN change_summary TEXT NOT NULL DEFAULT ''"))
         session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     else:
         if os.getenv("HAILIANG_DATABASE_AUTO_CREATE", "false").lower() == "true":

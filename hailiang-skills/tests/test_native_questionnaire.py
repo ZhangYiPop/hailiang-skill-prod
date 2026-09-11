@@ -101,6 +101,23 @@ def test_questionnaire_envelope_unwrap_preserves_real_content() -> None:
     )
 
 
+def test_questionnaire_allows_a_skill_directed_no_question_turn() -> None:
+    bundle = _bundle("multi_path_planning")
+    state = SessionState(session_id="sess_intro", active_skill_id="multi_path_planning")
+
+    text, block, decision = resolve_questionnaire_continuation(
+        bundle,
+        state,
+        '{"assistant_message":"你好，先选择路径推荐或科普答疑。","question_ids":[],"collection_complete":false}',
+    )
+
+    assert text == "你好，先选择路径推荐或科普答疑。"
+    assert block is None
+    assert decision["valid"] is True
+    assert decision["fallback_used"] is False
+    assert decision["selected_question_ids"] == []
+
+
 def test_questionnaire_stream_extractor_emits_only_envelope_content() -> None:
     extractor = _QuestionnaireContinuationExtractor(set())
     envelope = '{"assistant_message":"表单已提交，正在生成建议。","question_ids":[]}'

@@ -244,6 +244,7 @@ class WorkbenchRevisionRow(Base):
     object_id: Mapped[str] = mapped_column(ForeignKey("workbench_objects.object_id"), index=True)
     revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
     base_revision_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    change_summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
     dependency_locks: Mapped[list[Any]] = mapped_column(_json_type(), default=list)
     validation: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)

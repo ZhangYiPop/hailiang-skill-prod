@@ -34,7 +34,7 @@ class ExpertContextInput(StrictInput):
     expert_id: str | None = Field(..., min_length=1)
     expected_branch_version: int | None = Field(default=None, ge=0)
     expected_selection_version: int | None = Field(default=None, ge=0)
-    operation: Literal["continue", "select_team", "select_team_member", "select_expert"] = Field(...)
+    operation: Literal["continue", "select_team", "select_team_member", "select_expert", "clear_expert"] = Field(...)
 
 
 class ProfileBoundInput(StrictInput):
@@ -134,10 +134,12 @@ def _parse_input(raw: str) -> StreamInput:
         if action == "chat":
             result = ChatInput.model_validate(payload)
             if result.source == "toolbar" and result.expert_context.operation not in {
+                "select_team",
                 "select_expert",
                 "select_team_member",
+                "clear_expert",
             }:
-                raise HTTPException(status_code=422, detail="toolbar chat requires select_expert")
+                raise HTTPException(status_code=422, detail="toolbar chat requires an explicit expert operation")
             return result
         if action == "enter_skill":
             result = EnterSkillInput.model_validate(payload)
@@ -252,7 +254,7 @@ def _snapshot_expert_registries(context, orchestrator):
 
 
 def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBoundInput) -> bool:
-    """Apply only an explicit chat selection; all other actions are assertions."""
+    """Apply explicit chat selections; ``null/null/continue`` inherits the server state."""
     expert_context = input_data.expert_context
     operation = expert_context.operation
     if not isinstance(input_data, ChatInput):
@@ -267,20 +269,51 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
     if operation == "continue":
         has_team_id = expert_context.expert_team_id is not None
         has_expert_id = expert_context.expert_id is not None
-        if has_team_id != has_expert_id:
+        # A direct Expert deliberately has no Team ID.  Therefore a concrete
+        # ``expert_id`` with a null ``expert_team_id`` remains a valid legacy
+        # strict assertion.  The only ambiguous shape is a Team without the
+        # actual Expert currently answering for it.
+        if has_team_id and not has_expert_id:
             raise _expert_context_error(
                 "EXPERT_CONTEXT_OPERATION_INVALID",
-                "继续对话时 expert_team_id 与 expert_id 必须同时为具体值，或同时为 null。",
+                "继续对话时，提供 expert_team_id 时必须同时提供当前实际承接的 expert_id。",
             )
-        # A fixed expert_context always asserts the exact client-rendered
-        # state.  This prevents a stale tab from silently continuing under a
-        # different expert after a toolbar selection or handoff.
+        # ``null/null`` deliberately has no client-side identity assertion.
+        # It is the default ordinary-chat contract: another device, a restored
+        # history page, or a newly selected child can continue under the
+        # session's authoritative Agent without first hydrating local state.
+        if not has_team_id:
+            return context.apply_session_agent_selection()
+
+        # A concrete pair remains the legacy strict assertion mode. It is
+        # useful to callers that intentionally want stale-tab protection.
         _assert_expert_context_current(
             context,
             input_data,
             require_exact_identity=True,
         )
         return False
+
+    if operation == "clear_expert":
+        if expert_context.expert_team_id is not None or expert_context.expert_id is not None:
+            raise _expert_context_error(
+                "EXPERT_CONTEXT_OPERATION_INVALID",
+                "退出专家模式时 expert_team_id 与 expert_id 必须均为 null。",
+            )
+        # This is intentionally an explicit user action rather than an
+        # interpretation of null/null/continue.  It updates the session-wide
+        # selection and lets the shared branch helper expire forms/Skills.
+        context.set_session_agent_selection(
+            expert_team_id=None,
+            expert_id=None,
+            selection_source="clear_expert",
+        )
+        changed = context.apply_session_agent_selection()
+        context.session_meta.pop("pending_team_handoff_intent", None)
+        context.event_trace.append(make_event("expert_mode_cleared", {
+            "source": "toolbar",
+        }))
+        return changed
 
     # A selection is permitted only against the branch version the client just
     # rendered. Its target identity naturally differs from the current one.

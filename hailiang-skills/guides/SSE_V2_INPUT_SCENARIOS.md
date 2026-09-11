@@ -73,14 +73,12 @@ INNER_INPUT=$(jq -nc \
   }')
 post_stream
 
-# 第 3 步：转交成功后普通追问。团队和当前专家从第 2 步最终 state.expert_context 取值。
-CURRENT_TEAM_ID='student_growth_expert_team'
-CURRENT_EXPERT_ID="$TARGET_EXPERT_ID"
+# 第 3 步：转交成功后普通追问。无需读取或回传当前专家；服务端继承已确认的成员。
 RUN_ID="run-$(date +%s)-$RANDOM"
-INNER_INPUT=$(jq -nc --arg current_team_id "$CURRENT_TEAM_ID" --arg current_expert_id "$CURRENT_EXPERT_ID" '{
+INNER_INPUT=$(jq -nc '{
   action: "chat", context_scope: "profile", context_activation: "auto",
   content: "那我现在应该先准备哪些材料？", source: "chat",
-  expert_context: {expert_team_id: $current_team_id, expert_id: $current_expert_id, operation: "continue"},
+  expert_context: {expert_team_id: null, expert_id: null, operation: "continue"},
   enable_thinking: false, return_reasoning: false
 }')
 post_stream
@@ -91,7 +89,7 @@ post_stream
 第 2 步 `input`：`target_expert_id` 是用户点击的新专家；
 `expert_context.expert_id` 是点击前实际承接的专家，不能为 `null`。
 
-第 3 步 `input`：回传上一步最终 state 中的团队和实际承接专家，`operation:"continue"`。
+第 3 步 `input`：普通追问固定双 `null`；服务端继承上一步已确认的成员专家。
 
 ## 3. 专家团内，用户在工具栏主动指定成员并提问
 
@@ -143,7 +141,8 @@ INNER_INPUT=$(jq -nc '{
 post_stream
 ```
 
-`input`：`select_expert` 同时传专家团 ID 和该团内的目标成员 ID。
+`input`：`select_expert` 同时传专家团 ID 和该团内的目标成员 ID。目标成员也可以恰好是该团队的
+主协调专家；服务端仍将其标记为协调专家，因此该专家后续可以正常生成专家转交卡。
 
 ## 5. 新对话时直接指定独立专家（不进入专家团）
 
@@ -177,23 +176,21 @@ INNER_INPUT=$(jq -nc '{
 }')
 post_stream
 
-# 第 2 步：同一 session 切换至孩子 B；不预检。仍完整回传 A 范围最后收到的专家状态。
+# 第 2 步：同一 session 切换至孩子 B；不预检，也不需要读取 A 的专家状态。
 CONTEXT_DATA='{"user_id":"manual-test-user","profile_id":"profile_child_b","student_name":"小明"}'
-CURRENT_TEAM_ID='student_growth_expert_team'
-CURRENT_EXPERT_ID='expert_id_from_child_a_previous_state'
 RUN_ID="run-$(date +%s)-$RANDOM"
-INNER_INPUT=$(jq -nc --arg current_team_id "$CURRENT_TEAM_ID" --arg current_expert_id "$CURRENT_EXPERT_ID" '{
+INNER_INPUT=$(jq -nc '{
   action: "chat", context_scope: "profile", context_activation: "auto",
   content: "请结合小明自己的情况分析升学方向。", source: "chat",
-  expert_context: {expert_team_id: $current_team_id, expert_id: $current_expert_id, operation: "continue"},
+  expert_context: {expert_team_id: null, expert_id: null, operation: "continue"},
   enable_thinking: false, return_reasoning: false
 }')
 post_stream
 ```
 
-`input`：切换孩子只由 BFF 修改顶层 `context_data.profile_id`；本轮仍完整回传上一范围最后
-收到的 `expert_context`。`context_activation:"auto"` 时服务端会恢复/创建 B 分支并回传 B 的权威
-状态；不要在 `input` 传 `profile_id`。
+`input`：切换孩子只由 BFF 修改顶层 `context_data.profile_id`；普通追问仍固定传双 `null`。
+`context_activation:"auto"` 时服务端会恢复/创建 B 分支并继承 session 的当前 Agent；不要在
+`input` 传 `profile_id`。
 
 ## 7. 同一 Session 切换到另一位孩子，并在同一条消息指定团内专家
 
@@ -248,20 +245,18 @@ post_stream
 ```bash
 # 仅当当前 session 已有唯一且 active 的转交卡时执行。
 # SESSION_ID、CONTEXT_DATA 沿用产生该卡的那次会话和孩子范围。
-CURRENT_TEAM_ID='expert_team_id_from_card_state'
-CURRENT_EXPERT_ID='expert_id_from_card_state_active'
 RUN_ID="run-$(date +%s)-$RANDOM"
-INNER_INPUT=$(jq -nc --arg current_team_id "$CURRENT_TEAM_ID" --arg current_expert_id "$CURRENT_EXPERT_ID" '{
+INNER_INPUT=$(jq -nc '{
   action: "chat", context_scope: "profile", context_activation: "auto",
   content: "好的，请继续。", source: "chat",
-  expert_context: {expert_team_id: $current_team_id, expert_id: $current_expert_id, operation: "continue"},
+  expert_context: {expert_team_id: null, expert_id: null, operation: "continue"},
   enable_thinking: false, return_reasoning: false
 }')
 post_stream
 ```
 
-`input`：这是普通 `chat + continue`，不传卡片 ID 或目标专家 ID，但完整回传当前团队与专家。
-多候选时必须点击卡片。
+`input`：这是普通 `chat + continue`，不传卡片 ID 或目标专家 ID，也不回传当前团队与专家。
+唯一候选时服务端会按既有规则识别“好的”等确认文字；多候选时必须点击卡片。
 
 ## 10. 停止当前流式回答
 
@@ -279,10 +274,10 @@ post_stream
 ## 11. `expert_context` 固定三字段规则
 
 ```json
-// 普通聊天（当前没有专家团或专家）
+// 所有普通追问：服务端继承当前 session Agent；若没有 Agent 即普通聊天
 {"expert_team_id":null,"expert_id":null,"operation":"continue"}
 
-// 在专家团/专家模式下的普通追问：必须回传上一轮 state 的实际值
+// 兼容旧客户端的严格状态断言：仅在需要断言具体当前 Agent 时使用
 {"expert_team_id":"student_growth_expert_team","expert_id":"当前实际承接专家ID","operation":"continue"}
 
 // 用户明确选择专家团
@@ -294,9 +289,29 @@ post_stream
 // 用户直接选择独立专家
 {"expert_team_id":null,"expert_id":"admission_specialist","operation":"select_expert"}
 
+// 工具栏明确退出专家模式；本条聊天按 general_chat + Soul 执行
+{"expert_team_id":null,"expert_id":null,"operation":"clear_expert"}
+
 // 点击转交卡 / 工具栏团内切成员：断言切换前当前团队和专家
 {"expert_team_id":"student_growth_expert_team","expert_id":"当前实际承接专家ID","operation":"continue"}
 ```
 
 `expected_branch_version`、`expected_selection_version` 仍是可选断言字段，不属于固定三字段。
 三个固定字段任意缺失都会返回 `422 EXPERT_CONTEXT_FIELDS_REQUIRED`。
+
+## 12. 工具栏退出专家模式，并按普通聊天发送问题
+
+```bash
+# 点击“退出专家模式”后，下一条消息使用 clear_expert；这不是普通 continue。
+RUN_ID="run-$(date +%s)-$RANDOM"
+INNER_INPUT=$(jq -nc '{
+  action: "chat", context_scope: "profile", context_activation: "auto",
+  content: "我想先不限定专家，聊聊最近的感受。", source: "toolbar",
+  expert_context: {expert_team_id: null, expert_id: null, operation: "clear_expert"},
+  enable_thinking: false, return_reasoning: false
+}')
+post_stream
+```
+
+`clear_expert` 会清空当前 session 的专家团/专家承接者，并作废当前范围未完成的表单或 Skill 交互。
+本条消息及之后的 `null/null/continue` 使用普通聊天；它与普通追问的双 `null` 语义不同。

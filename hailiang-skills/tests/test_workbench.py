@@ -1614,6 +1614,43 @@ def test_candidate_team_handoff_is_persisted_as_an_interactive_block_and_can_be_
     assert "family_expert" not in message
 
 
+def test_candidate_team_restore_keeps_the_member_selected_by_a_handoff():
+    preview_service = _preview_service()
+    row = WorkbenchDebugSessionRow(
+        debug_session_id="dbg_keep_selected_member",
+        revision_id="rev_team",
+        runtime_context={
+            "session_meta": {
+                "expert_team_id": "team_a",
+                "expert_id": "family_expert",
+                "active_expert_id": "family_expert",
+                "expert_selection_source": "candidate_handoff_card",
+            },
+            "skill_states": {"agent_runtime": {"expert_id": "family_expert"}},
+        },
+    )
+    snapshot = {
+        "root": {"object_id": "team-object"},
+        "entries": [{
+            "object_id": "team-object",
+            "object_type": "expert_team",
+            "object_key": "team_a",
+            "payload": {"coordinator_expert_id": "coordinator-object"},
+            "dependency_locks": [
+                {"object_id": "coordinator-object", "object_type": "expert", "object_key": "coordinator_expert"},
+                {"object_id": "family-object", "object_type": "expert", "object_key": "family_expert"},
+            ],
+        }],
+    }
+
+    restored = preview_service._restore_revision_test_context(row, snapshot)
+
+    assert restored.session_meta["expert_team_id"] == "team_a"
+    assert restored.session_meta["active_expert_id"] == "family_expert"
+    assert restored.session_meta["expert_id"] == "family_expert"
+    assert restored.skill_states["agent_runtime"]["expert_id"] == "family_expert"
+
+
 def test_candidate_team_manual_at_expert_uses_a_snapshot_locked_structured_switch():
     context = SessionContext(
         session_id="revision_test_dbg_at",

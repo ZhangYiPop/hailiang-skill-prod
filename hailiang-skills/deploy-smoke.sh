@@ -376,6 +376,29 @@ if [ "$SKIP_MIGRATIONS" = "0" ]; then
   PYTHONPATH=src "$VENV_DIR/bin/alembic" upgrade head
 fi
 
+# Keep a missing migration from surfacing later as a generic frontend
+# "Failed to fetch" error.  This is deliberately checked even when callers
+# reuse an already migrated database via --skip-migrations.
+HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" "$VENV_DIR/bin/python" - <<'PY'
+import os
+
+from sqlalchemy import create_engine, inspect
+
+engine = create_engine(os.environ["HAILIANG_DATABASE_URL"])
+with engine.connect() as connection:
+    columns = {
+        column["name"]
+        for column in inspect(connection).get_columns("workbench_revisions")
+    }
+
+if "change_summary" not in columns:
+    raise SystemExit(
+        "workbench_revisions.change_summary is missing; run deploy-smoke.sh without --skip-migrations"
+    )
+
+print("Verified database schema: workbench_revisions.change_summary")
+PY
+
 # Import the application only after the database has been provisioned and
 # migrated. Importing api.main creates the application and may query workbench
 # tables during bootstrap.

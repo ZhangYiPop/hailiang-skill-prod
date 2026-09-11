@@ -327,6 +327,7 @@ export default function Workbench() {
     null,
   );
   const [payload, setPayload] = useState<Record<string, unknown>>({});
+  const [changeSummary, setChangeSummary] = useState("");
   const [runtimeContractText, setRuntimeContractText] = useState("{}");
   const [selectedReleaseIds, setSelectedReleaseIds] = useState<string[]>([]);
   const [expandedDependencyObjectIds, setExpandedDependencyObjectIds] = useState<string[]>([]);
@@ -1041,11 +1042,13 @@ export default function Workbench() {
               content_base64,
             }),
           ),
+          change_summary: changeSummary,
           actor_id: actor.actor_id,
         },
       );
       await loadAll();
       await openObject(selectedObject.object_id);
+      setChangeSummary("");
       setNotice({
         tone: saved.validation.valid ? "ok" : "error",
         text: saved.validation.valid
@@ -1559,6 +1562,23 @@ export default function Workbench() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function exportRevision(revision: ObjectRevision) {
+    if (!actor || !selectedObject) return;
+    setBusy(true);
+    try {
+      const blob = await workbenchApi.exportRevision(apiBaseUrl, revision.revision_id, actor.actor_id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${selectedObject.object_key}-r${revision.revision_no}-candidate.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setNotice({ tone: "ok", text: "候选修订配置包已生成。" });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "候选修订导出失败" });
+    } finally { setBusy(false); }
   }
 
   async function changeRelease(release: ObjectRelease, draft: boolean) {
@@ -2080,6 +2100,15 @@ export default function Workbench() {
                         </button>
                         <button
                           type="button"
+                          disabled={busy || !latestRevision}
+                          onClick={() => latestRevision && void exportRevision(latestRevision)}
+                          className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-medium text-slate-200 hover:bg-white/5 disabled:opacity-40"
+                        >
+                          <Download size={16} />
+                          导出最新修订
+                        </button>
+                        <button
+                          type="button"
                           disabled={busy}
                           onClick={() => void saveRevision()}
                           className="inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-slate-950 hover:bg-sky-300 disabled:opacity-40"
@@ -2099,6 +2128,16 @@ export default function Workbench() {
                         </ul>
                       </div>
                     ) : null}
+                    <label className="mt-5 block text-sm text-slate-300">
+                      修订说明（可选）
+                      <textarea
+                        value={changeSummary}
+                        onChange={(event) => setChangeSummary(event.target.value)}
+                        maxLength={2000}
+                        placeholder="记录本次改了什么、为什么改，方便后续测试与发布追溯"
+                        className="mt-2 min-h-20 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                      />
+                    </label>
                     <div className="mt-8 grid gap-6">
                       {selectedObject.object_type !== "skill" ? (
                         <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-5">
@@ -2434,16 +2473,28 @@ export default function Workbench() {
                             <p className="mt-1 text-xs text-slate-500">
                               变更人：{revision.created_by_display_name || revision.created_by || "未知"}
                             </p>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                void loadDebugTarget(selectedObject.object_id, revision.revision_id);
-                                setSection("evaluation");
-                              }}
-                              className="mt-3 w-full rounded-lg border border-sky-400/25 px-2 py-1.5 text-xs text-sky-200 hover:bg-sky-400/10"
-                            >
-                              查看记录并作为调试目标
-                            </button>
+                            {revision.change_summary ? <p className="mt-2 text-xs leading-5 text-slate-400">修订说明：{revision.change_summary}</p> : null}
+                            <div className="mt-3 grid grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void exportRevision(revision)}
+                                className="inline-flex items-center justify-center gap-1 rounded-lg border border-white/10 px-2 py-1.5 text-xs text-slate-200 hover:bg-white/5 disabled:opacity-40"
+                              >
+                                <Download size={13} />
+                                导出 r{revision.revision_no}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void loadDebugTarget(selectedObject.object_id, revision.revision_id);
+                                  setSection("evaluation");
+                                }}
+                                className="rounded-lg border border-sky-400/25 px-2 py-1.5 text-xs text-sky-200 hover:bg-sky-400/10"
+                              >
+                                作为调试目标
+                              </button>
+                            </div>
                           </div>
                         ),
                       )}
@@ -2912,7 +2963,7 @@ export default function Workbench() {
                           </button>
                           {expanded ? <div className="space-y-3 border-t border-white/10 p-4">{group.releases.map((release) => (
                             <div key={release.release_id} className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/10 p-3">
-                              <div><p className="text-sm font-medium">{release.version}{release.is_current ? <span className="ml-2 text-xs text-emerald-200">当前发布</span> : null}</p><p className="mt-1 text-xs text-slate-500">发布人：{release.published_by_display_name || release.published_by || "未知"} · {formatTime(release.published_at)}</p><p className="mt-1 text-xs text-slate-500">{release.dependency_locks.length} 个锁定依赖 · {shortHash(release.content_hash)}</p></div>
+                              <div><p className="text-sm font-medium">{release.version}{release.is_current ? <span className="ml-2 text-xs text-emerald-200">当前发布</span> : null}</p><p className="mt-1 text-xs text-slate-500">固化自 r{release.revision_no ?? "?"} · {release.revision_id}</p>{release.revision_change_summary ? <p className="mt-1 text-xs text-slate-400">修订说明：{release.revision_change_summary}</p> : null}<p className="mt-1 text-xs text-slate-500">发布人：{release.published_by_display_name || release.published_by || "未知"} · {formatTime(release.published_at)}</p><p className="mt-1 text-xs text-slate-500">{release.dependency_locks.length} 个锁定依赖 · {shortHash(release.content_hash)}</p></div>
                               <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void exportRelease(release)} className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm text-slate-300 hover:text-white"><Download size={15} />导出</button><button type="button" disabled={busy || release.is_current} onClick={() => void changeRelease(release, false)} className="rounded-xl border border-amber-400/25 px-3 py-2 text-sm text-amber-100 hover:bg-amber-400/10 disabled:cursor-not-allowed disabled:opacity-40">设为当前发布</button><button type="button" disabled={busy} onClick={() => void changeRelease(release, true)} className="rounded-xl border border-sky-400/25 px-3 py-2 text-sm text-sky-100 hover:bg-sky-400/10 disabled:cursor-not-allowed disabled:opacity-40">从此版本创建草稿</button></div>
                             </div>
                           ))}</div> : null}

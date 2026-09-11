@@ -52,6 +52,7 @@ export default function Home() {
     activeExpertId,
     pendingExpertId,
     pendingExpertTeamId,
+    pendingExpertClear,
     activeExpertTeam,
     messages,
     candidatePaths,
@@ -323,10 +324,12 @@ export default function Home() {
           activeExpertId={activeExpertId}
           pendingExpertId={pendingExpertId}
           pendingExpertTeamId={pendingExpertTeamId}
+          pendingExpertClear={pendingExpertClear}
           activeExpertTeam={activeExpertTeam}
           onSelectExpert={handleSelectExpert}
           onExitExpert={handleExitExpert}
           onSelectExpertTeam={handleSelectExpertTeam}
+          onExitExpertTeam={handleExitExpert}
           isGenerating={isSending}
           isCancelling={isCancellingRun}
           onStopGeneration={handleStopGeneration}

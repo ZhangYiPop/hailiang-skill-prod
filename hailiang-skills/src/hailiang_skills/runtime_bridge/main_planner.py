@@ -1117,6 +1117,26 @@ def _looks_like_planning_request(text: str) -> bool:
     return bool(normalized) and any(keyword in normalized for keyword in GENERAL_CHAT_EXCLUSION_KEYWORDS)
 
 
+def _questionnaire_decision_table_context(bundle) -> dict[str, Any] | None:
+    """Load an optional Skill-owned decision table for the questionnaire model.
+
+    The table is not evaluated by the server. The active Skill receives it
+    with the session context and decides whether a Case applies and whether
+    this turn needs a form at all.
+    """
+    root_dir = getattr(bundle, "root_dir", None)
+    if root_dir is None:
+        return None
+    table_path = Path(root_dir) / "assets" / "ask_decision_table.json"
+    try:
+        if not table_path.is_file() or table_path.stat().st_size > 256_000:
+            return None
+        payload = json.loads(table_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 class MainPlannerOrchestrator:
     """Hailiang API orchestrator backed by the career/general-chat route model."""
 
@@ -2500,12 +2520,14 @@ class MainPlannerOrchestrator:
         skill_facts = state.skill_facts.get(continuation["skill_id"], {})
         reconciliation = continuation.get("answer_reconciliation", {})
         reconciliation_enabled = isinstance(reconciliation, dict) and reconciliation.get("enabled")
+        decision_table = _questionnaire_decision_table_context(bundle)
         payload = {
             "skill": {
                 "name": metadata.name,
                 "brief": metadata.brief,
                 "description": metadata.description,
                 "stage": state.stage,
+                "instructions": bundle.skill_markdown,
             },
             "answers": continuation["answers"],
             "tier": continuation["tier"],
@@ -2535,6 +2557,8 @@ class MainPlannerOrchestrator:
             "question_catalog": continuation["question_catalog"],
             "answer_reconciliation": reconciliation,
         }
+        if decision_table is not None:
+            payload["ask_decision_table"] = decision_table
         return [
             ChatMessage(
                 role="system",
@@ -2550,8 +2574,12 @@ class MainPlannerOrchestrator:
                     "message 来源的 evidence 必须是用户原话中的短句，并明确包含答案值。不得从助手消息、旧总结或常识猜测答案。"
                     "profile_candidate_archive 是当前孩子的长期候选档案，不是已确认事实；仅在当前问题相关时自然确认或忽略，"
                     "绝不把它直接当作已经确定的答案或业务前提。"
-                    "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题，"
-                    "并先给出简短、有依据的阶段性说明和自然引导；说明可以自然确认本轮识别到的答案。"
+                    "必须遵守 skill.instructions 中的流程、开场和红线。若提供 ask_decision_table，"
+                    "你必须结合本轮输入与会话状态自行判断应命中的 Case；该表是模型的决策依据，"
+                    "不是服务端自动执行的规则。若 Case 要求本轮不开表单，可返回空 question_ids。"
+                    "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题。"
+                    "assistant_message 应直接推进当前对话：已有明确答案时不要再次复述或确认，"
+                    "除非该答案存在矛盾、时间变化或确有必要消歧；不需要表单时直接回答，不要添加历史事实摘要。"
                     "不得虚构、改写或直接在正文中提问；不得给出最终专业结论。"
                     "只返回一个 JSON 对象，字段必须严格按以下顺序："
                     '{"assistant_message":"面向用户的阶段性说明和引导",'
@@ -4019,7 +4047,12 @@ class MainPlannerOrchestrator:
         self._emit_runtime_status(context, "response", "正在生成回复")
         skill = self.registry.get(target["skill"])
         result = skill.run(user_message, context)
-        result.assistant_message = self._with_fact_summary(result.assistant_message, context)
+        # Facts are part of the planner/skill context, not a user-facing
+        # preamble.  Adding a generated "已基于：..." sentence here caused
+        # previously collected answers to be repeated on every turn and made
+        # otherwise direct answers sound like a running questionnaire recap.
+        # Skills may still acknowledge a newly supplied fact naturally, but
+        # the runtime must not prepend historical facts to the reply.
         if not self._has_streamed_reply(context):
             self._emit_reply_delta(context, result.assistant_message)
         self._record_prompt_assembly_from_skill(context, skill)
@@ -4054,22 +4087,11 @@ class MainPlannerOrchestrator:
         return result
 
     def _with_fact_summary(self, assistant_message: str, context) -> str:
-        province = context.known_facts.get_value("student_province")
-        subject_group = context.known_facts.get_value("subject_group")
-        score = context.known_facts.get_value("score_total")
-        summary_parts = []
-        if province not in (None, "", [], {}):
-            summary_parts.append(str(province))
-        if subject_group not in (None, "", [], {}):
-            summary_parts.append(str(subject_group))
-        if score not in (None, "", [], {}):
-            summary_parts.append(f"{score} 分")
-        if not summary_parts:
-            return assistant_message
-        summary = f"已基于：{' / '.join(summary_parts)}。\n\n"
-        if all(part in assistant_message for part in [str(province or ""), str(score or "")]):
-            return assistant_message
-        return f"{summary}{assistant_message}"
+        # Kept as a compatibility shim for integrations that called this
+        # helper directly.  Historical facts must never be injected into the
+        # visible assistant message by the runtime.
+        del context
+        return assistant_message
 
     def _run_hailiang_fallback(self, user_message: str, context, turn_id: str) -> SkillResult:
         del turn_id
@@ -4909,6 +4931,16 @@ class MainPlannerOrchestrator:
 
     def _split_multi_path_skill_by_stage(self, state: SessionState, context) -> None:
         if state.active_skill_id not in MULTI_PATH_SKILL_IDS:
+            state.status_flags["awaiting_school_stage_for_multi_path"] = False
+            state.status_flags["pending_multi_path_scene"] = ""
+            return
+        # ``multi_path_planning`` is the high-school Skill itself.  Its
+        # opening, mode selection and profile collection are owned by the
+        # Skill, including the case where the user has not supplied a grade.
+        # Do not install the legacy parent gate here: it replaces the Skill's
+        # own first reply with a hard-coded question and exposes junior-high
+        # examples that are outside this Skill's service scope.
+        if state.active_skill_id == "multi_path_planning":
             state.status_flags["awaiting_school_stage_for_multi_path"] = False
             state.status_flags["pending_multi_path_scene"] = ""
             return

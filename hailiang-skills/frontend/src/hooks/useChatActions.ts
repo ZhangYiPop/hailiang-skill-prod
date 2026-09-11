@@ -1045,6 +1045,7 @@ export function useChatActions() {
       const contextScope = targetProfileId ? "profile" : "unbound";
       const requestedExpertId = requestState.pendingExpertId.trim();
       const requestedExpertTeamId = requestState.pendingExpertTeamId.trim();
+      const clearExpert = requestState.pendingExpertClear;
       const branchKey = targetProfileId || "__unbound__";
       const branch = requestState.profileBranches[branchKey];
       const currentExpertTeamId = branch?.activeExpertTeamId
@@ -1216,6 +1217,12 @@ export function useChatActions() {
               expected_selection_version: expectedSelectionVersion,
               operation: "continue" as const,
             }
+          : clearExpert
+            ? {
+                expert_team_id: null,
+                expert_id: null,
+                operation: "clear_expert" as const,
+              }
           : requestedExpertTeamId && requestedExpertId
             ? {
                 expert_team_id: requestedExpertTeamId,
@@ -1241,10 +1248,12 @@ export function useChatActions() {
                   operation: "select_expert" as const,
                 }
               : {
-                  expert_team_id: currentExpertTeamId || null,
-                  expert_id: currentExpertId || null,
-                  expected_branch_version: expectedBranchVersion,
-                  expected_selection_version: expectedSelectionVersion,
+                  // The ordinary-chat wire contract deliberately does not
+                  // echo cached Agent state. The server inherits the current
+                  // session selection, which keeps restored and multi-device
+                  // conversations from failing on stale local state.
+                  expert_team_id: null,
+                  expert_id: null,
                   operation: "continue" as const,
                 };
         const input = options.transition
@@ -1286,7 +1295,7 @@ export function useChatActions() {
                 ...contextInput,
                 expert_context: expertContext,
                 content: trimmed,
-                source: requestedExpertTeamId && requestedExpertId ? "toolbar" : "chat",
+                source: requestedExpertTeamId || requestedExpertId || clearExpert ? "toolbar" : "chat",
                 context_activation: "auto" as const,
                 enable_thinking: thinkingEnabledForTurn,
                 return_reasoning: thinkingEnabledForTurn,
@@ -1335,6 +1344,9 @@ export function useChatActions() {
                 }
                 if (requestedExpertTeamId) {
                   store.setPendingExpertTeamId("");
+                }
+                if (clearExpert) {
+                  store.setPendingExpertClear(false);
                 }
                 if (pendingStopStreamRef.current === abortController && abortController) {
                   void cancelStreamRun(abortController, state.run_id);
@@ -1871,17 +1883,16 @@ export function useChatActions() {
       if (!isSelectedTeamMember) {
         store.setPendingExpertTeamId("");
       }
+      store.setPendingExpertClear(false);
       store.setPendingExpertId(normalizedExpertId);
     },
     [store],
   );
 
   const handleExitExpert = useCallback(async () => {
-    const state = useChatStore.getState();
-    const coordinatorId = state.activeExpertTeam?.coordinator_expert_id
-      ?? state.expertTeamCatalog[0]?.coordinator_expert_id
-      ?? "";
-    store.setPendingExpertId(coordinatorId);
+    store.setPendingExpertId("");
+    store.setPendingExpertTeamId("");
+    store.setPendingExpertClear(true);
   }, [store]);
 
   const handleSelectExpertTeam = useCallback(
@@ -1896,6 +1907,7 @@ export function useChatActions() {
       // coordinator id would silently start a direct-expert conversation and
       // prevent the runtime from offering team-member handoff cards.
       store.setPendingExpertId("");
+      store.setPendingExpertClear(false);
       store.setPendingExpertTeamId(team?.team_id ?? "");
     },
     [store],

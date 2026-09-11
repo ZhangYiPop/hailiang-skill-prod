@@ -12,6 +12,7 @@ type ComposerProps = {
   activeExpertId?: string;
   pendingExpertId?: string;
   pendingExpertTeamId?: string;
+  pendingExpertClear?: boolean;
   activeExpertTeam?: SelectedExpertTeam | null;
   onSelectExpert?: (expertId: string) => Promise<void>;
   onExitExpert?: () => Promise<void>;
@@ -28,7 +29,7 @@ const quickPrompts = [
   "强基计划详细讲讲，我现在适合吗",
 ];
 
-export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertCatalog = [], expertTeamCatalog = [], activeExpertId = "", pendingExpertId = "", pendingExpertTeamId = "", activeExpertTeam = null, onSelectExpert, onExitExpert, onSelectExpertTeam, onExitExpertTeam, isGenerating = false, isCancelling = false, onStopGeneration }: ComposerProps) {
+export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertCatalog = [], expertTeamCatalog = [], activeExpertId = "", pendingExpertId = "", pendingExpertTeamId = "", pendingExpertClear = false, activeExpertTeam = null, onSelectExpert, onExitExpert, onSelectExpertTeam, onExitExpertTeam, isGenerating = false, isCancelling = false, onStopGeneration }: ComposerProps) {
   const { composerValue, setComposerValue } = useChatStore();
   const [toolbarTargetExpertId, setToolbarTargetExpertId] = useState("");
   const toolbarTarget = activeExpertTeam?.members.find((member) => member.expert_id === toolbarTargetExpertId);
@@ -88,7 +89,7 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
                 onClick={() => void onExitExpertTeam()}
                 className="rounded-full border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-xs text-amber-100 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                退出专家团
+                {pendingExpertClear ? "退出专家团（待下条发送）" : "退出专家团"}
               </button>
             ) : null}
             {activeExpertTeam.members.map((member) => {
@@ -112,7 +113,9 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
             })}
           </div>
           <p className="px-1 text-[11px] leading-5 text-slate-500">
-            {toolbarTarget ? `下一条消息将由 @${toolbarTarget.mention_name} 接管。` : "点击团内专家后输入问题；当前成员不会推荐其他专家。"}
+            {pendingExpertClear
+              ? "下一条消息将退出专家模式并按普通聊天处理。"
+              : toolbarTarget ? `下一条消息将由 @${toolbarTarget.mention_name} 接管。` : "点击团内专家后输入问题；当前成员不会推荐其他专家。"}
           </p>
         </div>
       ) : (
@@ -127,7 +130,7 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
                 onClick={() => void onExitExpert()}
                 className="rounded-full border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-xs text-amber-100 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                退出专家模式
+                {pendingExpertClear ? "退出专家模式（待下条发送）" : "退出专家模式"}
               </button>
             ) : null}
             {expertTeamCatalog.map((team) => {
@@ -197,7 +200,7 @@ export function Composer({ disabled, showQuickPrompts = false, onSubmit, expertC
               );
             })}
           </div>
-          <p className="px-1 text-[11px] leading-5 text-slate-500">{pendingTeam ? "可在首条消息前直接选择团内成员；不选则由主协调专家承接。" : "专家能力由专家包锁定；专家团由主协调专家决定是否建议转交。"}</p>
+          <p className="px-1 text-[11px] leading-5 text-slate-500">{pendingExpertClear ? "下一条消息将退出专家模式并按普通聊天处理。" : pendingTeam ? "可在首条消息前直接选择团内成员；不选则由主协调专家承接。" : "专家能力由专家包锁定；专家团由主协调专家决定是否建议转交。"}</p>
         </div>
       ) : null
       )}

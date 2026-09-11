@@ -2122,32 +2122,23 @@ class RuntimeBridgeTest(unittest.TestCase):
         self.assertEqual(short_circuit["stage"], "precheck")
         self.assertTrue(short_circuit["details"]["consultative_lock"])
 
-    def test_main_planner_asks_grade_before_entering_multi_path_when_stage_unknown(self) -> None:
-        orchestrator = build_orchestrator()
-        context = SessionContext(user_id="u1")
-
-        result = orchestrator.handle_message("想看看除了普通高考还有什么路", context)
-
-        self.assertIn("几年级", result.assistant_message)
-        self.assertEqual(context.skill_states["main_planner"]["target_skill"], "main_planner")
-        self.assertEqual(context.skill_states["skill_runtime"]["active_skill_id"], "main_planner")
-        self.assertEqual(context.interaction_state["active_skill"], "main_planner")
-        self.assertEqual(context.skill_states["planner"].get("missing_facts"), ["grade"])
-        self.assertIsNotNone(context.skill_states["planner"].get("missing_fact_form"))
-
-    def test_main_planner_resumes_multi_path_after_user_supplies_grade(self) -> None:
+    def test_main_planner_enters_high_school_multi_path_without_a_parent_grade_gate(self) -> None:
         orchestrator = build_orchestrator()
         orchestrator.runtime_client = FakeRuntimeClient()
         context = SessionContext(user_id="u1")
+        _preactivate_requested_target_skill(
+            context,
+            "multi_path_planning",
+            runtime_registry=orchestrator.runtime_registry,
+        )
+        context.session_meta["requested_target_skill_id"] = "multi_path_planning"
 
-        first = orchestrator.handle_message("想看看除了普通高考还有什么路", context)
-        second = orchestrator.handle_message("初二", context)
+        result = orchestrator.handle_message("你好", context)
 
-        self.assertIn("几年级", first.assistant_message)
-        self.assertEqual(second.assistant_message, "runtime 原生 Skill 回复")
-        self.assertEqual(context.known_facts.get_value("grade"), "初二")
-        self.assertEqual(context.skill_states["main_planner"]["target_skill"], "junior_multi_path_planning")
-        self.assertEqual(context.skill_states["skill_runtime"]["active_skill_id"], "junior_multi_path_planning")
+        self.assertNotIn("几年级", result.assistant_message)
+        self.assertEqual(context.skill_states["skill_runtime"]["active_skill_id"], "multi_path_planning")
+        self.assertEqual(context.interaction_state["active_skill"], "multi_path_planning")
+        self.assertFalse(context.skill_states["skill_runtime"].get("status_flags", {}).get("awaiting_school_stage_for_multi_path"))
 
     def test_planner_missing_facts_are_replaced_after_user_supplies_form_values(self) -> None:
         orchestrator = build_orchestrator()
@@ -2248,7 +2239,7 @@ class RuntimeBridgeTest(unittest.TestCase):
 
         result = orchestrator.handle_message("我想做前景探路，高一中等", context)
 
-        self.assertEqual(result.assistant_message, "runtime 原生 Skill 回复")
+        self.assertNotIn("几年级", result.assistant_message)
         self.assertEqual(context.skill_states["main_planner"]["target_skill"], "future_explore")
         self.assertEqual(context.skill_states["skill_runtime"]["active_skill_id"], "future_explore")
         self.assertEqual(context.interaction_state["active_skill"], "future_explore")
@@ -2373,6 +2364,7 @@ class RuntimeBridgeTest(unittest.TestCase):
 
     def test_explicit_multi_path_entry_stays_active_when_grade_is_unknown(self) -> None:
         orchestrator = build_orchestrator()
+        orchestrator.runtime_client = FakeRuntimeClient()
         context = SessionContext(user_id="u1")
         _preactivate_requested_target_skill(
             context,
@@ -2383,7 +2375,7 @@ class RuntimeBridgeTest(unittest.TestCase):
 
         result = orchestrator.handle_message("进入multi_path_planning", context)
 
-        self.assertIn("几年级", result.assistant_message)
+        self.assertNotIn("几年级", result.assistant_message)
         self.assertEqual(context.skill_states["skill_runtime"]["active_skill_id"], "multi_path_planning")
         self.assertEqual(context.interaction_state["active_skill"], "multi_path_planning")
 

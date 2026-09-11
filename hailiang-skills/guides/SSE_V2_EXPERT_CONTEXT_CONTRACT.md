@@ -15,8 +15,8 @@
 - 本轮孩子身份只能来自 BFF 写入的 `context_data.profile_id`。`input` 中不得
   出现 `profile_id`。
 - 除 `stop` 外，每个动作都必须带 `expert_context`，且**固定同时包含**
-  `expert_team_id`、`expert_id`、`operation` 三个键。普通 `chat + continue` 回传当前
-  权威状态；没有专家团/专家时前两个键均传 `null`。工具栏选择和专家转交卡同样携带完整对象。
+  `expert_team_id`、`expert_id`、`operation` 三个键。普通 `chat + continue` 固定传两个
+  `null`，由服务端继承权威状态。工具栏选择和专家转交卡同样携带完整对象。
 - 浏览器不需要判断“是否第一条消息”或“目标孩子的分支是否已加载”。普通 `chat`
   默认执行无感上下文激活：服务端先切入/创建目标分支、恢复 session 级 Agent，再处理
   同一条消息。服务端返回的权威状态直接覆盖本地缓存。
@@ -41,11 +41,12 @@
 
 `expected_branch_version` 和 `expected_selection_version` 对请求方可省略。省略时，服务端会在完成
 当前 session/profile 分支恢复后，使用对应的权威版本继续处理；响应中的 `state.expert_context` 仍会返回完整版本。
-如果请求显式传入版本，服务端仍会严格校验，显式旧版本继续返回 `409 EXPERT_CONTEXT_STALE`。
+如果普通追问使用 `null/null/continue`，服务端不把可选版本字段当作断言，而是继承当前 session
+的权威承接者。只有请求显式携带团队与专家 ID 的 `continue` 才会严格校验专家与版本；显式旧值返回
+`409 EXPERT_CONTEXT_STALE`。
 
-普通追问必须回传团队/专家 ID；如果从最近一次 SSE `state` 获得的权威状态为团队
-`student_growth_expert_team`、专家 `career_plan_expert`、`branch_version=1`、
-`selection_version=1`，继续对话请求为：
+普通追问固定使用 `null/null/continue`；无论用户刚恢复历史、换了设备还是切换到另一位孩子，服务端都会
+延续当前 session 的专家团/专家。若当前 session 未选择专家团或专家，才使用 `general_chat + Soul`：
 
 ```json
 {
@@ -54,8 +55,8 @@
   "content": "一年级，男孩，杭州",
   "source": "chat",
   "expert_context": {
-    "expert_team_id": "student_growth_expert_team",
-    "expert_id": "career_plan_expert",
+    "expert_team_id": null,
+    "expert_id": null,
     "operation": "continue"
   },
   "enable_thinking": false,
@@ -64,8 +65,9 @@
 ```
 
 若缺少 `expert_team_id`、`expert_id`、`operation` 中任意一个键，服务端返回
-`422 EXPERT_CONTEXT_FIELDS_REQUIRED`。普通追问中前两个字段必须都为当前具体 ID，或在普通聊天时
-都为 `null`；只传一个具体 ID 会返回 `422 EXPERT_CONTEXT_OPERATION_INVALID`。
+`422 EXPERT_CONTEXT_FIELDS_REQUIRED`。普通追问中前两个字段固定都为 `null`；它表示继承而不是退出
+专家模式。只传一个具体 ID 会返回
+`422 EXPERT_CONTEXT_OPERATION_INVALID`。
 
 ### 2.1 `context_data` 的中文含义
 
@@ -104,11 +106,11 @@
 
 | 字段 | 中文含义 |
 | --- | --- |
-| `expert_team_id` | 必传。当前范围正在使用的专家团 ID；无专家团时为 `null`。 |
-| `expert_id` | 必传。当前范围实际承接的专家 ID；无专家时为 `null`。 |
+| `expert_team_id` | 必传。`continue` 时与 `expert_id` 同为 `null` 表示继承；具体值仅用于严格断言或显式选择。 |
+| `expert_id` | 必传。`continue` 时与 `expert_team_id` 同为 `null` 表示继承；`select_expert` 时是目标专家。 |
 | `expected_branch_version` | 前端最后一次从服务端获得的该范围版本号，用于防止旧页面覆盖新状态。 |
 | `expected_selection_version` | 前端最后一次获得的 session 级 Agent 选择版本。工具栏显式选择专家团/专家时必须断言，防止旧页面覆盖更新后的全局选择。 |
-| `operation` | 必传。本轮是普通续聊断言，还是用户明确选择专家团/专家。 |
+| `operation` | 必传。支持 `continue`、`select_team`、`select_expert`、兼容别名 `select_team_member` 和显式退出 `clear_expert`。 |
 
 服务端在每个 SSE `state`、`GET /sessions/{id}` 和
 `GET /sessions/{id}/context` 中返回权威 `expert_context`：
@@ -161,7 +163,7 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 | 绑定孩子并选择专家团 | 同上，`profile_id` 为目标孩子 | `action:"chat"`、`source:"chat"` | `expert_team_id` + `expert_id:null` + `operation:"select_team"` | 激活团队主协调专家。不能在此操作同时指定成员。 |
 | 绑定孩子并直接选择团队成员 | 同上 | `action:"chat"`、`source:"toolbar"` | `expert_team_id` + 团内 `expert_id` + `operation:"select_expert"` | 原子激活团队并选成员；适用于首次进入、再次进入或切换孩子。 |
 | 未绑定孩子的单专家 | 仅 `user_id` | `action:"chat"`、`context_scope:"unbound"`、`source:"chat"` | `expert_team_id:null` + `expert_id` + `operation:"select_expert"` | 进入单专家模式。当前已有专家团时，不能省略团队 ID 来改选团队成员。 |
-| 已有任何状态，普通继续对话 | 当前目标范围的 `context_data` | `action:"chat"`、`source:"chat"` | 当前 `expert_team_id` + 当前 `expert_id` + `operation:"continue"`；普通聊天均为 `null` | 服务端校验并沿用当前专家选择；不改变专家/专家团。 |
+| 已有任何状态，普通继续对话 | 当前目标范围的 `context_data` | `action:"chat"`、`source:"chat"` | `expert_team_id:null` + `expert_id:null` + `operation:"continue"` | 服务端继承当前专家选择；不改变专家/专家团。 |
 
 ### 4.1 会话开始与首次绑定孩子
 
@@ -201,8 +203,8 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 
 #### 什么都不选，只继续对话
 
-普通 `continue` 也必须完整回传**当前**的 `expert_team_id` 和 `expert_id`；普通聊天两者均为
-`null`。版本字段仍可选：有同一范围的最新值才传，未知时省略，不要猜测 `1/0`。
+普通 `continue` 固定传 `expert_team_id:null` 与 `expert_id:null`。版本字段也无需传；只有明确选择
+专家或确认交互时才使用权威 state/卡片中的具体状态，不要猜测 `1/0`。
 
 ```json
 {
@@ -284,7 +286,7 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 
 | 用户意图 | `source` | `EC` | 服务端行为 |
 | --- | --- | --- | --- |
-| 不选专家，只继续聊 | `chat` | 当前范围最后收到的 `expert_team_id` + `expert_id` + `operation:"continue"` | 切入 B；如 session 已有团队/成员则继承，否则通用对话。 |
+| 不选专家，只继续聊 | `chat` | `expert_team_id:null` + `expert_id:null` + `operation:"continue"` | 切入 B；如 session 已有团队/成员则继承，否则通用对话。 |
 | 手动选择单专家 | `chat` | `expert_team_id:null` + `expert_id` + `operation:"select_expert"` | 在 B 的单专家模式处理；若当前已有团队，必须改为下一行的显式团队形式。 |
 | 切换专家团，但不指定成员 | `chat` | `expert_team_id` + `expert_id:null` + `operation:"select_team"` | 切入 B 后激活新团队的主协调专家。 |
 | 选择/切换专家团并指定成员 | `toolbar` | `expert_team_id` + 团内 `expert_id` + `operation:"select_expert"` | 切入 B 后原子激活目标团队并选目标成员。无需区分 B 是否第一次进入。 |
@@ -296,7 +298,7 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 
 | 字段 | 所在位置 | 表示什么 | 允许出现的动作 |
 | --- | --- | --- | --- |
-| `expert_context.expert_id` | `input.expert_context` | `continue` 时是当前专家断言；`select_expert` 时是要直接选择的专家；`select_team` 时必须为 `null`。 | 所有非停止动作。 |
+| `expert_context.expert_id` | `input.expert_context` | `continue` 时与团队字段同为 `null` 表示继承；具体值是严格断言。`select_expert` 时是目标专家；`select_team` 时必须为 `null`。 | 所有非停止动作。 |
 | `target_expert_id` | `input` 顶层 | 已激活团队里的“下一位目标成员”。 | 仅 `switch_team_member`、`confirm_team_handoff`。 |
 | `expert_context.expert_team_id` | `input.expert_context` | 当前/目标专家团；单专家模式为 `null`。 | 所有非停止动作。 |
 | `context_data.profile_id` | 顶层请求 | 本轮目标孩子；变化即切孩子。 | 仅 `context_scope:"profile"`。 |
@@ -305,10 +307,11 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 
 | `action` | `operation` | `expert_team_id` | `expert_id` | `target_expert_id` | 不能一起传的内容 |
 | --- | --- | --- | --- | --- | --- |
-| `chat` 普通续聊 | `continue` | 必传：当前团队 ID，普通聊天为 `null` | 必传：当前专家 ID，普通聊天为 `null` | 不传 | 缺少任一固定字段；只传其中一个具体 ID；`input.profile_id`。 |
+| `chat` 普通续聊 | `continue` | 必须 `null` | 必须 `null` | 不传 | 缺少任一固定字段；只传其中一个具体 ID；`input.profile_id`。 |
 | `chat` 选团队 | `select_team` | 必传 | 必须 `null` | 不传 | 非空 `expert_id`、`target_expert_id`。 |
 | `chat` 选团队成员 | `select_expert` | 必传 | 必传，且属于该团队 | 不传 | `target_expert_id`、`select_team_member`（新客户端）。 |
 | `chat` 单专家 | `select_expert` | `null` | 必传 | 不传 | `target_expert_id`；当前已有团队时省略团队 ID。 |
+| `chat` 退出专家模式 | `clear_expert` | 必须 `null` | 必须 `null` | 不传 | 具体团队/专家 ID。 |
 | `switch_team_member` | `continue` | 必传：当前团队 | 必传：当前专家 | 必传，目标成员 | `select_team` / `select_expert`；换目标时不要改写 EC 为目标。 |
 | `confirm_team_handoff` | `continue` | 必传：当前团队 | 必传：当前专家 | 必传，且来自卡片候选 | `select_team` / `select_expert`；不要伪造 `source_message_id`。 |
 
@@ -318,6 +321,10 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 
 `enter_skill`、`quit_skill`、`switch_team_member`、`confirm_team_handoff` 也必须带 `EC`，且其
 `operation` 固定为 `continue`：它们不能顺带改变专家团选择。
+
+`clear_expert` 只允许 `action:"chat"` 且 `source:"toolbar"` 使用。它是用户明确的“退出专家模式”
+操作：服务端清空 session 级 Agent 选择，作废当前分支未完成的表单/Skill 交互，并让本条消息按
+`general_chat + Soul` 执行。`null/null/continue` 永远不会触发这一退出行为。
 
 ## 5. 过期状态与错误处理
 

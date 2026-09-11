@@ -345,11 +345,12 @@ def resolve_questionnaire_continuation(
     requested_ids = requested_ids if isinstance(requested_ids, list) else []
     collection_complete = bool(payload.get("collection_complete")) if isinstance(payload, dict) else False
     selected_ids = [item for item in requested_ids if item in allowed_ids]
+    explicit_no_question = isinstance(payload, dict) and requested_ids == [] and not collection_complete
     valid = bool(
         isinstance(payload, dict)
         and isinstance(payload.get("assistant_message"), str)
         and not collection_complete
-        and selected_ids
+        and (selected_ids or explicit_no_question)
         and len(selected_ids) == len(requested_ids)
     )
     fallback_used = not valid
@@ -372,7 +373,7 @@ def resolve_questionnaire_continuation(
         if isinstance(payload, dict) and isinstance(payload.get("assistant_message"), str)
         else "请通过下面的表单继续补充关键信息。"
     )
-    return text or "请通过下面的表单继续补充关键信息。", _form_block(skill_id, selected), {
+    return text or "请通过下面的表单继续补充关键信息。", (_form_block(skill_id, selected) if selected else None), {
         "valid": valid,
         "collection_complete": False,
         "fallback_used": fallback_used,
