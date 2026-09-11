@@ -193,6 +193,7 @@ class OpenAICompatibleChatClient:
                 response.raise_for_status()
                 raw_response = response.text
                 usage = _extract_usage(raw_response)
+                finish_reason = _extract_finish_reason(raw_response)
                 metrics = {
                     "request_purpose": request_purpose,
                     "llm_route": self._llm_route,
@@ -202,6 +203,8 @@ class OpenAICompatibleChatClient:
                     "input_tokens": usage.get("input_tokens"),
                     "output_tokens": usage.get("output_tokens"),
                     "total_tokens": usage.get("total_tokens"),
+                    "finish_reason": finish_reason,
+                    "configured_max_tokens": self._config.max_tokens,
                     "ttft_ms": None,
                     "ttft_source": "unavailable_non_stream",
                     "duration_ms": round((perf_counter() - started) * 1000, 3),
@@ -268,6 +271,8 @@ class OpenAICompatibleChatClient:
             ttft_ms: float | None = None
             content_ttft_ms: float | None = None
             usage: dict[str, int | None] = {}
+            finish_reason: str | None = None
+            received_done = False
             with span(
                 "llm.chat_completions.stream",
                 node="llm_stream",
@@ -303,6 +308,7 @@ class OpenAICompatibleChatClient:
                                 continue
                             data = line[5:].strip()
                             if data == "[DONE]":
+                                received_done = True
                                 break
                             try:
                                 chunk = json.loads(data)
@@ -313,6 +319,9 @@ class OpenAICompatibleChatClient:
                             chunk_usage = _extract_usage_payload(chunk)
                             if chunk_usage:
                                 usage = chunk_usage
+                            chunk_finish_reason = _extract_stream_finish_reason(chunk)
+                            if chunk_finish_reason is not None:
+                                finish_reason = chunk_finish_reason
                             stream_chunk = _extract_stream_chunk(chunk)
                             if stream_chunk.content_delta or stream_chunk.reasoning_delta:
                                 if first_delta:
@@ -346,6 +355,9 @@ class OpenAICompatibleChatClient:
                             "input_tokens": usage.get("input_tokens"),
                             "output_tokens": usage.get("output_tokens"),
                             "total_tokens": usage.get("total_tokens"),
+                            "finish_reason": finish_reason,
+                            "configured_max_tokens": self._config.max_tokens,
+                            "stream_received_done": received_done,
                             "ttft_ms": ttft_ms,
                             "ttft_source": "first_model_delta" if ttft_ms is not None else "no_model_delta",
                             "content_ttft_ms": content_ttft_ms,
@@ -406,6 +418,24 @@ def _extract_usage(raw_body: str) -> dict[str, int | None]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return _extract_usage_payload(payload)
+
+
+def _extract_finish_reason(raw_body: str) -> str | None:
+    try:
+        payload = json.loads(raw_body)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return _extract_stream_finish_reason(payload)
+
+
+def _extract_stream_finish_reason(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    value = choices[0].get("finish_reason")
+    return str(value).strip() if value is not None and str(value).strip() else None
 
 
 def _extract_usage_payload(payload: object) -> dict[str, int | None]:

@@ -30,8 +30,13 @@ class RuntimeBridgeConfig:
     local_fast_path_enabled: bool = True
     active_window_messages: int = 16
     context_window_tokens: int = 32_000
+    working_context_tokens: int = 160_000
     async_checkpoint_ratio: float = 0.60
     sync_compression_ratio: float = 0.80
+    expert_history_messages: int = 12
+    expert_history_message_chars: int = 1_500
+    expert_history_max_chars: int = 6_000
+    expert_reply_max_chars: int = 1_000
     legacy_bridge_skill_ids: frozenset[str] = frozenset()
     skill_enabled_by_id: dict[str, bool] = field(default_factory=dict)
     tool_routing_mode: str = "ms_agent"
@@ -116,12 +121,21 @@ def load_runtime_bridge_config(path: Path | None = None) -> RuntimeBridgeConfig:
             data.get("local_fast_path_enabled"),
             default=True,
         ),
-        active_window_messages=_clamp_active_window(data.get("active_window_messages")),
+        active_window_messages=_clamp_active_window(
+            os.getenv("HAILIANG_ACTIVE_WINDOW_MESSAGES") or data.get("active_window_messages")
+        ),
         context_window_tokens=_read_int(
             os.getenv("HAILIANG_CONTEXT_WINDOW_TOKENS"),
             data.get("context_window_tokens"),
             default=32_000,
             minimum=4_000,
+            maximum=1_000_000,
+        ),
+        working_context_tokens=_read_int(
+            os.getenv("HAILIANG_WORKING_CONTEXT_TOKENS"),
+            data.get("working_context_tokens"),
+            default=160_000,
+            minimum=8_000,
             maximum=1_000_000,
         ),
         async_checkpoint_ratio=_read_float(
@@ -137,6 +151,34 @@ def load_runtime_bridge_config(path: Path | None = None) -> RuntimeBridgeConfig:
             default=0.80,
             minimum=0.20,
             maximum=0.99,
+        ),
+        expert_history_messages=_read_int(
+            os.getenv("HAILIANG_EXPERT_HISTORY_MESSAGES"),
+            data.get("expert_history_messages"),
+            default=12,
+            minimum=1,
+            maximum=1_000,
+        ),
+        expert_history_message_chars=_read_int(
+            os.getenv("HAILIANG_EXPERT_HISTORY_MESSAGE_CHARS"),
+            data.get("expert_history_message_chars"),
+            default=1_500,
+            minimum=100,
+            maximum=1_500_000,
+        ),
+        expert_history_max_chars=_read_int(
+            os.getenv("HAILIANG_EXPERT_HISTORY_MAX_CHARS"),
+            data.get("expert_history_max_chars"),
+            default=6_000,
+            minimum=1_000,
+            maximum=1_500_000,
+        ),
+        expert_reply_max_chars=_read_int(
+            os.getenv("HAILIANG_EXPERT_REPLY_MAX_CHARS"),
+            data.get("expert_reply_max_chars"),
+            default=1_000,
+            minimum=1_000,
+            maximum=2_000_000,
         ),
         legacy_bridge_skill_ids=frozenset(
             item.strip()
@@ -224,7 +266,7 @@ def _clamp_active_window(value: Any) -> int:
         parsed = int(value if value is not None else 16)
     except (TypeError, ValueError):
         parsed = 16
-    return min(20, max(1, parsed))
+    return min(1_000, max(1, parsed))
 
 
 def _read_int(env_value: Any, configured: Any, *, default: int, minimum: int, maximum: int) -> int:

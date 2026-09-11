@@ -113,6 +113,7 @@ class RuntimeThinkingStreamTest(unittest.TestCase):
         response = FakeStreamResponse(
             [
                 'data: {"choices":[{"delta":{"content":"回答"}}]}',
+                'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
                 'data: {"choices":[],"usage":{"prompt_tokens":123,"completion_tokens":7,"total_tokens":130}}',
                 "data: [DONE]",
             ]
@@ -136,6 +137,9 @@ class RuntimeThinkingStreamTest(unittest.TestCase):
         self.assertEqual(metrics["input_tokens"], 123)
         self.assertEqual(metrics["output_tokens"], 7)
         self.assertEqual(metrics["total_tokens"], 130)
+        self.assertEqual(metrics["finish_reason"], "length")
+        self.assertEqual(metrics["configured_max_tokens"], 8000)
+        self.assertTrue(metrics["stream_received_done"])
         self.assertIsNotNone(metrics["ttft_ms"])
         self.assertEqual(metrics["ttft_source"], "first_model_delta")
         self.assertIsNotNone(metrics["content_ttft_ms"])

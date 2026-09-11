@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "title": "旅行偏好与行程需求",
+  "max_fields_per_form": 6,
+  "questions": [
+    {
+      "id": "interests",
+      "label": "你更喜欢哪些旅行内容？",
+      "input_type": "multi_select",
+      "required": true,
+      "max_selections": 4,
+      "options": [
+        { "value": "自然风光", "label": "自然风光" },
+        { "value": "历史人文", "label": "历史人文" },
+        { "value": "美食", "label": "美食" },
+        { "value": "亲子乐园", "label": "亲子乐园" },
+        { "value": "海滨度假", "label": "海滨度假" },
+        { "value": "城市夜游", "label": "城市夜游" },
+        { "value": "博物馆与展览", "label": "博物馆与展览" },
+        { "value": "轻徒步", "label": "轻徒步" }
+      ]
+    },
+    {
+      "id": "traveler_age",
+      "label": "主要出行人的年龄",
+      "input_type": "integer",
+      "value_type": "integer",
+      "required": true,
+      "min": 1,
+      "max": 120,
+      "placeholder": "例如：35"
+    },
+    {
+      "id": "monthly_income_range",
+      "label": "家庭月收入范围",
+      "input_type": "single_select",
+      "required": true,
+      "options": [
+        { "value": "1万元以下", "label": "1 万元以下" },
+        { "value": "1-3万元", "label": "1–3 万元" },
+        { "value": "3-5万元", "label": "3–5 万元" },
+        { "value": "5万元以上", "label": "5 万元以上" }
+      ]
+    },
+    {
+      "id": "travel_budget",
+      "label": "本次旅行总预算（元）",
+      "input_type": "number",
+      "value_type": "number",
+      "required": true,
+      "min": 500,
+      "max": 200000,
+      "decimal_places": 0,
+      "placeholder": "例如：8000"
+    },
+    {
+      "id": "transport_mode",
+      "label": "更倾向的出行方式",
+      "input_type": "single_select",
+      "required": true,
+      "options": [
+        { "value": "公共交通", "label": "公共交通" },
+        { "value": "自驾", "label": "自驾" },
+        { "value": "高铁为主", "label": "高铁为主" },
+        { "value": "飞机为主", "label": "飞机为主" }
+      ]
+    },
+    {
+      "id": "travel_month",
+      "label": "计划出行月份",
+      "input_type": "single_select",
+      "required": true,
+      "options": [
+        { "value": "1月", "label": "1 月" },
+        { "value": "2月", "label": "2 月" },
+        { "value": "3月", "label": "3 月" },
+        { "value": "4月", "label": "4 月" },
+        { "value": "5月", "label": "5 月" },
+        { "value": "6月", "label": "6 月" },
+        { "value": "7月", "label": "7 月" },
+        { "value": "8月", "label": "8 月" },
+        { "value": "9月", "label": "9 月" },
+        { "value": "10月", "label": "10 月" },
+        { "value": "11月", "label": "11 月" },
+        { "value": "12月", "label": "12 月" }
+      ]
+    },
+    {
+      "id": "travel_days",
+      "label": "计划旅行几天",
+      "input_type": "integer",
+      "value_type": "integer",
+      "required": true,
+      "min": 1,
+      "max": 30,
+      "placeholder": "例如：4"
+    },
+    {
+      "id": "child_friendly_needs",
+      "label": "亲子出行的额外需求",
+      "input_type": "multi_select",
+      "required": false,
+      "max_selections": 3,
+      "options": [
+        { "value": "少走路", "label": "少走路" },
+        { "value": "有儿童乐园", "label": "有儿童乐园" },
+        { "value": "方便午休", "label": "方便午休" },
+        { "value": "室内项目多", "label": "室内项目多" }
+      ],
+      "display_condition": {
+        "question_id": "interests",
+        "operator": "contains",
+        "value": "亲子乐园"
+      }
+    },
+    {
+      "id": "special_notes",
+      "label": "同行人或特殊要求补充",
+      "input_type": "text",
+      "required": false,
+      "placeholder": "例如：老人同行、不能吃辣、希望住在地铁附近"
+    }
+  ]
+}

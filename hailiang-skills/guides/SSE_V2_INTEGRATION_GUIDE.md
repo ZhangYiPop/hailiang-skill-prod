@@ -640,7 +640,6 @@ proxy_read_timeout 180s;
 | 409 | `SESSION_ID_CONFLICT` | 阻断并重新校验登录态和会话归属。 |
 | 409 | `ACTIVE_RUN_MUST_STOP` | 先停止原 run，再切换档案。 |
 | 409 | `SKILL_ENTRY_BLOCKED_IN_EXPERT_TEAM` | 保持专家模式，由专家 Runtime 选择 Skill。 |
-| 409 | `TEAM_SWITCH_BLOCKED_BY_PENDING_FORM` | 先完成或放弃当前表单。 |
 | 429 | `LLM_RATE_LIMITED` / 并发容量不足 | 遵循 `Retry-After`，提示稍后再试。 |
 | 501 | `MODEL_OPENING_NOT_ENABLED` | 不调用预留动作。 |
 
@@ -716,7 +715,7 @@ SSE 不提供 `Last-Event-ID` 断点续传。页面打开、刷新或流中断�
 }
 ```
 
-切换保留历史消息、已确认 Facts 和已提交答案；未完成表单、候选路径、转交卡及旧执行状态失效。提交旧表单或确认旧转交卡返回 HTTP `409 CONFIGURATION_UPDATED`，前端必须结束 loading、刷新 `/api/v1/expert-teams` 与会话状态，并提示用户重新操作。
+切换保留历史消息、已确认 Facts 和已提交答案；未完成表单、候选路径、转交卡及旧执行状态失效。专家切换不会被未完成表单阻断：服务端先将表单设为 `expired`，清除待完成问卷与活动 Skill 状态，并写入 `form_abandoned` 事件；前端须将旧表单保留为只读并清除本地草稿。提交旧表单或确认旧转交卡返回 HTTP `409 CONFIGURATION_UPDATED`，前端必须结束 loading、刷新 `/api/v1/expert-teams` 与会话状态，并提示用户重新操作。
 
 ## 13. 实现权威来源
 

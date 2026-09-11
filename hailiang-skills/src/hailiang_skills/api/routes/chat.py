@@ -192,6 +192,53 @@ def build_chat_router(
         skills = RuntimeSkillRegistry(bundles={"general_chat": general} if general is not None else {})
         return skills, ExpertRegistry(definitions={}), ExpertTeamRegistry(definitions={})
 
+    def active_catalog_metadata() -> dict[tuple[str, str], dict[str, Any]]:
+        """Map active deployment entries to display-only release audit data."""
+        if configuration_snapshot_resolver is None:
+            return {}
+        snapshot = configuration_snapshot_resolver()
+        if not isinstance(snapshot, dict):
+            return {}
+        entries = snapshot.get("entries")
+        if not isinstance(entries, list):
+            return {}
+        deployment = snapshot.get("deployment") if isinstance(snapshot.get("deployment"), dict) else None
+        result: dict[tuple[str, str], dict[str, Any]] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            object_type = str(entry.get("object_type") or "").strip()
+            object_key = str(entry.get("object_key") or "").strip()
+            if object_type not in {"skill", "expert", "expert_team"} or not object_key:
+                continue
+            release_no = entry.get("release_no")
+            revision_no = entry.get("revision_no")
+            modified_by = entry.get("revision_created_by")
+            result[(object_type, object_key)] = {
+                "version": f"v{release_no}" if isinstance(release_no, int) else None,
+                "release": {
+                    "release_id": entry.get("release_id"),
+                    "release_no": release_no,
+                    "version": f"v{release_no}" if isinstance(release_no, int) else None,
+                    "published_by": entry.get("release_published_by"),
+                    "published_by_display_name": entry.get("release_published_by_display_name"),
+                    "published_at": entry.get("release_published_at"),
+                },
+                "revision": {
+                    "revision_id": entry.get("revision_id"),
+                    "revision_no": revision_no,
+                    "version": f"r{revision_no}" if isinstance(revision_no, int) else None,
+                    "modified_by": modified_by,
+                    "modified_by_display_name": entry.get("revision_created_by_display_name"),
+                    "modified_at": entry.get("revision_created_at"),
+                },
+                "modified_by": modified_by,
+                "modified_by_display_name": entry.get("revision_created_by_display_name"),
+                "modified_at": entry.get("revision_created_at"),
+                "deployment": deployment,
+            }
+        return result
+
     def session_expert_registries(context: SessionContext):
         """Resolve restored session metadata from its bound deployment package."""
         snapshot = (context.session_meta or {}).get("configuration_snapshot")
@@ -417,10 +464,14 @@ def build_chat_router(
     @router.get("/expert-teams")
     def list_expert_teams() -> dict:
         _, expert_registry, team_registry = active_catalog_registries()
+        metadata = active_catalog_metadata()
         return {
             "expert_teams": build_expert_team_catalog(
                 team_registry,
                 expert_registry,
+                metadata_by_team_id={key: value for (kind, key), value in metadata.items() if kind == "expert_team"},
+                metadata_by_expert_id={key: value for (kind, key), value in metadata.items() if kind == "expert"},
+                metadata_by_skill_id={key: value for (kind, key), value in metadata.items() if kind == "skill"},
             )
         }
 

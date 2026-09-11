@@ -70,6 +70,12 @@ class AgentScopeExpertRuntime:
         default_expert_id: str = DEFAULT_EXPERT_ID,
         client_factory=None,
         event_recorder=None,
+        history_messages: int = 12,
+        history_message_chars: int = 1_500,
+        history_max_chars: int = 6_000,
+        reply_max_chars: int = 1_000,
+        profile_memory_repository=None,
+        context_composer=None,
     ) -> None:
         self.expert_registry = expert_registry
         self.team_registry = team_registry or ExpertTeamRegistry(definitions={})
@@ -77,6 +83,12 @@ class AgentScopeExpertRuntime:
         self.default_expert_id = default_expert_id
         self.client_factory = client_factory
         self.event_recorder = event_recorder
+        self.history_messages = max(1, int(history_messages))
+        self.history_message_chars = max(1, int(history_message_chars))
+        self.history_max_chars = max(1, int(history_max_chars))
+        self.reply_max_chars = max(1_000, int(reply_max_chars))
+        self.profile_memory_repository = profile_memory_repository
+        self.context_composer = context_composer
         self.native_executor = NativeSkillExecutor(runtime_registry)
         self._available, self._availability_error = agentscope_available()
 
@@ -139,42 +151,39 @@ class AgentScopeExpertRuntime:
             self._event(context, "team_coordinator_started" if definition.agent_id == team.coordinator_expert_id else "team_member_started", event_payload)
         self._event(context, "expert_started", event_payload)
 
-        client = None
-        single_skill_id = self._single_skill_dispatch_target(definition, team)
-        if single_skill_id:
-            # A one-Skill Expert is an authorization boundary, not a second
-            # router. The native Skill still owns its RAG/MCP/web/script/form
-            # decisions after this deterministic handoff.
-            context.session_meta["expert_requested_skill_id"] = single_skill_id
-            context.session_meta["expert_skill_selection_source"] = "single_skill_dispatch"
-            state["selected_skill_id"] = single_skill_id
-            state["execution_mode"] = "single_skill_dispatch"
-            self._event(
+        # An Expert owns the decision on *every* turn, including Experts with
+        # only one locked Skill.  A unique dependency is an authorization
+        # boundary, never proof that the Skill is appropriate for the message:
+        # AGENT.md may require a direct answer, a clarification, or a bounded
+        # Skill handoff.
+        client = self.client_factory(context) if self.client_factory else None
+        if not self._is_supported_client(client):
+            self._event(context, "expert_decision_unavailable", {
+                "expert_id": definition.agent_id,
+                "reason": "llm_client_unavailable",
+            })
+            raise AgentScopeRuntimeUnavailable("专家决策暂不可用，请稍后重试")
+        try:
+            self._run_agent(
+                definition,
+                user_message,
                 context,
-                "expert_single_skill_selected",
-                {"expert_id": definition.agent_id, "skill_id": single_skill_id},
+                client,
+                state,
+                team=team,
+                routing_instruction=self._active_skill_routing_instruction(context, definition),
             )
-        else:
-            client = self.client_factory(context) if self.client_factory else None
-            if self._is_supported_client(client) and self._available:
-                try:
-                    self._run_agent(
-                        definition,
-                        user_message,
-                        context,
-                        client,
-                        state,
-                        team=team,
-                        routing_instruction=self._active_skill_routing_instruction(context, definition),
-                    )
-                except Exception as exc:
-                    # Do not silently use the old orchestrator as the operational
-                    # fallback. Keep the existing native route as the controlled
-                    # executor, but expose an explicit degraded expert event.
-                    state["agent_scope_error"] = str(exc)
-                    self._event(context, "expert_runtime_degraded", {"expert_id": definition.agent_id, "error": str(exc)})
-            else:
-                self._event(context, "expert_decision_deferred", {"reason": "llm_client_unavailable"})
+        except Exception as exc:
+            # Never bypass AGENT.md by silently falling back to a unique or
+            # previously active Skill.  The caller can surface this as a
+            # retryable turn failure while the trace remains auditable.
+            state["agent_scope_error"] = str(exc)
+            self._event(context, "expert_decision_unavailable", {
+                "expert_id": definition.agent_id,
+                "reason": "agent_execution_failed",
+                "error": str(exc),
+            })
+            raise AgentScopeRuntimeUnavailable("专家决策暂不可用，请稍后重试") from exc
 
         # A coordinator must not silently turn a clearly-specialist request
         # into an unstructured direct reply merely because a ReAct tool call
@@ -247,6 +256,16 @@ class AgentScopeExpertRuntime:
             or state.get("pending_form")
             or self._has_pending_native_questionnaire(context)
         )
+        if not agent_reply and not has_native_handoff:
+            # A completed ReAct call that neither answered nor selected an
+            # authorized native action is not a decision.  Letting the legacy
+            # planner continue here would reintroduce the bypass this runtime
+            # exists to prevent.
+            self._event(context, "expert_decision_unavailable", {
+                "expert_id": definition.agent_id,
+                "reason": "empty_agent_decision",
+            })
+            raise AgentScopeRuntimeUnavailable("专家决策暂不可用，请稍后重试")
         if agent_reply and not has_native_handoff:
             state["execution_mode"] = "expert_direct"
             context.session_meta["expert_direct_reply"] = {
@@ -334,34 +353,19 @@ class AgentScopeExpertRuntime:
         runtime = getattr(context, "skill_states", {}).get("skill_runtime", {})
         return str(runtime.get("active_skill_id") or "") if isinstance(runtime, dict) else ""
 
-    @staticmethod
-    def _single_skill_dispatch_target(
-        definition: ExpertDefinition,
-        team: ExpertTeamDefinition | None,
-    ) -> str | None:
-        """Return the sole Skill when no team coordination decision is needed."""
-        skills = definition.authorized_skill_ids
-        if len(skills) != 1:
-            return None
-        # A coordinator of a multi-member team must retain the opportunity to
-        # offer a member handoff. Members and standalone Experts can dispatch
-        # their sole locked Skill deterministically.
-        if team is not None and definition.agent_id == team.coordinator_expert_id and len(team.members) > 1:
-            return None
-        return skills[0]
-
     def _active_skill_routing_instruction(self, context, definition: ExpertDefinition) -> str:
-        """Shared production/candidate policy for an Expert's Skill handoff."""
+        """Inject the active Skill's resumable state into Expert policy."""
         active_skill_id = self._active_skill_id(context)
         if not active_skill_id or active_skill_id not in definition.authorized_skill_ids:
             return ""
         return (
             "\n# 当前会话的 Skill 路由规则\n"
             f"当前正在执行的已授权 Skill 是：{active_skill_id}。先判断用户本轮消息的业务意图。"
-            "如果仍是当前任务的答题、追问或补充信息，调用 execute_skill 并传入当前 Skill。"
-            "如果用户的新任务明显更匹配另一个授权 Skill，调用 execute_skill 并传入那个 Skill，"
-            "以便系统自动切换后由目标 Skill 作答。不得要求用户点击按钮，也不得自行用通用文本替代目标 Skill。"
-            "只能从上方授权 Skill 目录中选择；若没有匹配的授权 Skill，说明边界并请用户调整问题。"
+            "AGENT.md 是本轮选择的最高业务策略。若当前 Skill 的表单、阶段或上下文仍能处理本轮，"
+            "调用 execute_skill 并传入当前 Skill；短选项、追问和补充资料通常属于这一类。"
+            "若另一已授权 Skill 更适合本轮，即使问题与当前 Skill 有部分重叠，也可调用 execute_skill "
+            "选择该 Skill，系统会自动完成内部切换，不得要求用户点击按钮。"
+            "如 AGENT.md 要求由专家直接回答，则不要调用 Skill。只能从上方授权 Skill 目录中选择。"
         )
 
     @staticmethod
@@ -383,8 +387,7 @@ class AgentScopeExpertRuntime:
         entry = self._snapshot_entry(context, "expert", expert_id)
         return str((entry or {}).get("name") or "").strip()
 
-    @staticmethod
-    def _expert_history_messages(context, *, limit: int = 12) -> list[dict[str, str]]:
+    def _expert_history_messages(self, context) -> list[dict[str, str]]:
         """Return bounded visible dialogue for an Expert model invocation."""
         history: list[dict[str, str]] = []
         for item in getattr(context, "messages", []) or []:
@@ -398,8 +401,8 @@ class AgentScopeExpertRuntime:
                 continue
             content = str(item.get("content") or "").strip()
             if content:
-                history.append({"role": str(item["role"]), "content": content[:1500]})
-        return history[-max(1, limit):]
+                history.append({"role": str(item["role"]), "content": content[:self.history_message_chars]})
+        return history[-self.history_messages :]
 
     def _expert_conversation_history(self, context) -> str:
         history = self._expert_history_messages(context)
@@ -407,7 +410,7 @@ class AgentScopeExpertRuntime:
             return "（暂无历史对话）"
         labels = {"user": "用户", "assistant": "助手"}
         rendered = "\n".join(f"{labels[item['role']]}：{item['content']}" for item in history)
-        return rendered[-6000:]
+        return rendered[-self.history_max_chars :]
 
     def _configured_expert(self, context, definition: ExpertDefinition) -> ExpertDefinition:
         entry = self._snapshot_entry(context, "expert", definition.agent_id)
@@ -525,6 +528,18 @@ class AgentScopeExpertRuntime:
             """Read the current session's effective facts; this tool never writes facts."""
             return runtime._read_effective_facts(context)
 
+        def record_candidate_fact(fact_key: str, value: str, confidence: float, evidence_summary: str) -> dict[str, Any]:
+            """Store a tentative, current-child-only profile observation for later natural confirmation."""
+            return runtime._record_candidate_fact(
+                context,
+                definition,
+                source_turn_id=str(state.get("turn_id") or "") or None,
+                fact_key=fact_key,
+                value=value,
+                confidence=confidence,
+                evidence_summary=evidence_summary,
+            )
+
         def propose_member_handoff(candidate_expert_ids: list[str], reason: str) -> dict[str, Any]:
             """Ask the user to choose one to three team members; never transfers automatically."""
             if team is None or not runtime._can_propose_team_handoff(team, definition.agent_id):
@@ -536,12 +551,24 @@ class AgentScopeExpertRuntime:
             "execute_skill": TrustedFunctionTool(execute_skill, is_concurrency_safe=False),
             "request_declared_form": TrustedFunctionTool(request_declared_form, is_read_only=True),
             "read_effective_facts": TrustedFunctionTool(read_effective_facts, is_read_only=True),
+            "record_candidate_fact": TrustedFunctionTool(record_candidate_fact, is_concurrency_safe=False),
         }
         enabled_capabilities = set(definition.capabilities)
+        enabled_capabilities.add("record_candidate_fact")
         if team is not None and self._can_propose_team_handoff(team, definition.agent_id):
             all_tools["propose_member_handoff"] = TrustedFunctionTool(propose_member_handoff, is_concurrency_safe=False)
             enabled_capabilities.add("propose_member_handoff")
-        model = _HailiangChatModel(client)
+        model = _HailiangChatModel(
+            client,
+            completion_recorder=lambda result, metrics: runtime._record_model_completion(
+                context,
+                result=result,
+                metrics=metrics,
+                source="expert_agent",
+                expert_id=definition.agent_id,
+                expert_turn_id=str(state.get("turn_id") or ""),
+            ),
+        )
         catalog = self._catalog(definition)
         # AgentScope does not implicitly receive SessionContext. Previously
         # the expert was merely given a tool *capable* of reading Facts, which
@@ -549,8 +576,31 @@ class AgentScopeExpertRuntime:
         # child's already-known grade. The active profile branch is isolated
         # before this method runs, so this snapshot is both safe to inject and
         # authoritative for the current turn.
+        from hailiang_skills.core.profile_candidate_archive import candidate_archive
+        composed_memory = {}
+        runtime_state = getattr(context, "skill_states", {}).get("career_plan_entity", {})
+        if isinstance(runtime_state, dict):
+            composed_memory = runtime_state.get("composed_context") if isinstance(runtime_state.get("composed_context"), dict) else {}
+        archive = candidate_archive(
+            context,
+            repository=self.profile_memory_repository,
+            query_text=user_message,
+            skill_id=definition.agent_id,
+        )
+        if self.context_composer is not None:
+            composed_memory, _budget = self.context_composer.compose_memory(
+                composed_memory,
+                confirmed_facts=self._read_effective_facts(context),
+                archive=archive,
+                current_message=user_message,
+                activity_state={"expert_id": definition.agent_id},
+            )
         effective_facts = json.dumps(
-            self._read_effective_facts(context),
+            {
+                "confirmed_facts": self._read_effective_facts(context),
+                "profile_candidate_archive": composed_memory.get("profile_candidate_archive", archive),
+                "conversation_summary": composed_memory.get("summary", ""),
+            },
             ensure_ascii=False,
             default=str,
         )
@@ -579,10 +629,14 @@ class AgentScopeExpertRuntime:
                     "不要提示用户在输入框中手动 @ 专家。"
                 )
         system_prompt = (
-            f"你是 {definition.name}。只能使用受控工具，不能读取文件、执行 Shell、安装工具或修改事实。\n"
+            f"你是 {definition.name}。只能使用受控工具，不能读取文件、执行 Shell 或安装工具；只有 record_candidate_fact 可写入候选档案。\n"
             "先根据业务规则和下方已注入的有效事实判断；需要专项能力时调用 execute_skill。"
+            "当用户表达了与孩子相关、可在未来复用但尚不应视为确定结论的特质、偏好或倾向时，可调用 record_candidate_fact 保存候选观察；"
+            "必须使用简短语义键、忠实的证据摘要和 0 到 1 的置信度，不得把候选当作已确认事实。"
             "不得重复询问下方已经有明确值的资料（例如年级、学年）；只有资料缺失或存在冲突时才追问。\n"
-            f"\n# 当前孩子的有效事实（本轮可信上下文）\n{effective_facts}\n"
+            f"\n# 当前孩子的有效事实与候选档案\n{effective_facts}\n"
+            "候选档案不是已确认事实；请只在当前问题确实相关时，以自然方式决定是否确认、更新或忽略，"
+            "不得把候选内容直接当成结论，也不得照抄固定确认话术。\n"
             f"\n# 最近对话（按时间顺序，仅用于保持上下文）\n{conversation_history}\n"
             "每次 execute_skill 必须传已选 Skill ID 和用户任务，且不得超过预算。\n\n"
             f"# 专家规则\n{definition.rules_markdown}\n\n# 授权 Skill 目录\n{catalog}{team_prompt}{routing_instruction}"
@@ -599,16 +653,81 @@ class AgentScopeExpertRuntime:
             return await agent.reply(UserMsg("user", user_message))
 
         reply = _run_async(run_agent())
-        state["agent_reply"] = reply.get_text_content()[:1000]
+        state["agent_reply"] = self._limit_reply(
+            reply.get_text_content(),
+            context=context,
+            source="expert_agent_reply",
+            expert_id=definition.agent_id,
+            expert_turn_id=str(state.get("turn_id") or ""),
+        )
         self._event(context, "expert_agent_completed", {"expert_id": definition.agent_id, "tool_calls": state["budget"]["skill_calls"], "handoff_tool_calls": int(state.get("handoff_tool_calls") or 0), "structured_handoff": isinstance(state.get("team_handoff"), dict)})
+
+    def _record_candidate_fact(
+        self,
+        context,
+        definition: ExpertDefinition,
+        *,
+        source_turn_id: str | None,
+        fact_key: str,
+        value: str,
+        confidence: float,
+        evidence_summary: str,
+    ) -> dict[str, Any]:
+        """Store model-inferred evidence without promoting it to a business fact."""
+        key = str(fact_key or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key):
+            raise ValueError("候选事实键必须是 1 到 64 位的小写字母、数字或下划线，且以字母开头")
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("候选事实值不能为空")
+        try:
+            normalized_confidence = float(confidence)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("候选事实置信度必须是 0 到 1 的数字") from exc
+        if not 0 <= normalized_confidence <= 1:
+            raise ValueError("候选事实置信度必须在 0 到 1 之间")
+        summary = str(evidence_summary or "").strip()
+        if not summary:
+            raise ValueError("候选事实必须提供简短证据摘要")
+
+        from hailiang_skills.core.profile_candidate_archive import archive_candidate
+
+        archive_key = f"conversation.{definition.agent_id}.{key}"
+        archived = archive_candidate(
+            context,
+            key=archive_key,
+            value=text[:500],
+            source_skill=definition.agent_id,
+            source_turn_id=source_turn_id,
+            evidence_summary=summary[:500],
+            confidence=normalized_confidence,
+            repository=self.profile_memory_repository,
+        )
+        self._event(context, "expert_candidate_fact_recorded", {
+            "expert_id": definition.agent_id,
+            "fact_key": archive_key,
+            "archived": archived,
+            "confidence": normalized_confidence,
+        })
+        return {
+            "status": "candidate_archived" if archived else "not_archived_unbound_context",
+            "fact_key": archive_key,
+            "confidence": normalized_confidence,
+        }
 
     def _execute_skill(self, definition: ExpertDefinition, state: dict[str, Any], context, skill_id: str, task: str, handoff_context: dict[str, Any] | None) -> dict[str, Any]:
         skill_id = str(skill_id or "").strip()
         if skill_id not in definition.authorized_skill_ids:
+            self._event(context, "expert_skill_handoff_rejected", {
+                "expert_id": definition.agent_id,
+                "skill_id": skill_id,
+                "reason": "not_authorized",
+            })
             raise ValueError(f"未授权 Skill: {skill_id}")
         budget = state["budget"]
         if budget["skill_calls"] >= budget["max_skill_calls"]:
             raise ValueError("已达到本轮 Skill 调用上限")
+        previous_skill_id = self._active_skill_id(context)
         observation: SkillObservation = self.native_executor.observe(skill_id, str(task or ""), handoff_context)
         budget["skill_calls"] += 1
         state["selected_skill_id"] = skill_id
@@ -619,7 +738,18 @@ class AgentScopeExpertRuntime:
         # Existing session state remains authoritative. This is only an
         # ephemeral routing hint consumed by MainPlannerOrchestrator.
         context.session_meta["expert_requested_skill_id"] = skill_id
-        self._event(context, "expert_skill_executed", {"expert_id": definition.agent_id, "skill_id": skill_id})
+        self._event(context, "expert_skill_executed", {
+            "expert_id": definition.agent_id,
+            "skill_id": skill_id,
+            "source_skill_id": previous_skill_id or None,
+        })
+        if previous_skill_id and previous_skill_id != skill_id:
+            self._event(context, "expert_skill_handoff_confirmed", {
+                "expert_id": definition.agent_id,
+                "from_skill_id": previous_skill_id,
+                "to_skill_id": skill_id,
+                "handoff_summary": state["handoff_summary"][:500],
+            })
         return {"status": "scheduled", "skill_id": skill_id, "summary": observation.summary}
 
     def _request_declared_form(self, definition: ExpertDefinition, state: dict[str, Any], context, skill_id: str, question_ids: list[str]) -> dict[str, Any]:
@@ -862,7 +992,7 @@ class AgentScopeExpertRuntime:
         names = [name for name in names if name]
         target = "、".join(names) or "合适的团内专家"
         reason = str(handoff.get("reason") or "这个问题更适合由专项专家继续处理。").strip()
-        return f"我建议由{target}继续协助。{reason} 请确认是否由该专家接管回答。"
+        return f"我建议由{target}继续协助。{reason} 已为你准备转交卡，请确认是否由该专家接管回答。"
 
     def _generate_team_clarification_reply(
         self,
@@ -906,7 +1036,91 @@ class AgentScopeExpertRuntime:
             raise AgentScopeRuntimeUnavailable(f"主协调专家生成兜底回复失败: {exc}") from exc
         if not reply:
             raise AgentScopeRuntimeUnavailable("主协调专家生成兜底回复失败：模型返回为空")
-        return reply[:1000]
+        self._record_model_completion(
+            context,
+            result=None,
+            metrics=client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {},
+            source="team_coordinator_clarification",
+            expert_id=definition.agent_id,
+            returned_chars=len(reply),
+        )
+        return self._limit_reply(
+            reply,
+            context=context,
+            source="team_coordinator_clarification",
+            expert_id=definition.agent_id,
+        )
+
+    def _limit_reply(
+        self,
+        reply: str,
+        *,
+        context=None,
+        source: str = "expert_reply",
+        expert_id: str = "",
+        expert_turn_id: str = "",
+    ) -> str:
+        """Keep a configurable emergency ceiling without silently using 1k chars."""
+        text = str(reply or "")
+        limited = text[:self.reply_max_chars]
+        if context is not None and len(limited) < len(text):
+            self._event(context, "model_output_truncated", {
+                "source": source,
+                "expert_id": expert_id or None,
+                "expert_turn_id": expert_turn_id or None,
+                "truncation_reason_code": "application_reply_char_limit",
+                "truncation_reason": "应用层专家回复保护上限截断",
+                "configured_reply_max_chars": self.reply_max_chars,
+                "received_chars": len(text),
+                "returned_chars": len(limited),
+            })
+        return limited
+
+    def _record_model_completion(
+        self,
+        context,
+        *,
+        result,
+        metrics: dict[str, Any] | None,
+        source: str,
+        expert_id: str,
+        expert_turn_id: str = "",
+        returned_chars: int | None = None,
+    ) -> None:
+        """Persist provider completion evidence without recording reply content."""
+        metrics = metrics if isinstance(metrics, dict) else {}
+        finish_reason = str(metrics.get("finish_reason") or "").strip() or None
+        final_text = str(getattr(result, "final_text", "") or "")
+        limit_reasons = {"length", "max_tokens", "max_token", "token_limit"}
+        truncated = bool(finish_reason and finish_reason.lower() in limit_reasons)
+        truncation_status = "confirmed" if truncated else ("not_reported" if finish_reason is None else "not_truncated")
+        payload = {
+            "source": source,
+            "expert_id": expert_id or None,
+            "expert_turn_id": expert_turn_id or None,
+            "model": metrics.get("model"),
+            "request_purpose": metrics.get("request_purpose"),
+            "finish_reason": finish_reason,
+            "finish_reason_reported": finish_reason is not None,
+            "configured_max_tokens": metrics.get("configured_max_tokens"),
+            "input_tokens": metrics.get("input_tokens"),
+            "output_tokens": metrics.get("output_tokens"),
+            "returned_chars": len(final_text) if returned_chars is None else returned_chars,
+            "truncated": truncated,
+            "truncation_status": truncation_status,
+            "diagnostic_reason": (
+                "上游模型未提供 finish_reason，无法仅凭正文确认是否截断"
+                if finish_reason is None
+                else None
+            ),
+        }
+        self._event(context, "model_output_completion", payload)
+        if truncated:
+            self._event(context, "model_output_truncated", {
+                **payload,
+                "truncation_reason_code": "upstream_finish_reason_length",
+                "truncation_reason": "上游模型以输出长度上限结束",
+            })
 
     @staticmethod
     def _can_propose_team_handoff(team: ExpertTeamDefinition, expert_id: str) -> bool:
@@ -1158,7 +1372,7 @@ class AgentScopeExpertRuntime:
 class _HailiangChatModel:
     """A small AgentScope model adapter reusing Hailiang's LLM client/rate limits."""
 
-    def __new__(cls, client):
+    def __new__(cls, client, completion_recorder=None):
         from agentscope.credential import OpenAICredential
         from agentscope.model import ChatModelBase
 
@@ -1198,6 +1412,9 @@ class _HailiangChatModel:
                     function = tool.get("function", {}) if isinstance(tool, dict) else {}
                     specs.append(ToolSpec(name=str(function.get("name") or ""), description=str(function.get("description") or ""), parameters_schema=function.get("parameters") or {}, enabled=True))
                 result = await asyncio.to_thread(client.complete_with_tools, translated, specs, preferred_mode="native", request_purpose="agentscope_expert")
+                if callable(completion_recorder):
+                    metrics = client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {}
+                    completion_recorder(result, metrics)
                 if result.tool_calls:
                     return ChatResponse(content=[ToolCallBlock(id=item.id, name=item.name, input=json.dumps(item.arguments, ensure_ascii=False)) for item in result.tool_calls], is_last=True)
                 return ChatResponse(content=[TextBlock(text=result.final_text or "")], is_last=True)

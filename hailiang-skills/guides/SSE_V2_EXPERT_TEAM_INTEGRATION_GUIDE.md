@@ -9,8 +9,8 @@
 > 适用对象：业务前端、转发后端（BFF）、专家团配置与联调人员
 
 > **严格请求字段更新（2026-09-07）：** 专家团/专家状态统一放入
-> `input.expert_context`；普通 `chat + continue` 只需携带
-> `{"operation":"continue"}`，由服务端恢复当前专家选择。`input.profile_id`、顶层
+> `input.expert_context`；除 `stop` 外均固定携带 `expert_team_id`、`expert_id`、
+> `operation` 三个键。普通 `chat + continue` 固定传两个 `null`，由服务端继承当前专家状态。`input.profile_id`、顶层
 > `expert_team_id`、顶层 `expert_id` 已被拒绝。完整请求、停止和错误处理请见
 > [SSE_V2_EXPERT_CONTEXT_CONTRACT.md](SSE_V2_EXPERT_CONTEXT_CONTRACT.md)。
 
@@ -25,8 +25,8 @@
    `operation="select_team"` 传团队 ID；未选成员时服务端将主协调专家绑定到当前会话上下文范围。
    若用户已从该团队成员菜单选择专家，则使用 `operation="select_expert"` 并同时传团队和成员 ID；
    服务端会在目标孩子范围自动激活团队后选择该成员。
-3. 已经进入专家团后，后续普通追问只需带 `expert_context.operation="continue"`；团队 ID、
-   专家 ID 和版本断言均可省略。服务端从 session 恢复当前选择，不会重置为主协调专家。
+3. 已经进入专家团后，后续普通追问使用 `operation="continue"` 与双 `null`；服务端继承当前选择，
+   不会重置为主协调专家。
    只要当前仍由主协调专家承接，服务端会在每一轮新的用户消息中重新判断成员承接意图；
    明确命中一个专项时必须生成仅含该成员的 `team_handoff` 卡片；同时命中多个专项时生成 2～3 位候选。
    纯问候、泛泛迷茫或专项信息不足时才由协调专家直接澄清。上一轮卡片未点击也不阻止再次建议。
@@ -170,26 +170,30 @@ BFF 负责：session_id / run_id / context_data / 用户鉴权 / SSE 原样转�
 
 ### 4.1 所有节点共用的 `expert_context`
 
-`expert_context` 不是前端猜测的路由参数。显式选择团队、成员或确认转交时，团队 ID、专家 ID
-和操作类型用于表达本轮意图；普通 `continue` 仅需操作类型，服务端恢复 session 当前选择。
+`expert_context` 不是前端猜测的路由参数。除 `stop` 外，每次都固定传 `expert_team_id`、
+`expert_id`、`operation` 三个字段：显式选择团队、成员或确认转交时表达本轮意图；普通
+普通追问固定传 `null/null/continue`。服务端从 session 权威状态继承当前专家团与实际专家；
+这适用于历史恢复、跨设备继续与切换孩子。具体 ID 的 `continue` 仅保留给转交卡确认、工具栏成员
+切换及需要严格旧状态断言的兼容客户端。
 版本字段对请求方可选。未绑定孩子使用
 `__unbound__` 作为本地键。
 
-普通追问的最小对象：
+普通聊天（无专家团/专家）的固定对象：
 
 ```json
-{"operation": "continue"}
+{"expert_team_id": null, "expert_id": null, "operation": "continue"}
 ```
 
-显式选择、工具栏切换和转交卡确认才携带团队/专家 ID；版本字段仍可选。
+专家团或单专家模式下的普通追问同样传 `null/null/continue`；版本字段可省略且不会用于该继承请求的
+过期断言。
 
 | 字段 | 前端从哪里取 | 作用 |
 | --- | --- | --- |
-| `expert_team_id` | 仅显式选择、转交卡确认或需要并发断言时取最近权威状态 | 普通 `continue` 可省略；显式断言时必须与 `expert_id` 同时提供。 |
-| `expert_id` | 仅显式选择、转交卡确认或需要并发断言时取最近权威状态 | 普通 `continue` 可省略；服务端使用当前实际承接专家。 |
+| `expert_team_id` | 普通追问固定传 `null`；显式选择或交互确认时取权威 state/卡片 | `continue` 的双 `null` 表示继承；选择团队/成员时携带目标团队。 |
+| `expert_id` | 普通追问固定传 `null`；显式选择或交互确认时取权威 state/卡片 | `continue` 的双 `null` 表示继承；选择成员时携带目标专家。 |
 | `expected_branch_version` | 可选；有缓存时取最近权威 `state.expert_context.branch_version` | 当前孩子/未绑定范围的版本断言；省略时服务端使用当前分支版本。 |
 | `expected_selection_version` | 可选；有缓存时取最近权威 `state.expert_context.selection_version` | session 级专家选择版本；省略时服务端使用当前选择版本。 |
-| `operation` | 由本次用户动作决定 | 普通追问用 `continue`；用户主动选择团队用 `select_team`；选择团内成员时用 `select_expert` 并同时传团队和成员 ID；单专家也用 `select_expert`。 |
+| `operation` | 由本次用户动作决定 | 普通追问用 `continue`；用户主动选择团队用 `select_team`；选择团内成员时用 `select_expert` 并同时传团队和成员 ID；单专家也用 `select_expert`；退出专家模式用 `clear_expert`。 |
 
 不要在 `input` 顶层传 `profile_id`、`expert_team_id` 或 `expert_id`：它们分别会返回
 `422 INPUT_PROFILE_ID_FORBIDDEN` 和 `422 LEGACY_EXPERT_FIELDS_FORBIDDEN`。
@@ -266,8 +270,8 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
 ### 4.3 主协调专家承接后的普通追问
 
 假设上一轮最终 `state.expert_context` 为：团队 `student_growth_expert_team`、专家
-`career_plan_expert`、分支版本 `1`、选择版本 `1`。普通追问不需要回传这些状态，只传
-`continue` 即可；服务端按该 session 当前选择承接，不重新传“我选择了哪个团队”的意图。
+`career_plan_expert`、分支版本 `1`、选择版本 `1`。普通追问固定传双 `null` 与
+`operation:"continue"`；服务端按该 session 当前选择承接，不重新传“我选择了哪个团队”的意图。
 
 ```bash
 curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" \
@@ -275,7 +279,7 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
   --data-raw '{
     "session_id":"session_bff_generated_001",
     "run_id":"run_bff_generated_002",
-    "input":"{\"action\":\"chat\",\"context_scope\":\"profile\",\"context_activation\":\"auto\",\"content\":\"他主要是在写作业和玩手机时顶撞我。\",\"source\":\"chat\",\"expert_context\":{\"operation\":\"continue\"}}",
+    "input":"{\"action\":\"chat\",\"context_scope\":\"profile\",\"context_activation\":\"auto\",\"content\":\"他主要是在写作业和玩手机时顶撞我。\",\"source\":\"chat\",\"expert_context\":{\"expert_team_id\":null,\"expert_id\":null,\"operation\":\"continue\"}}",
     "context_data":{"user_id":"user_001","profile_id":"profile_child_a","student_name":"小海"}
   }'
 ```
@@ -287,7 +291,8 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
 ### 4.4 切换孩子后的首条消息：不预检、不重发
 
 用户在同一 session 从孩子 A 切到孩子 B 后，前端仍只发送一次普通 `chat`。`context_data`
-由 BFF 改成孩子 B；前端保持 `context_activation="auto"`。服务端会先恢复/创建 B 分支，
+由 BFF 改成孩子 B；前端保持 `context_activation="auto"`，并固定携带双 `null` 的
+`expert_context`。服务端会先恢复/创建 B 分支，
 再恢复 session 最后活跃成员（包含已确认转交的成员），最后回答此条消息。
 
 ```bash
@@ -296,19 +301,19 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
   --data-raw '{
     "session_id":"session_bff_generated_001",
     "run_id":"run_bff_generated_switch_b",
-    "input":"{\"action\":\"chat\",\"context_scope\":\"profile\",\"context_activation\":\"auto\",\"content\":\"请结合小明自己的情况分析沟通问题。\",\"source\":\"chat\",\"expert_context\":{\"operation\":\"continue\"}}",
+    "input":"{\"action\":\"chat\",\"context_scope\":\"profile\",\"context_activation\":\"auto\",\"content\":\"请结合小明自己的情况分析沟通问题。\",\"source\":\"chat\",\"expert_context\":{\"expert_team_id\":null,\"expert_id\":null,\"operation\":\"continue\"}}",
     "context_data":{"user_id":"user_001","profile_id":"profile_child_b","student_name":"小明"}
   }'
 ```
 
-这里普通 `continue` 的团队、专家和版本字段都不需要传，不要求前端事先知道 B 是否已有服务端
-分支；发生范围切换时服务端会先恢复 B 分支，再恢复 session 当前专家选择。首个 `state` 会返回：
+这里普通 `continue` 的团队、专家字段固定为双 `null`，不要求前端事先知道 B 是否已有服务端分支；
+发生范围切换时服务端会先恢复 B 分支，再恢复 session 当前专家选择。首个 `state` 会返回：
 
 - `context_switched: true`、`context_activation: "auto"`；
 - B 范围的权威 `expert_context` 和 `session.active_skill`；
 - B 自己的历史/Facts，不混入 A；如 B 的旧表单、转交卡或 Skill 属于不同 Agent，则仅保留为历史且标为过期。
 
-之后用户在 B 的下一次追问仍只传 `{"operation":"continue"}`。只有
+之后用户在 B 的下一次追问继续传双 `null` 的完整三字段 `expert_context`。只有
 `context_activation="strict"` 才会拒绝这种隐式切换并返回
 `409 CONTEXT_ACTIVATION_REQUIRED`；业务前端不应使用 `strict`。
 
@@ -321,7 +326,7 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
 | --- | --- | --- | --- |
 | 切到 B，选择专家团但不指定成员 | `{"expert_team_id":"student_growth_expert_team","expert_id":null,"operation":"select_team"}` | `chat` | B 激活该团队的主协调专家。 |
 | 切到 B，选择专家团并指定成员 | `{"expert_team_id":"student_growth_expert_team","expert_id":"family_education_expert","operation":"select_expert"}` | `toolbar` | B 原子激活该团队并由目标成员回答。 |
-| 切到 B，不重新选择 | `{"operation":"continue"}` | `chat` | B 继承 session 当前实际承接专家。 |
+| 切到 B，不重新选择 | `expert_team_id:null` + `expert_id:null` + `operation:"continue"` | `chat` | B 继承 session 当前实际承接专家。 |
 
 上述三种都必须使用 `action="chat"` 和 `context_activation="auto"`。不能为了“切孩子后换成员”
 发送 `switch_team_member`，也不能携带 A 的 `source_message_id` 发送 `confirm_team_handoff`；这两种
@@ -397,8 +402,8 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
 
 ### 4.7 成员专家承接后的普通追问
 
-无论该成员来自工具栏还是转交卡，下一轮一律回到 `chat + continue`，无需读取或回传上一步的
-团队、专家和版本：
+无论该成员来自工具栏还是转交卡，下一轮一律回到 `chat + continue`，固定传双 `null` 让服务端继承
+上一步的实际成员；版本字段不需要携带：
 
 ```bash
 curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" \
@@ -406,7 +411,7 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
   --data-raw '{
     "session_id":"session_bff_generated_001",
     "run_id":"run_bff_generated_member_followup_001",
-    "input":"{\"action\":\"chat\",\"context_scope\":\"profile\",\"context_activation\":\"auto\",\"content\":\"那我今天晚上可以先怎么和他沟通？\",\"source\":\"chat\",\"expert_context\":{\"operation\":\"continue\"}}",
+    "input":"{\"action\":\"chat\",\"context_scope\":\"profile\",\"context_activation\":\"auto\",\"content\":\"那我今天晚上可以先怎么和他沟通？\",\"source\":\"chat\",\"expert_context\":{\"expert_team_id\":null,\"expert_id\":null,\"operation\":\"continue\"}}",
     "context_data":{"user_id":"user_001","profile_id":"profile_child_a","student_name":"小海"}
   }'
 ```
@@ -421,7 +426,7 @@ curl -N -X POST "$BASE_URL/api/v2/sessions/chat/stream" \
   -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
   --data '{
     "session_id":"session_001", "run_id":"run_003", "context_data":{"user_id":"u_001"},
-    "input":"{\\"action\\":\\"chat\\",\\"content\\":\\"好的，请继续\\",\\"source\\":\\"chat\\",\\"context_activation\\":\\"auto\\",\\"expert_context\\":{\\"operation\\":\\"continue\\"}}"
+    "input":"{\\"action\\":\\"chat\\",\\"content\\":\\"好的，请继续\\",\\"source\\":\\"chat\\",\\"context_activation\\":\\"auto\\",\\"expert_context\\":{\\"expert_team_id\\":null,\\"expert_id\\":null,\\"operation\\":\\"continue\\"}}"
   }'
 ```
 
@@ -435,11 +440,11 @@ curl -N -X POST "$BASE_URL/api/v2/sessions/chat/stream" \
 | --- | --- | --- | --- | --- |
 | 选择/切换专家团并发消息 | `chat` | `select_team` | `expert_context.expert_team_id`，`expert_id=null`，`context_activation=auto` | 不在顶层传团队 ID。 |
 | 首条消息选择团内成员 | `chat` | `select_expert` | `expert_context.expert_team_id` + 团内 `expert_id`，`source=toolbar` | 同一请求自动激活团队；不传其他团队的专家 ID。 |
-| 主协调/成员普通追问 | `chat` | `continue` | `content`、`context_activation=auto`、`expert_context={operation:"continue"}` | 不重复 `select_team`。 |
-| 切换孩子后的首聊 | `chat` | `continue` | `context_scope`；BFF 改 `context_data`；`context_activation=auto`；`expert_context={operation:"continue"}` | 不预检 B 分支、不自动重发。 |
+| 主协调/成员普通追问 | `chat` | `continue` | `content`、`context_activation=auto`、`expert_team_id:null`、`expert_id:null` | 不重复 `select_team`，不读取本地专家缓存。 |
+| 切换孩子后的首聊 | `chat` | `continue` | `context_scope`；BFF 改 `context_data`；`context_activation=auto`；双 `null` | 不预检 B 分支、不自动重发。 |
 | 工具栏选择成员并问问题 | `switch_team_member` | `continue` | `target_expert_id`、`content`、`source=toolbar`、当前 `expert_context.expert_team_id/expert_id` | 不发送 `context_activation`，不把 @ 写入普通聊天。 |
 | 点击转交卡 | `confirm_team_handoff` | `continue` | `source_message_id`、`target_expert_id`、`source=team_handoff`、当前 `expert_context.expert_team_id/expert_id` | 不把 `@专家` 当作 `content`。 |
-| 成员承接后的追问 | `chat` | `continue` | `content`、`context_activation=auto`、`expert_context={operation:"continue"}` | 不沿用转交前的 coordinator ID。 |
+| 成员承接后的追问 | `chat` | `continue` | `content`、`context_activation=auto`、双 `null`、`operation:"continue"` | 不沿用转交前的 coordinator ID；双 `null` 为固定三字段的继承写法。 |
 
 显式携带旧版本时出现 `409 EXPERT_CONTEXT_STALE`，前端读取错误中 `details.expert_context`，
 覆盖当前范围缓存并提示用户；**不能自动重放**原提问。省略版本字段的请求由服务端按当前
@@ -553,8 +558,8 @@ X-SSE-Protocol: hailiang.sse.v2
 ### 4.4 同一专家团会话中切换孩子
 
 切换孩子没有独立的 `switch_profile` action：下一次 `chat` 使用新的 `run_id`，并由 BFF 在
-`context_data.profile_id` 与 `student_name` 中传入目标孩子。普通续聊保持
-`context_activation="auto"` 和 `expert_context={"operation":"continue"}`；服务端会先切换/创建
+`context_data.profile_id` 与 `student_name` 中传入目标孩子。普通续聊固定使用
+`context_activation="auto"` 和双 `null` 的 `expert_context`；服务端会先切换/创建
 目标孩子分支，再恢复 session 最近选择的专家团与专家。
 
 #### 4.4.1 切换孩子，同时保留专家团并指定团内新专家
@@ -582,7 +587,8 @@ X-SSE-Protocol: hailiang.sse.v2
 
 #### 4.4.2 普通切换与未绑定范围
 
-不改选专家时，`expert_context` 仅传 `{"operation":"continue"}`；不要重复传团队或专家 ID。
+不改选专家时，`expert_context` 固定传双 `null` 与 `operation:"continue"`；不要重新使用
+`select_team` 或改写为目标成员 ID。
 切换到未绑定范围时，`context_scope="unbound"`，且 `context_data` 只能传 `user_id`。转交卡、
 表单、Skill 和 Facts 仍按范围隔离，完整时间线不等于模型上下文。
 
@@ -684,11 +690,31 @@ X-SSE-Protocol: hailiang.sse.v2
   "context_activation": "auto",
   "content": "他主要是在写作业和玩手机时顶撞我。",
   "source": "chat",
-  "expert_context": {"operation": "continue"}
+  "expert_context": {"expert_team_id": null, "expert_id": null, "operation": "continue"}
 }
 ```
 
-此时服务端保留当前团队和当前成员专家。不要重复传 `expert_context.expert_team_id`，否则它会被当成用户重新选择专家团：当前成员将回到主协调专家，待确认转交卡也会失效。
+此时服务端继承并保留当前团队和当前成员专家。双 `null` 是固定契约的一部分；只有把
+`operation` 改为 `select_team` 才会重新选择专家团并回到主协调专家。
+
+### 5.2.1 工具栏退出专家模式
+
+用户明确点击“退出专家模式”后，下一条带问题的 `chat` 使用 `clear_expert`，而不是把普通
+`continue` 解释为退出：
+
+```json
+{
+  "action": "chat",
+  "context_scope": "profile",
+  "context_activation": "auto",
+  "content": "我想先按普通聊天聊聊。",
+  "source": "toolbar",
+  "expert_context": {"expert_team_id": null, "expert_id": null, "operation": "clear_expert"}
+}
+```
+
+服务端清空 session 级专家选择、作废当前范围未完成的表单/Skill 交互，并以 `general_chat + Soul`
+处理本条消息。之后的普通追问继续使用双 `null` 的 `continue`。
 
 ### 5.3 协调专家提出转交：前端只渲染卡，不自行请求
 
@@ -739,6 +765,11 @@ X-SSE-Protocol: hailiang.sse.v2
   "source_message_id": "msg_handoff_001",
   "target_expert_id": "family_education_expert",
   "source": "team_handoff",
+  "expert_context": {
+    "expert_team_id": "student_growth_expert_team",
+    "expert_id": "career_plan_expert",
+    "operation": "continue"
+  },
   "enable_thinking": false,
   "return_reasoning": false
 }
@@ -749,6 +780,7 @@ X-SSE-Protocol: hailiang.sse.v2
 | `source_message_id` | 字符串 | 是 | 转交卡所在的助手消息 ID。直接使用 `team_handoff.source_message_id` 或该帧的 `message_id`。 |
 | `target_expert_id` | 字符串 | 是 | 用户选中的候选专家 ID，只能从 `team_handoff.candidates[].expert_id` 取。 |
 | `source` | 固定字符串 | 是 | 固定为 `team_handoff`。 |
+| `expert_context` | 对象 | 是 | 使用**该卡片所在 state** 的当前团队与实际承接专家，`operation` 固定为 `continue`；不能把目标专家写入这里。 |
 | `content` | 不支持 | 否 | 不传。服务端会把触发转交的原始用户问题及必要上下文交给目标专家。 |
 
 成功后有两个可观察结果：
@@ -798,6 +830,11 @@ X-SSE-Protocol: hailiang.sse.v2
   "target_expert_id": "family_education_expert",
   "content": "我想直接请家庭教育专家分析孩子顶撞的问题。",
   "source": "toolbar",
+  "expert_context": {
+    "expert_team_id": "student_growth_expert_team",
+    "expert_id": "career_plan_expert",
+    "operation": "continue"
+  },
   "enable_thinking": false,
   "return_reasoning": false
 }
@@ -808,6 +845,7 @@ X-SSE-Protocol: hailiang.sse.v2
 | `target_expert_id` | 字符串 | 是 | 用户主动指定的当前专家，必须属于当前已激活专家团。 |
 | `content` | 非空字符串 | 是 | 与切换同时发送给目标专家的用户问题。 |
 | `source` | 固定字符串 | 是 | 固定为 `toolbar`，即便 UI 呈现为 @。 |
+| `expert_context` | 对象 | 是 | 切换前的当前团队与实际承接专家，`operation` 固定为 `continue`；目标成员只放在 `target_expert_id`。 |
 
 成功后，`expert.transition.source` 为 `toolbar`，`source_message_id` 为 `null`。前端必须等待 SSE 中的 `expert.active` 变更后，再更新全局“当前专家”。
 
@@ -1448,6 +1486,9 @@ proxy_read_timeout 180s;
 | --- | --- | --- | --- |
 | 422 | `EXPERT_TEAM_NOT_FOUND` | 指定专家团不存在或当前不可用 | 刷新专家团目录，要求重新选择。 |
 | 422 | `EXPERT_NOT_FOUND` | 指定专家不存在或当前不可用 | 刷新专家目录。 |
+| 422 | `EXPERT_CONTEXT_REQUIRED` | 非停止动作缺少 `expert_context` 对象 | 补齐完整 `expert_context` 后重新发起。 |
+| 422 | `EXPERT_CONTEXT_FIELDS_REQUIRED` | `expert_context` 缺少 `expert_team_id`、`expert_id`、`operation` 任一固定字段 | 三个字段必须同时传；没有团队/专家时前两个传 `null`，不能省略。 |
+| 422 | `EXPERT_CONTEXT_OPERATION_INVALID` | `operation` 与团队/专家 ID 的组合不合法 | 按动作修正：普通 `continue` 固定双 `null`；`select_team` 的专家为 `null`；`select_expert` 填合法目标专家；`clear_expert` 的两个 ID 均为 `null`。 |
 | 422 | `EXPERT_NOT_IN_ACTIVE_TEAM` | 指定专家不属于当前已激活专家团 | 不切换，刷新当前团队成员列表。 |
 | 404 | `TEAM_HANDOFF_SOURCE_NOT_FOUND` | 转交卡来源消息找不到 | 刷新会话历史并移除本地旧卡。 |
 | 409 | `TEAM_HANDOFF_NOT_ACTIVE` | 转交卡已被确认、过期或被新对话替代 | 卡片置为只读，刷新会话状态。 |
@@ -1490,7 +1531,7 @@ GET /api/v1/sessions/{session_id}/context
 - [ ] `GET /api/v1/expert-teams` 可以拉取团队、协调专家和成员 ID。
 - [ ] 首轮 `chat` 在 `expert_context` 带 `expert_team_id` 与 `operation=select_team` 后，SSE 的 `expert.mode` 为 `team`。
 - [ ] 首轮 `expert.active.expert_id` 为该团队的 `coordinator_expert_id`。
-- [ ] 同一范围续聊只带 `expert_context={operation:"continue"}` 时，当前成员专家不被错误重置为协调专家。
+- [ ] 同一范围续聊带双 `null` 与 `operation:"continue"` 时，当前成员专家不被错误重置为协调专家。
 - [ ] 用户主动换专家团时才在 `expert_context` 重新带 `expert_team_id`，并能观察到新的协调专家。
 - [ ] 切换到新孩子并指定同团成员时，`select_expert` 返回目标成员，且服务端自动激活目标团队。
 - [ ] 激活或回退部署后，已有会话的下一次普通消息返回 `configuration_changed=true`，并以该帧的 `expert` 刷新当前专家。

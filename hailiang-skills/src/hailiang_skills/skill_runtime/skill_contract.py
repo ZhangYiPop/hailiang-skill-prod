@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +24,8 @@ def load_skill_contract(skill_root: str | Path, metadata: dict[str, Any] | None 
 
 def default_skill_contract(root_name: str, *, metadata: dict[str, Any] | None = None) -> SkillContract:
     metadata = metadata if isinstance(metadata, dict) else {}
-    skill_id = str(metadata.get("skill_id") or root_name).strip() or root_name
-    skill_role = str(metadata.get("entrypoint_role") or metadata.get("skill_role") or "child").strip() or "child"
-    return SkillContract(
-        skill_id=skill_id,
-        skill_role=skill_role,
-        stages=(StageContract(id="init", kind="default"),),
+    return replace(
+        parse_skill_contract({}, fallback_name=root_name, metadata=metadata),
         metadata={"generated_default": True},
     )
 
@@ -44,18 +41,18 @@ def parse_skill_contract(
     skill_role = str(
         payload.get("skill_role") or metadata.get("entrypoint_role") or metadata.get("skill_role") or "child"
     ).strip() or "child"
-    stages_payload = payload.get("stages", [])
+    stages_payload = payload.get("stages", metadata.get("stages", []))
     stages = tuple(_parse_stage(item) for item in stages_payload if isinstance(item, dict)) or (
         StageContract(id="init", kind="default"),
     )
     facts_schema = _parse_facts_schema(payload.get("facts"))
-    routes_payload = payload.get("routes", [])
+    routes_payload = payload.get("routes", metadata.get("routes", []))
     routes = tuple(_parse_route(item) for item in routes_payload if isinstance(item, dict))
     accepts_scenes = tuple(
         str(item).strip()
-        for item in payload.get("accepts_scenes", [])
+        for item in payload.get("accepts_scenes", metadata.get("accepts_scenes", []))
         if str(item).strip()
-    ) if isinstance(payload.get("accepts_scenes"), list) else ()
+    ) if isinstance(payload.get("accepts_scenes", metadata.get("accepts_scenes", [])), list) else ()
     return SkillContract(
         skill_id=skill_id,
         skill_role=skill_role,

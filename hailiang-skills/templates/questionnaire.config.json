@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "title": "业务问卷示例",
+  "max_fields_per_form": 6,
+  "questions": [
+    {
+      "id": "category",
+      "label": "请选择类别",
+      "input_type": "single_select",
+      "required": true,
+      "options": [
+        { "value": "选项一", "label": "选项一" },
+        { "value": "选项二", "label": "选项二" }
+      ]
+    },
+    {
+      "id": "goals",
+      "label": "请选择目标（最多 3 项）",
+      "input_type": "multi_select",
+      "required": true,
+      "max_selections": 3,
+      "options": [
+        { "value": "目标一", "label": "目标一" },
+        { "value": "目标二", "label": "目标二" },
+        { "value": "目标三", "label": "目标三" }
+      ]
+    },
+    {
+      "id": "budget",
+      "label": "预算（万元）",
+      "input_type": "number",
+      "value_type": "number",
+      "required": true,
+      "min": 0,
+      "decimal_places": 1,
+      "placeholder": "例如：30"
+    },
+    {
+      "id": "description",
+      "label": "补充说明",
+      "input_type": "text",
+      "required": false,
+      "placeholder": "请输入补充信息"
+    },
+    {
+      "id": "conditional_detail",
+      "label": "选项一的补充信息",
+      "input_type": "text",
+      "required": false,
+      "display_condition": {
+        "question_id": "category",
+        "operator": "equals",
+        "value": "选项一"
+      }
+    }
+  ]
+}

@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from hailiang_skills.core.loop_defense import LoopDefense
 from hailiang_skills.core.logging import make_event
+from hailiang_skills.core.context_composer import ContextComposer
 from hailiang_skills.core.scenario_engine import ScenarioEngine
 from hailiang_skills.core.session_logging import append_session_events
 from hailiang_skills.core.telemetry import current_telemetry
@@ -349,6 +350,11 @@ class _RuntimePlannerLLM:
             "plan_summary_short 必须是最多 12 个中文字符，并以‘正在’开头，用来展示当前执行动作。\n"
             "steps[].action 会直接作为用户看到的 intent.label：必须是最多 12 个中文字符，并以‘正在’开头，用‘正在+动宾短语’总结当前思考步骤，不要输出句号、编号或内部文件名。\n"
             "如果没有明确需要加载的文件，对应数组返回 []。\n\n"
+            "依赖选择必须服从当前 SKILL.md 的语义约束：先判断其中描述的执行时机，再决定本轮是否加载。"
+            "如果 Skill 明确要求‘每个用户回合’、‘每次回复前’或其他当前已满足的条件执行某脚本，"
+            "即使本轮只是问候、开始指令或简短追问，也必须把该脚本放入 required_scripts；"
+            "如果 Skill 只要求在特定阶段或意图下执行，则仅在条件满足时加载，不能因为脚本存在就一律执行。"
+            "不得用模型自行记忆或推测的结果替代 Skill 指定的事实来源。\n\n"
             "tool_routing 必须是对象："
             '{"required":false,"candidates":[],"allow_web_search":false,'
             '"candidate_domains":[],"query_focus":"","reason":""}。'
@@ -368,6 +374,9 @@ class _RuntimePlannerLLM:
         reference_catalog = self._reference_catalog()
         if reference_catalog:
             enhanced_prompt += f"\n\n# Available Local Reference Paths\n{reference_catalog}"
+        script_catalog = self._script_catalog()
+        if script_catalog:
+            enhanced_prompt += f"\n\n# Available Local Script Paths\n{script_catalog}"
         if self.tool_routing_context:
             enhanced_prompt += f"\n\n# Tool Routing Policy And Catalog\n{self.tool_routing_context}"
         try:
@@ -468,6 +477,19 @@ class _RuntimePlannerLLM:
             paths.append(f"- {path.relative_to(self.skill_dir)}")
         return "\n".join(paths)
 
+    def _script_catalog(self) -> str:
+        if not self.skill_dir:
+            return ""
+        scripts_dir = self.skill_dir / "scripts"
+        if not scripts_dir.is_dir():
+            return ""
+        paths: list[str] = []
+        for path in sorted(item for item in scripts_dir.rglob("*") if item.is_file()):
+            if path.name.startswith(".") or path.suffix.lower() != ".py":
+                continue
+            paths.append(f"- {path.relative_to(self.skill_dir)}")
+        return "\n".join(paths)
+
     @staticmethod
     def _extract_combined_response(value: str) -> str:
         payload = _try_parse_json(value) or _extract_json_object(value)
@@ -494,16 +516,22 @@ def _normalize_runtime_planner_response(value: str) -> str:
     if not isinstance(payload, dict):
         payload = _extract_json_object(value)
     if not isinstance(payload, dict):
+        recovered_dependencies = _extract_partial_planner_dependencies(value)
         payload = {
             "can_handle": True,
-            "plan_summary": "fallback empty lazy load plan",
+            "plan_summary": (
+                "recovered partial lazy load plan"
+                if any(recovered_dependencies.values())
+                else "fallback empty lazy load plan"
+            ),
             "steps": [{"step": 1, "action": "continue with SKILL.md only", "type": "code"}],
-            "required_scripts": [],
-            "required_references": [],
-            "required_resources": [],
-            "required_packages": [],
+            **recovered_dependencies,
             "parameters": {},
-            "reasoning": "planner response was not valid JSON; fallback used",
+            "reasoning": (
+                "planner response was not valid JSON; dependency selections were recovered"
+                if any(recovered_dependencies.values())
+                else "planner response was not valid JSON; fallback used"
+            ),
             "plan_summary_short": "继续规划",
         }
     normalized = {
@@ -521,6 +549,27 @@ def _normalize_runtime_planner_response(value: str) -> str:
     if not normalized["steps"]:
         normalized["steps"] = [{"step": 1, "action": "continue with SKILL.md only", "type": "code"}]
     return json.dumps(normalized, ensure_ascii=False)
+
+
+def _extract_partial_planner_dependencies(value: str) -> dict[str, list[str]]:
+    """Keep dependency choices that precede a truncated planner response.
+
+    The combined planner intentionally emits dependency arrays before the
+    user-visible message. A later malformed/truncated field must not silently
+    turn a semantically selected script into an empty lazy-load plan.
+    """
+    text = str(value or "")
+    recovered: dict[str, list[str]] = {}
+    for field in (
+        "required_scripts",
+        "required_references",
+        "required_resources",
+        "required_packages",
+    ):
+        match = re.search(rf'"{field}"\s*:\s*(\[[^\]]*\])', text)
+        parsed = _try_parse_json(match.group(1)) if match else None
+        recovered[field] = _normalize_planner_list(parsed)
+    return recovered
 
 
 def _extract_json_object(value: str) -> dict[str, Any] | None:
@@ -573,6 +622,49 @@ def _truncate_debug_text(value: str, *, limit: int) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}...(truncated)"
+
+
+def _sanitize_script_execution_reply(value: str) -> str:
+    """Remove internal script narration/result dumps from user-visible text."""
+    text = str(value or "")
+    text = re.sub(r"```(?:json)?\s*[\[{].*?[\]}]\s*```", "", text, flags=re.IGNORECASE | re.DOTALL)
+    decoder = json.JSONDecoder()
+    cursor = 0
+    cleaned_parts: list[str] = []
+    while cursor < len(text):
+        next_positions = [position for token in ("{", "[") if (position := text.find(token, cursor)) >= 0]
+        if not next_positions:
+            cleaned_parts.append(text[cursor:])
+            break
+        start = min(next_positions)
+        cleaned_parts.append(text[cursor:start])
+        try:
+            parsed, consumed = decoder.raw_decode(text[start:])
+        except ValueError:
+            cleaned_parts.append(text[start])
+            cursor = start + 1
+            continue
+        if isinstance(parsed, (dict, list)):
+            cursor = start + consumed
+            continue
+        cleaned_parts.append(text[start : start + consumed])
+        cursor = start + consumed
+    text = "".join(cleaned_parts)
+    text = re.sub(r"[（(]\s*脚本(?:正在)?执行中[^）)]*[）)]", "", text)
+    lines = [
+        line for line in text.splitlines()
+        if not re.search(r"(?:我来|正在|开始|已经|将要)?执行脚本|脚本(?:返回|输出|执行结果)", line)
+    ]
+    return "\n".join(lines).strip()
+
+
+def _state_has_script_execution(state: SessionState) -> bool:
+    runtime_trace = state.status_flags.get("ms_agent_runtime")
+    return bool(
+        isinstance(runtime_trace, dict)
+        and isinstance(runtime_trace.get("execution_outputs"), list)
+        and runtime_trace.get("execution_outputs")
+    )
 
 
 def _compact_skill_entry_context(value: Any, *, depth: int = 0) -> Any:
@@ -1025,15 +1117,38 @@ def _looks_like_planning_request(text: str) -> bool:
     return bool(normalized) and any(keyword in normalized for keyword in GENERAL_CHAT_EXCLUSION_KEYWORDS)
 
 
+def _questionnaire_decision_table_context(bundle) -> dict[str, Any] | None:
+    """Load an optional Skill-owned decision table for the questionnaire model.
+
+    The table is not evaluated by the server. The active Skill receives it
+    with the session context and decides whether a Case applies and whether
+    this turn needs a form at all.
+    """
+    root_dir = getattr(bundle, "root_dir", None)
+    if root_dir is None:
+        return None
+    table_path = Path(root_dir) / "assets" / "ask_decision_table.json"
+    try:
+        if not table_path.is_file() or table_path.stat().st_size > 256_000:
+            return None
+        payload = json.loads(table_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 class MainPlannerOrchestrator:
     """Hailiang API orchestrator backed by the career/general-chat route model."""
 
-    def __init__(self, registry, llm_config, moderation_service=None, *, business_config_entries=None) -> None:
+    def __init__(self, registry, llm_config, moderation_service=None, *, business_config_entries=None, profile_memory_repository=None, conversation_memory_repository=None) -> None:
         self.registry = registry
         self.llm_config = llm_config
         self.test_llm_routing = TestLLMRoutingConfig.from_environment()
         self.moderation_service = moderation_service
         self.runtime_bridge_config = load_runtime_bridge_config()
+        self.context_composer = ContextComposer(self.runtime_bridge_config.working_context_tokens)
+        self.profile_memory_repository = profile_memory_repository
+        self.conversation_memory_repository = conversation_memory_repository
         self.scenario_engine = ScenarioEngine()
         self.loop_defense = LoopDefense()
         if business_config_entries is None:
@@ -1098,6 +1213,7 @@ class MainPlannerOrchestrator:
             context_window_tokens=self.runtime_bridge_config.context_window_tokens,
             async_checkpoint_ratio=self.runtime_bridge_config.async_checkpoint_ratio,
             sync_compression_ratio=self.runtime_bridge_config.sync_compression_ratio,
+            checkpoint_repository=conversation_memory_repository,
         )
         self.embedding_client = self._build_embedding_client(llm_config)
         self.intent_router = IntentRouter(
@@ -1115,6 +1231,12 @@ class MainPlannerOrchestrator:
             default_expert_id=DEFAULT_EXPERT_ID,
             client_factory=self._runtime_client_for_context,
             event_recorder=self._record_events,
+            history_messages=self.runtime_bridge_config.expert_history_messages,
+            history_message_chars=self.runtime_bridge_config.expert_history_message_chars,
+            history_max_chars=self.runtime_bridge_config.expert_history_max_chars,
+            reply_max_chars=self.runtime_bridge_config.expert_reply_max_chars,
+            profile_memory_repository=profile_memory_repository,
+            context_composer=self.context_composer,
         )
 
     @staticmethod
@@ -1267,11 +1389,11 @@ class MainPlannerOrchestrator:
         record["timestamp"] = datetime.now(timezone.utc).isoformat()
         self._record_events(context, [make_event("prompt_assembly", record)])
 
-    def _emit_runtime_status(self, context, stage: str, label: str) -> None:
+    def _emit_runtime_status(self, context, stage: str, label: str, *, detail: str = "") -> None:
         callback = (context.session_meta or {}).get("status_callback")
         display_label = normalize_status_label(label)
         if callable(callback) and display_label:
-            callback({"stage": stage, "label": display_label})
+            callback({"stage": stage, "label": display_label, "detail": detail})
 
     def _emit_tool_status(
         self,
@@ -1690,7 +1812,9 @@ class MainPlannerOrchestrator:
             state.status_flags.pop("ms_agent_require_tool_routing_gate", False)
         )
         stream_reply_callback = None
-        if stream_combined_response and not questionnaire_enabled(bundle):
+        scripts_dir = bundle.root_dir / "scripts"
+        has_declared_scripts = scripts_dir.is_dir() and any(scripts_dir.glob("*.py"))
+        if stream_combined_response and not questionnaire_enabled(bundle) and not has_declared_scripts:
             callback = (context.session_meta or {}).get("reply_delta_callback")
             if (context.session_meta or {}).get("stream_final_reply") and callable(callback):
                 stream_reply_callback = callback
@@ -2174,6 +2298,8 @@ class MainPlannerOrchestrator:
                 raw_reply=combined_response or None,
             )
 
+        redact_script_execution = _state_has_script_execution(state)
+
         tool_results: tuple[ToolCallResult, ...] = ()
         transient_messages: tuple[ChatMessage, ...] = ()
         preferred_mode = "native"
@@ -2231,6 +2357,7 @@ class MainPlannerOrchestrator:
                     logger,
                     context,
                     phase="runtime_final_response_after_tools",
+                    redact_script_execution=redact_script_execution,
                 )
 
             tool_specs = _authorize_requested_tool_specs(
@@ -2264,6 +2391,7 @@ class MainPlannerOrchestrator:
                     logger,
                     context,
                     phase="runtime_final_response",
+                    redact_script_execution=redact_script_execution,
                 )
 
             self._record_runtime_prompt(
@@ -2285,6 +2413,10 @@ class MainPlannerOrchestrator:
                     turn_result.final_text,
                     response_policy=current_bundle.runtime_metadata.response_policy,
                 )
+                if redact_script_execution:
+                    final_text = _sanitize_script_execution_reply(final_text)
+                    if not final_text:
+                        final_text = "已完成本轮处理，但没有生成可安全展示的正文。请换一种说法再试一次。"
                 self._emit_runtime_status(context, "response", "正在生成回复")
                 self._emit_reply_delta(context, final_text)
                 self._record_runtime_prompt(
@@ -2388,12 +2520,14 @@ class MainPlannerOrchestrator:
         skill_facts = state.skill_facts.get(continuation["skill_id"], {})
         reconciliation = continuation.get("answer_reconciliation", {})
         reconciliation_enabled = isinstance(reconciliation, dict) and reconciliation.get("enabled")
+        decision_table = _questionnaire_decision_table_context(bundle)
         payload = {
             "skill": {
                 "name": metadata.name,
                 "brief": metadata.brief,
                 "description": metadata.description,
                 "stage": state.stage,
+                "instructions": bundle.skill_markdown,
             },
             "answers": continuation["answers"],
             "tier": continuation["tier"],
@@ -2413,6 +2547,7 @@ class MainPlannerOrchestrator:
             "conversation": {
                 "summary": str(memory.get("summary") or ""),
                 "facts": memory_facts,
+                "profile_candidate_archive": memory.get("profile_candidate_archive", []),
                 # The evidence list below already carries the same user turns
                 # with stable source IDs during first-form reconciliation.
                 "recent_messages": [] if reconciliation_enabled else recent_messages,
@@ -2422,6 +2557,8 @@ class MainPlannerOrchestrator:
             "question_catalog": continuation["question_catalog"],
             "answer_reconciliation": reconciliation,
         }
+        if decision_table is not None:
+            payload["ask_decision_table"] = decision_table
         return [
             ChatMessage(
                 role="system",
@@ -2435,8 +2572,14 @@ class MainPlannerOrchestrator:
                     "每项严格使用 {question_id,value,source_id,evidence,confidence}，source_id 必须来自给定来源。"
                     "fact 来源只能匹配 eligible_question_ids，value 必须忠实等于 fact 值；"
                     "message 来源的 evidence 必须是用户原话中的短句，并明确包含答案值。不得从助手消息、旧总结或常识猜测答案。"
-                    "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题，"
-                    "并先给出简短、有依据的阶段性说明和自然引导；说明可以自然确认本轮识别到的答案。"
+                    "profile_candidate_archive 是当前孩子的长期候选档案，不是已确认事实；仅在当前问题相关时自然确认或忽略，"
+                    "绝不把它直接当作已经确定的答案或业务前提。"
+                    "必须遵守 skill.instructions 中的流程、开场和红线。若提供 ask_decision_table，"
+                    "你必须结合本轮输入与会话状态自行判断应命中的 Case；该表是模型的决策依据，"
+                    "不是服务端自动执行的规则。若 Case 要求本轮不开表单，可返回空 question_ids。"
+                    "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题。"
+                    "assistant_message 应直接推进当前对话：已有明确答案时不要再次复述或确认，"
+                    "除非该答案存在矛盾、时间变化或确有必要消歧；不需要表单时直接回答，不要添加历史事实摘要。"
                     "不得虚构、改写或直接在正文中提问；不得给出最终专业结论。"
                     "只返回一个 JSON 对象，字段必须严格按以下顺序："
                     '{"assistant_message":"面向用户的阶段性说明和引导",'
@@ -2522,6 +2665,7 @@ class MainPlannerOrchestrator:
             reply,
             response_policy=bundle.runtime_metadata.response_policy,
         )
+        self._archive_questionnaire_context(context, bundle, decision, user_message)
         stage_questionnaire_form(state, bundle, block)
         if not streamed:
             self._emit_reply_delta(context, reply)
@@ -2562,6 +2706,40 @@ class MainPlannerOrchestrator:
             ],
         )
         return reply, ""
+
+    def _archive_questionnaire_context(self, context, bundle, decision: dict[str, Any], user_message: str) -> None:
+        """Store declared-option observations as profile-scoped durable evidence."""
+        from hailiang_skills.core.profile_candidate_archive import archive_candidate
+
+        skill_id = str(bundle.contract.skill_id or bundle.root_name)
+        latest_user = next(
+            (item for item in reversed(getattr(context, "messages", [])) if item.get("role") == "user"),
+            {},
+        )
+        turn_id = str((latest_user.get("metadata") or {}).get("turn_id") or "") or None
+        for item in decision.get("resolved_answers", []):
+            if not isinstance(item, dict) or item.get("resolution") != "declared_option_exact_match":
+                continue
+            question_id = str(item.get("question_id") or "").strip()
+            if not question_id:
+                continue
+            archived = archive_candidate(
+                context,
+                key=f"conversation.{skill_id}.{question_id}",
+                value=item.get("value"),
+                source_skill=skill_id,
+                source_turn_id=turn_id,
+                evidence_summary=str(item.get("evidence") or user_message)[:500],
+                confidence=float(item.get("confidence") or 1.0),
+                repository=self.profile_memory_repository,
+            )
+            if archived:
+                self._record_events(context, [make_event("questionnaire_context_archived", {
+                    "skill_id": skill_id,
+                    "question_id": question_id,
+                    "profile_id": context.profile_id,
+                    "resolution": item.get("resolution"),
+                })])
 
     def _skill_entry_messages(
         self,
@@ -2770,6 +2948,10 @@ class MainPlannerOrchestrator:
             reply,
             response_policy=bundle.runtime_metadata.response_policy,
         )
+        if _state_has_script_execution(state):
+            reply = _sanitize_script_execution_reply(reply)
+            if not reply:
+                reply = "已完成本轮处理，但没有生成可安全展示的正文。请换一种说法再试一次。"
         stage_questionnaire_form(state, bundle, block)
         deferred_promotions = flush_deferred_questionnaire_promotions(state, context, bundle) if block is None else []
         self._emit_reply_delta(context, reply)
@@ -2812,6 +2994,7 @@ class MainPlannerOrchestrator:
         context,
         *,
         phase: str,
+        redact_script_execution: bool = False,
     ) -> tuple[str, str]:
         self._emit_runtime_status(context, "response", "正在生成回复")
         self._record_runtime_prompt(
@@ -2831,6 +3014,10 @@ class MainPlannerOrchestrator:
             )
             if questionnaire_enabled(bundle):
                 reply = unwrap_questionnaire_assistant_message(reply)
+            if redact_script_execution:
+                reply = _sanitize_script_execution_reply(reply)
+                if not reply:
+                    reply = "已完成本轮处理，但没有生成可安全展示的正文。请换一种说法再试一次。"
             duration_ms = int((time.perf_counter() - started) * 1000)
             self._emit_reply_delta(context, reply)
             logger.log("turn.resolve.final_text.timing", phase=phase, duration_ms=duration_ms)
@@ -2909,7 +3096,11 @@ class MainPlannerOrchestrator:
             if chunk.content_delta:
                 reply_parts.append(chunk.content_delta)
                 callback = (context.session_meta or {}).get("reply_delta_callback")
-                if (context.session_meta or {}).get("stream_final_reply") and callable(callback):
+                if (
+                    not redact_script_execution
+                    and (context.session_meta or {}).get("stream_final_reply")
+                    and callable(callback)
+                ):
                     visible_delta = (
                         questionnaire_extractor.feed(chunk.content_delta)
                         if questionnaire_extractor is not None
@@ -2926,6 +3117,8 @@ class MainPlannerOrchestrator:
             reply = questionnaire_extractor.assistant_message
         elif questionnaire_enabled(bundle):
             reply = unwrap_questionnaire_assistant_message(reply)
+        if redact_script_execution:
+            reply = _sanitize_script_execution_reply(reply)
         reasoning = "".join(reasoning_parts).strip()
         duration_ms = int((time.perf_counter() - started) * 1000)
         empty_stream_retry = False
@@ -2958,10 +3151,16 @@ class MainPlannerOrchestrator:
                 )
                 if questionnaire_enabled(bundle):
                     reply = unwrap_questionnaire_assistant_message(reply)
+                if redact_script_execution:
+                    reply = _sanitize_script_execution_reply(reply)
             except Exception as exc:  # pragma: no cover - defensive fallback
                 logger.log("turn.resolve.final_text.empty_retry_failed", phase=phase, error=str(exc))
             if not reply.strip():
                 reply = "刚才这轮回复生成不完整，我没有拿到可展示的正文。你可以再发一次，我会基于当前信息继续回答。"
+            self._emit_reply_delta(context, reply)
+        elif redact_script_execution:
+            # Script-backed replies are buffered so internal narration or raw
+            # process output can never escape through an earlier stream chunk.
             self._emit_reply_delta(context, reply)
         elif questionnaire_extractor is not None and not streamed_visible_reply:
             # A non-conforming/plain response cannot be safely exposed until
@@ -3094,11 +3293,51 @@ class MainPlannerOrchestrator:
             llm_client=self._runtime_client_for_context(context),
             logger=memory_logger,
             defer_update=self.runtime_bridge_config.memory_async_update,
+            on_sync_compression=lambda: self._emit_runtime_status(
+                context,
+                "context_compression",
+                "正在压缩上下文",
+                detail="正在整理较早对话，保留当前问题和近期上下文",
+            ),
         )
         memory_context = supplement_questionnaire_evidence(
             memory_result.context,
             list(getattr(context, "messages", []) or []),
         )
+        # Candidates are intentionally not merged into effective Facts. They
+        # are evidence for the model to confirm naturally when relevant.
+        from hailiang_skills.core.profile_candidate_archive import candidate_archive
+        latest_user_message = next(
+            (str(item.get("content") or "") for item in reversed(getattr(context, "messages", [])) if item.get("role") == "user"),
+            "",
+        )
+        memory_context["profile_candidate_archive"] = candidate_archive(
+            context,
+            repository=self.profile_memory_repository,
+            query_text=latest_user_message,
+            skill_id=active_skill_id,
+        )
+        self._record_events(context, [make_event("profile_memory_retrieved", {
+            "profile_id": getattr(context, "profile_id", None),
+            "skill_id": active_skill_id,
+            "result_count": len(memory_context["profile_candidate_archive"]),
+            "token_budget": self.context_composer.budget.archive_tokens,
+        })])
+        memory_context, budget_status = self.context_composer.compose_memory(
+            memory_context,
+            confirmed_facts={key: record.value for key, record in getattr(context.known_facts, "facts", {}).items()},
+            archive=memory_context["profile_candidate_archive"],
+            current_message=latest_user_message,
+            activity_state={"active_skill_id": active_skill_id, "stage": getattr(state, "stage", "")},
+        )
+        memory_context["context_budget"] = budget_status
+        event_type = "context_budget_trimmed" if budget_status["trimmed_sections"] else "context_budget_composed"
+        self._record_events(context, [make_event(event_type, {
+            "working_context_tokens": budget_status["working_context_tokens"],
+            "estimated_prompt_tokens": budget_status["estimated_prompt_tokens"],
+            "trimmed_sections": budget_status["trimmed_sections"],
+            "current_message_rejected": budget_status["current_message_rejected"],
+        })])
         if bool((getattr(context, "session_meta", {}) or {}).get("resume_recap_pending")):
             memory_context["continuity_instruction"] = (
                 "This child branch was just resumed. Begin the next answer with a concise one- or two-sentence Chinese recap "
@@ -3126,11 +3365,13 @@ class MainPlannerOrchestrator:
             unsummarized_chars=sum(len(str(item.get("content") or "")) for item in memory_recent if isinstance(item, dict)),
             questionnaire_evidence_message_count=len(questionnaire_evidence),
             active_window_messages=self.runtime_bridge_config.active_window_messages,
+            profile_candidate_fact_count=len(memory_context["profile_candidate_archive"]),
         )
         context.skill_states.setdefault(MAIN_PLANNER_ID, {})["conversation_memory"] = memory_context.get(
             "status",
             {},
         )
+        context.skill_states.setdefault(MAIN_PLANNER_ID, {})["composed_context"] = memory_context
         self._record_events(
             context,
             [
@@ -3145,6 +3386,12 @@ class MainPlannerOrchestrator:
                 )
             ],
         )
+        checkpoint_mode = str((memory_result.step.payload or {}).get("checkpoint_mode") or "")
+        if checkpoint_mode in {"sync_compression", "async_checkpoint"}:
+            self._record_events(context, [make_event(
+                "context_compaction_completed" if memory_result.step.status in {"success", "skipped"} else "context_compaction_degraded",
+                {"checkpoint_mode": checkpoint_mode, "status": memory_result.step.status},
+            )])
 
     def _append_turn_memory(
         self,
@@ -3210,6 +3457,16 @@ class MainPlannerOrchestrator:
         """
         meta = getattr(context, "session_meta", {}) or {}
         if meta.get("expert_team_id") or meta.get("expert_id") or meta.get("active_expert_id"):
+            self.context_composer.assert_current_message_fits(user_message)
+            # Experts use the same compact, profile-scoped working memory as
+            # Skills. Prepare it before AgentScope receives this turn; the
+            # current user message remains a separate non-trimmable input.
+            expert_memory_state = self._load_runtime_state(context)
+            self._prepare_turn_long_context(
+                context,
+                expert_memory_state,
+                str(expert_memory_state.active_skill_id or GENERAL_CHAT_ID),
+            )
             return self.expert_runtime.handle_message(
                 user_message,
                 context,
@@ -3219,6 +3476,7 @@ class MainPlannerOrchestrator:
 
     def _handle_message_legacy(self, user_message: str, context) -> SkillResult:
         self._normalize_planner_state_alias(context)
+        self.context_composer.assert_current_message_fits(user_message)
         turn_id = f"turn_{uuid4().hex[:12]}"
         context.session_meta["active_turn_id"] = turn_id
         context.session_meta.pop("skill_intro", None)
@@ -3789,7 +4047,12 @@ class MainPlannerOrchestrator:
         self._emit_runtime_status(context, "response", "正在生成回复")
         skill = self.registry.get(target["skill"])
         result = skill.run(user_message, context)
-        result.assistant_message = self._with_fact_summary(result.assistant_message, context)
+        # Facts are part of the planner/skill context, not a user-facing
+        # preamble.  Adding a generated "已基于：..." sentence here caused
+        # previously collected answers to be repeated on every turn and made
+        # otherwise direct answers sound like a running questionnaire recap.
+        # Skills may still acknowledge a newly supplied fact naturally, but
+        # the runtime must not prepend historical facts to the reply.
         if not self._has_streamed_reply(context):
             self._emit_reply_delta(context, result.assistant_message)
         self._record_prompt_assembly_from_skill(context, skill)
@@ -3824,22 +4087,11 @@ class MainPlannerOrchestrator:
         return result
 
     def _with_fact_summary(self, assistant_message: str, context) -> str:
-        province = context.known_facts.get_value("student_province")
-        subject_group = context.known_facts.get_value("subject_group")
-        score = context.known_facts.get_value("score_total")
-        summary_parts = []
-        if province not in (None, "", [], {}):
-            summary_parts.append(str(province))
-        if subject_group not in (None, "", [], {}):
-            summary_parts.append(str(subject_group))
-        if score not in (None, "", [], {}):
-            summary_parts.append(f"{score} 分")
-        if not summary_parts:
-            return assistant_message
-        summary = f"已基于：{' / '.join(summary_parts)}。\n\n"
-        if all(part in assistant_message for part in [str(province or ""), str(score or "")]):
-            return assistant_message
-        return f"{summary}{assistant_message}"
+        # Kept as a compatibility shim for integrations that called this
+        # helper directly.  Historical facts must never be injected into the
+        # visible assistant message by the runtime.
+        del context
+        return assistant_message
 
     def _run_hailiang_fallback(self, user_message: str, context, turn_id: str) -> SkillResult:
         del turn_id
@@ -4679,6 +4931,16 @@ class MainPlannerOrchestrator:
 
     def _split_multi_path_skill_by_stage(self, state: SessionState, context) -> None:
         if state.active_skill_id not in MULTI_PATH_SKILL_IDS:
+            state.status_flags["awaiting_school_stage_for_multi_path"] = False
+            state.status_flags["pending_multi_path_scene"] = ""
+            return
+        # ``multi_path_planning`` is the high-school Skill itself.  Its
+        # opening, mode selection and profile collection are owned by the
+        # Skill, including the case where the user has not supplied a grade.
+        # Do not install the legacy parent gate here: it replaces the Skill's
+        # own first reply with a hard-coded question and exposes junior-high
+        # examples that are outside this Skill's service scope.
+        if state.active_skill_id == "multi_path_planning":
             state.status_flags["awaiting_school_stage_for_multi_path"] = False
             state.status_flags["pending_multi_path_scene"] = ""
             return

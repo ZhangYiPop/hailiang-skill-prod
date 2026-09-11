@@ -32,6 +32,7 @@ class ConversationMemoryStore:
         context_window_tokens: int = 32_000,
         async_checkpoint_ratio: float = 0.0,
         sync_compression_ratio: float = 0.80,
+        checkpoint_repository=None,
     ) -> None:
         self.runtime_dir = Path(runtime_dir)
         self.enabled = enabled
@@ -39,6 +40,7 @@ class ConversationMemoryStore:
         self.context_window_tokens = max(4_000, int(context_window_tokens))
         self.async_checkpoint_ratio = min(0.95, max(0.0, float(async_checkpoint_ratio)))
         self.sync_compression_ratio = min(0.99, max(self.async_checkpoint_ratio, float(sync_compression_ratio)))
+        self.checkpoint_repository = checkpoint_repository
         self._jobs_lock = threading.Lock()
         self._active_jobs: dict[tuple[str, str], str] = {}
         self._file_locks_lock = threading.Lock()
@@ -54,6 +56,7 @@ class ConversationMemoryStore:
         llm_client: Any | None = None,
         logger: Any | None = None,
         defer_update: bool = False,
+        on_sync_compression=None,
     ) -> MemoryTurnResult:
         if not self.enabled:
             memory = self._default_memory(user_id, session_id, active_skill_id)
@@ -130,6 +133,8 @@ class ConversationMemoryStore:
 
         if llm_client is None:
             if usage_ratio >= self.sync_compression_ratio:
+                if callable(on_sync_compression):
+                    on_sync_compression()
                 return self._apply_extract_checkpoint(
                     user_id=user_id,
                     session_id=session_id,
@@ -155,6 +160,8 @@ class ConversationMemoryStore:
 
         # At the hard threshold, compaction happens in this request so the
         # prompt cannot continue growing while a background job is pending.
+        if usage_ratio >= self.sync_compression_ratio and callable(on_sync_compression):
+            on_sync_compression()
         if defer_update and usage_ratio < self.sync_compression_ratio:
             return self._schedule_memory_update(
                 user_id=user_id,
@@ -192,6 +199,7 @@ class ConversationMemoryStore:
             )
             memory["summary_updated_through_message_index"] = summary_target_count
             memory["facts_updated_through_message_index"] = summary_target_count
+            self._prune_summarized_messages(memory)
             memory["memory_update_status"] = "success"
             memory["last_error"] = None
             memory["last_memory_updated_at"] = datetime.now(UTC).isoformat()
@@ -385,6 +393,7 @@ class ConversationMemoryStore:
             "conversation_facts": {"global": {}, "skill": {}, "stage": {}},
             "summary_updated_through_message_index": 0,
             "facts_updated_through_message_index": 0,
+            "archived_message_count": 0,
             "memory_update_status": "idle",
             "memory_update_job_id": None,
             "last_memory_updated_at": None,
@@ -394,6 +403,16 @@ class ConversationMemoryStore:
         }
 
     def _load_memory(self, user_id: str, session_id: str, active_skill_id: str) -> dict[str, Any]:
+        if self.checkpoint_repository is not None:
+            logical_session, profile_id = self._checkpoint_key(session_id)
+            try:
+                data = self.checkpoint_repository.load(logical_session, profile_id)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                # The filesystem fallback remains available for development or
+                # a transient checkpoint-store failure.
+                pass
         path = self._memory_path(user_id, session_id)
         if not path.is_file():
             return self._default_memory(user_id, session_id, active_skill_id)
@@ -404,9 +423,21 @@ class ConversationMemoryStore:
         return data if isinstance(data, dict) else self._default_memory(user_id, session_id, active_skill_id)
 
     def _save_memory(self, user_id: str, session_id: str, memory: dict[str, Any]) -> None:
+        if self.checkpoint_repository is not None:
+            logical_session, profile_id = self._checkpoint_key(session_id)
+            try:
+                self.checkpoint_repository.save(logical_session, profile_id, memory)
+                return
+            except Exception:
+                pass
         path = self._memory_path(user_id, session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _checkpoint_key(scope_id: str) -> tuple[str, str]:
+        session_id, separator, profile_id = str(scope_id).partition("__profile__")
+        return session_id or str(scope_id), profile_id if separator else "unscoped"
 
     def _call_memory_llm(
         self,
@@ -521,6 +552,7 @@ class ConversationMemoryStore:
                         int(latest.get("facts_updated_through_message_index") or 0),
                         update_through_message_index,
                     )
+                    self._prune_summarized_messages(latest)
                     latest["memory_update_status"] = "success"
                     latest["memory_update_job_id"] = None
                     latest["last_error"] = None
@@ -689,6 +721,7 @@ class ConversationMemoryStore:
         return {
             "active_window_messages": int(memory.get("active_window_messages") or self.active_window_messages),
             "total_messages": len(messages),
+            "archived_message_count": int(memory.get("archived_message_count") or 0),
             "complete_messages": complete_count,
             "summary_updated_through_message_index": int(memory.get("summary_updated_through_message_index") or 0),
             "facts_updated_through_message_index": int(memory.get("facts_updated_through_message_index") or 0),
@@ -771,6 +804,7 @@ class ConversationMemoryStore:
             "\n".join(item for item in [previous, *lines] if item)
         )
         memory["summary_updated_through_message_index"] = update_through_message_index
+        self._prune_summarized_messages(memory)
         # No facts are inferred by this fallback; retain the last safe facts checkpoint.
         memory["memory_update_status"] = "degraded_success"
         memory["last_error"] = detail
@@ -785,6 +819,20 @@ class ConversationMemoryStore:
                 payload=self._memory_trace_payload(memory),
             ),
         )
+
+    @staticmethod
+    def _prune_summarized_messages(memory: dict[str, Any]) -> None:
+        """Keep only the active raw window after a durable summary succeeds."""
+        covered = max(0, int(memory.get("summary_updated_through_message_index") or 0))
+        messages = list(memory.get("messages") or [])
+        if covered <= 0 or not messages:
+            return
+        covered = min(covered, len(messages))
+        memory["messages"] = messages[covered:]
+        memory["archived_message_count"] = int(memory.get("archived_message_count") or 0) + covered
+        # Offsets are relative to the persisted raw tail after pruning.
+        memory["summary_updated_through_message_index"] = 0
+        memory["facts_updated_through_message_index"] = 0
 
     def _trim_memory_summary(self, summary: str, limit: int = 1800) -> str:
         cleaned = summary.strip()

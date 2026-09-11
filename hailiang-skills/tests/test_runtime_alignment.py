@@ -9,15 +9,21 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent_skill_runtime_core import MSAgentRuntimeProbe, parse_script_json_output
+from agent_skill_runtime_core.core import _script_args_from_payload
 
 from hailiang_skills.runtime_bridge.conversation_memory import (
     ConversationMemoryStore,
     supplement_questionnaire_evidence,
 )
-from hailiang_skills.runtime_bridge.main_planner import MainPlannerOrchestrator, _summarize_ms_agent_runtime_trace
+from hailiang_skills.runtime_bridge.main_planner import (
+    MainPlannerOrchestrator,
+    _sanitize_script_execution_reply,
+    _summarize_ms_agent_runtime_trace,
+)
 from hailiang_skills.runtime_bridge.ms_agent_adapter import MSAgentRuntimeAdapter, SandboxPrepareResult
 from hailiang_skills.skill_runtime.models import ChatMessage, SessionState
 from hailiang_skills.skill_runtime.session import build_prompt_assembly
+from hailiang_skills.skill_runtime.skill_contract import load_skill_contract
 from hailiang_skills.skill_runtime.skill_loader import load_skill_bundle_from_directory
 
 
@@ -88,6 +94,44 @@ def _runtime_probe() -> MSAgentRuntimeProbe:
             "ExecutionInput": FakeExecutionInput,
         },
     )
+
+
+def test_script_execution_narration_and_json_are_removed_from_visible_reply() -> None:
+    reply = """好的！我来执行脚本生成方案。
+```json
+{"current_profession":"法学","round":0,"internal_score":88}
+```
+（脚本执行中……）
+根据你的偏好，更适合从法学与公共管理两个方向继续比较。"""
+
+    sanitized = _sanitize_script_execution_reply(reply)
+
+    assert sanitized == "根据你的偏好，更适合从法学与公共管理两个方向继续比较。"
+    assert _sanitize_script_execution_reply(
+        '脚本执行结果：\n{"score":88,"internal":true}\n最终建议：优先比较两个方向。'
+    ) == "最终建议：优先比较两个方向。"
+
+
+def test_skill_md_metadata_supplies_routing_when_runtime_contract_is_absent_or_facts_only(tmp_path: Path) -> None:
+    metadata = {
+        "skill_id": "travel_demo",
+        "accepts_scenes": ["城市旅行推荐"],
+        "stages": [{"id": "collect", "kind": "questionnaire"}],
+        "routes": [{"scene": "完成推荐", "target_skill_id": "general_chat"}],
+    }
+
+    without_contract = load_skill_contract(tmp_path, metadata=metadata)
+    assert without_contract.accepts_scenes == ("城市旅行推荐",)
+    assert without_contract.stages[0].id == "collect"
+    assert without_contract.routes[0].target_skill_id == "general_chat"
+
+    (tmp_path / "runtime_contract.json").write_text(
+        json.dumps({"facts": {"skill": ["target_city"]}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    facts_only = load_skill_contract(tmp_path, metadata=metadata)
+    assert facts_only.accepts_scenes == ("城市旅行推荐",)
+    assert facts_only.facts_schema.skill_keys == ("target_city",)
 
 
 def _make_script_skill(tmp_path: Path, *, requirements: str = "") -> Path:
@@ -210,6 +254,44 @@ def test_script_execution_waits_for_prepare_and_uses_script_inputs(tmp_path: Pat
     assert any(step.name == "sandbox_prepare" for step in steps)
     assert any(step.name == "requirements_cache" and step.payload["state"] == "hit" for step in steps)
     assert any(step.name == "script_execution" and step.status == "success" for step in steps)
+
+
+def test_action_oriented_script_uses_stdin_without_legacy_cli_arguments() -> None:
+    assert _script_args_from_payload(
+        {"action": "group-calc", "query": "西班牙费用", "major": "理科"}
+    ) == []
+    assert _script_args_from_payload({"query": "旧脚本查询", "major": "理科"}) == [
+        "--query", "旧脚本查询", "--major", "理科",
+    ]
+
+
+def test_study_abroad_engine_treats_no_preference_as_an_absent_filter() -> None:
+    skill_dir = (
+        Path(__file__).resolve().parents[1]
+        / "runtime/workbench_runtime/a486c6f48fcfa54f515a164b0c3700e8737e16a2b89aef372fbe4948927bf340"
+        / "study_abroad_cost_calculator"
+    )
+    request = {
+        "action": "group-calc",
+        "country": "西班牙",
+        "major": "理科",
+        "school_type": "无偏好",
+        "city_tier": "无偏好",
+        "budget": "10-20万",
+        "budget_bound": "lower",
+    }
+    completed = subprocess.run(
+        [sys.executable, str(skill_dir / "scripts/engine.py")],
+        input=json.dumps(request, ensure_ascii=False),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["empty"] is False
+    assert result["yearly_total"]["cny"] == [93326, 121871]
 
 
 def test_main_planner_allowlisted_scripts_use_local_fast_path(tmp_path: Path) -> None:
@@ -362,20 +444,12 @@ def test_conversation_memory_updates_summary_facts_and_contract_hash(tmp_path: P
         {"role": "assistant", "content": "接下来结合浙江政策分析。"},
     ]
     assert result.context["questionnaire_evidence_messages"] == [
-        {
-            "role": "user",
-            "content": "孩子高一，想选科",
-            "source_skill_id": "main_planner",
-        },
-        {
-            "role": "user",
-            "content": "我在浙江",
-            "source_skill_id": "main_planner",
-        },
+        {"role": "user", "content": "我在浙江", "source_skill_id": "main_planner"},
     ]
-    assert result.context["status"]["questionnaire_evidence_messages"] == 2
+    assert result.context["status"]["questionnaire_evidence_messages"] == 1
     assert result.context["status"]["runtime_contract_hash"]
-    assert result.context["status"]["summary_updated_through_message_index"] == 2
+    assert result.context["status"]["summary_updated_through_message_index"] == 0
+    assert result.context["status"]["archived_message_count"] == 2
     assert result.step.status == "success"
 
 
@@ -605,9 +679,10 @@ def test_deferred_conversation_memory_preserves_turn_appended_while_job_runs(tmp
         time.sleep(0.01)
 
     assert memory["memory_update_status"] == "success"
-    assert len(memory["messages"]) == 6
+    assert len(memory["messages"]) == 4
     assert memory["conversation_summary"] == "上一轮确认孩子高一。"
-    assert memory["summary_updated_through_message_index"] == 2
+    assert memory["summary_updated_through_message_index"] == 0
+    assert memory["archived_message_count"] == 2
 
 
 def test_prompt_includes_soul_and_conversation_memory(tmp_path: Path) -> None:

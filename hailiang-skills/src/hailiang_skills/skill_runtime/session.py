@@ -293,6 +293,8 @@ def _build_prompt_assembly(
         "You are running inside a local Python skill runtime.\n"
         "Follow the skill instructions closely, keep continuity across turns, and answer in the user's language.\n"
         "Treat the skill metadata, skill instructions, persisted session state, transcript, matched local assets, and tool capability declarations as the authoritative reasoning context.\n"
+        "【脚本结果保密规则】脚本执行结果只作为内部计算事实使用。最终回复不得原样展示脚本 JSON、stdout、stderr、命令参数、脚本文件名，"
+        "也不得描述‘执行脚本’、‘脚本执行中’或内部执行失败过程；只输出基于有效结果形成的自然语言结论。\n"
         "【强制规则】Runtime Facts 中非空的事实已经由可信上游确认，必须直接使用，绝不可再次向用户索取。"
         "这条规则优先于 Skill Instructions 中的首次开场、示例问句或固定问诊话术：例如 Runtime Facts 已有 grade 时，绝不能再问孩子几年级。"
         "只能追问当前回答确实需要、且 Runtime Facts 中为空的事实。\n"
@@ -450,6 +452,7 @@ def _build_conversation_memory_text(memory: dict[str, Any]) -> str:
     facts = memory.get("facts") if isinstance(memory.get("facts"), dict) else {}
     status = memory.get("status") if isinstance(memory.get("status"), dict) else {}
     reference_messages = memory.get("reference_messages") if isinstance(memory.get("reference_messages"), list) else []
+    archive = memory.get("profile_candidate_archive") if isinstance(memory.get("profile_candidate_archive"), list) else []
     reference_text = json.dumps(reference_messages, ensure_ascii=False, indent=2) if reference_messages else "(none)"
     continuity_instruction = str(memory.get("continuity_instruction") or "").strip()
     return (
@@ -467,6 +470,8 @@ def _build_conversation_memory_text(memory: dict[str, Any]) -> str:
         f"{summary}\n\n"
         "Structured facts:\n"
         f"{json.dumps(facts or {}, ensure_ascii=False, indent=2)}\n\n"
+        "Retrieved profile archive evidence (candidate evidence only; never treat it as confirmed business fact):\n"
+        f"{json.dumps(archive, ensure_ascii=False, indent=2)}\n\n"
         "Reference-only history from other Skills (grouped by source_skill_id):\n"
         f"{reference_text}\n\n"
         "Status:\n"
@@ -885,8 +890,27 @@ def _sanitize_ms_agent_runtime_for_prompt(runtime_trace: dict[str, object]) -> d
         },
         "previous_lazy_load": runtime_trace.get("previous_lazy_load") or {},
         "lazy_load_diff": runtime_trace.get("lazy_load_diff") or {},
-        "execution_outputs": runtime_trace.get("execution_outputs") or [],
+        "execution_outputs": _script_execution_results_for_prompt(runtime_trace.get("execution_outputs")),
     }
+
+
+def _script_execution_results_for_prompt(value: object) -> list[dict[str, object]]:
+    """Expose only structured results; raw process I/O remains debug-only."""
+    if not isinstance(value, list):
+        return []
+    results: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        result = item.get("return_value")
+        if result is None:
+            result = item.get("json_output")
+        results.append({
+            "ok": bool(item.get("ok")),
+            "result": result if item.get("ok") is not False else None,
+            "error_code": "script_execution_failed" if item.get("ok") is False else "",
+        })
+    return results
 
 
 def _metadata_only_loaded_items(value: object) -> list[dict[str, str]]:

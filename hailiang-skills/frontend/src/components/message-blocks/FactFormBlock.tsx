@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useChatStore } from "@/store/useChatStore";
 import type { FactFormBlock as FactFormBlockType, FactFormField } from "@/types/messageBlocks";
@@ -17,7 +17,7 @@ type FactFormBlockProps = {
 };
 
 export function FactFormBlock({ messageId, block, onSubmit, interactionState }: FactFormBlockProps) {
-  const { formDrafts, setFormDraftValue } = useChatStore();
+  const { formDrafts, setFormDraftValue, clearFormDraft } = useChatStore();
   const [submitting, setSubmitting] = useState(false);
   const formId = block.payload.form_id;
   const fields = block.payload.fields ?? [];
@@ -26,6 +26,15 @@ export function FactFormBlock({ messageId, block, onSubmit, interactionState }: 
   // conditional returns avoids changing Hook order when the form becomes
   // `submitted` after the user clicks an option.
   const canAutoSubmit = fields.length === 1 && fields[0]?.input_type === "single_select" && fields[0]?.submit_mode === "auto";
+
+  // Expert changes make the server-side interaction immutable. Keeping the
+  // browser draft would make an abandoned form look as though it could still
+  // be submitted after the user later returns to the message.
+  useEffect(() => {
+    if (interactionState?.status === "expired") {
+      clearFormDraft(formId);
+    }
+  }, [clearFormDraft, formId, interactionState?.status]);
 
   if (interactionState?.status === "submitted") {
     return <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/5 p-4 text-sm text-emerald-100">已完成补充信息</div>;
@@ -137,9 +146,13 @@ export function FactFormBlock({ messageId, block, onSubmit, interactionState }: 
 
           return (
             <label key={field.fact_key} className="block">
-              <span className="text-sm font-medium text-white">{field.label}</span>
+              <span className="text-sm font-medium text-white">{field.label}{field.required ? <span className="ml-1 text-rose-300">*</span> : null}</span>
               {commonHint ? <span className="mt-1 block text-xs text-slate-400">{commonHint}</span> : null}
               <input
+                type={field.input_type === "integer" || field.input_type === "number" ? "number" : "text"}
+                min={field.min as number | undefined}
+                max={field.max as number | undefined}
+                step={field.input_type === "integer" ? 1 : field.decimal_places != null ? 10 ** -field.decimal_places : undefined}
                 value={typeof currentValue === "string" ? currentValue : ""}
                 disabled={submitting}
                 onChange={(event) => setFormDraftValue(formId, field.fact_key, event.target.value)}

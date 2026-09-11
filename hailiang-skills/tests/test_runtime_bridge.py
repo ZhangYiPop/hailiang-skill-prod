@@ -38,6 +38,7 @@ from hailiang_skills.runtime_bridge.main_planner import (
     _IncrementalAssistantMessageExtractor,
     _QuestionnaireContinuationExtractor,
     _RuntimePlannerLLM,
+    _normalize_runtime_planner_response,
     _authorize_requested_tool_specs,
     _tool_intent_label,
 )
@@ -696,6 +697,15 @@ class RuntimeBridgeTest(unittest.TestCase):
             },
         )
 
+    def test_response_error_metadata_keeps_header_code_when_body_is_streamed(self) -> None:
+        class StreamWrappedResponse:
+            headers = {"X-Hailiang-Error-Code": "EXPERT_CONTEXT_FIELDS_REQUIRED"}
+
+        self.assertEqual(
+            _response_error_metadata(StreamWrappedResponse()),
+            {"response_error_code": "EXPERT_CONTEXT_FIELDS_REQUIRED"},
+        )
+
     def test_runtime_planner_llm_normalizes_nonstandard_json_plan(self) -> None:
         class NonstandardPlannerClient(FakeRuntimeClient):
             def complete(self, messages, *, logger=None) -> str:
@@ -759,6 +769,53 @@ class RuntimeBridgeTest(unittest.TestCase):
             self.assertEqual(planner.last_combined_response, "这是同一次规划调用生成的正文。")
             self.assertIn("references/rule.md", client.prompts[0])
             self.assertNotIn("本地规则资料", client.prompts[0])
+
+    def test_runtime_planner_uses_skill_semantics_for_on_demand_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            skill_dir = Path(directory)
+            scripts_dir = skill_dir / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "state.py").write_text("print('{}')", encoding="utf-8")
+
+            class SemanticPlannerClient:
+                def __init__(self) -> None:
+                    self.prompt = ""
+
+                def complete(self, messages, *, logger=None) -> str:
+                    del logger
+                    self.prompt = str(messages[-1].content)
+                    return json.dumps(
+                        {
+                            "can_handle": True,
+                            "required_scripts": ["state.py"],
+                            "required_references": [],
+                            "required_resources": [],
+                            "required_packages": [],
+                            "assistant_message": "",
+                        },
+                        ensure_ascii=False,
+                    )
+
+            client = SemanticPlannerClient()
+            planner = _RuntimePlannerLLM(client, skill_dir=skill_dir)
+            payload = json.loads(planner.generate([SimpleNamespace(content="plan")]).content)
+
+            self.assertEqual(payload["required_scripts"], ["state.py"])
+            self.assertIn("每个用户回合", client.prompt)
+            self.assertIn("特定阶段或意图", client.prompt)
+            self.assertIn("scripts/state.py", client.prompt)
+
+    def test_invalid_combined_plan_preserves_earlier_dependency_selections(self) -> None:
+        payload = json.loads(
+            _normalize_runtime_planner_response(
+                '{"can_handle":true,"required_scripts":["pick_profession.py"],'
+                '"required_references":["copywriting.md"],"assistant_message":"未闭合'
+            )
+        )
+
+        self.assertEqual(payload["required_scripts"], ["pick_profession.py"])
+        self.assertEqual(payload["required_references"], ["copywriting.md"])
+        self.assertEqual(payload["plan_summary"], "recovered partial lazy load plan")
 
     def test_incremental_assistant_message_extractor_handles_fragmented_json_escapes(self) -> None:
         extractor = _IncrementalAssistantMessageExtractor()
@@ -2065,32 +2122,23 @@ class RuntimeBridgeTest(unittest.TestCase):
         self.assertEqual(short_circuit["stage"], "precheck")
         self.assertTrue(short_circuit["details"]["consultative_lock"])
 
-    def test_main_planner_asks_grade_before_entering_multi_path_when_stage_unknown(self) -> None:
-        orchestrator = build_orchestrator()
-        context = SessionContext(user_id="u1")
-
-        result = orchestrator.handle_message("想看看除了普通高考还有什么路", context)
-
-        self.assertIn("几年级", result.assistant_message)
-        self.assertEqual(context.skill_states["main_planner"]["target_skill"], "main_planner")
-        self.assertEqual(context.skill_states["skill_runtime"]["active_skill_id"], "main_planner")
-        self.assertEqual(context.interaction_state["active_skill"], "main_planner")
-        self.assertEqual(context.skill_states["planner"].get("missing_facts"), ["grade"])
-        self.assertIsNotNone(context.skill_states["planner"].get("missing_fact_form"))
-
-    def test_main_planner_resumes_multi_path_after_user_supplies_grade(self) -> None:
+    def test_main_planner_enters_high_school_multi_path_without_a_parent_grade_gate(self) -> None:
         orchestrator = build_orchestrator()
         orchestrator.runtime_client = FakeRuntimeClient()
         context = SessionContext(user_id="u1")
+        _preactivate_requested_target_skill(
+            context,
+            "multi_path_planning",
+            runtime_registry=orchestrator.runtime_registry,
+        )
+        context.session_meta["requested_target_skill_id"] = "multi_path_planning"
 
-        first = orchestrator.handle_message("想看看除了普通高考还有什么路", context)
-        second = orchestrator.handle_message("初二", context)
+        result = orchestrator.handle_message("你好", context)
 
-        self.assertIn("几年级", first.assistant_message)
-        self.assertEqual(second.assistant_message, "runtime 原生 Skill 回复")
-        self.assertEqual(context.known_facts.get_value("grade"), "初二")
-        self.assertEqual(context.skill_states["main_planner"]["target_skill"], "junior_multi_path_planning")
-        self.assertEqual(context.skill_states["skill_runtime"]["active_skill_id"], "junior_multi_path_planning")
+        self.assertNotIn("几年级", result.assistant_message)
+        self.assertEqual(context.skill_states["skill_runtime"]["active_skill_id"], "multi_path_planning")
+        self.assertEqual(context.interaction_state["active_skill"], "multi_path_planning")
+        self.assertFalse(context.skill_states["skill_runtime"].get("status_flags", {}).get("awaiting_school_stage_for_multi_path"))
 
     def test_planner_missing_facts_are_replaced_after_user_supplies_form_values(self) -> None:
         orchestrator = build_orchestrator()
@@ -2191,7 +2239,7 @@ class RuntimeBridgeTest(unittest.TestCase):
 
         result = orchestrator.handle_message("我想做前景探路，高一中等", context)
 
-        self.assertEqual(result.assistant_message, "runtime 原生 Skill 回复")
+        self.assertNotIn("几年级", result.assistant_message)
         self.assertEqual(context.skill_states["main_planner"]["target_skill"], "future_explore")
         self.assertEqual(context.skill_states["skill_runtime"]["active_skill_id"], "future_explore")
         self.assertEqual(context.interaction_state["active_skill"], "future_explore")
@@ -2316,6 +2364,7 @@ class RuntimeBridgeTest(unittest.TestCase):
 
     def test_explicit_multi_path_entry_stays_active_when_grade_is_unknown(self) -> None:
         orchestrator = build_orchestrator()
+        orchestrator.runtime_client = FakeRuntimeClient()
         context = SessionContext(user_id="u1")
         _preactivate_requested_target_skill(
             context,
@@ -2326,7 +2375,7 @@ class RuntimeBridgeTest(unittest.TestCase):
 
         result = orchestrator.handle_message("进入multi_path_planning", context)
 
-        self.assertIn("几年级", result.assistant_message)
+        self.assertNotIn("几年级", result.assistant_message)
         self.assertEqual(context.skill_states["skill_runtime"]["active_skill_id"], "multi_path_planning")
         self.assertEqual(context.interaction_state["active_skill"], "multi_path_planning")
 

@@ -16,12 +16,24 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from hailiang_skills.storage.database import Base, WorkbenchDebugSessionRow
-from hailiang_skills.workbench.service import WorkbenchConflict, WorkbenchError, WorkbenchService, _hash
-from hailiang_skills.workbench.runtime_overlay import configured_skill_bundle, skill_bundle_from_entry
+from hailiang_skills.workbench.service import (
+    WorkbenchConflict,
+    WorkbenchError,
+    WorkbenchService,
+    _hash,
+    _script_execution_succeeded,
+)
+from hailiang_skills.workbench.runtime_overlay import (
+    configured_skill_bundle,
+    skill_bundle_from_entry,
+    skill_markdown_with_metadata,
+)
 from hailiang_skills.api.routes import workbench as workbench_routes
 from hailiang_skills.api.routes.workbench import build_deployment_router, build_workbench_router
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.runtime_bridge.main_planner import MainPlannerOrchestrator
+from hailiang_skills.skill_runtime.models import ChatMessage, SessionState, ToolCapability, ToolRegistry
+from hailiang_skills.skill_runtime.tools import run_local_rag
 
 
 @pytest.fixture()
@@ -61,7 +73,48 @@ def test_database_bundle_needs_no_business_template(tmp_path, monkeypatch):
     assert bundle.scripts["scripts/score.py"].is_file()
 
 
-def test_candidate_single_skill_expert_enters_locked_skill_without_agent_router(monkeypatch, service):
+def test_workbench_asset_is_retrievable_by_skill_local_rag(tmp_path, monkeypatch):
+    from hailiang_skills.workbench import runtime_overlay
+
+    monkeypatch.setattr(runtime_overlay, "state_root", lambda: tmp_path)
+    entry = {
+        "object_key": "asset_retrieval_skill",
+        "payload": {
+            "prompt_markdown": "优先使用本地 asset 回答。",
+            "source_metadata": {"name": "本地资产检索测试"},
+            "runtime_contract": {},
+        },
+        "files": [
+            _text_asset(
+                "assets/policy.json",
+                '{"workbench_asset_token":"只允许周一至周五预约"}',
+                "application/json",
+            ),
+        ],
+    }
+
+    bundle = skill_bundle_from_entry(entry)
+    bundle.tool_registry = ToolRegistry(
+        capabilities=(ToolCapability(name="rag", description="本地资料检索", enabled=True),),
+    )
+    state = SessionState(
+        session_id="sess_workbench_asset_rag",
+        active_skill_id="asset_retrieval_skill",
+        messages=[ChatMessage(role="user", content="workbench_asset_token 的预约规则是什么？")],
+    )
+
+    results = run_local_rag(bundle, state)
+
+    assert bundle.runtime_metadata.assets.local_enabled is True
+    assert bundle.local_assets["assets/policy.json"].startswith('{"workbench_asset_token"')
+    assert any(
+        result.source == "local_asset:assets/policy.json"
+        and "只允许周一至周五预约" in result.snippet
+        for result in results
+    )
+
+
+def test_candidate_single_skill_expert_requires_agent_authorization(monkeypatch, service):
     snapshot = {
         "root": {"object_id": "expert-1"},
         "entries": [
@@ -80,14 +133,60 @@ def test_candidate_single_skill_expert_enters_locked_skill_without_agent_router(
         "_execute_candidate_skill",
         lambda entry, message, _context: called.append(str(entry["object_key"])) or "由提分技能回答",
     )
-    service.orchestrator = SimpleNamespace(handle_message=lambda *_args: pytest.fail("不应调用专家路由"))
+    agent_calls: list[str] = []
+
+    def handle_message(message, received_context):
+        agent_calls.append(message)
+        received_context.event_trace.append({
+            "event_type": "expert_skill_executed",
+            "payload": {"expert_id": "academic_coach", "skill_id": "score_improve"},
+        })
+        return SimpleNamespace(assistant_message="专家已选择提分技能")
+
+    service.orchestrator = SimpleNamespace(handle_message=handle_message)
 
     result = service._execute_snapshot_message(snapshot, "我想提分", context)
 
     assert result == "由提分技能回答"
     assert called == ["score_improve"]
+    assert agent_calls == ["我想提分"]
     assert context.interaction_state["active_skill"] == "score_improve"
-    assert context.event_trace[-1]["event_type"] == "candidate_single_skill_selected"
+    assert context.event_trace[-1]["event_type"] == "expert_skill_executed"
+
+
+def test_candidate_context_uses_snapshot_names_for_unpublished_expert_and_team(service):
+    context = SessionContext()
+    context.session_meta.update({
+        "expert_team_id": "study_abroad_team",
+        "expert_id": "study_abroad_consultant",
+        "active_expert_id": "study_abroad_consultant",
+        "configuration_snapshot": {
+            "entries": [
+                {
+                    "object_type": "expert_team",
+                    "object_key": "study_abroad_team",
+                    "name": "留学规划专家团",
+                    "payload": {"coordinator_expert_id": "study_abroad_consultant"},
+                },
+                {
+                    "object_type": "expert",
+                    "object_key": "study_abroad_consultant",
+                    "name": "留学咨询师",
+                },
+            ],
+        },
+    })
+    service.orchestrator = SimpleNamespace(
+        expert_registry=SimpleNamespace(get=lambda _expert_id: None),
+        expert_team_registry=SimpleNamespace(get=lambda _team_id: None),
+        runtime_registry=SimpleNamespace(get=lambda _skill_id: None),
+    )
+
+    expert, expert_context = service._candidate_expert_state(context)
+
+    assert expert_context["expert_team_id"] == "study_abroad_team"
+    assert expert["team"]["name"] == "留学规划专家团"
+    assert expert["active"]["name"] == "留学咨询师"
 
 
 def test_filesystem_migration_captures_root_data_and_requires_explicit_current(tmp_path, monkeypatch):
@@ -201,7 +300,7 @@ class _PreviewOrchestrator:
 
 class _RedispatchPreviewOrchestrator(_PreviewOrchestrator):
     def handle_message(self, message, context):
-        selected = "family_skill" if "另一个技能" in message else "disc_skill"
+        selected = "family_skill" if ("另一个技能" in message or "亲子沟通" in message) else "disc_skill"
         context.event_trace.append({
             "event_type": "expert_skill_executed",
             "payload": {"expert_id": "switching_expert", "skill_id": selected},
@@ -223,13 +322,6 @@ class _TeamHandoffPreviewOrchestrator(_PreviewOrchestrator):
         }
         assistant["metadata"]["team_handoff"] = assistant["team_handoff"]
         return SimpleNamespace(assistant_message=assistant["content"])
-
-
-class _SemanticSwitchChooser:
-    def select_candidate_skill_switch(self, message, _context, *, current_skill_id):
-        if current_skill_id == "disc_skill" and "亲子沟通" in message:
-            return "family_skill"
-        return None
 
 
 def _preview_service() -> WorkbenchService:
@@ -272,6 +364,35 @@ def _publish_skill(service: WorkbenchService, actor_id: str, *, key: str = "skil
         confirmation_notes="人工确认", actor_id=actor_id,
     )
     return obj, revision, release
+
+
+def test_revision_and_release_include_business_actor_display_name(service: WorkbenchService):
+    creator_id = service.register_actor("初始创建人")["actor_id"]
+    editor_id = service.register_actor("业务修改人")["actor_id"]
+    obj = service.create_object(
+        object_type="skill", object_key="actor_trace_skill", name="人员追溯 Skill", actor_id=creator_id,
+    )
+    revision = service.save_revision(
+        obj["object_id"], base_revision_id=None,
+        payload={"prompt_markdown": "用于验证版本变更人员", "runtime_contract": {}, "capability_ids": []},
+        dependency_locks=[], assets=[], actor_id=editor_id,
+    )
+    assert revision["created_by_display_name"] == "业务修改人"
+
+    debug = service.create_debug_session(revision["revision_id"], baseline_release_id=None, actor_id=editor_id)
+    service.complete_debug_session(debug["debug_session_id"], conclusion="通过", actor_id=editor_id)
+    release = service.publish_revision(
+        revision["revision_id"], evidence_id=debug["debug_session_id"], manual_confirmation=True,
+        confirmation_notes="人工确认", actor_id=editor_id,
+    )
+    assert release["published_by_display_name"] == "业务修改人"
+
+    detail = service.get_object(obj["object_id"])
+    assert detail["revisions"][0]["created_by"] == editor_id
+    assert detail["revisions"][0]["created_by_display_name"] == "业务修改人"
+    assert detail["releases"][0]["published_by"] == editor_id
+    assert detail["releases"][0]["published_by_display_name"] == "业务修改人"
+    assert service.list_releases()[0]["published_by_display_name"] == "业务修改人"
 
 
 def _publish_expert(
@@ -791,6 +912,7 @@ def test_skill_revision_preserves_editable_reference_and_safe_python_script(serv
         dependency_locks=[],
         assets=[
             _text_asset("references/rules.md", "# 规则\n仅使用已知事实。", "text/markdown"),
+            _text_asset("assets/lookup.json", '{"城市":"杭州"}\n', "application/json"),
             _text_asset("scripts/score.py", "def main(payload: dict) -> dict:\n    return {'score': 1}\n", "text/x-python"),
         ],
         actor_id=actor_id,
@@ -808,18 +930,24 @@ def test_skill_revision_preserves_editable_reference_and_safe_python_script(serv
     imported = service.import_package(package, environment="prod", actor_id=actor_id)
 
     assert revision["validation"]["valid"] is True
-    assert {item["relative_path"] for item in assets} == {"references/rules.md", "scripts/score.py"}
+    assert {item["relative_path"] for item in assets} == {"references/rules.md", "assets/lookup.json", "scripts/score.py"}
     assert snapshot["entries"][0]["runtime_root"]
     assert "content_base64" not in snapshot["entries"][0]["files"][0]
     assert imported["status"] == "staged"
+    assert any(path.endswith("/assets/lookup.json") for path in service._read_zip(package))
     assert any(path.endswith("/scripts/score.py") for path in service._read_zip(package))
     bundle = SimpleNamespace(
         _skill_markdown="filesystem", _skill_markdown_loader=None,
-        root_dir=None, skill_file=None, references={}, scripts={}, _references={}, _references_loader=None, _scripts={},
+        root_dir=None, skill_file=None, references={}, local_assets={}, scripts={}, _references={}, _references_loader=None,
+        _local_assets={}, _local_assets_loader=None, _scripts={},
     )
     configured = configured_skill_bundle(bundle, snapshot["entries"][0])
     assert configured._references["references/rules.md"].startswith("# 规则")
+    assert configured._local_assets["assets/lookup.json"] == '{"城市":"杭州"}\n'
     assert configured._scripts["scripts/score.py"].is_file()
+    loaded = skill_bundle_from_entry(snapshot["entries"][0])
+    assert loaded.local_assets["assets/lookup.json"] == '{"城市":"杭州"}\n'
+    assert loaded.runtime_metadata.assets.local_enabled is True
 
 
 def test_team_package_can_import_recursively_into_workbench_objects():
@@ -1176,6 +1304,21 @@ def test_revision_test_evidence_keeps_a_per_turn_execution_debug_summary():
     assert any(event["event_type"] == "candidate_turn_started" for event in trace[0]["events"])
 
 
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ({"ok": True}, True),
+        ({"ok": False, "exit_code": "success"}, False),
+        ({"json_output": {"ok": True}, "exit_code": "success"}, True),
+        ({"return_value": {"ok": True}, "exit_code": 0}, True),
+        ({"exit_code": "success"}, True),
+        ({"exit_code": 1}, False),
+    ],
+)
+def test_candidate_script_execution_status_normalizes_sandbox_shapes(output, expected):
+    assert _script_execution_succeeded(output) is expected
+
+
 def test_candidate_stream_assigns_a_generation_before_runtime_execution(monkeypatch):
     preview_service = _preview_service()
     actor_id = _actor(preview_service)
@@ -1380,7 +1523,7 @@ def test_candidate_expert_can_redispatch_to_another_locked_skill():
     assert "DISC 候选规则" in first["assistant_message"]
     assert "家庭关系候选规则" in switched["assistant_message"]
     latest_events = switched["debug_session"]["trace"][-1]["events"]
-    assert any(event["event_type"] == "candidate_skill_redispatch_requested" for event in latest_events)
+    assert any(event["event_type"] == "expert_skill_executed" for event in latest_events)
     assert switched["debug_session"]["trace"][-1]["debug"]["skill"]["object_key"] == "family_skill"
 
 
@@ -1399,9 +1542,7 @@ def test_candidate_expert_semantically_redispatches_a_new_task_to_locked_skill()
         dependency_locks=[{"release_id": disc_release["release_id"]}, {"release_id": family_release["release_id"]}],
         assets=[], actor_id=actor_id,
     )
-    orchestrator = _RedispatchPreviewOrchestrator()
-    orchestrator.expert_runtime = _SemanticSwitchChooser()
-    preview_service.orchestrator = orchestrator
+    preview_service.orchestrator = _RedispatchPreviewOrchestrator()
     session = preview_service.create_revision_test_session(expert_revision["revision_id"], actor_id=actor_id)
     preview_service.run_revision_test_turn(session["debug_session_id"], user_message="做性格测试", actor_id=actor_id)
     switched = preview_service.run_revision_test_turn(
@@ -1410,13 +1551,14 @@ def test_candidate_expert_semantically_redispatches_a_new_task_to_locked_skill()
 
     assert "家庭关系候选规则" in switched["assistant_message"]
     latest_events = switched["debug_session"]["trace"][-1]["events"]
-    assert any(event["event_type"] == "candidate_skill_semantic_redispatch" for event in latest_events)
+    assert any(event["event_type"] == "expert_skill_executed" for event in latest_events)
 
 
 def test_candidate_team_handoff_is_persisted_as_an_interactive_block_and_can_be_confirmed():
     context = SessionContext()
     context.session_meta.update({
         "expert_team_id": "team_a",
+        "active_expert_id": "coordinator_expert",
         "configuration_snapshot": {
             "entries": [
                 {
@@ -1433,6 +1575,7 @@ def test_candidate_team_handoff_is_persisted_as_an_interactive_block_and_can_be_
                 "role": "assistant",
                 "message_id": "msg_handoff_1",
                 "content": "建议转交家庭教育专家。",
+            "blocks": [{"type": "fact_form", "payload": {"form_id": "handoff_context", "fields": []}}],
             "team_handoff": {
                 "handoff_id": "handoff_1",
                 "status": "active",
@@ -1442,6 +1585,10 @@ def test_candidate_team_handoff_is_persisted_as_an_interactive_block_and_can_be_
             },
         },
     ]
+    context.skill_states["skill_runtime"] = {
+        "active_skill_id": "team_skill",
+        "skill_facts": {"team_skill": {"_pending_questionnaire": {"form_id": "handoff_context"}}},
+    }
 
     blocks = WorkbenchService._latest_assistant_blocks(context)
     assert blocks[-1]["type"] == "team_handoff"
@@ -1461,7 +1608,47 @@ def test_candidate_team_handoff_is_persisted_as_an_interactive_block_and_can_be_
     assert context.messages[-1]["team_handoff"]["status"] == "selected"
     assert context.session_meta["team_member_switch"]["source"] == "team_handoff"
     assert context.session_meta["team_member_switch"]["target_expert_id"] == "family_expert"
+    assert context.messages[-1]["interaction_states"]["fact_form:handoff_context"]["status"] == "expired"
+    assert "_pending_questionnaire" not in context.skill_states["skill_runtime"]["skill_facts"]["team_skill"]
+    assert any(event["event_type"] == "form_abandoned" for event in context.event_trace)
     assert "family_expert" not in message
+
+
+def test_candidate_team_restore_keeps_the_member_selected_by_a_handoff():
+    preview_service = _preview_service()
+    row = WorkbenchDebugSessionRow(
+        debug_session_id="dbg_keep_selected_member",
+        revision_id="rev_team",
+        runtime_context={
+            "session_meta": {
+                "expert_team_id": "team_a",
+                "expert_id": "family_expert",
+                "active_expert_id": "family_expert",
+                "expert_selection_source": "candidate_handoff_card",
+            },
+            "skill_states": {"agent_runtime": {"expert_id": "family_expert"}},
+        },
+    )
+    snapshot = {
+        "root": {"object_id": "team-object"},
+        "entries": [{
+            "object_id": "team-object",
+            "object_type": "expert_team",
+            "object_key": "team_a",
+            "payload": {"coordinator_expert_id": "coordinator-object"},
+            "dependency_locks": [
+                {"object_id": "coordinator-object", "object_type": "expert", "object_key": "coordinator_expert"},
+                {"object_id": "family-object", "object_type": "expert", "object_key": "family_expert"},
+            ],
+        }],
+    }
+
+    restored = preview_service._restore_revision_test_context(row, snapshot)
+
+    assert restored.session_meta["expert_team_id"] == "team_a"
+    assert restored.session_meta["active_expert_id"] == "family_expert"
+    assert restored.session_meta["expert_id"] == "family_expert"
+    assert restored.skill_states["agent_runtime"]["expert_id"] == "family_expert"
 
 
 def test_candidate_team_manual_at_expert_uses_a_snapshot_locked_structured_switch():
@@ -1488,6 +1675,16 @@ def test_candidate_team_manual_at_expert_uses_a_snapshot_locked_structured_switc
             ],
         },
     })
+    context.messages.append({
+        "role": "assistant",
+        "message_id": "msg_candidate_form",
+        "content": "请补充当前家庭情况。",
+        "blocks": [{"type": "fact_form", "payload": {"form_id": "candidate_family_context", "fields": []}}],
+    })
+    context.skill_states["skill_runtime"] = {
+        "active_skill_id": "family_skill",
+        "skill_facts": {"family_skill": {"_pending_questionnaire": {"form_id": "candidate_family_context"}}},
+    }
 
     message = WorkbenchService._revision_test_input_message(
         context,
@@ -1508,6 +1705,10 @@ def test_candidate_team_manual_at_expert_uses_a_snapshot_locked_structured_switc
         "content": "孩子最近不愿意写作业，怎么沟通？",
         "visible_user_message": "@家庭教育专家 孩子最近不愿意写作业，怎么沟通？",
     }
+    assert context.messages[0]["interaction_states"]["fact_form:candidate_family_context"]["status"] == "expired"
+    assert "_pending_questionnaire" not in context.skill_states["skill_runtime"]["skill_facts"]["family_skill"]
+    abandoned = [event for event in context.event_trace if event["event_type"] == "form_abandoned"]
+    assert abandoned and abandoned[-1]["payload"]["reason"] == "candidate_manual_expert_selection"
     assert context.user_id == "workbench-candidate-dbg_at"
     assert context.profile_id == "anonymous-candidate"
 
@@ -1704,10 +1905,10 @@ def test_standard_expert_package_preview_reads_brief_from_agent_yaml(service: Wo
     actor_id = _actor(service)
     output = io.BytesIO()
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
-        archive.writestr("AGENT.md", "# 专家规则\n")
+        archive.writestr("AGENT.md", "---\nname: 导入专家\nagent_id: imported_expert\ndesc: 学习规划支持\n---\n# 专家规则\n")
         archive.writestr(
             "agent.yaml",
-            "schema_version: 1\nid: imported_expert\nname: 导入专家\nbrief: 面向学生的学习规划支持\n",
+            "schema_version: 1\nname: 导入专家\nbrief: 面向学生的学习规划支持\n",
         )
 
     preview = service.preview_standard_skill_package(output.getvalue(), actor_id=actor_id)
@@ -1716,6 +1917,26 @@ def test_standard_expert_package_preview_reads_brief_from_agent_yaml(service: Wo
     assert preview["draft"]["object_key"] == "imported_expert"
     assert preview["draft"]["name"] == "导入专家"
     assert preview["draft"]["payload"]["brief"] == "面向学生的学习规划支持"
+
+
+def test_standard_expert_team_preview_reads_expert_team_id_from_team_frontmatter(service: WorkbenchService):
+    actor_id = _actor(service)
+    output = io.BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "TEAM.md",
+            "---\nname: 学生成长专家团\nexpert_team_id: student_growth_expert_team\ndesc: 覆盖学生成长相关问题\n---\n# 团队规则\n",
+        )
+        archive.writestr(
+            "team.yaml",
+            "schema_version: 1\nname: 学生成长专家团\nbrief: 覆盖学习、升学与职业成长问题\n",
+        )
+
+    preview = service.preview_standard_skill_package(output.getvalue(), actor_id=actor_id)
+
+    assert preview["draft"]["object_type"] == "expert_team"
+    assert preview["draft"]["object_key"] == "student_growth_expert_team"
+    assert preview["draft"]["payload"]["brief"] == "覆盖学习、升学与职业成长问题"
 
 
 def test_standard_zip_strips_macos_wrapper_and_maps_questions_asset(service: WorkbenchService):
@@ -1730,8 +1951,61 @@ def test_standard_zip_strips_macos_wrapper_and_maps_questions_asset(service: Wor
     preview = service.preview_standard_skill_package(output.getvalue(), actor_id=actor_id)
 
     paths = {item["relative_path"] for item in preview["draft"]["assets"]}
-    assert paths == {"references/rules.md", "scripts/score.py", "references/assets/questions.json"}
+    assert paths == {"references/rules.md", "scripts/score.py", "assets/questions.json"}
     assert preview["form_preview"][0]["input_type"] == "single_select"
+
+
+def test_standard_skill_import_preserves_assets_scripts_and_questionnaire_path(service: WorkbenchService):
+    actor_id = _actor(service)
+    output = io.BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "SKILL.md",
+            "---\nname: 旅行推荐\nskill_id: travel_demo\nquestionnaire:\n  enabled: true\n  config_path: assets/questionnaire.json\n---\n# 旅行推荐\n",
+        )
+        archive.writestr("assets/questionnaire.json", json.dumps({"schema_version": 1, "questions": [{"id": "age", "label": "年龄", "input_type": "integer"}]}, ensure_ascii=False))
+        archive.writestr("scripts/score.py", "def main(payload):\n    return payload\n")
+        archive.writestr("references/cities.md", "城市资料")
+
+    preview = service.preview_standard_skill_package(output.getvalue(), actor_id=actor_id)
+    paths = {item["relative_path"] for item in preview["draft"]["assets"]}
+    assert paths == {"assets/questionnaire.json", "scripts/score.py", "references/cities.md"}
+    assert preview["draft"]["payload"]["configuration"]["questionnaire"]["config_path"] == "assets/questionnaire.json"
+    assert "questionnaire" not in preview["draft"]["payload"]["runtime_contract"]
+
+
+def test_questionnaire_metadata_is_written_back_to_skill_frontmatter() -> None:
+    markdown = "---\nname: 旅行推荐\n---\n# 旅行推荐\n"
+
+    rendered = skill_markdown_with_metadata(markdown, {
+        "questionnaire": {"enabled": True, "config_path": "assets/questionnaire.json"},
+    })
+
+    assert "name: 旅行推荐" in rendered
+    assert "questionnaire:" in rendered
+    assert "config_path: assets/questionnaire.json" in rendered
+    assert rendered.endswith("# 旅行推荐\n")
+
+
+def test_standard_skill_import_preserves_safe_root_data_files(service: WorkbenchService):
+    actor_id = _actor(service)
+    output = io.BytesIO()
+    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "SKILL.md",
+            "---\nname: 猜职业\nskill_id: guess_profession_contract\n---\n# 猜职业\n",
+        )
+        archive.writestr(
+            "scripts/pick_profession.py",
+            "import json, sys\npayload = json.load(sys.stdin)\nprint(json.dumps({'ok': True}))\n",
+        )
+        archive.writestr("professions.json", json.dumps({"professions": ["教师"]}, ensure_ascii=False))
+
+    preview = service.preview_standard_skill_package(output.getvalue(), actor_id=actor_id)
+
+    paths = {item["relative_path"] for item in preview["draft"]["assets"]}
+    assert paths == {"scripts/pick_profession.py", "professions.json"}
+    assert preview["warnings"] == []
 
 
 def test_unsafe_python_script_is_saved_for_correction_but_cannot_publish(service: WorkbenchService):
@@ -1848,7 +2122,13 @@ def test_active_deployment_snapshot_contains_declarative_payload(service: Workbe
 
     assert snapshot is not None
     assert snapshot["root_release_id"] == release["release_id"]
-    assert next(item for item in snapshot["entries"] if item["object_type"] == "expert_team")["payload"]["rules_markdown"] == "固定快照 Prompt"
+    deployed_team = next(item for item in snapshot["entries"] if item["object_type"] == "expert_team")
+    assert deployed_team["payload"]["rules_markdown"] == "固定快照 Prompt"
+    assert deployed_team["release_no"] == 1
+    assert deployed_team["revision_no"] == 1
+    assert deployed_team["revision_created_by"] == actor_id
+    assert snapshot["deployment"]["deployment_id"] == deployment["deployment_id"]
+    assert snapshot["deployment"]["activated_by"] == actor_id
     service.delete_object(obj["object_id"], confirmation_name=obj["name"], actor_id=actor_id)
     frozen_snapshot = service.active_deployment_snapshot("prod")
     assert frozen_snapshot is not None

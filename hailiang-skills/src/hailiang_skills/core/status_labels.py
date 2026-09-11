@@ -14,6 +14,7 @@ _LABELS = {
     # This is an explicit pre-answer product stage, so keep the intentional
     # "正在" wording instead of applying the generic prefix cleanup below.
     "正在总结信息": "正在总结信息",
+    "正在压缩上下文": "正在压缩上下文",
 }
 
 

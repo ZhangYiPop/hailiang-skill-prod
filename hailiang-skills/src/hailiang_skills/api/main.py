@@ -62,6 +62,12 @@ from hailiang_skills.core.rate_limit import get_llm_rate_limiter
 from hailiang_skills.core.deployment import deployment_environment, node_name, release_version, state_root
 from hailiang_skills.storage.event_store import configure_event_store
 from hailiang_skills.storage.repositories.postgres_repo import SessionVersionConflict
+from hailiang_skills.storage.repositories.profile_memory_repo import (
+    InMemoryConversationMemoryRepository,
+    InMemoryProfileMemoryRepository,
+    PostgresConversationMemoryRepository,
+    PostgresProfileMemoryRepository,
+)
 from hailiang_skills.workbench.factory import build_workbench_service
 from hailiang_skills.workbench.catalog import load_current_release_entries
 from pathlib import Path
@@ -101,13 +107,13 @@ _HTTP_ERROR_MESSAGES = {
     "EXPERT_TEAM_NOT_ACTIVE": "当前会话尚未进入专家团。",
     "TEAM_HANDOFF_NOT_ACTIVE": "该专家转交建议已失效。",
     "TEAM_HANDOFF_TARGET_NOT_ALLOWED": "该专家不在本次可转交范围内。",
-    "TEAM_SWITCH_BLOCKED_BY_PENDING_FORM": "请先完成或取消当前表单，再切换专家。",
     "SKILL_ENTRY_BLOCKED_IN_EXPERT_TEAM": "专家团内不能直接进入单个 Skill。",
     "DIALOGUE_LAST_MESSAGE_MUST_BE_USER": "dialogue 最后一条消息必须是 user。",
     "ACTIVE_RUN_MUST_STOP": "当前回答仍在生成，请先停止并等待完成后再切换孩子。",
     "INPUT_PROFILE_ID_FORBIDDEN": "SSE v2 不接受 input.profile_id；请仅使用 context_data.profile_id。",
     "LEGACY_EXPERT_FIELDS_FORBIDDEN": "请将专家团和专家状态放入 expert_context，不能使用顶层旧字段。",
     "EXPERT_CONTEXT_REQUIRED": "非停止操作必须提供 expert_context。",
+    "EXPERT_CONTEXT_FIELDS_REQUIRED": "expert_context 必须同时提供 expert_team_id、expert_id 和 operation。",
     "EXPERT_CONTEXT_STALE": "专家上下文已更新，请使用服务端返回的最新状态继续。",
     "EXPERT_CONTEXT_OPERATION_INVALID": "expert_context.operation 与当前操作不匹配。",
     "CONTEXT_ACTIVATION_REQUIRED": "当前请求会切换孩子上下文；请使用 context_activation=auto，或先完成当前操作。",
@@ -176,21 +182,41 @@ def _extract_request_context(request: Request, *, body_payload: dict[str, object
 
 def _response_error_metadata(response: object) -> dict[str, object]:
     """Extract stable JSON error fields without logging the full response body."""
+    # ``BaseHTTPMiddleware.call_next`` wraps downstream JSON responses in a
+    # streaming response on recent Starlette versions.  That wrapper no longer
+    # exposes ``body``, so retain the error code in a response header as a
+    # durable, content-free diagnostic fallback.
+    headers = getattr(response, "headers", {})
+    header_code = headers.get("X-Hailiang-Error-Code") if hasattr(headers, "get") else None
+    metadata: dict[str, object] = {}
+    if isinstance(header_code, str) and header_code:
+        metadata["response_error_code"] = header_code
     raw_body = getattr(response, "body", None)
     if not isinstance(raw_body, (bytes, bytearray)) or not raw_body:
-        return {}
+        return metadata
     try:
         payload = json.loads(raw_body)
     except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}
+        return metadata
     if not isinstance(payload, dict):
-        return {}
+        return metadata
 
-    metadata: dict[str, object] = {}
     for key in ("code", "message", "detail"):
         if key in payload:
             metadata[f"response_error_{key}"] = payload[key]
     return metadata
+
+
+def _request_error_metadata(request: Request) -> dict[str, object]:
+    """Read the structured pre-stream error saved by an exception handler."""
+    payload = getattr(request.state, "hailiang_error_payload", None)
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        f"response_error_{key}": payload[key]
+        for key in ("code", "message", "detail", "error", "upstream_detail")
+        if key in payload
+    }
 
 
 async def _read_json_body(request: Request) -> dict[str, object] | None:
@@ -232,25 +258,40 @@ def create_app() -> FastAPI:
         storage.user_fact_repository,
         storage.profile_repository,
     )
+    profile_memory_repository = (
+        PostgresProfileMemoryRepository(storage.session_factory)
+        if storage.session_factory is not None
+        else InMemoryProfileMemoryRepository()
+    )
+    conversation_memory_repository = (
+        PostgresConversationMemoryRepository(storage.session_factory)
+        if storage.session_factory is not None
+        else InMemoryConversationMemoryRepository()
+    )
 
     app = FastAPI(title="hailiang-skills")
 
     @app.exception_handler(HTTPException)
-    async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
+    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        payload = _http_error_payload(
+            exc.detail,
+            default_code="REQUEST_VALIDATION_ERROR" if exc.status_code == 422 else "HTTP_ERROR",
+        )
+        request.state.hailiang_error_payload = payload
         return JSONResponse(
             status_code=exc.status_code,
-            content=_http_error_payload(
-                exc.detail,
-                default_code="REQUEST_VALIDATION_ERROR" if exc.status_code == 422 else "HTTP_ERROR",
-            ),
-            headers=exc.headers,
+            content=payload,
+            headers={**(exc.headers or {}), "X-Hailiang-Error-Code": str(payload["code"])},
         )
 
     @app.exception_handler(RequestValidationError)
-    async def request_validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    async def request_validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        payload = _http_error_payload(exc.errors(), default_code="REQUEST_VALIDATION_ERROR")
+        request.state.hailiang_error_payload = payload
         return JSONResponse(
             status_code=422,
-            content=_http_error_payload(exc.errors(), default_code="REQUEST_VALIDATION_ERROR"),
+            content=payload,
+            headers={"X-Hailiang-Error-Code": str(payload["code"])},
         )
     app.state.storage = storage
     configure_event_store(storage.session_factory)
@@ -281,6 +322,8 @@ def create_app() -> FastAPI:
         llm_config,
         moderation_service=moderation_service,
         business_config_entries=database_entries,
+        profile_memory_repository=profile_memory_repository,
+        conversation_memory_repository=conversation_memory_repository,
     )
     workbench_service.orchestrator = orchestrator
     app.state.workbench_service = workbench_service
@@ -314,16 +357,19 @@ def create_app() -> FastAPI:
     )
 
     @app.exception_handler(SessionVersionConflict)
-    async def session_version_conflict(_: Request, exc: SessionVersionConflict) -> JSONResponse:
+    async def session_version_conflict(request: Request, exc: SessionVersionConflict) -> JSONResponse:
+        payload = {
+            **_http_error_payload(
+                "session changed concurrently; reload context and retry",
+                default_code="SESSION_UPDATE_CONFLICT",
+            ),
+            "error": str(exc),
+        }
+        request.state.hailiang_error_payload = payload
         return JSONResponse(
             status_code=409,
-            content={
-                **_http_error_payload(
-                    "session changed concurrently; reload context and retry",
-                    default_code="SESSION_UPDATE_CONFLICT",
-                ),
-                "error": str(exc),
-            },
+            content=payload,
+            headers={"X-Hailiang-Error-Code": str(payload["code"])},
         )
 
     @app.middleware("http")
@@ -369,7 +415,10 @@ def create_app() -> FastAPI:
             matched_route = getattr(request.scope.get("route"), "path", route_template)
             status_code = response.status_code
             if status_code >= 400:
-                response_error_metadata = _response_error_metadata(response)
+                response_error_metadata = {
+                    **_response_error_metadata(response),
+                    **_request_error_metadata(request),
+                }
             response.headers["X-Request-Id"] = request_id
             response.headers["X-Trace-Id"] = context.trace_id
             response.headers["X-App-Version"] = release_version()

@@ -10,6 +10,7 @@ import secrets
 import tempfile
 import uuid
 from dataclasses import replace
+from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from threading import RLock
@@ -34,6 +35,7 @@ from hailiang_skills.core.sse_protocol import empty_message_state, presentation_
 from hailiang_skills.core.team_handoff_confirmation import active_handoff_decision
 from hailiang_skills.core.skill_display import build_skill_display
 from hailiang_skills.schemas.facts import KnownFacts
+from hailiang_skills.schemas.questionnaire import validate_questionnaire_config
 from hailiang_skills.storage.database import (
     WorkbenchActorRow,
     WorkbenchAssetRow,
@@ -49,25 +51,74 @@ from hailiang_skills.storage.database import (
     utc_now,
 )
 from hailiang_skills.workbench.kernel_identity import capability_catalog, kernel_fingerprint
-from hailiang_skills.workbench.runtime_overlay import configured_skill_bundle, materialize_entry_files, skill_bundle_from_entry
+from hailiang_skills.workbench.runtime_overlay import (
+    configured_skill_bundle,
+    materialize_entry_files,
+    skill_bundle_from_entry,
+    skill_markdown_with_metadata,
+)
 from hailiang_skills.runtime_bridge.script_review import review_scripts
+from hailiang_skills.runtime_bridge.agentscope_expert_runtime import AgentScopeRuntimeUnavailable
 
 
 VALID_OBJECT_TYPES = {"skill", "expert", "expert_team"}
 EXECUTABLE_SUFFIXES = {".pyc", ".sh", ".bash", ".zsh", ".js", ".mjs", ".cjs", ".exe", ".dll", ".so", ".dylib"}
+SAFE_ROOT_RESOURCE_SUFFIXES = {".json", ".yaml", ".yml", ".csv", ".txt"}
 MAX_ASSET_BYTES = int(os.getenv("HAILIANG_WORKBENCH_MAX_ASSET_BYTES", str(20 * 1024 * 1024)))
 MAX_PACKAGE_BYTES = int(os.getenv("HAILIANG_WORKBENCH_MAX_PACKAGE_BYTES", str(100 * 1024 * 1024)))
 # Candidate tests must fail visibly rather than hold a browser SSE connection
 # for the much longer general test-model timeout. It remains configurable for
 # slow, intentionally long-running test environments.
 WORKBENCH_CANDIDATE_LLM_TIMEOUT_S = max(
-    int(os.getenv("HAILIANG_WORKBENCH_CANDIDATE_LLM_TIMEOUT_S", "60") or 60),
+    int(os.getenv("HAILIANG_WORKBENCH_CANDIDATE_LLM_TIMEOUT_S", "900") or 900),
     1,
 )
 WORKBENCH_CANDIDATE_LLM_MAX_TOKENS = max(
-    int(os.getenv("HAILIANG_WORKBENCH_CANDIDATE_LLM_MAX_TOKENS", "2000") or 2000),
+    int(os.getenv("HAILIANG_WORKBENCH_CANDIDATE_LLM_MAX_TOKENS", "384000") or 384000),
     1,
 )
+
+
+def _script_execution_succeeded(output: dict[str, Any]) -> bool:
+    """Normalize both local and MS-Agent sandbox execution result shapes."""
+    explicit_ok = output.get("ok")
+    if isinstance(explicit_ok, bool):
+        return explicit_ok
+
+    for field in ("json_output", "return_value"):
+        result = output.get(field)
+        if isinstance(result, dict) and isinstance(result.get("ok"), bool):
+            return bool(result["ok"])
+
+    exit_code = output.get("exit_code")
+    if isinstance(exit_code, bool):
+        return False
+    if isinstance(exit_code, int):
+        return exit_code == 0
+    if isinstance(exit_code, str):
+        return exit_code.strip().lower() in {"0", "ok", "success", "succeeded", "completed"}
+    return False
+
+
+def _questionnaire_asset_errors(payload: dict[str, Any], assets: list[tuple[str, str, bytes]]) -> list[str]:
+    metadata = payload.get("configuration") or payload.get("source_metadata") or {}
+    questionnaire = metadata.get("questionnaire") if isinstance(metadata, dict) else {}
+    contract = payload.get("runtime_contract") if isinstance(payload.get("runtime_contract"), dict) else {}
+    if not isinstance(questionnaire, dict) or not questionnaire:
+        # Read compatibility for revisions created before questionnaire
+        # configuration moved out of runtime_contract.json.
+        questionnaire = contract.get("questionnaire") if isinstance(contract.get("questionnaire"), dict) else {}
+    config_path = str(questionnaire.get("config_path") or "").strip()
+    if not config_path:
+        return []
+    asset = next((content for path, _media_type, content in assets if path == config_path), None)
+    if asset is None:
+        return [f"questionnaire.config_path 指向的文件不存在：{config_path}"]
+    try:
+        config = json.loads(asset.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return [f"问卷配置不是合法 UTF-8 JSON：{config_path}"]
+    return [f"{config_path}: {error}" for error in validate_questionnaire_config(config)]
 
 
 class WorkbenchError(ValueError):
@@ -260,7 +311,13 @@ class WorkbenchService:
                     descriptor = {}
         raw_key = str(
             metadata.get("skill_id")
+            or metadata.get("agent_id")
+            or metadata.get("expert_team_id")
+            or metadata.get("team_id")
             or metadata.get("id")
+            or descriptor.get("agent_id")
+            or descriptor.get("expert_team_id")
+            or descriptor.get("team_id")
             or descriptor.get("id")
             or PurePosixPath(source_path).parent.name
             or "imported_skill"
@@ -270,28 +327,61 @@ class WorkbenchService:
         runtime_contract = self._standard_runtime_contract(files)
         assets = []
         blocked: list[str] = []
+        reserved_root_files = {
+            "SKILL.md", "skill.md", "runtime_contract.json",
+            "AGENT.md", "agent.yaml", "TEAM.md", "team.yaml",
+            "skills.lock.json", "experts.lock.json", "object.json",
+        }
         for path, content in files.items():
-            if path == source_path or not (path.startswith("references/") or path.startswith("scripts/") or path.startswith("assets/")):
+            package_path = PurePosixPath(path)
+            safe_root_resource = (
+                len(package_path.parts) == 1
+                and package_path.name not in reserved_root_files
+                and package_path.suffix.lower() in SAFE_ROOT_RESOURCE_SUFFIXES
+            )
+            if path == source_path or not (
+                path.startswith("references/")
+                or path.startswith("scripts/")
+                or path.startswith("assets/")
+                or safe_root_resource
+            ):
                 continue
             if path.startswith("scripts/") and PurePosixPath(path).suffix.lower() not in {".py", ".txt"}:
                 blocked.append(f"不支持的脚本文件：{path}")
                 continue
-            target_path = f"references/{path}" if path.startswith("assets/") else path
+            # Preserve the package layout.  assets/ and scripts/ are runtime
+            # directories, not reference documents; changing their prefix
+            # makes config_path and script discovery fail after import.
+            target_path = path
             media_type = "text/x-python" if path.endswith(".py") else "application/json" if path.endswith(".json") else "text/markdown"
             assets.append({"relative_path": target_path, "media_type": media_type, "content_base64": base64.b64encode(content).decode("ascii")})
         decoded = self._decode_assets(assets, object_type=object_type) if not blocked else []
         script_errors = self._script_validation_errors(decoded) if object_type == "skill" else []
-        questionnaire = runtime_contract.get("questionnaire") if isinstance(runtime_contract.get("questionnaire"), dict) else {}
+        questionnaire = metadata.get("questionnaire") if isinstance(metadata.get("questionnaire"), dict) else {}
+        if not questionnaire and isinstance(runtime_contract.get("questionnaire"), dict):
+            # Legacy package compatibility only; new packages declare this in SKILL.md.
+            questionnaire = copy.deepcopy(runtime_contract["questionnaire"])
         if not questionnaire:
             questionnaire = self._questions_asset_to_questionnaire(files)
             if questionnaire:
-                runtime_contract = {**runtime_contract, "questionnaire": questionnaire}
+                metadata["questionnaire"] = copy.deepcopy(questionnaire)
         payload = (
-            {"prompt_markdown": source, "runtime_contract": runtime_contract, "capability_ids": []}
+            {
+                "prompt_markdown": source,
+                "configuration": copy.deepcopy(metadata),
+                "runtime_contract": runtime_contract,
+                "capability_ids": [],
+            }
             if object_type == "skill"
             else {
                 "rules_markdown": body or source,
-                "brief": _normalize_brief(descriptor.get("brief") or metadata.get("description") or name),
+                "brief": _normalize_brief(
+                    descriptor.get("brief")
+                    or metadata.get("brief")
+                    or metadata.get("description")
+                    or metadata.get("desc")
+                    or name
+                ),
                 "budget": {"max_iters": 4, "max_skill_calls": 3},
             }
         )
@@ -302,7 +392,7 @@ class WorkbenchService:
             metadata["description"] = str(ai_hint["description"])[:2000]
         warnings = [*blocked, *script_errors]
         warnings.extend(str(item) for item in ai_hint.get("review_items", []) if str(item))
-        if questionnaire and not isinstance(questionnaire.get("fields"), list):
+        if questionnaire and not any(key in questionnaire for key in ("fields", "config_path", "config_json")):
             warnings.append("问卷定义无法映射为平台表单字段，请人工补充。")
         return {
             "source": {"entry_path": source_path, "files": sorted(files), "metadata": metadata},
@@ -486,10 +576,14 @@ class WorkbenchService:
                     .order_by(WorkbenchReleaseRow.release_no.desc())
                 )
             )
+            actor_names = self._actor_display_names(
+                db,
+                [*(item.created_by for item in revisions), *(item.published_by for item in releases)],
+            )
             detail = {
                 **self._object_dict(row, revisions[0].revision_no if revisions else 0, releases[0].release_no if releases else 0),
-                "revisions": [self._revision_dict(item) for item in revisions],
-                "releases": [self._release_dict(item, row) for item in releases],
+                "revisions": [self._revision_dict(item, actor_names) for item in revisions],
+                "releases": [self._release_dict(item, row, actor_names) for item in releases],
             }
             if row.object_type in {"expert", "expert_team"}:
                 detail["brief"] = _normalize_brief((revisions[0].payload or {}).get("brief")) if revisions else ""
@@ -698,6 +792,7 @@ class WorkbenchService:
         dependency_locks: list[dict[str, Any]] | None,
         assets: list[dict[str, Any]] | None,
         actor_id: str,
+        change_summary: str = "",
     ) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise WorkbenchError("payload 必须是对象")
@@ -732,12 +827,13 @@ class WorkbenchService:
             decoded_assets = self._decode_assets(assets or [], object_type=obj.object_type)
             validation = self._validate_payload(obj.object_type, payload, canonical_locks)
             if obj.object_type == "skill":
+                questionnaire_errors = _questionnaire_asset_errors(payload, decoded_assets)
                 script_errors = self._script_validation_errors(decoded_assets)
-                if script_errors:
+                if questionnaire_errors or script_errors:
                     validation = {
                         **validation,
                         "valid": False,
-                        "errors": [*validation.get("errors", []), *script_errors],
+                        "errors": [*validation.get("errors", []), *questionnaire_errors, *script_errors],
                     }
             revision_no = (latest.revision_no if latest else 0) + 1
             content_hash = _hash({
@@ -753,6 +849,7 @@ class WorkbenchService:
                 object_id=object_id,
                 revision_no=revision_no,
                 base_revision_id=base_revision_id,
+                change_summary=str(change_summary or "").strip(),
                 payload=payload,
                 dependency_locks=canonical_locks,
                 validation=validation,
@@ -786,7 +883,7 @@ class WorkbenchService:
                     content=content,
                 ))
             obj.updated_at = utc_now()
-            self._audit(db, actor_id, "revision.saved", obj.object_type, revision.revision_id, {"revision_no": revision_no})
+            self._audit(db, actor_id, "revision.saved", obj.object_type, revision.revision_id, {"revision_no": revision_no, "change_summary": revision.change_summary})
             try:
                 db.commit()
             except IntegrityError as exc:
@@ -796,7 +893,7 @@ class WorkbenchService:
                     code="REVISION_BASE_CONFLICT",
                     details={"submitted_base_revision_id": base_revision_id},
                 ) from exc
-            return self._revision_dict(revision)
+            return self._revision_dict(revision, self._actor_display_names(db, [revision.created_by]))
 
     def compare_revisions(self, left_revision_id: str, right_revision_id: str) -> dict[str, Any]:
         with self.session_factory() as db:
@@ -882,6 +979,12 @@ class WorkbenchService:
                 raise WorkbenchConflict("修订测试会话已经结束", code="DEBUG_SESSION_COMPLETED")
             snapshot = copy.deepcopy(row.snapshot or {})
             context = self._restore_revision_test_context(row, snapshot)
+            # Capture every structured interaction transition, including a
+            # text-confirmed/recovered handoff that is resolved before the
+            # normal input adapter below.  Evidence must not lose a
+            # form_abandoned event merely because the confirmation arrived as
+            # ordinary text instead of a card click.
+            event_count_before = len(context.event_trace)
             stream_handoff: dict[str, Any] | None = None
             # Candidate messages use exactly the same interaction lifecycle as
             # formal chat. A new free-text turn makes a previous form/card
@@ -914,7 +1017,6 @@ class WorkbenchService:
                     text_handoff_mode = "team_handoff_ack_recovered"
                 else:
                     expire_active_interactions(context.messages)
-            event_count_before = len(context.event_trace)
             turn_started = datetime.now().timestamp()
             candidate_stream_generation: str | None = None
             candidate_stream_sequence = 0
@@ -1026,6 +1128,11 @@ class WorkbenchService:
                         "候选修订测试的模型响应超时，请稍后重试。",
                         code="MODEL_TIMEOUT",
                         details={"timeout_s": WORKBENCH_CANDIDATE_LLM_TIMEOUT_S},
+                    ) from exc
+                if isinstance(exc, AgentScopeRuntimeUnavailable):
+                    raise WorkbenchError(
+                        "专家决策暂不可用，请稍后重试。",
+                        code="EXPERT_DECISION_UNAVAILABLE",
                     ) from exc
                 raise
             was_stopped = bool(
@@ -1289,13 +1396,18 @@ class WorkbenchService:
         }
         if target_expert_id not in allowed_experts:
             raise WorkbenchError("目标专家未锁定在当前候选专家团中", code="REVISION_TEST_HANDOFF_FORBIDDEN")
+        from_expert_id = str(context.session_meta.get("active_expert_id") or "")
+        context.abandon_active_interactions_for_expert_change(
+            reason="candidate_confirm_team_handoff",
+            from_expert_id=from_expert_id,
+            target_expert_id=target_expert_id,
+        )
         handoff["status"] = "selected"
         handoff["selected_target_expert_id"] = target_expert_id
         update_interaction(source, "team_handoff", status=SELECTED, selected_target_skill_id=target_expert_id)
         metadata = source.setdefault("metadata", {})
         if isinstance(metadata, dict) and isinstance(metadata.get("team_handoff"), dict):
             metadata["team_handoff"].update({"status": "selected", "selected_target_expert_id": target_expert_id})
-        from_expert_id = str(context.session_meta.get("active_expert_id") or "")
         context.session_meta["active_expert_id"] = target_expert_id
         context.session_meta["expert_id"] = target_expert_id
         context.session_meta["expert_selection_source"] = "candidate_handoff_card"
@@ -1361,6 +1473,12 @@ class WorkbenchService:
         if not team_id or str(handoff.get("team_id") or "") != team_id or target_expert_id not in allowed:
             raise WorkbenchError("待恢复的专家转交已失效", code="REVISION_TEST_HANDOFF_STALE")
         from_expert_id = str(context.session_meta.get("active_expert_id") or "")
+        if from_expert_id != target_expert_id:
+            context.abandon_active_interactions_for_expert_change(
+                reason="candidate_confirm_recovered_team_handoff",
+                from_expert_id=from_expert_id,
+                target_expert_id=target_expert_id,
+            )
         mention_name = str(candidate.get("mention_name") or candidate.get("name") or target_expert_id)
         context.session_meta.update({"active_expert_id": target_expert_id, "expert_id": target_expert_id, "expert_selection_source": "candidate_handoff_text_confirmation"})
         context.session_meta["_candidate_branch_version"] = int(
@@ -1421,15 +1539,6 @@ class WorkbenchService:
         }
         if target_expert_id not in allowed_experts:
             raise WorkbenchError("目标专家不属于当前候选专家团", code="REVISION_TEST_EXPERT_FORBIDDEN")
-        for message in context.messages:
-            if not isinstance(message, dict) or message.get("role") != "assistant":
-                continue
-            if any(
-                key.startswith("fact_form:") and state.get("status") == ACTIVE
-                for key, state in ensure_message_interactions(message).items()
-                if isinstance(state, dict)
-            ):
-                raise WorkbenchConflict("请先完成或放弃当前表单，再切换专家", code="REVISION_TEST_EXPERT_BLOCKED_BY_FORM")
         payload = team_entry.get("payload") if isinstance(team_entry.get("payload"), dict) else {}
         members = payload.get("members") if isinstance(payload.get("members"), list) else []
         configured_member = next(
@@ -1453,7 +1562,12 @@ class WorkbenchService:
             or target_expert_id
         ).strip()
         from_expert_id = str(context.session_meta.get("active_expert_id") or "")
-        expire_active_interactions(context.messages)
+        if from_expert_id != target_expert_id:
+            context.abandon_active_interactions_for_expert_change(
+                reason="candidate_manual_expert_selection",
+                from_expert_id=from_expert_id,
+                target_expert_id=target_expert_id,
+            )
         context.session_meta["active_expert_id"] = target_expert_id
         context.session_meta["expert_id"] = target_expert_id
         context.session_meta["expert_selection_source"] = "candidate_manual_at"
@@ -1531,28 +1645,60 @@ class WorkbenchService:
         meta = context.session_meta if isinstance(context.session_meta, dict) else {}
         team_id = str(meta.get("expert_team_id") or "").strip()
         expert_id = str(meta.get("active_expert_id") or meta.get("expert_id") or "").strip()
+        snapshot = meta.get("configuration_snapshot") if isinstance(meta.get("configuration_snapshot"), dict) else {}
+        entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
+
+        def snapshot_entry(object_type: str, object_key: str) -> dict[str, Any]:
+            return next(
+                (
+                    item for item in entries
+                    if isinstance(item, dict)
+                    and item.get("object_type") == object_type
+                    and str(item.get("object_key") or "") == object_key
+                ),
+                {},
+            )
+
+        expert_entry = snapshot_entry("expert", expert_id)
+        team_entry = snapshot_entry("expert_team", team_id)
         registry = getattr(self.orchestrator, "expert_registry", None)
         definition = registry.get(expert_id) if expert_id and registry is not None else None
         team_registry = getattr(self.orchestrator, "expert_team_registry", None)
         team = team_registry.get(team_id) if team_id and team_registry is not None else None
-        mode = "team" if team is not None else "single" if definition is not None else "none"
+        # Candidate revisions may not exist in the deployed registries. Their
+        # immutable snapshot is the public source of names, so never expose a
+        # technical ID merely because the draft has not been published.
+        mode = "team" if team_id else "single" if expert_id else "none"
         member = team.member_for_expert(expert_id) if team is not None else None
+        expert_name = str(expert_entry.get("name") or getattr(definition, "name", "") or expert_id)
+        team_name = str(team_entry.get("name") or getattr(team, "name", "") or team_id)
         expert = {
             "mode": mode,
             "team": {
-                "team_id": team.team_id,
-                "name": team.name,
-                "coordinator_expert_id": team.coordinator_expert_id,
-            } if team is not None else {},
+                "team_id": team_id,
+                "name": team_name,
+                "coordinator_expert_id": str(
+                    (team_entry.get("payload") or {}).get("coordinator_expert_id")
+                    or getattr(team, "coordinator_expert_id", "")
+                    or ""
+                ),
+            } if team_id else {},
             "active": {
                 "expert_id": expert_id,
-                "name": str(getattr(definition, "name", "") or expert_id),
+                "name": expert_name,
                 "mention_name": str(getattr(member, "mention_name", "") or ""),
-                "is_coordinator": bool(team is not None and expert_id == team.coordinator_expert_id),
+                "is_coordinator": bool(
+                    team_id
+                    and expert_id == str(
+                        (team_entry.get("payload") or {}).get("coordinator_expert_id")
+                        or getattr(team, "coordinator_expert_id", "")
+                        or ""
+                    )
+                ),
             } if expert_id else {},
             "activation": {
                 "source": "candidate_snapshot",
-                "is_default": bool(team is not None and expert_id == team.coordinator_expert_id),
+                "is_default": bool(team_id and expert_id == str(getattr(team, "coordinator_expert_id", "") or "")),
                 "selection_source": str(meta.get("expert_selection_source") or ""),
             } if mode != "none" else {},
             "transition": {},
@@ -2066,86 +2212,39 @@ class WorkbenchService:
                 (item.get("object_key") for item in root_entry.get("dependency_locks", []) if item.get("object_id") == coordinator_object_id),
                 None,
             )
-            if coordinator:
-                context.session_meta["expert_id"] = coordinator
-                context.session_meta["active_expert_id"] = coordinator
-                context.skill_states.setdefault("agent_runtime", {})["expert_id"] = coordinator
+            allowed_members = {
+                str(item.get("object_key") or "")
+                for item in root_entry.get("dependency_locks", [])
+                if isinstance(item, dict) and item.get("object_type") == "expert"
+            }
+            persisted_expert = str(
+                context.session_meta.get("active_expert_id")
+                or context.session_meta.get("expert_id")
+                or ""
+            ).strip()
+            # A candidate team starts with its coordinator, but this helper
+            # also runs when a subsequent test turn restores persisted state.
+            # Do not reset a member chosen through a validated handoff card or
+            # the @ toolbar on every restore.  Keep the immutable snapshot as
+            # the authority: an absent or no-longer-locked member falls back
+            # to the coordinator.
+            selected_expert = persisted_expert if persisted_expert in allowed_members else coordinator
+            if selected_expert:
+                context.session_meta["expert_id"] = selected_expert
+                context.session_meta["active_expert_id"] = selected_expert
+                context.skill_states.setdefault("agent_runtime", {})["expert_id"] = selected_expert
 
     def _execute_snapshot_message(self, snapshot: dict[str, Any], message: str, context: SessionContext) -> str:
         root_entry = self._snapshot_root_entry(snapshot)
         if root_entry.get("object_type") == "skill":
             return self._execute_candidate_skill(root_entry, message, context)
         allowed = self._candidate_allowed_skill_ids(snapshot, root_entry, context)
-        # A standalone Expert with exactly one locked Skill has no Skill-level
-        # decision to make.  Candidate execution must mirror the production
-        # Expert runtime here: enter that immutable Skill directly, then let
-        # the Skill decide which of its own tools (RAG/MCP/web/scripts/forms)
-        # to use.  A coordinator of a multi-member team remains a router, even
-        # if it happens to have one personal Skill.
-        if len(allowed) == 1 and not self._candidate_is_multi_member_coordinator(snapshot, root_entry, context):
-            skill_id = next(iter(allowed))
-            target_entry = next(
-                (
-                    item for item in snapshot.get("entries", [])
-                    if isinstance(item, dict)
-                    and item.get("object_type") == "skill"
-                    and item.get("object_key") == skill_id
-                ),
-                None,
-            )
-            if target_entry is None:
-                raise WorkbenchError("候选快照缺少唯一锁定的 Skill", code="CANDIDATE_SKILL_SNAPSHOT_MISSING")
-            context.interaction_state["active_skill"] = skill_id
-            self._record_candidate_turn_event(
-                context,
-                "candidate_single_skill_selected",
-                {"expert_id": str(context.session_meta.get("active_expert_id") or context.session_meta.get("expert_id") or ""), "skill_id": skill_id},
-            )
-            return self._execute_candidate_skill(target_entry, message, context)
-        active_skill = str(context.interaction_state.get("active_skill") or "")
-        # Once an Agent has entered an authorized Skill, continue that Skill
-        # directly. Re-running the Agent for every answer resets its route and
-        # turns a questionnaire answer such as "A" back into a fresh request.
-        # An explicit task/Skill change is the exception: send the turn back
-        # to the Expert so it can choose another *locked* Skill.  The old
-        # shortcut made an instruction such as "用另一个技能来解答" invisible
-        # to the Expert and incorrectly forced the current Skill to answer.
-        redispatch = active_skill in allowed and self._candidate_requests_redispatch(message)
-        if active_skill in allowed and not redispatch:
-            semantic_target = self._candidate_semantic_redispatch(
-                message,
-                context,
-                current_skill_id=active_skill,
-                allowed_skill_ids=allowed,
-            )
-            if semantic_target:
-                target_entry = next(
-                    (item for item in snapshot.get("entries", []) if isinstance(item, dict) and item.get("object_type") == "skill" and item.get("object_key") == semantic_target),
-                    None,
-                )
-                if target_entry is None:
-                    raise WorkbenchError("候选快照缺少 Agent 选择的 Skill", code="CANDIDATE_SKILL_SNAPSHOT_MISSING")
-                context.interaction_state["active_skill"] = semantic_target
-                self._record_candidate_turn_event(
-                    context,
-                    "candidate_skill_semantic_redispatch",
-                    {"from_skill_id": active_skill, "to_skill_id": semantic_target},
-                )
-                return self._execute_candidate_skill(target_entry, message, context)
-        if active_skill in allowed and not redispatch:
-            target_entry = next(
-                (item for item in snapshot.get("entries", []) if isinstance(item, dict) and item.get("object_type") == "skill" and item.get("object_key") == active_skill),
-                None,
-            )
-            if target_entry is None:
-                raise WorkbenchError("候选快照缺少当前 Skill", code="CANDIDATE_SKILL_SNAPSHOT_MISSING")
-            return self._execute_candidate_skill(target_entry, message, context)
-        if redispatch:
-            self._record_candidate_turn_event(
-                context,
-                "candidate_skill_redispatch_requested",
-                {"from_skill_id": active_skill, "reason": "user_explicit_skill_or_task_change"},
-            )
+        # Candidate conversations use the same Expert decision boundary as
+        # production on every turn.  In particular, a one-Skill Expert still
+        # receives AGENT.md and may answer directly instead of invoking it.
+        # The Expert is also responsible for deciding whether a short form
+        # answer resumes the current Skill or a new message enters another
+        # locked Skill.
         message_count_before = len(context.messages)
         event_count_before = len(context.event_trace)
         output = self.orchestrator.handle_message(message, context)
@@ -2186,88 +2285,12 @@ class WorkbenchService:
         return str(getattr(output, "assistant_message", "") or "")
 
     @staticmethod
-    def _candidate_is_multi_member_coordinator(
-        snapshot: dict[str, Any], root_entry: dict[str, Any], context: SessionContext,
-    ) -> bool:
-        """Whether this candidate turn must keep team-level expert selection."""
-        if root_entry.get("object_type") != "expert_team":
-            return False
-        payload = root_entry.get("payload") or {}
-        coordinator_object_id = str(payload.get("coordinator_expert_id") or "")
-        member_locks = [
-            item for item in root_entry.get("dependency_locks", [])
-            if isinstance(item, dict) and item.get("object_type") == "expert"
-        ]
-        active_expert_id = str(
-            context.session_meta.get("active_expert_id") or context.session_meta.get("expert_id") or ""
-        )
-        coordinator_key = next(
-            (
-                str(item.get("object_key") or "") for item in member_locks
-                if str(item.get("object_id") or "") == coordinator_object_id
-            ),
-            "",
-        )
-        return len(member_locks) > 1 and bool(coordinator_key) and active_expert_id == coordinator_key
-
-    @staticmethod
     def _latest_assistant_content(context: SessionContext) -> str:
         for item in reversed(getattr(context, "messages", []) or []):
             if isinstance(item, dict) and item.get("role") == "assistant":
                 return str(item.get("content") or "")
         return ""
 
-    @staticmethod
-    def _candidate_requests_redispatch(message: str) -> bool:
-        """Conservative, language-facing exit signal for a candidate Skill.
-
-        A short answer such as ``A`` must remain in a questionnaire.  We only
-        bypass continuation when the tester has clearly asked to change the
-        current task/Skill.  The Expert still makes the actual selection and
-        can only choose its immutable dependency locks.
-        """
-        normalized = "".join(str(message or "").lower().split())
-        if not normalized:
-            return False
-        markers = (
-            "换个skill", "换一个skill", "切换skill", "换技能", "换一个技能",
-            "切换技能", "另一个技能", "其他技能", "改用", "换个能力",
-            "退出当前", "停止当前", "不做测试了", "先不做", "换个问题",
-        )
-        return any(marker in normalized for marker in markers)
-
-    def _candidate_semantic_redispatch(
-        self,
-        message: str,
-        context: SessionContext,
-        *,
-        current_skill_id: str,
-        allowed_skill_ids: set[str],
-    ) -> str | None:
-        """Return a different locked Skill only after the Expert chose it.
-
-        Short option-like messages are questionnaire continuations and never
-        incur a routing probe.  The production AgentScope Expert performs the
-        semantic judgment; unavailable/degraded runtimes safely retain the
-        current candidate Skill instead of guessing from keywords.
-        """
-        if len(str(message or "").strip()) < 8:
-            return None
-        expert_runtime = getattr(self.orchestrator, "expert_runtime", None)
-        chooser = getattr(expert_runtime, "select_candidate_skill_switch", None)
-        if not callable(chooser):
-            return None
-        selected = str(chooser(message, context, current_skill_id=current_skill_id) or "")
-        if not selected or selected == current_skill_id:
-            return None
-        if selected not in allowed_skill_ids:
-            self._record_candidate_turn_event(
-                context,
-                "candidate_skill_semantic_redispatch_rejected",
-                {"from_skill_id": current_skill_id, "to_skill_id": selected, "reason": "not_locked_by_current_expert"},
-            )
-            return None
-        return selected
 
     @staticmethod
     def _candidate_allowed_skill_ids(snapshot: dict[str, Any], root_entry: dict[str, Any], context: SessionContext) -> set[str]:
@@ -2364,7 +2387,7 @@ class WorkbenchService:
                         continue
                     script_runs.append({
                         "path": str(output.get("script") or ""),
-                        "status": "success" if output.get("ok") else "failed",
+                        "status": "success" if _script_execution_succeeded(output) else "failed",
                         "input": output.get("stdin_payload") or output.get("args") or {},
                         "output": output.get("json_output") or output.get("return_value") or output.get("stdout") or "",
                         "error": str(output.get("error") or output.get("stderr") or ""),
@@ -2587,7 +2610,7 @@ class WorkbenchService:
             obj = self._require_object(db, revision.object_id)
             existing = db.scalar(select(WorkbenchReleaseRow).where(WorkbenchReleaseRow.revision_id == revision_id))
             if existing is not None:
-                return self._release_dict(existing, obj)
+                return self._release_dict(existing, obj, self._actor_display_names(db, [existing.published_by]))
             if not revision.validation.get("valid", False):
                 raise WorkbenchError(
                     "修订校验未通过，不能发布",
@@ -2637,7 +2660,7 @@ class WorkbenchService:
                     "发布序号已被并发占用，请刷新后重试",
                     code="RELEASE_SEQUENCE_CONFLICT",
                 ) from exc
-            return self._release_dict(row, obj)
+            return self._release_dict(row, obj, self._actor_display_names(db, [row.published_by]))
 
     def archive_release(self, release_id: str, *, actor_id: str) -> dict[str, Any]:
         with self.session_factory() as db:
@@ -2669,7 +2692,7 @@ class WorkbenchService:
             self._audit(db, actor_id, "release.current_changed", obj.object_type, obj.object_id,
                         {"from_release_id": previous, "to_release_id": release_id})
             runtime_entry = self._runtime_entry_for_release(db, release_id)
-            result = self._release_dict(release, obj)
+            result = self._release_dict(release, obj, self._actor_display_names(db, [release.published_by]))
             db.commit()
         self._install_runtime_entry(runtime_entry)
         return result
@@ -2692,28 +2715,65 @@ class WorkbenchService:
                 base_revision_id=latest.revision_id if latest else None,
             )
             db.commit()
-            return self._revision_dict(revision)
+            return self._revision_dict(revision, self._actor_display_names(db, [revision.created_by]))
 
     def list_releases(self, *, object_type: str | None = None, include_archived: bool = False) -> list[dict[str, Any]]:
         with self.session_factory() as db:
-            query = select(WorkbenchReleaseRow, WorkbenchObjectRow).join(
+            query = select(WorkbenchReleaseRow, WorkbenchObjectRow, WorkbenchRevisionRow).join(
                 WorkbenchObjectRow, WorkbenchObjectRow.object_id == WorkbenchReleaseRow.object_id
-            )
+            ).join(WorkbenchRevisionRow, WorkbenchRevisionRow.revision_id == WorkbenchReleaseRow.revision_id)
             if object_type:
                 query = query.where(WorkbenchObjectRow.object_type == object_type)
             if not include_archived:
                 query = query.where(WorkbenchReleaseRow.archived.is_(False), WorkbenchObjectRow.archived.is_(False))
-            return [self._release_dict(release, obj) for release, obj in db.execute(query.order_by(WorkbenchReleaseRow.published_at.desc()))]
+            rows = list(db.execute(query.order_by(WorkbenchReleaseRow.published_at.desc())))
+            actor_names = self._actor_display_names(db, [release.published_by for release, _obj, _revision in rows])
+            result = []
+            for release, obj, revision in rows:
+                item = self._release_dict(release, obj, actor_names)
+                item["revision_no"] = revision.revision_no
+                item["revision_change_summary"] = str(getattr(revision, "change_summary", "") or "")
+                result.append(item)
+            return result
 
-    def export_release(self, release_id: str, *, actor_id: str) -> tuple[bytes, dict[str, Any]]:
+    def export_configuration(self, *, release_id: str | None, revision_id: str | None, actor_id: str) -> tuple[bytes, dict[str, Any]]:
+        if bool(release_id) == bool(revision_id):
+            raise WorkbenchError("必须且只能指定一个正式版本或修订版本", code="EXPORT_TARGET_REQUIRED")
         with self.session_factory() as db:
-            root_release = self._require_release(db, release_id)
-            entries = self._release_closure(db, root_release)
+            package_kind = "release"
+            if release_id:
+                root_release = self._require_release(db, release_id)
+                entries = self._release_closure(db, root_release)
+            else:
+                package_kind = "candidate_revision"
+                revision = self._require_revision(db, str(revision_id))
+                root_obj = self._require_object(db, revision.object_id)
+                root_release = SimpleNamespace(
+                    release_id=f"revision:{revision.revision_id}", object_id=root_obj.object_id,
+                    release_no=None, revision_id=revision.revision_id, dependency_locks=revision.dependency_locks,
+                    content_hash=revision.content_hash, published_by="", published_at=None,
+                )
+                entries = [(root_release, root_obj, revision)]
+                seen = {root_release.release_id}
+                for lock in revision.dependency_locks or []:
+                    for dependency in self._release_closure(db, self._require_release(db, str(lock["release_id"]))) :
+                        if dependency[0].release_id not in seen:
+                            entries.append(dependency)
+                            seen.add(dependency[0].release_id)
+            actor_names = self._actor_display_names(
+                db,
+                [
+                    actor
+                    for release, _obj, revision in entries
+                    for actor in (revision.created_by, release.published_by)
+                ],
+            )
             package_id = _id("pkg")
             manifest_objects: list[dict[str, Any]] = []
             files: dict[str, bytes] = {}
             for release, obj, revision in entries:
-                prefix = f"objects/{obj.object_type}/{obj.object_key}/v{release.release_no}"
+                version_label = f"v{release.release_no}" if release.release_no else f"r{revision.revision_no}"
+                prefix = f"objects/{obj.object_type}/{obj.object_key}/{version_label}"
                 object_payload = {
                     "object_id": obj.object_id,
                     "object_type": obj.object_type,
@@ -2723,6 +2783,14 @@ class WorkbenchService:
                     "release_id": release.release_id,
                     "release_no": release.release_no,
                     "revision_id": revision.revision_id,
+                    "revision_no": revision.revision_no,
+                    "change_summary": str(getattr(revision, "change_summary", "") or ""),
+                    "revision_created_by": revision.created_by,
+                    "revision_created_by_display_name": actor_names.get(revision.created_by, revision.created_by),
+                    "revision_created_at": _iso(revision.created_at),
+                    "release_published_by": release.published_by,
+                    "release_published_by_display_name": actor_names.get(release.published_by, release.published_by),
+                    "release_published_at": _iso(release.published_at),
                     "content_hash": release.content_hash,
                     "payload": revision.payload,
                     "dependency_locks": release.dependency_locks,
@@ -2746,13 +2814,22 @@ class WorkbenchService:
                     "release_id": release.release_id,
                     "release_no": release.release_no,
                     "revision_id": revision.revision_id,
+                    "revision_no": revision.revision_no,
+                    "change_summary": str(getattr(revision, "change_summary", "") or ""),
+                    "revision_created_by": revision.created_by,
+                    "revision_created_by_display_name": actor_names.get(revision.created_by, revision.created_by),
+                    "revision_created_at": _iso(revision.created_at),
+                    "release_published_by": release.published_by,
+                    "release_published_by_display_name": actor_names.get(release.published_by, release.published_by),
+                    "release_published_at": _iso(release.published_at),
                     "content_hash": release.content_hash,
                     "dependency_locks": release.dependency_locks,
                     "files": object_files,
                 })
             root_obj = self._require_object(db, root_release.object_id)
             manifest = {
-                "schema_version": 1,
+                "schema_version": 2,
+                "package_kind": package_kind,
                 "package_id": package_id,
                 "root": {
                     "object_id": root_obj.object_id,
@@ -2760,6 +2837,9 @@ class WorkbenchService:
                     "object_key": root_obj.object_key,
                     "release_id": root_release.release_id,
                     "release_no": root_release.release_no,
+                    "revision_id": root_release.revision_id,
+                    "revision_no": entries[0][2].revision_no,
+                    "change_summary": str(getattr(entries[0][2], "change_summary", "") or ""),
                 },
                 "objects": manifest_objects,
                 "kernel_fingerprint": self.kernel_fingerprint,
@@ -2771,9 +2851,12 @@ class WorkbenchService:
             archive = self._zip(files)
             if len(archive) > MAX_PACKAGE_BYTES:
                 raise WorkbenchError("配置包超过大小限制", code="PACKAGE_TOO_LARGE")
-            self._audit(db, actor_id, "package.exported", "release", release_id, {"package_id": package_id, "package_sha256": hashlib.sha256(archive).hexdigest()})
+            self._audit(db, actor_id, "package.exported", package_kind, release_id or revision_id, {"package_id": package_id, "package_sha256": hashlib.sha256(archive).hexdigest()})
             db.commit()
             return archive, manifest
+
+    def export_release(self, release_id: str, *, actor_id: str) -> tuple[bytes, dict[str, Any]]:
+        return self.export_configuration(release_id=release_id, revision_id=None, actor_id=actor_id)
 
     def import_package(self, package_bytes: bytes, *, environment: str, actor_id: str) -> dict[str, Any]:
         validated = self._validated_package_contents(package_bytes)
@@ -2829,6 +2912,7 @@ class WorkbenchService:
         validated = self._validated_package_contents(package_bytes, materialize_entries=False)
         manifest = validated["manifest"]
         package_hash = validated["package_hash"]
+        root_source_release_id = str((manifest.get("root") or {}).get("release_id") or "")
         ordered_entries = sorted(
             validated["entries"],
             key=lambda item: {"skill": 0, "expert": 1, "expert_team": 2}.get(str(item.get("object_type") or ""), 9),
@@ -2871,6 +2955,23 @@ class WorkbenchService:
                     package_hash=package_hash,
                     actor_id=actor_id,
                 )
+                # A package is an exchange artifact, never an implicit
+                # publication. Keep the root as a candidate revision so the
+                # receiving environment must run its own tests and publish
+                # decision. Dependency releases remain available for the
+                # root Agent/Team's immutable locks.
+                if source_release_id == root_source_release_id and result["created_releases"]:
+                    local_release_id = str(result["release"]["release_id"])
+                    local_release = self._require_release(db, local_release_id)
+                    local_object = self._require_object(db, local_release.object_id)
+                    if local_object.current_release_id == local_release_id:
+                        local_object.current_release_id = None
+                    db.delete(local_release)
+                    result["created_releases"] = 0
+                    result["runtime_entry"] = None
+                    result["entry"]["local_release_id"] = None
+                    result["entry"]["local_release_no"] = None
+                    result["entry"]["status"] = "created_candidate_revision"
                 source_release_map[source_release_id] = result["release"]
                 imported_entries.append(result["entry"])
                 runtime_entry = result.get("runtime_entry")
@@ -2943,6 +3044,12 @@ class WorkbenchService:
                 "package_hash": row.package_hash,
                 "kernel_fingerprint": row.manifest.get("kernel_fingerprint"),
                 "root": row.manifest.get("root"),
+                "deployment": {
+                    "deployment_id": row.deployment_id,
+                    "environment": row.environment,
+                    "activated_by": row.activated_by,
+                    "activated_at": _iso(row.activated_at),
+                },
                 "entries": entries or row.manifest.get("objects", []),
                 "bound_at": _iso(utc_now()),
             }
@@ -3757,6 +3864,20 @@ class WorkbenchService:
         if object_type == "skill":
             if not str(payload.get("prompt_markdown") or "").strip():
                 errors.append("Skill Prompt 不能为空")
+            runtime_contract = payload.get("runtime_contract") if isinstance(payload.get("runtime_contract"), dict) else {}
+            legacy_contract_keys = sorted(set(runtime_contract) - {"facts"})
+            if legacy_contract_keys:
+                warnings.append(
+                    "runtime_contract.json 中的历史字段仍可兼容读取，但新 Skill 只应保留 facts："
+                    + ", ".join(legacy_contract_keys)
+                )
+            metadata = payload.get("configuration") or payload.get("source_metadata") or {}
+            questionnaire = metadata.get("questionnaire") if isinstance(metadata, dict) else {}
+            if not isinstance(questionnaire, dict) or not questionnaire:
+                questionnaire = runtime_contract.get("questionnaire") if isinstance(runtime_contract.get("questionnaire"), dict) else {}
+            config_json = questionnaire.get("config_json")
+            if config_json is not None:
+                errors.extend(validate_questionnaire_config(config_json))
             known = known_capabilities if known_capabilities is not None else {
                 item["capability_id"] for item in capability_catalog(self.orchestrator)
             }
@@ -4003,7 +4124,11 @@ class WorkbenchService:
     def _add_compatibility_files(self, files, prefix, obj, revision, release) -> None:
         payload = revision.payload
         if obj.object_type == "skill":
-            files[f"{prefix}/SKILL.md"] = str(payload.get("prompt_markdown") or "").encode("utf-8")
+            metadata = payload.get("source_metadata") or payload.get("configuration") or {}
+            files[f"{prefix}/SKILL.md"] = skill_markdown_with_metadata(
+                str(payload.get("prompt_markdown") or ""),
+                metadata if isinstance(metadata, dict) else {},
+            ).encode("utf-8")
             files[f"{prefix}/runtime_contract.json"] = json.dumps(payload.get("runtime_contract") or {}, ensure_ascii=False, indent=2).encode("utf-8")
         elif obj.object_type == "expert":
             files[f"{prefix}/AGENT.md"] = str(payload.get("rules_markdown") or "").encode("utf-8")
@@ -4055,7 +4180,7 @@ class WorkbenchService:
             raise WorkbenchError("manifest.json 无法解析", code="INVALID_PACKAGE") from exc
         if not isinstance(manifest, dict):
             raise WorkbenchError("manifest.json 必须是对象", code="INVALID_PACKAGE")
-        if manifest.get("schema_version") != 1:
+        if manifest.get("schema_version") not in {1, 2}:
             raise WorkbenchError("不支持的配置包 Schema", code="PACKAGE_SCHEMA_MISMATCH")
         claimed_hash = str(manifest.get("manifest_hash") or "")
         unsigned = dict(manifest)
@@ -4370,14 +4495,15 @@ class WorkbenchService:
             allow_legacy_brief=legacy_missing_brief,
         )
         if object_type == "skill":
+            questionnaire_errors = _questionnaire_asset_errors(payload, decoded_assets)
             script_errors = self._script_validation_errors(decoded_assets)
-            if script_errors:
+            if questionnaire_errors or script_errors:
                 validation = {
                     **validation,
                     "valid": False,
-                    "errors": [*validation.get("errors", []), *script_errors],
+                    "errors": [*validation.get("errors", []), *questionnaire_errors, *script_errors],
                 }
-        if not validation.get("valid", False):
+        if not validation.get("valid", False) and not str(entry.get("release_id") or "").startswith("revision:"):
             raise WorkbenchError(
                 "导入包中的对象校验未通过",
                 code="REVISION_VALIDATION_FAILED",
@@ -4412,6 +4538,7 @@ class WorkbenchService:
                 object_id=obj.object_id,
                 revision_no=(latest.revision_no if latest else 0) + 1,
                 base_revision_id=latest.revision_id if latest else None,
+                change_summary=str(entry.get("change_summary") or "").strip(),
                 payload=payload,
                 dependency_locks=local_dependency_locks,
                 validation=validation,
@@ -4615,12 +4742,25 @@ class WorkbenchService:
         }
 
     @staticmethod
-    def _revision_dict(row) -> dict[str, Any]:
+    def _actor_display_names(db, actor_ids: Iterable[str]) -> dict[str, str]:
+        ids = {str(actor_id or "").strip() for actor_id in actor_ids if str(actor_id or "").strip()}
+        if not ids:
+            return {}
+        return {
+            row.actor_id: row.display_name
+            for row in db.scalars(select(WorkbenchActorRow).where(WorkbenchActorRow.actor_id.in_(ids)))
+            if str(row.display_name or "").strip()
+        }
+
+    @staticmethod
+    def _revision_dict(row, actor_names: dict[str, str] | None = None) -> dict[str, Any]:
         return {
             "revision_id": row.revision_id, "object_id": row.object_id, "revision_no": row.revision_no,
-            "base_revision_id": row.base_revision_id, "payload": row.payload,
+            "base_revision_id": row.base_revision_id, "change_summary": str(getattr(row, "change_summary", "") or ""), "payload": row.payload,
             "dependency_locks": row.dependency_locks, "validation": row.validation,
-            "content_hash": row.content_hash, "created_by": row.created_by, "created_at": _iso(row.created_at),
+            "content_hash": row.content_hash, "created_by": row.created_by,
+            "created_by_display_name": (actor_names or {}).get(row.created_by, row.created_by),
+            "created_at": _iso(row.created_at),
         }
 
     @staticmethod
@@ -4643,14 +4783,16 @@ class WorkbenchService:
         return row
 
     @staticmethod
-    def _release_dict(row, obj) -> dict[str, Any]:
+    def _release_dict(row, obj, actor_names: dict[str, str] | None = None) -> dict[str, Any]:
         return {
             "is_current": obj.current_release_id == row.release_id,
             "release_id": row.release_id, "object_id": row.object_id, "object_type": obj.object_type,
             "object_key": obj.object_key, "name": obj.name, "revision_id": row.revision_id,
             "release_no": row.release_no, "version": f"v{row.release_no}", "dependency_locks": row.dependency_locks,
             "content_hash": row.content_hash, "verification": row.verification, "archived": row.archived,
-            "published_by": row.published_by, "published_at": _iso(row.published_at),
+            "published_by": row.published_by,
+            "published_by_display_name": (actor_names or {}).get(row.published_by, row.published_by),
+            "published_at": _iso(row.published_at),
         }
 
     @staticmethod

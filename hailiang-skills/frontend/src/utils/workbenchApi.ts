@@ -23,11 +23,14 @@ export type ObjectRevision = {
   object_id: string;
   revision_no: number;
   base_revision_id: string | null;
+  change_summary?: string;
   payload: Record<string, unknown>;
   dependency_locks: DependencyLock[];
   validation: { valid: boolean; errors?: string[]; warnings?: string[] };
   content_hash: string;
   created_by: string;
+  /** Display name resolved from the business actor directory; falls back to ID for historical records. */
+  created_by_display_name?: string;
   created_at: string;
 };
 
@@ -49,12 +52,16 @@ export type ObjectRelease = {
   object_key: string;
   name: string;
   revision_id: string;
+  revision_no?: number;
+  revision_change_summary?: string;
   release_no: number;
   version: string;
   dependency_locks: DependencyLock[];
   content_hash: string;
   archived: boolean;
   published_by: string;
+  /** Display name resolved from the business actor directory; falls back to ID for historical records. */
+  published_by_display_name?: string;
   published_at: string;
 };
 
@@ -624,6 +631,19 @@ export const workbenchApi = {
     actorId: string,
   ): Promise<Blob> {
     return this.downloadRelease(baseUrl, releaseId, actorId);
+  },
+  async exportRevision(
+    baseUrl: string,
+    revisionId: string,
+    actorId: string,
+  ): Promise<Blob> {
+    const response = await fetch(`${normalizeBaseUrl(baseUrl)}/workbench/v1/exports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ revision_id: revisionId, actor_id: actorId }),
+    });
+    if (!response.ok) throw await responseError(response, "候选修订导出失败");
+    return response.blob();
   },
   makeCurrent: (baseUrl: string, releaseId: string, currentId: string | null, actorId: string) =>
     request<ObjectRelease>(baseUrl, `/workbench/v1/releases/${releaseId}/make-current`, {

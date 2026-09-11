@@ -134,6 +134,94 @@ class SessionContext:
         self.session_meta["session_agent_selection"] = next_selection
         return dict(next_selection)
 
+    def abandon_active_interactions_for_expert_change(
+        self,
+        *,
+        reason: str,
+        from_expert_id: str | None,
+        target_expert_id: str | None,
+    ) -> list[dict[str, str]]:
+        """End branch-local work that cannot safely move to another expert.
+
+        A native fact form is tied to the Skill/Expert that produced it.  An
+        explicit expert change must therefore preserve it as history but make
+        it read-only, rather than rejecting the user's navigation request.
+        Route and handoff cards use the same interaction lifecycle and are
+        expired alongside the form, matching the existing switch semantics.
+        """
+        changes = expire_active_interactions(self.messages)
+        abandoned_forms = [
+            change
+            for change in changes
+            if str(change.get("interaction_id") or "").startswith("fact_form:")
+        ]
+
+        def append_runtime_form(form_id: object) -> None:
+            normalized_form_id = str(form_id or "").strip()
+            if not normalized_form_id:
+                return
+            interaction_id = f"fact_form:{normalized_form_id}"
+            if any(change["interaction_id"] == interaction_id for change in abandoned_forms):
+                return
+            source_message_id = ""
+            for message in reversed(self.messages):
+                if not isinstance(message, dict) or message.get("role") != "assistant":
+                    continue
+                blocks = message.get("blocks") if isinstance(message.get("blocks"), list) else []
+                if any(
+                    isinstance(block, dict)
+                    and block.get("type") == "fact_form"
+                    and isinstance(block.get("payload"), dict)
+                    and str(block["payload"].get("form_id") or "") == normalized_form_id
+                    for block in blocks
+                ):
+                    source_message_id = str(message.get("message_id") or "")
+                    break
+            abandoned_forms.append({"message_id": source_message_id, "interaction_id": interaction_id})
+
+        runtime_state = self.skill_states.get("skill_runtime")
+        if isinstance(runtime_state, dict):
+            runtime_state.pop("pending_form", None)
+            runtime_state["active_skill_id"] = ""
+            status_flags = runtime_state.get("status_flags")
+            if isinstance(status_flags, dict):
+                status_flags.pop("native_questionnaire_form", None)
+            for facts in (runtime_state.get("skill_facts") or {}).values():
+                if isinstance(facts, dict):
+                    pending_questionnaire = facts.get("_pending_questionnaire")
+                    if isinstance(pending_questionnaire, dict):
+                        append_runtime_form(pending_questionnaire.get("form_id"))
+                    facts.pop("_pending_questionnaire", None)
+        agent_state = self.skill_states.get("agent_runtime")
+        if isinstance(agent_state, dict):
+            pending_form = agent_state.get("pending_form")
+            if isinstance(pending_form, dict):
+                append_runtime_form(pending_form.get("form_id"))
+            agent_state.pop("pending_form", None)
+        self.session_meta.pop("pending_form", None)
+        self.interaction_state["active_skill"] = ""
+
+        if abandoned_forms:
+            self.event_trace.append(
+                make_event(
+                    "form_abandoned",
+                    {
+                        "reason": reason,
+                        "from_expert_id": str(from_expert_id or "") or None,
+                        "target_expert_id": str(target_expert_id or "") or None,
+                        "forms": [
+                            {
+                                "source_message_id": change["message_id"],
+                                "interaction_id": change["interaction_id"],
+                                "form_id": change["interaction_id"].removeprefix("fact_form:"),
+                            }
+                            for change in abandoned_forms
+                        ],
+                    },
+                )
+            )
+        return changes
+
     def apply_session_agent_selection(self) -> bool:
         """Restore the session Agent into the active child/unbound branch.
 
@@ -164,19 +252,19 @@ class SessionContext:
             self.session_meta["expert_selection_source"] = selection["selection_source"]
         if not changed:
             return False
+        self.abandon_active_interactions_for_expert_change(
+            reason="context_agent_inheritance",
+            from_expert_id=current_expert_id,
+            target_expert_id=expert_id,
+        )
         self.session_meta.pop("pending_team_handoff", None)
         self.session_meta.pop("expert_requested_skill_id", None)
-        expire_active_interactions(self.messages)
         self.interaction_state["active_skill"] = "career_plan_entity" if (team_id or expert_id) else "general_chat"
         runtime_state = self.skill_states.get("skill_runtime")
         if isinstance(runtime_state, dict):
             runtime_state["active_skill_id"] = "career_plan_entity" if (team_id or expert_id) else "general_chat"
-            for facts in (runtime_state.get("skill_facts") or {}).values():
-                if isinstance(facts, dict):
-                    facts.pop("_pending_questionnaire", None)
         agent_state = self.skill_states.get("agent_runtime")
         if isinstance(agent_state, dict):
-            agent_state.pop("pending_form", None)
             agent_state["active_expert_id"] = expert_id
         return True
 
@@ -297,6 +385,15 @@ class SessionContext:
             if profile_name:
                 self.profile_name = profile_name
             return False
+        # A form belongs to the currently visible child. Preserve confirmed
+        # facts/state, but expire live UI work before it is serialized so a
+        # return to this child rebuilds the smallest valid next question.
+        if current:
+            self.abandon_active_interactions_for_expert_change(
+                reason="profile_switch",
+                from_expert_id=str(self.session_meta.get("active_expert_id") or "") or None,
+                target_expert_id=None,
+            )
         # The active branch may be the unbound branch (whose public profile
         # id is ``None``), so it must be persisted before entering a child as
         # well.
@@ -337,6 +434,11 @@ class SessionContext:
         if self.context_scope == "unbound":
             return False
         if self.profile_id:
+            self.abandon_active_interactions_for_expert_change(
+                reason="profile_switch",
+                from_expert_id=str(self.session_meta.get("active_expert_id") or "") or None,
+                target_expert_id=None,
+            )
             self.sync_active_branch()
         global_meta = self._global_session_meta()
         branch = self.profile_branches.get(UNBOUND_CONTEXT_BRANCH_ID)
@@ -470,9 +572,11 @@ class SessionContext:
     def refresh_effective_facts(self) -> None:
         merged = KnownFacts()
         for key, record in self.shared_facts.facts.items():
-            merged.facts[key] = record
+            if record.status != "candidate":
+                merged.facts[key] = record
         for key, record in self.profile_facts.facts.items():
-            merged.facts[key] = record
+            if record.status != "candidate":
+                merged.facts[key] = record
         for key, record in self.session_facts.facts.items():
             merged.facts[key] = record
         self.known_facts = merged
@@ -489,6 +593,8 @@ class SessionContext:
         scope: str | None = None,
         source_turn_id: str | None = None,
         provenance: Provenance | None = None,
+        status: str = "confirmed",
+        evidence_summary: str | None = None,
     ) -> FactRecord:
         fact_scope = resolve_fact_scope(key, scope)
         # Unbound conversations may collect information, but it must stay in
@@ -513,6 +619,8 @@ class SessionContext:
             scope=fact_scope,
             source_turn_id=source_turn_id,
             provenance=provenance,
+            status=status,
+            evidence_summary=evidence_summary,
         )
         self.refresh_effective_facts()
         return record

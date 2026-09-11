@@ -115,6 +115,7 @@ type ChatStore = {
   activeExpertId: string;
   pendingExpertId: string;
   pendingExpertTeamId: string;
+  pendingExpertClear: boolean;
   activeExpertTeam: SelectedExpertTeam | null;
   profileBranches: Record<string, {
     activeExpertTeamId?: string;
@@ -168,6 +169,7 @@ type ChatStore = {
   setActiveExpertId: (value: string) => void;
   setPendingExpertId: (value: string) => void;
   setPendingExpertTeamId: (value: string) => void;
+  setPendingExpertClear: (value: boolean) => void;
   setActiveExpertTeam: (value: SelectedExpertTeam | null) => void;
   setProfileBranch: (profileId: string, value: {
     activeExpertTeamId?: string;
@@ -392,6 +394,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   activeExpertId: "",
   pendingExpertId: "",
   pendingExpertTeamId: "",
+  pendingExpertClear: false,
   activeExpertTeam: null,
   profileBranches: {},
   messages: [],
@@ -460,6 +463,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   setActiveExpertId: (value) => set({ activeExpertId: value }),
   setPendingExpertId: (value) => set({ pendingExpertId: value }),
   setPendingExpertTeamId: (value) => set({ pendingExpertTeamId: value }),
+  setPendingExpertClear: (value) => set({ pendingExpertClear: value }),
   setActiveExpertTeam: (value) => set({ activeExpertTeam: value }),
   setProfileBranch: (profileId, value) => set((state) => ({
     profileBranches: {
@@ -650,6 +654,7 @@ export const useChatStore = create<ChatStore>((set) => ({
       activeExpertId: "",
       pendingExpertId: "",
       pendingExpertTeamId: "",
+      pendingExpertClear: false,
       activeExpertTeam: null,
       profileBranches: {},
       currentScenario: "",

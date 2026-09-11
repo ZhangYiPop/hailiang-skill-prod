@@ -6,12 +6,22 @@ memory_enabled: true
 memory_async_update: true
 sandbox_prewarm_enabled: true
 local_fast_path_enabled: true
-# Keep the latest 8 user/assistant turns verbatim; only older complete pairs
-# are eligible for a profile-bound checkpoint.
-active_window_messages: 16
-context_window_tokens: 32000
+# The active model accepts one million input/context tokens. Keep the latest
+# 100 user/assistant turns verbatim, then summarize older complete pairs.
+active_window_messages: 200
+context_window_tokens: 1000000
+# Keep normal working prompts much smaller than the model's hard 1M input
+# ceiling. The composer accounts for instructions, state, archive evidence and
+# messages before dispatching a model call.
+working_context_tokens: 160000
 async_checkpoint_ratio: 0.60
 sync_compression_ratio: 0.80
+# Expert routing is a separate model pass. These bounds prevent it from
+# silently discarding a long conversation before the model context limit.
+expert_history_messages: 200
+expert_history_message_chars: 12000
+expert_history_max_chars: 900000
+expert_reply_max_chars: 1500000
 tool_routing:
   # ms_agent removes the normal-turn standalone classifier call. Use
   # standalone for a controlled rollback; invalid merged output still falls

@@ -172,6 +172,12 @@ class FactRecord(BaseModel):
     scope: str = "user"
     source_turn_id: str | None = None
     provenance: Provenance | None = None
+    # Candidate records are durable profile evidence, but intentionally do not
+    # become effective business Facts until a later turn confirms them.
+    status: str = "confirmed"
+    observed_at: str = Field(default_factory=utc_now_iso)
+    evidence_summary: str | None = None
+    observation_history: list[dict[str, Any]] = Field(default_factory=list)
     updated_at: str = Field(default_factory=utc_now_iso)
 
 
@@ -190,8 +196,23 @@ class KnownFacts(BaseModel):
         scope: str = "user",
         source_turn_id: str | None = None,
         provenance: Provenance | None = None,
+        status: str = "confirmed",
+        evidence_summary: str | None = None,
     ) -> FactRecord:
         normalized_value = normalize_fact_value(key, value)
+        previous = self.facts.get(key)
+        history = list(previous.observation_history) if previous else []
+        if previous is not None:
+            history.append({
+                "value": previous.value,
+                "status": previous.status,
+                "observed_at": previous.observed_at,
+                "source_type": previous.source_type,
+                "source_id": previous.source_id,
+                "source_turn_id": previous.source_turn_id,
+                "evidence_summary": previous.evidence_summary,
+                "confidence": previous.confidence,
+            })
         record = FactRecord(
             value=normalized_value,
             confidence=confidence,
@@ -202,6 +223,9 @@ class KnownFacts(BaseModel):
             scope=scope,
             source_turn_id=source_turn_id,
             provenance=provenance,
+            status="candidate" if status == "candidate" else "confirmed",
+            evidence_summary=str(evidence_summary or "").strip()[:500] or None,
+            observation_history=history[-8:],
         )
         self.facts[key] = record
         return record

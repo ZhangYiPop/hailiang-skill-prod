@@ -169,6 +169,23 @@ def _build_bundle_from_root(
                 )
             )
 
+    # Some legacy Skills keep read-only lookup data beside SKILL.md. Preserve
+    # these files as assets when a package is imported/exported; new Skills
+    # should normally prefer assets/ for clearer ownership.
+    for file_path in sorted(item for item in root_dir.iterdir() if item.is_file()):
+        if file_path in {skill_file, root_dir / "runtime_contract.json"}:
+            continue
+        if file_path.suffix.lower() not in {".json", ".yaml", ".yml", ".csv", ".txt"}:
+            continue
+        resources.append(
+            SkillResource(
+                resource_type="asset",
+                relative_path=file_path.name,
+                file_path=file_path,
+                size_bytes=file_path.stat().st_size,
+            )
+        )
+
     data_root = default_generated_data_dir()
     contract = load_skill_contract(root_dir, metadata=metadata)
     runtime_metadata = _build_runtime_metadata(metadata, contract)

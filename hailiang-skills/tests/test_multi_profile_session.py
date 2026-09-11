@@ -9,6 +9,7 @@ from sqlalchemy import create_engine
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.core.fact_service import FactService as RuntimeFactService
+from hailiang_skills.core.profile_candidate_archive import archive_candidate, candidate_archive
 from hailiang_skills.runtime_bridge.default_expert_team import (
     initialize_default_expert_team,
     require_default_expert_team,
@@ -124,7 +125,10 @@ def test_profile_branches_isolate_messages_skill_expert_and_resume_state() -> No
         target_profile_id="profile_a",
     )
     assert [item["content"] for item in resumed_a.messages] == ["A 的问题"]
-    assert resumed_a.skill_states["skill_runtime"]["active_skill_id"] == "skill_a"
+    # Switching children preserves A's facts/history but ends live Skill work;
+    # the next A turn rebuilds the smallest valid question instead of reviving
+    # a stale form or pending state.
+    assert resumed_a.skill_states["skill_runtime"]["active_skill_id"] == ""
     assert resumed_a.session_meta["active_expert_id"] == "expert_a"
     assert resumed_a.session_meta["resume_recap_pending"] is True
     assert [item["item_type"] for item in resumed_a.timeline_items].count("profile_switch") == 2
@@ -133,6 +137,26 @@ def test_profile_branches_isolate_messages_skill_expert_and_resume_state() -> No
         for item in resumed_a.timeline_items
         if item["item_type"] == "message"
     } == {"profile_a", "profile_b"}
+
+
+def test_profile_candidate_archive_isolated_and_not_effective_fact() -> None:
+    context = SessionContext(session_id="sess_candidate", user_id="user_1", profile_id="profile_a")
+    assert archive_candidate(
+        context,
+        key="conversation.interest_explore.trait",
+        value="爱运动",
+        source_skill="interest_explore",
+        source_turn_id="turn_a",
+        evidence_summary="孩子比较爱运动",
+        confidence=0.72,
+    )
+    assert context.known_facts.get_value("conversation.interest_explore.trait") is None
+    assert candidate_archive(context)[0]["value"] == "爱运动"
+
+    context.activate_profile_branch("profile_b", profile_name="小B")
+    assert candidate_archive(context) == []
+    context.activate_profile_branch("profile_a", profile_name="小A")
+    assert candidate_archive(context)[0]["source_turn_id"] == "turn_a"
 
 
 def test_unbound_branch_isolated_and_resumes_without_profile_projection() -> None:
@@ -314,6 +338,7 @@ def test_hard_context_threshold_compresses_synchronously_and_keeps_recent_turns(
             assistant_message=f"{index}:{long_text}",
         )
 
+    sync_notifications: list[str] = []
     result = store.prepare_for_turn(
         user_id="user_1",
         session_id="sess__profile__profile_a",
@@ -321,9 +346,11 @@ def test_hard_context_threshold_compresses_synchronously_and_keeps_recent_turns(
         skill_dir=None,
         llm_client=None,
         defer_update=True,
+        on_sync_compression=lambda: sync_notifications.append("started"),
     )
 
     assert result.context["status"]["checkpoint_mode"] == "sync_compression"
     assert result.context["status"]["memory_update_status"] == "degraded_success"
+    assert sync_notifications == ["started"]
     assert len(result.context["recent_messages"]) == 16
     assert result.context["summary"]

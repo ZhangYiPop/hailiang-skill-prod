@@ -38,6 +38,7 @@ class RevisionInput(StrictModel):
     payload: dict[str, Any]
     dependency_locks: list[dict[str, Any]] = Field(default_factory=list)
     assets: list[dict[str, Any]] = Field(default_factory=list)
+    change_summary: str = Field(default="", max_length=2000)
     actor_id: str = Field(min_length=1)
 
 
@@ -139,7 +140,8 @@ class EvaluationCompleteInput(StrictModel):
 
 
 class ExportInput(StrictModel):
-    release_id: str = Field(min_length=1)
+    release_id: str | None = None
+    revision_id: str | None = None
     actor_id: str = Field(min_length=1)
 
 
@@ -439,8 +441,11 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
 
     @router.post("/exports")
     def export_release(body: ExportInput):
-        archive, manifest = _call(lambda: service.export_release(body.release_id, actor_id=body.actor_id))
-        filename = f"{manifest['root']['object_key']}-v{manifest['root']['release_no']}.zip"
+        archive, manifest = _call(lambda: service.export_configuration(
+            release_id=body.release_id, revision_id=body.revision_id, actor_id=body.actor_id,
+        ))
+        label = f"v{manifest['root']['release_no']}" if manifest['root'].get('release_no') else f"r{manifest['root']['revision_no']}"
+        filename = f"{manifest['root']['object_key']}-{label}.zip"
         return Response(
             archive,
             media_type="application/zip",

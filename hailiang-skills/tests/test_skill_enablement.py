@@ -110,6 +110,28 @@ def test_runtime_config_invalid_tool_routing_mode_fails_safe(
     assert "defaulting to ms_agent" in caplog.text
 
 
+def test_runtime_config_supports_extended_model_context_and_expert_history(tmp_path: Path) -> None:
+    config_path = tmp_path / "runtime.yml"
+    config_path.write_text(
+        "active_window_messages: 200\n"
+        "context_window_tokens: 1000000\n"
+        "expert_history_messages: 200\n"
+        "expert_history_message_chars: 12000\n"
+        "expert_history_max_chars: 900000\n"
+        "expert_reply_max_chars: 1500000\n",
+        encoding="utf-8",
+    )
+
+    config = load_runtime_bridge_config(config_path)
+
+    assert config.active_window_messages == 200
+    assert config.context_window_tokens == 1_000_000
+    assert config.expert_history_messages == 200
+    assert config.expert_history_message_chars == 12_000
+    assert config.expert_history_max_chars == 900_000
+    assert config.expert_reply_max_chars == 1_500_000
+
+
 def test_disabled_skill_is_absent_from_registry_catalog_and_intent_examples() -> None:
     registry = load_local_skill_registry(
         PROJECT_RUNTIME_SKILLS_ROOT,

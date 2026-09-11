@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import copy
 import json
 from pathlib import Path
 import subprocess
@@ -43,6 +44,47 @@ def _bundle(skill_id: str):
     return bundle
 
 
+def _config_bundle():
+    bundle = copy.copy(_bundle("mock_admission"))
+    bundle.metadata = copy.deepcopy(bundle.metadata)
+    bundle.metadata["questionnaire"] = {
+        "enabled": True,
+        "config_json": {
+            "schema_version": 1,
+            "title": "测试问卷",
+            "questions": [
+                {"id": "kind", "label": "类型", "input_type": "single_select", "options": ["A", "B"]},
+                {"id": "tags", "label": "标签", "input_type": "multi_select", "max_selections": 2, "options": ["x", "y", "z"]},
+                {"id": "score", "label": "分数", "input_type": "number", "value_type": "number", "min": 0, "max": 100, "decimal_places": 1},
+                {"id": "detail", "label": "详情", "input_type": "text", "required": False,
+                 "display_condition": {"question_id": "kind", "operator": "equals", "value": "A"}},
+            ],
+        },
+    }
+    return bundle
+
+
+def test_generic_config_json_supports_all_input_types_and_conditions():
+    bundle = _config_bundle()
+    state = SessionState(session_id="generic_questionnaire", active_skill_id="mock_admission")
+    specs = {item["question_id"]: item for item in available_question_specs(bundle, state)}
+    assert {specs[item]["input_type"] for item in ("kind", "tags", "score")} == {"single_select", "multi_select", "number"}
+    assert "detail" not in specs
+    state.skill_facts["mock_admission"] = {"answers": {"kind": "A"}}
+    assert "detail" in {item["question_id"] for item in available_question_specs(bundle, state)}
+
+
+def test_generic_config_json_answers_validate_options_limits_and_ranges():
+    bundle = _config_bundle()
+    state = SessionState(session_id="generic_answers", active_skill_id="mock_admission")
+    _, block = decode_questionnaire_reply(bundle, state, '{"assistant_message":"请填写","question_ids":["tags","score"]}')
+    stage_questionnaire_form(state, bundle, block)
+    assert consume_pending_questionnaire_answer(state, None, bundle, "标签：x、y、z；分数：101") is None
+    result = consume_pending_questionnaire_answer(state, None, bundle, "标签：x、y；分数：88.5")
+    assert result is not None
+    assert result["values"] == {"tags": ["x", "y"], "score": 88.5}
+
+
 def test_questionnaire_envelope_unwrap_preserves_real_content() -> None:
     envelope = (
         '{"assistant_message":"已收到你的填写信息，正在生成建议。",'
@@ -57,6 +99,23 @@ def test_questionnaire_envelope_unwrap_preserves_real_content() -> None:
     assert unwrap_questionnaire_assistant_message("前缀文字 {\"assistant_message\":\"不应截断\"}") == (
         "前缀文字 {\"assistant_message\":\"不应截断\"}"
     )
+
+
+def test_questionnaire_allows_a_skill_directed_no_question_turn() -> None:
+    bundle = _bundle("multi_path_planning")
+    state = SessionState(session_id="sess_intro", active_skill_id="multi_path_planning")
+
+    text, block, decision = resolve_questionnaire_continuation(
+        bundle,
+        state,
+        '{"assistant_message":"你好，先选择路径推荐或科普答疑。","question_ids":[],"collection_complete":false}',
+    )
+
+    assert text == "你好，先选择路径推荐或科普答疑。"
+    assert block is None
+    assert decision["valid"] is True
+    assert decision["fallback_used"] is False
+    assert decision["selected_question_ids"] == []
 
 
 def test_questionnaire_stream_extractor_emits_only_envelope_content() -> None:
