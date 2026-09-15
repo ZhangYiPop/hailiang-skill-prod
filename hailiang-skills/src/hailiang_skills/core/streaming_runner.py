@@ -501,6 +501,44 @@ class StreamingRunner:
         # can include partial text without racing a database write.
         self._active_run_snapshots: dict[tuple[str, str], dict[str, Any]] = {}
 
+    def _persist_terminal_run_status(
+        self,
+        session_id: str,
+        run_id: str,
+        status: str,
+        *,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        """Close a run in both the session ledger and the run index.
+
+        Error paths used to emit ``run_failed`` before saving the mutated
+        session.  If the SSE client disconnected or the context had advanced,
+        the ledger therefore stayed ``running`` and later requests returned
+        ``ACTIVE_RUN_MUST_STOP`` forever.
+        """
+        for _ in range(3):
+            try:
+                current = self.repository.get(session_id)
+                ledger = current.session_meta.setdefault("run_ledger", {})
+                item = ledger.get(run_id) if isinstance(ledger, dict) else None
+                if not isinstance(item, dict) or str(item.get("status") or "") != "running":
+                    return
+                item["status"] = status
+                item["finished_at"] = utc_now_iso()
+                if isinstance(error, dict):
+                    item["error"] = {
+                        "code": str(error.get("code") or ""),
+                        "message": str(error.get("message") or "")[:500],
+                    }
+                self.repository.save(current)
+                if hasattr(self.repository, "update_run_status"):
+                    self.repository.update_run_status(run_id, status)
+                return
+            except SessionVersionConflict:
+                continue
+            except Exception:
+                return
+
     def reserve_turn(self, session_id: str, user_id: str, *, run_id: str | None = None) -> TurnLease:
         return self.turn_coordinator.acquire(session_id, user_id, run_id=run_id)
 
@@ -1386,6 +1424,12 @@ class StreamingRunner:
                 self.repository.save(context)
                 error = public_model_error(exc, terminal=True)
                 push("run_failed", {"message": error["message"], "error": error})
+                self._persist_terminal_run_status(
+                    session_id,
+                    stream_generation,
+                    "failed",
+                    error=error,
+                )
                 if protocol == UNIFIED_PROTOCOL:
                     push(
                         "run_completed",
@@ -1529,6 +1573,17 @@ class StreamingRunner:
             # boundary and therefore cannot overwrite a newer request.
             if context.session_meta.get("active_stream_generation") == stream_generation:
                 context.session_meta["active_stream_generation"] = "client_cancelled"
+            # Covers generator/client disconnects and unexpected worker
+            # exits where the exception branch could not emit run_failed.
+            self._persist_terminal_run_status(
+                session_id,
+                stream_generation,
+                "failed",
+                error={
+                    "code": "STREAM_TERMINATED",
+                    "message": "流式响应在完成前终止",
+                },
+            )
 
     def prepare_skill_transition(
         self,

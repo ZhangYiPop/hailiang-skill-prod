@@ -731,7 +731,7 @@ def test_chat_stream_uses_context_data_profile_without_legacy_input_profile_id(a
     frames = _state_frames(response.text)
     assert all(frame["profile_id"] == "p1" for frame in frames)
     assert frames[0]["context_notice"]["type"] == "profile_context_activated"
-    assert frames[0]["context_notice"]["text"] == "本轮回答将结合 **小海** 的档案数据。"
+    assert frames[0]["context_notice"]["text"] == "本轮回答将结合 **小海** 的档案数据"
     assert repository.get("sess_context_selected_profile").profile_id == "p1"
 
 
@@ -763,7 +763,7 @@ def test_chat_stream_emits_context_notice_when_switching_profile(api_client) -> 
     notice = frames[0]["context_notice"]
     assert notice == {
         "type": "profile_switched",
-        "text": "本轮回答将结合 **小明** 的档案数据。",
+        "text": "本轮回答将结合 **小明** 的档案数据",
         "from_context_scope": "profile",
         "from_profile_id": "p1",
         "from_context_label": "小海",

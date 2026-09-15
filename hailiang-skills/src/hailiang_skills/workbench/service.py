@@ -59,6 +59,7 @@ from hailiang_skills.workbench.runtime_overlay import (
 )
 from hailiang_skills.runtime_bridge.script_review import review_scripts
 from hailiang_skills.runtime_bridge.agentscope_expert_runtime import AgentScopeRuntimeUnavailable
+from hailiang_skills.runtime_bridge.agent_frontmatter import validate_agent_skill_routing
 
 
 VALID_OBJECT_TYPES = {"skill", "expert", "expert_team"}
@@ -824,6 +825,17 @@ class WorkbenchService:
                     },
                 )
             canonical_locks = self._validate_dependencies(db, obj.object_type, payload, dependency_locks or [])
+            if obj.object_type == "expert":
+                routing_errors = validate_agent_skill_routing(
+                    str(payload.get("rules_markdown") or ""),
+                    {str(item.get("object_key") or "") for item in canonical_locks if str(item.get("object_key") or "")},
+                )
+                if routing_errors:
+                    raise WorkbenchError(
+                        "；".join(routing_errors),
+                        code="AGENT_SKILL_ROUTING_INVALID",
+                        details={"errors": routing_errors},
+                    )
             decoded_assets = self._decode_assets(assets or [], object_type=obj.object_type)
             validation = self._validate_payload(obj.object_type, payload, canonical_locks)
             if obj.object_type == "skill":
@@ -3020,7 +3032,10 @@ class WorkbenchService:
         return self.export_configuration(release_id=release_id, revision_id=None, actor_id=actor_id)
 
     def import_package(self, package_bytes: bytes, *, environment: str, actor_id: str) -> dict[str, Any]:
-        validated = self._validated_package_contents(package_bytes)
+        # Staging is an intake step.  Defer Python directory/layout and script
+        # safety review until activation, while retaining ZIP/manifest/hash and
+        # executable-file checks here.
+        validated = self._validated_package_contents(package_bytes, defer_script_validation=True)
         manifest = copy.deepcopy(validated["manifest"])
         root_release_id = str((manifest.get("root") or {}).get("release_id") or "")
         root_entry = next((item for item in validated["entries"] if str(item.get("release_id") or "") == root_release_id), {})
@@ -3245,6 +3260,15 @@ class WorkbenchService:
             target = db.get(WorkbenchDeploymentRow, deployment_id)
             if target is None:
                 raise WorkbenchError("部署记录不存在", code="DEPLOYMENT_NOT_FOUND")
+            # Re-run package integrity/dependency/script checks immediately
+            # before runtime installation.  File placement is intentionally
+            # not an activation gate: imported packages may retain legacy
+            # ``script/`` or other relative Python paths, while the runtime
+            # loader only executes explicitly supported Skill script assets.
+            self._validated_package_contents(
+                target.package_bytes,
+                enforce_python_location=False,
+            )
             root_team_id = self._deployment_root_team_id(target, required=False)
             root_object_id = str((target.manifest.get("root") or {}).get("object_id") or "")
             active_rows = list(
@@ -4060,6 +4084,10 @@ class WorkbenchService:
                 errors.append("专家规则不能为空")
             if len(locks) < 1:
                 errors.append("专家必须引用至少一个已发布 Skill 版本")
+            errors.extend(validate_agent_skill_routing(
+                str(payload.get("rules_markdown") or ""),
+                {str(item.get("object_key") or "") for item in locks if str(item.get("object_key") or "")},
+            ))
             budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
             for key, maximum in (("max_iters", 4), ("max_skill_calls", 3)):
                 value = int(budget.get(key, maximum) or maximum)
@@ -4343,7 +4371,15 @@ class WorkbenchService:
         *,
         materialize_entries: bool = True,
         defer_script_validation: bool = False,
+        enforce_python_location: bool = True,
     ) -> dict[str, Any]:
+        """Validate package integrity while optionally tolerating legacy .py paths.
+
+        ``enforce_python_location`` is deliberately independent from script
+        safety review: deployment intake/activation may preserve a legacy
+        layout, but only files under the supported ``scripts/`` runtime root
+        are considered executable script assets.
+        """
         if not package_bytes or len(package_bytes) > MAX_PACKAGE_BYTES:
             raise WorkbenchError("配置包为空或超过大小限制", code="PACKAGE_TOO_LARGE")
         files = self._read_zip(package_bytes)
@@ -4454,7 +4490,9 @@ class WorkbenchService:
             for path, content in declared_contents:
                 relative_path = path[len(prefix):] if path.startswith(prefix) else path
                 if PurePosixPath(relative_path).suffix.lower() == ".py":
-                    if not defer_script_validation and (declaration.get("object_type") != "skill" or not relative_path.startswith("scripts/")):
+                    if enforce_python_location and not defer_script_validation and (
+                        declaration.get("object_type") != "skill" or not relative_path.startswith("scripts/")
+                    ):
                         raise WorkbenchError("Python 脚本只能位于 Skill 的 scripts/ 目录", code="EXECUTABLE_CONTENT_FORBIDDEN")
                     if relative_path.startswith("scripts/"):
                         script_sources.append((relative_path, "text/x-python", content))
@@ -4694,7 +4732,7 @@ class WorkbenchService:
                     **validation,
                     "warnings": [
                         *list(validation.get("warnings") or []),
-                        "Python 脚本尚未完成目录与安全审查，请在 Skill 编辑区整理到 scripts/ 后再测试或发布",
+                        "检测到非 scripts/ 目录中的 Python 文件，导入时保留原路径；运行时不会自动执行该文件",
                     ],
                 }
         if not validation.get("valid", False) and not str(entry.get("release_id") or "").startswith("revision:"):

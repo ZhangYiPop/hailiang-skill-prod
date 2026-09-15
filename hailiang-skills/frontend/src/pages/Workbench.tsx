@@ -40,6 +40,7 @@ import { MessageBlocksRenderer } from "@/components/message-blocks/MessageBlocks
 import { TeamHandoffCard } from "@/components/message-blocks/TeamHandoffCard";
 import { useChatStore } from "@/store/useChatStore";
 import { presentationFromSseState } from "@/utils/conversationPresentation";
+import { syncAgentRoutingFrontmatter } from "@/utils/agentRoutingFrontmatter";
 import type { FactFormField, MessageBlock } from "@/types/messageBlocks";
 import type { MessageInteractionState, MessagePresentation, TeamHandoff } from "@/utils/api";
 import type { SseV2State } from "@/types/streamEvents";
@@ -581,12 +582,34 @@ export default function Workbench() {
   }
 
   function selectDependencyRelease(objectId: string, releaseId: string | null) {
+    const retained = selectedReleaseIds.filter(
+      (id) => dependencyReleases.find((release) => release.release_id === id)?.object_id !== objectId,
+    );
+    const nextReleaseIds = releaseId ? [...retained, releaseId] : retained;
     setSelectedReleaseIds((current) => {
-      const retained = current.filter(
+      const currentRetained = current.filter(
         (id) => dependencyReleases.find((release) => release.release_id === id)?.object_id !== objectId,
       );
-      return releaseId ? [...retained, releaseId] : retained;
+      return releaseId ? [...currentRetained, releaseId] : currentRetained;
     });
+    // Removing a dependency deliberately preserves a potentially hand-edited
+    // rule. The strict server validation makes the required manual cleanup
+    // visible before a revision can be saved.
+    if (selectedObject?.object_type !== "expert" || !releaseId) return;
+    const skillIds = dependencyReleases
+      .filter((release) => nextReleaseIds.includes(release.release_id))
+      .map((release) => release.object_key);
+    try {
+      setPayload((current) => ({
+        ...current,
+        rules_markdown: syncAgentRoutingFrontmatter(String(current.rules_markdown ?? ""), skillIds),
+      }));
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        text: error instanceof Error ? error.message : "无法自动同步 AGENT.md 路由模板。",
+      });
+    }
   }
 
   const latestRevision = selectedObject?.revisions?.[0] ?? null;

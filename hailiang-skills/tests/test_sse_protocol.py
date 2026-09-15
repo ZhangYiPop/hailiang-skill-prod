@@ -198,7 +198,7 @@ def test_profile_context_notice_is_part_of_every_v2_state_shape() -> None:
             "context_switched": True,
             "context_notice": {
                 "type": "profile_switched",
-                "text": "本轮回答将结合 **小明** 的档案数据。",
+                "text": "本轮回答将结合 **小明** 的档案数据",
                 "from_context_scope": "profile",
                 "from_profile_id": "profile_a",
                 "from_context_label": "小红",
@@ -216,7 +216,7 @@ def test_profile_context_notice_is_part_of_every_v2_state_shape() -> None:
     _, state = decode_sse(raw or "")
     assert state["context_notice"] == {
         "type": "profile_switched",
-        "text": "本轮回答将结合 **小明** 的档案数据。",
+        "text": "本轮回答将结合 **小明** 的档案数据",
         "from_context_scope": "profile",
         "from_profile_id": "profile_a",
         "from_context_label": "小红",

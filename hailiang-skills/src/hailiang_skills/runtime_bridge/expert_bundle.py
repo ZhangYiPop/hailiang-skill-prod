@@ -14,6 +14,8 @@ from typing import Any
 
 import yaml
 
+from hailiang_skills.runtime_bridge.agent_frontmatter import validate_agent_skill_routing
+
 
 class ExpertBundleError(ValueError):
     pass
@@ -142,6 +144,10 @@ def load_expert_bundle(bundle_dir: str | Path, runtime_registry) -> ExpertDefini
     locks = _load_locks(lock_path)
     if set(declared_ids) != set(locks):
         raise ExpertBundleError("agent.yaml.skills 必须与 skills.lock.json 的 Skill ID 完全一致")
+    rules_markdown = rules_path.read_text(encoding="utf-8").strip()
+    routing_errors = validate_agent_skill_routing(rules_markdown, set(declared_ids))
+    if routing_errors:
+        raise ExpertBundleError("；".join(routing_errors))
     validated: list[LockedSkill] = []
     for skill_id in declared_ids:
         lock = locks[skill_id]
@@ -169,7 +175,7 @@ def load_expert_bundle(bundle_dir: str | Path, runtime_registry) -> ExpertDefini
     return ExpertDefinition(
         agent_id=agent_id,
         name=name,
-        rules_markdown=rules_path.read_text(encoding="utf-8").strip(),
+        rules_markdown=rules_markdown,
         skills=tuple(validated),
         brief=str(raw.get("brief") or "").strip(),
         max_iters=max_iters,

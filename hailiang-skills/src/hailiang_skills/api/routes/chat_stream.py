@@ -468,7 +468,7 @@ def _profile_context_notice(
     if target_scope == "profile" and target_name and (switched or session_created):
         return {
             "type": "profile_switched" if switched else "profile_context_activated",
-            "text": f"本轮回答将结合 **{target_name}** 的档案数据。",
+            "text": f"本轮回答将结合 **{target_name}** 的档案数据",
             "from_context_scope": from_scope if switched else None,
             "from_profile_id": str(from_profile_id) if switched and from_profile_id else None,
             "from_context_label": from_label if switched else "",

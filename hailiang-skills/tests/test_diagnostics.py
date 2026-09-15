@@ -118,6 +118,34 @@ def test_session_diagnostics_projects_confirmed_output_truncation(monkeypatch, t
     }]
 
 
+def test_session_diagnostics_surfaces_skill_unavailable_fallback(monkeypatch, tmp_path) -> None:
+    client = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(diagnostics, "read_events", lambda session_id: [{
+        "event_id": "evt_skill_fallback",
+        "event_type": "expert_skill_unavailable_fallback",
+        "timestamp": "2026-09-15T10:00:00+08:00",
+        "payload": {
+            "skill_id": "score_improve",
+            "code": "EXPERT_SKILL_UNAVAILABLE_FALLBACK",
+            "message": "指定 Skill 当前不可用，已由专家直接兜底",
+        },
+    }])
+
+    response = client.post(
+        "/api/v1/operations/diagnostics/sessions/query",
+        json={"session_id": "sess_001"},
+        headers={"X-Security-Admin-Token": "diagnostic-token"},
+    )
+
+    assert response.status_code == 200
+    assert any(
+        item["event_type"] == "expert_skill_unavailable_fallback"
+        and item["code"] == "EXPERT_SKILL_UNAVAILABLE_FALLBACK"
+        and item["message"] == "指定 Skill 当前不可用，已由专家直接兜底"
+        for item in response.json()["errors"]
+    )
+
+
 def test_request_diagnostics_handles_pre_session_failure(monkeypatch, tmp_path) -> None:
     client = _client(monkeypatch, tmp_path)
     response = client.post(

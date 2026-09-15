@@ -17,6 +17,7 @@ from hailiang_skills.core.profile_candidate_archive import candidate_archive
 from hailiang_skills.core.skill_display import build_skill_display
 from hailiang_skills.core.skill_ids import EXPERT_DIRECT_EXECUTION_ID
 from hailiang_skills.runtime_bridge.agentscope_expert_runtime import AgentScopeExpertRuntime, AgentScopeRuntimeUnavailable
+from hailiang_skills.runtime_bridge.agent_frontmatter import parse_agent_frontmatter, validate_agent_skill_routing
 from hailiang_skills.runtime_bridge.expert_bundle import (
     ExpertBundleError,
     ExpertDefinition,
@@ -58,6 +59,27 @@ def test_default_expert_is_reference_only_and_locks_runtime_skills():
     assert expert.topology == "single_expert"
     assert "multi_path_planning" in expert.authorized_skill_ids
     assert not (expert.source_dir / "skills").exists()
+
+
+def test_agent_frontmatter_strictly_matches_locked_skills_but_legacy_markdown_is_allowed():
+    markdown = """---
+skill_routing:
+  rules:
+    - skill_id: score_improve
+      when: []
+---
+# 专家规则
+按需要调用 Skill。
+"""
+    parsed = parse_agent_frontmatter(markdown)
+
+    assert parsed.body.startswith("# 专家规则")
+    assert parsed.routing_rules[0].skill_id == "score_improve"
+    assert validate_agent_skill_routing(markdown, {"score_improve"}) == []
+    assert validate_agent_skill_routing(markdown, {"score_improve", "subject_advisor"}) == [
+        "AGENT.md skill_routing.rules 缺少当前绑定 Skill: subject_advisor"
+    ]
+    assert validate_agent_skill_routing("# 旧专家规则", {"score_improve"}) == []
 
 
 def test_family_education_expert_reuses_only_the_two_central_runtime_skills():
@@ -445,6 +467,57 @@ def test_structured_route_selects_authorized_skill_before_any_expert_reply():
     assert "agent_reply" not in state
     assert any(event["event_type"] == "expert_skill_route_selected" for event in context.event_trace)
     assert any(event["event_type"] == "expert_skill_executed" for event in context.event_trace)
+
+
+def test_missing_requested_skill_falls_back_to_expert_and_records_event():
+    class RouteClient:
+        def complete(self, _messages, **_kwargs):
+            return json.dumps({
+                "mode": "execute_skill",
+                "skill_id": "missing_skill",
+                "candidate_skill_ids": ["missing_skill"],
+                "confidence": 0.9,
+                "reason": "模型误选了一个已不存在的 Skill",
+            })
+
+        def last_request_metrics(self):
+            return {}
+
+    definition = ExpertDefinition(
+        agent_id="fallback_expert",
+        name="兜底专家",
+        rules_markdown="无法使用专项 Skill 时由专家直接回答。",
+        skills=(LockedSkill("missing_skill", "v1"),),
+    )
+    runtime = AgentScopeExpertRuntime(
+        ExpertRegistry(definitions={definition.agent_id: definition}),
+        _runtime_registry(),
+    )
+    context = SessionContext()
+    decision = runtime._decide_authorized_skill(
+        definition, "请帮我分析这个问题", context, RouteClient(),
+    )
+
+    assert decision["mode"] == "direct_reply"
+    assert decision["skill_id"] == ""
+    assert any(
+        event["event_type"] == "expert_skill_unavailable_fallback"
+        and event["payload"]["skill_id"] == "missing_skill"
+        for event in context.event_trace
+    )
+
+
+def test_expert_explicit_grade_is_saved_to_session_scope_without_overwriting_profile():
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
+    context = SessionContext(profile_id="profile_001")
+    context.update_fact("grade", "高一", source_skill="profile", scope="profile")
+
+    runtime._capture_explicit_user_facts(context, "孩子现在五年级了", source_turn_id="turn_001")
+
+    assert context.profile_facts.get_value("grade") == "高一"
+    assert context.session_facts.get_value("grade") == "五年级"
+    assert context.known_facts.get_value("grade") == "五年级"
+    assert any(event["event_type"] == "expert_explicit_fact_captured" for event in context.event_trace)
 
 
 def test_high_relevance_direct_reply_without_agent_quote_is_rerouted_to_skill():

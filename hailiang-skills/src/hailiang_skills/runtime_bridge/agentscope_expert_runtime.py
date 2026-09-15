@@ -15,6 +15,7 @@ from hailiang_skills.runtime_bridge.expert_bundle import ExpertDefinition, Exper
 from hailiang_skills.runtime_bridge.expert_team_bundle import ExpertTeamDefinition, ExpertTeamMember, ExpertTeamRegistry
 from hailiang_skills.runtime_bridge.expert_models import ExpertMember, SkillObservation
 from hailiang_skills.runtime_bridge.native_skill_executor import NativeSkillExecutor
+from hailiang_skills.runtime_bridge.agent_frontmatter import AgentFrontMatter, AgentRoutingRule, parse_agent_frontmatter
 
 
 AGENT_RUNTIME_STATE_KEY = "agent_runtime"
@@ -145,6 +146,7 @@ class AgentScopeExpertRuntime:
         state.pop("team_handoff", None)
         state["member_runs"] = []  # Reserved: v1 never creates members.
         state["delegation_trace"] = []  # Reserved: v1 never delegates.
+        self._capture_explicit_user_facts(context, user_message, source_turn_id=state["turn_id"])
         event_payload = {"expert_id": definition.agent_id, "topology": definition.topology}
         if team is not None:
             event_payload.update({"team_id": team.team_id, "is_coordinator": definition.agent_id == team.coordinator_expert_id})
@@ -187,16 +189,43 @@ class AgentScopeExpertRuntime:
                     team=team, routing_instruction=self._active_skill_routing_instruction(context, definition),
                 )
         except Exception as exc:
-            # Never bypass AGENT.md by silently falling back to a unique or
-            # previously active Skill.  The caller can surface this as a
-            # retryable turn failure while the trace remains auditable.
-            state["agent_scope_error"] = str(exc)
-            self._event(context, "expert_decision_unavailable", {
-                "expert_id": definition.agent_id,
-                "reason": "agent_execution_failed",
-                "error": str(exc),
-            })
-            raise AgentScopeRuntimeUnavailable("专家决策暂不可用，请稍后重试") from exc
+            # A stale dependency lock or a deleted Skill is a configuration
+            # problem, not an unavailable AgentScope/model problem.  Keep the
+            # active Expert responsible for the turn and let it answer from
+            # AGENT.md rather than leaking a generic MODEL_UNAVAILABLE error.
+            if isinstance(exc, ValueError) and str(exc).startswith("Skill 不可用:"):
+                missing_skill_id = str(exc).split(":", 1)[1].strip()
+                decision = {
+                    "mode": "direct_reply",
+                    "skill_id": "",
+                    "candidate_skill_ids": [],
+                    "direct_reply_reason": f"目标 Skill {missing_skill_id} 当前不可用，由专家直接兜底",
+                    "agent_policy_basis": "目标 Skill 不可用时由当前专家直接兜底",
+                    "reason": "runtime_skill_unavailable_fallback",
+                }
+                state["skill_route_decision"] = decision
+                state["agent_reply"] = self._generate_expert_direct_reply(
+                    definition, user_message, context, client, decision,
+                )
+                self._event(context, "expert_skill_unavailable_fallback", {
+                    "expert_id": definition.agent_id,
+                    "skill_id": missing_skill_id,
+                    "code": "EXPERT_SKILL_UNAVAILABLE_FALLBACK",
+                    "reason": "runtime_skill_missing",
+                    "error": str(exc)[:300],
+                    "message": "指定 Skill 当前不可用，已由专家直接兜底",
+                })
+            else:
+                # Other AgentScope/model failures remain retryable runtime
+                # errors; only a missing Skill is converted to the explicit
+                # Expert fallback above.
+                state["agent_scope_error"] = str(exc)
+                self._event(context, "expert_decision_unavailable", {
+                    "expert_id": definition.agent_id,
+                    "reason": "agent_execution_failed",
+                    "error": str(exc),
+                })
+                raise AgentScopeRuntimeUnavailable("专家决策暂不可用，请稍后重试") from exc
 
         # A coordinator must not silently turn a clearly-specialist request
         # into an unstructured direct reply merely because a ReAct tool call
@@ -204,6 +233,27 @@ class AgentScopeExpertRuntime:
         # consumed by formal chat and candidate tests.
         if team is not None and self._can_propose_team_handoff(team, definition.agent_id):
             self._ensure_controlled_team_handoff(definition, team, user_message, context, state)
+
+        # If a coordinator's controlled tool reported a missing Skill, do not
+        # accept a generic ReAct sentence as the answer. Generate the same
+        # bounded Expert fallback used by the direct routing path. A valid
+        # handoff proposal remains authoritative when the coordinator produced
+        # one for the current turn.
+        unavailable = state.get("skill_unavailable")
+        if isinstance(unavailable, dict) and not isinstance(state.get("team_handoff"), dict):
+            missing_skill_id = str(unavailable.get("skill_id") or "")
+            decision = {
+                "mode": "direct_reply",
+                "skill_id": "",
+                "candidate_skill_ids": [],
+                "direct_reply_reason": f"目标 Skill {missing_skill_id} 当前不可用，由专家直接兜底",
+                "agent_policy_basis": "目标 Skill 不可用时由当前专家直接兜底",
+                "reason": "runtime_skill_unavailable_fallback",
+            }
+            state["skill_route_decision"] = decision
+            state["agent_reply"] = self._generate_expert_direct_reply(
+                definition, user_message, context, client, decision,
+            )
 
         # If the expert can answer within its own role boundary, its reply is
         # authoritative.  The legacy planner is only an executor for a Skill
@@ -421,6 +471,50 @@ class AgentScopeExpertRuntime:
         rendered = "\n".join(f"{labels[item['role']]}：{item['content']}" for item in history)
         return rendered[-self.history_max_chars :]
 
+    def _capture_explicit_user_facts(self, context, user_message: str, *, source_turn_id: str) -> None:
+        """Persist facts stated explicitly in an Expert turn.
+
+        The direct Expert path does not invoke MainPlanner's facts extractor.
+        Without this small boundary capture, a user correction such as
+        “孩子五年级了” remains only in the prompt text while a stale profile
+        value (for example “高一”) is rehydrated on the next request.  Store
+        the explicit value in the current session branch so it overrides the
+        profile value for this conversation without mutating the child profile.
+        """
+        text = str(user_message or "").strip()
+        if not text:
+            return
+        matches = re.findall(
+            r"(?:小学|初中|高中|初[一二三]|高[一二三]|[一二三四五六七八九]年级)",
+            text,
+        )
+        if not matches:
+            return
+        value = str(matches[-1]).strip()
+        if not value:
+            return
+        current = context.known_facts.get_value("grade") if hasattr(context, "known_facts") else None
+        if str(current or "").strip() == value:
+            return
+        context.update_fact(
+            "grade",
+            value,
+            source_skill="expert_runtime",
+            confidence=0.95,
+            source_type="user_input",
+            source_id=source_turn_id,
+            source_turn_id=source_turn_id,
+            scope="session",
+            evidence_summary="用户在对话中明确提供或修正孩子年级",
+        )
+        self._event(context, "expert_explicit_fact_captured", {
+            "fact_key": "grade",
+            "value": value,
+            "scope": "session",
+            "source_turn_id": source_turn_id,
+            "message": "已将用户明确提供的年级保存到当前会话分支",
+        })
+
     def _configured_expert(self, context, definition: ExpertDefinition) -> ExpertDefinition:
         entry = self._snapshot_entry(context, "expert", definition.agent_id)
         if entry is None:
@@ -527,7 +621,34 @@ class AgentScopeExpertRuntime:
 
         def execute_skill(skill_id: str, task: str, handoff_context: dict[str, Any] | None = None) -> dict[str, Any]:
             """Authorize one selected runtime Skill for the current user task."""
-            return runtime._execute_skill(definition, state, context, skill_id, task, handoff_context)
+            try:
+                return runtime._execute_skill(definition, state, context, skill_id, task, handoff_context)
+            except ValueError as exc:
+                if not str(exc).startswith("Skill 不可用:"):
+                    raise
+                missing_skill_id = str(exc).split(":", 1)[1].strip()
+                runtime._event(context, "expert_skill_unavailable_fallback", {
+                    "expert_id": definition.agent_id,
+                    "skill_id": missing_skill_id,
+                    "code": "EXPERT_SKILL_UNAVAILABLE_FALLBACK",
+                    "reason": "runtime_skill_missing",
+                    "error": str(exc)[:300],
+                    "message": "指定 Skill 当前不可用，已由专家直接兜底",
+                })
+                state["skill_unavailable"] = {
+                    "skill_id": missing_skill_id,
+                    "error": str(exc)[:300],
+                }
+                # Returning a structured result keeps AgentScope in the same
+                # controlled turn. The model can immediately answer under
+                # AGENT.md instead of receiving a tool exception and emitting
+                # a generic runtime failure.
+                return {
+                    "status": "unavailable",
+                    "skill_id": missing_skill_id,
+                    "fallback": "expert_direct_reply",
+                    "message": "指定 Skill 当前不可用，已由专家直接兜底",
+                }
 
         def request_declared_form(skill_id: str, question_ids: list[str]) -> dict[str, Any]:
             """Request only question IDs declared by the selected Skill's questionnaire."""
@@ -1356,6 +1477,10 @@ class AgentScopeExpertRuntime:
         merely because the model started answering early.
         """
         active_skill_id = self._active_skill_id(context)
+        # This marker is a one-turn bridge into MainPlannerOrchestrator. Clear
+        # any value left by an earlier failed turn so an unavailable target
+        # cannot accidentally re-run the previous Skill during fallback.
+        context.session_meta.pop("expert_requested_skill_id", None)
         if self._has_pending_native_questionnaire(context) and active_skill_id in definition.authorized_skill_ids:
             self._event(context, "expert_skill_route_selected", {
                 "expert_id": definition.agent_id,
@@ -1363,7 +1488,31 @@ class AgentScopeExpertRuntime:
                 "skill_id": active_skill_id,
                 "reason": "active_skill_pending_questionnaire",
             })
-            self._execute_skill(definition, state, context, active_skill_id, user_message, None)
+            try:
+                self._execute_skill(definition, state, context, active_skill_id, user_message, None)
+            except ValueError as exc:
+                if not str(exc).startswith("Skill 不可用:"):
+                    raise
+                decision = {
+                    "mode": "direct_reply",
+                    "skill_id": "",
+                    "candidate_skill_ids": [],
+                    "direct_reply_reason": f"目标 Skill {active_skill_id} 当前不可用，由专家直接兜底",
+                    "agent_policy_basis": "目标 Skill 不可用时由当前专家直接兜底",
+                    "reason": "runtime_skill_unavailable_fallback",
+                }
+                state["skill_route_decision"] = decision
+                state["agent_reply"] = self._generate_expert_direct_reply(
+                    definition, user_message, context, client, decision,
+                )
+                self._event(context, "expert_skill_unavailable_fallback", {
+                    "expert_id": definition.agent_id,
+                    "skill_id": active_skill_id,
+                    "code": "EXPERT_SKILL_UNAVAILABLE_FALLBACK",
+                    "reason": "runtime_skill_missing",
+                    "error": str(exc)[:300],
+                    "message": "指定 Skill 当前不可用，已由专家直接兜底",
+                })
             return
 
         decision = self._decide_authorized_skill(
@@ -1373,7 +1522,31 @@ class AgentScopeExpertRuntime:
         mode = str(decision.get("mode") or "")
         skill_id = str(decision.get("skill_id") or "")
         if mode == "execute_skill":
-            self._execute_skill(definition, state, context, skill_id, user_message, None)
+            try:
+                self._execute_skill(definition, state, context, skill_id, user_message, None)
+            except ValueError as exc:
+                if not str(exc).startswith("Skill 不可用:"):
+                    raise
+                self._event(context, "expert_skill_unavailable_fallback", {
+                    "expert_id": definition.agent_id,
+                    "skill_id": skill_id,
+                    "code": "EXPERT_SKILL_UNAVAILABLE_FALLBACK",
+                    "reason": "runtime_skill_missing",
+                    "error": str(exc)[:300],
+                    "message": "指定 Skill 当前不可用，已由专家直接兜底",
+                })
+                decision = {
+                    **decision,
+                    "mode": "direct_reply",
+                    "skill_id": "",
+                    "direct_reply_reason": f"目标 Skill {skill_id} 当前不可用，由专家直接兜底",
+                    "agent_policy_basis": "目标 Skill 不可用时由当前专家直接兜底",
+                    "reason": "runtime_skill_unavailable_fallback",
+                }
+                state["skill_route_decision"] = decision
+                state["agent_reply"] = self._generate_expert_direct_reply(
+                    definition, user_message, context, client, decision,
+                )
             return
         if mode != "direct_reply":
             self._event(context, "expert_decision_unavailable", {
@@ -1399,7 +1572,12 @@ class AgentScopeExpertRuntime:
         """Return only a validated internal route, never user-visible text."""
         from hailiang_skills.skill_runtime.models import ChatMessage
 
-        cards = self._skill_capability_cards(definition)
+        frontmatter = self._agent_routing_frontmatter(definition, context)
+        agent_rules = frontmatter.body if frontmatter is not None else definition.rules_markdown
+        cards = self._skill_capability_cards(
+            definition,
+            routing_rules=frontmatter.routing_rules if frontmatter is not None else (),
+        )
         inspected = tuple(skill_id for skill_id in inspected_skill_ids if skill_id in definition.authorized_skill_ids)
         inspection = self._full_skill_instructions(inspected) if inspected else ""
         retry_note = (
@@ -1417,7 +1595,9 @@ class AgentScopeExpertRuntime:
             "\"direct_reply_reason\":\"仅 direct_reply 时填写\",\"reason\":\"简短内部依据\"}。\n"
             "多项匹配时选择最匹配的一项；只有目录不足以判断时用 inspect_skills，并在 candidate_skill_ids 中给出最多两个授权 ID。"
             "direct_reply 时 agent_policy_basis 必须是 AGENT.md 中可核验的原文短引；不要编造。\n"
-            f"# AGENT.md\n{definition.rules_markdown}\n\n# 授权 Skill 能力目录\n{json.dumps(cards, ensure_ascii=False)}\n"
+            f"# AGENT.md 正文\n{agent_rules}\n"
+            + (f"\n# AGENT.md 路由前言\n{json.dumps(self._routing_rule_payload(frontmatter.routing_rules), ensure_ascii=False)}\n" if frontmatter is not None else "")
+            + f"\n# 授权 Skill 能力目录\n{json.dumps(cards, ensure_ascii=False)}\n"
             f"# 当前活动 Skill\n{active_skill_id or '无'}\n{retry_note}"
             f"{inspection}\n# 最近对话\n{self._expert_conversation_history(context)}"
         )
@@ -1452,17 +1632,29 @@ class AgentScopeExpertRuntime:
                 inspected_skill_ids=safe,
             )
         if decision["mode"] == "execute_skill" and decision["skill_id"] not in definition.authorized_skill_ids:
-            self._event(context, "expert_skill_handoff_rejected", {
-                "expert_id": definition.agent_id, "skill_id": decision["skill_id"], "reason": "route_not_authorized",
+            requested_skill_id = str(decision.get("skill_id") or "")
+            self._event(context, "expert_skill_unavailable_fallback", {
+                "expert_id": definition.agent_id,
+                "skill_id": decision["skill_id"],
+                "code": "EXPERT_SKILL_UNAVAILABLE_FALLBACK",
+                "reason": "route_not_authorized",
+                "message": "指定 Skill 不在专家当前可用范围，已由专家直接兜底",
             })
-            raise AgentScopeRuntimeUnavailable("专家路由决策暂不可用，请稍后重试")
+            return {
+                **decision,
+                "mode": "direct_reply",
+                "skill_id": "",
+                "direct_reply_reason": f"目标 Skill {requested_skill_id} 不在专家当前可用范围，由专家直接兜底",
+                "agent_policy_basis": "目标 Skill 不可用时由当前专家直接兜底",
+                "reason": "requested_skill_unavailable_fallback",
+            }
         if decision["mode"] == "direct_reply":
             model_candidate = next(
                 (skill_id for skill_id in decision.get("candidate_skill_ids") or () if skill_id in definition.authorized_skill_ids),
                 None,
             )
             high_match = model_candidate or self._high_relevance_skill(user_message, cards)
-            policy_ok = self._policy_quote_is_valid(definition.rules_markdown, decision.get("agent_policy_basis", ""))
+            policy_ok = self._policy_quote_is_valid(agent_rules, decision.get("agent_policy_basis", ""))
             if high_match and not policy_ok:
                 self._event(context, "expert_direct_reply_blocked", {
                     "expert_id": definition.agent_id, "candidate_skill_id": high_match,
@@ -1488,6 +1680,9 @@ class AgentScopeExpertRuntime:
             "candidate_skill_ids": decision.get("candidate_skill_ids") or [],
             "capability_catalog_version": self._capability_catalog_version(cards),
             "execute_skill_registered": bool(definition.authorized_skill_ids),
+            "frontmatter_rule_index": self._routing_rule_index(frontmatter, str(decision.get("skill_id") or "")),
+            "frontmatter_used": frontmatter is not None,
+            "frontmatter_fallback_to_agent_markdown": frontmatter is None or not bool(frontmatter.routing_rules),
             "confidence": decision.get("confidence"),
             "reason": str(decision.get("reason") or "")[:300],
         })
@@ -1527,11 +1722,13 @@ class AgentScopeExpertRuntime:
     def _generate_expert_direct_reply(self, definition: ExpertDefinition, user_message: str, context, client, decision: dict[str, Any]) -> str:
         from hailiang_skills.skill_runtime.models import ChatMessage
 
+        frontmatter = self._agent_routing_frontmatter(definition, context)
+        agent_rules = frontmatter.body if frontmatter is not None else definition.rules_markdown
         prompt = (
             f"你是 {definition.name}。现在可对用户作答，因为内部路由已确认不应调用授权 Skill。"
             "严格遵循 AGENT.md，不要复刻任何 Skill 的表单、计算或既定流程；不要提及内部路由、Skill 或系统。"
             "承接最近对话，避免重复已经收集的事实；只在真正缺一项关键信息时追问一个最小问题。\n"
-            f"# AGENT.md\n{definition.rules_markdown}\n"
+            f"# AGENT.md\n{agent_rules}\n"
             f"# 已核验直答依据\n{decision.get('agent_policy_basis') or decision.get('direct_reply_reason') or '没有适用的授权 Skill'}\n"
             f"# 有效事实\n{json.dumps(self._read_effective_facts(context), ensure_ascii=False, default=str)}\n"
             f"# 最近对话\n{self._expert_conversation_history(context)}"
@@ -1551,8 +1748,14 @@ class AgentScopeExpertRuntime:
         )
         return self._limit_reply(reply, context=context, source="expert_direct_reply", expert_id=definition.agent_id)
 
-    def _skill_capability_cards(self, definition: ExpertDefinition) -> list[dict[str, Any]]:
+    def _skill_capability_cards(
+        self,
+        definition: ExpertDefinition,
+        *,
+        routing_rules: tuple[AgentRoutingRule, ...] = (),
+    ) -> list[dict[str, Any]]:
         cards: list[dict[str, Any]] = []
+        rules_by_skill = {rule.skill_id: rule for rule in routing_rules}
         for skill_id in definition.authorized_skill_ids:
             bundle = self.runtime_registry.get(skill_id)
             if bundle is None:
@@ -1572,8 +1775,33 @@ class AgentScopeExpertRuntime:
                 # “适用场景 / 使用时机 / 工作流”.  This bounded semantic card
                 # is intentionally loaded before the optional full read.
                 "semantic_summary": self._skill_routing_summary(markdown),
+                "agent_routing_rule": self._routing_rule_payload((rules_by_skill[skill_id],))[0]
+                if skill_id in rules_by_skill else None,
             })
         return cards
+
+    def _agent_routing_frontmatter(self, definition: ExpertDefinition, context) -> AgentFrontMatter | None:
+        try:
+            parsed = parse_agent_frontmatter(definition.rules_markdown)
+        except Exception as exc:
+            self._event(context, "expert_agent_frontmatter_ignored", {
+                "expert_id": definition.agent_id, "reason": str(exc)[:400],
+            })
+            return None
+        return parsed if parsed.exists else None
+
+    @staticmethod
+    def _routing_rule_payload(rules: tuple[AgentRoutingRule, ...]) -> list[dict[str, Any]]:
+        return [
+            {"skill_id": rule.skill_id, "when": list(rule.when), "priority": rule.priority, "index": rule.index}
+            for rule in rules
+        ]
+
+    @staticmethod
+    def _routing_rule_index(frontmatter: AgentFrontMatter | None, skill_id: str) -> int | None:
+        if frontmatter is None:
+            return None
+        return next((rule.index for rule in frontmatter.routing_rules if rule.skill_id == skill_id), None)
 
     @staticmethod
     def _skill_routing_summary(markdown: str) -> str:

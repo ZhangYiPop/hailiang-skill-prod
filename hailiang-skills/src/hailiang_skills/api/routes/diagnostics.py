@@ -224,7 +224,13 @@ def _diagnostic_errors(
             status = str(payload.get("status") or item.get("status") or "").lower()
             error = payload.get("error") or item.get("error")
             event_type = str(item.get("event_type") or item.get("event") or "")
-            if status not in {"failed", "error", "rejected"} and not error and "error" not in event_type.lower() and "failed" not in event_type.lower():
+            if (
+                status not in {"failed", "error", "rejected"}
+                and not error
+                and "error" not in event_type.lower()
+                and "failed" not in event_type.lower()
+                and "unavailable" not in event_type.lower()
+            ):
                 continue
             error_payload = error if isinstance(error, dict) else {}
             errors.append({
@@ -234,7 +240,11 @@ def _diagnostic_errors(
                 "event_type": event_type or None,
                 "status": status or None,
                 "code": error_payload.get("code") or payload.get("error_code") or None,
-                "message": error_payload.get("message") if error_payload else (str(error) if error else None),
+                "message": (
+                    error_payload.get("message")
+                    if error_payload
+                    else (payload.get("message") or (str(error) if error else None))
+                ),
                 "detail": error_payload.get("detail") or error_payload.get("upstream_detail") or None,
             })
     errors.sort(key=lambda item: str(item.get("timestamp") or ""))
