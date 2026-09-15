@@ -988,6 +988,31 @@ def test_team_package_can_import_recursively_into_workbench_objects():
     assert {item["object_key"] for item in team_detail["releases"][0]["dependency_locks"]} == {"expert_a", "expert_b"}
 
 
+def test_import_accepts_a_single_top_level_zip_folder_and_macos_metadata(service: WorkbenchService):
+    actor_id = _actor(service)
+    _, _, release = _publish_skill(service, actor_id, key="wrapped_import_skill")
+    package, _ = service.export_release(release["release_id"], actor_id=actor_id)
+
+    wrapped = io.BytesIO()
+    with ZipFile(wrapped, "w", ZIP_DEFLATED) as archive:
+        for path, content in service._read_zip(package).items():
+            archive.writestr(f"wrapped-package/{path}", content)
+        archive.writestr("__MACOSX/wrapped-package/._manifest.json", b"finder metadata")
+
+    files = service._read_zip(wrapped.getvalue())
+    assert "manifest.json" in files
+    assert all(not path.startswith("wrapped-package/") for path in files)
+    imported = service.import_package(wrapped.getvalue(), environment="prod", actor_id=actor_id)
+    assert imported["status"] == "staged"
+
+
+def test_zip_filename_repair_recovers_utf8_written_as_cp437():
+    intended = "references/红线与转介话术.md"
+    mojibake = intended.encode("utf-8").decode("cp437")
+    assert WorkbenchService._repair_zip_filename(mojibake) == intended
+    assert WorkbenchService._repair_zip_filename(intended) == intended
+
+
 def test_legacy_package_without_brief_imports_but_requires_a_new_brief_to_publish():
     source = _blank_service()
     target = _blank_service()
@@ -2187,6 +2212,42 @@ def test_debug_session_exposes_the_bound_candidate_snapshot(service: WorkbenchSe
 
     assert snapshot["root"]["revision_id"] == revision["revision_id"]
     assert snapshot["entries"][0]["payload"]["prompt_markdown"] == "仅用于候选调试"
+
+
+def test_candidate_snapshot_skills_are_mounted_before_expert_routing(service: WorkbenchService):
+    from pathlib import Path
+    from hailiang_skills.skill_runtime.skill_registry import load_local_skill_registry
+
+    registry = load_local_skill_registry(Path(__file__).resolve().parents[1] / "runtime_skills")
+    service.orchestrator = SimpleNamespace(
+        runtime_registry=registry,
+        main_bundle=registry.get_raw("main_planner"),
+    )
+    context = SessionContext()
+    snapshot = {
+        "entries": [{
+            "object_type": "skill",
+            "object_key": "unpublished_cost_skill",
+            "name": "候选留学费用计算器",
+            "revision_id": "rev_candidate",
+            "payload": {
+                "prompt_markdown": "# 留学费用计算器\n适用：英国本科留学费用与预算报告。",
+                "runtime_contract": {},
+            },
+            "files": [],
+        }],
+    }
+    assert registry.get("unpublished_cost_skill") is None
+
+    mounts = service._mount_candidate_snapshot_skills(snapshot, context)
+    try:
+        bundle = registry.get("unpublished_cost_skill")
+        assert bundle is not None
+        assert "英国本科留学费用" in bundle.skill_markdown
+    finally:
+        service._restore_candidate_snapshot_skills(mounts)
+
+    assert registry.get("unpublished_cost_skill") is None
 
 
 def test_configuration_snapshot_stays_global_across_profile_branches():

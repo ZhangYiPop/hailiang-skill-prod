@@ -416,6 +416,75 @@ def test_single_skill_expert_still_uses_agent_rules_for_a_direct_reply():
     assert not any(event["event_type"] == "expert_skill_executed" for event in context.event_trace)
 
 
+def test_structured_route_selects_authorized_skill_before_any_expert_reply():
+    class RouteClient:
+        def complete(self, _messages, **_kwargs):
+            return json.dumps({
+                "mode": "execute_skill",
+                "skill_id": "score_improve",
+                "candidate_skill_ids": ["score_improve"],
+                "confidence": 0.94,
+                "agent_policy_basis": "",
+                "reason": "用户明确咨询提分方案",
+            })
+
+        def last_request_metrics(self):
+            return {}
+
+    skill_registry = _runtime_registry()
+    experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
+    definition = experts.require("career_plan_expert")
+    runtime = AgentScopeExpertRuntime(experts, skill_registry)
+    context = SessionContext()
+    state = runtime._state(context, definition)
+    state["budget"] = {"max_iters": 4, "max_skill_calls": 3, "skill_calls": 0}
+
+    runtime._route_answering_expert_turn(definition, "怎么提高数学成绩", context, RouteClient(), state)
+
+    assert context.session_meta["expert_requested_skill_id"] == "score_improve"
+    assert "agent_reply" not in state
+    assert any(event["event_type"] == "expert_skill_route_selected" for event in context.event_trace)
+    assert any(event["event_type"] == "expert_skill_executed" for event in context.event_trace)
+
+
+def test_high_relevance_direct_reply_without_agent_quote_is_rerouted_to_skill():
+    class RouteClient:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, _messages, **_kwargs):
+            self.calls += 1
+            return json.dumps({
+                "mode": "direct_reply",
+                "skill_id": "",
+                "candidate_skill_ids": ["score_improve"],
+                "confidence": 0.9,
+                "agent_policy_basis": "没有这条规则",
+                "direct_reply_reason": "专家自己回答",
+                "reason": "错误直答",
+            })
+
+        def last_request_metrics(self):
+            return {}
+
+    skill_registry = _runtime_registry()
+    definition = ExpertDefinition(
+        agent_id="score_expert",
+        name="提分专家",
+        rules_markdown="需要专项提分计划时使用已授权 Skill。",
+        skills=(LockedSkill("score_improve", "v1"),),
+    )
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={definition.agent_id: definition}), skill_registry)
+    context = SessionContext()
+    state = runtime._state(context, definition)
+    state["budget"] = {"max_iters": 4, "max_skill_calls": 3, "skill_calls": 0}
+
+    runtime._route_answering_expert_turn(definition, "我想要一个数学提分计划", context, RouteClient(), state)
+
+    assert context.session_meta["expert_requested_skill_id"] == "score_improve"
+    assert any(event["event_type"] == "expert_direct_reply_blocked" for event in context.event_trace)
+
+
 def test_expert_does_not_bypass_agent_when_decision_client_is_unavailable():
     skill_registry = _runtime_registry()
     definition = ExpertDefinition(

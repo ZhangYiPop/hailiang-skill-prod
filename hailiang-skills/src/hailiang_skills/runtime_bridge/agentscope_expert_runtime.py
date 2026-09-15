@@ -164,15 +164,28 @@ class AgentScopeExpertRuntime:
             })
             raise AgentScopeRuntimeUnavailable("专家决策暂不可用，请稍后重试")
         try:
-            self._run_agent(
-                definition,
-                user_message,
-                context,
-                client,
-                state,
-                team=team,
-                routing_instruction=self._active_skill_routing_instruction(context, definition),
-            )
+            # A team coordinator still uses the existing controlled member
+            # handoff tool.  Every actual answering expert (including a
+            # single-expert session) instead has to make a machine-readable
+            # Skill/direct-answer decision before any user-visible text is
+            # generated.  This closes the old ReAct free-text bypass.
+            if team is not None and self._can_propose_team_handoff(team, definition.agent_id):
+                self._run_agent(
+                    definition,
+                    user_message,
+                    context,
+                    client,
+                    state,
+                    team=team,
+                    routing_instruction=self._active_skill_routing_instruction(context, definition),
+                )
+            elif callable(getattr(client, "complete", None)):
+                self._route_answering_expert_turn(definition, user_message, context, client, state)
+            else:  # test adapter compatibility; production clients always expose complete().
+                self._run_agent(
+                    definition, user_message, context, client, state,
+                    team=team, routing_instruction=self._active_skill_routing_instruction(context, definition),
+                )
         except Exception as exc:
             # Never bypass AGENT.md by silently falling back to a unique or
             # previously active Skill.  The caller can surface this as a
@@ -323,18 +336,14 @@ class AgentScopeExpertRuntime:
             "handoff_summary": "",
         }
         context.session_meta.pop("expert_requested_skill_id", None)
-        instruction = (
-            "\n# 候选测试中的续聊路由判断\n"
-            f"当前正在执行 Skill：{current_skill_id}。本轮只判断用户是否已切换到另一个业务任务。"
-            "只有当新任务明显不属于当前 Skill、且另一个授权 Skill 更匹配时，才调用 execute_skill。"
-            "若仍在当前任务内（包括题目答案、追问、补充信息），不要调用任何工具，也不要给用户回答。"
-        )
         try:
-            self._run_agent(definition, user_message, context, client, state, team=team, routing_instruction=instruction)
+            decision = self._decide_authorized_skill(
+                definition, user_message, context, client, active_skill_id=current_skill_id,
+            )
         except Exception as exc:
             self._event(context, "candidate_skill_redispatch_deferred", {"expert_id": definition.agent_id, "error": str(exc)})
             return None
-        selected = str(context.session_meta.pop("expert_requested_skill_id", "") or "")
+        selected = str(decision.get("skill_id") or "") if decision.get("mode") == "execute_skill" else ""
         if selected and selected != current_skill_id and selected in definition.authorized_skill_ids:
             self._event(
                 context,
@@ -554,6 +563,12 @@ class AgentScopeExpertRuntime:
             "record_candidate_fact": TrustedFunctionTool(record_candidate_fact, is_concurrency_safe=False),
         }
         enabled_capabilities = set(definition.capabilities)
+        # A published expert's dependency lock is the authorization source.
+        # Candidate bundles may carry an older non-empty capabilities list
+        # that forgot this legacy tool name; it must not make all locked Skills
+        # invisible to the expert.
+        if definition.authorized_skill_ids:
+            enabled_capabilities.add("execute_skill")
         enabled_capabilities.add("record_candidate_fact")
         if team is not None and self._can_propose_team_handoff(team, definition.agent_id):
             all_tools["propose_member_handoff"] = TrustedFunctionTool(propose_member_handoff, is_concurrency_safe=False)
@@ -1332,15 +1347,306 @@ class AgentScopeExpertRuntime:
             return False
         return isinstance(client, OpenAICompatibleChatClient)
 
-    def _catalog(self, definition: ExpertDefinition) -> str:
-        lines = []
+    def _route_answering_expert_turn(self, definition: ExpertDefinition, user_message: str, context, client, state: dict[str, Any]) -> None:
+        """Make an internal, auditable decision before generating any reply.
+
+        The former AgentScope ReAct turn could return prose without selecting a
+        Skill.  Keeping routing separate means that prose is never accepted as
+        a routing decision and that a matching locked Skill cannot be skipped
+        merely because the model started answering early.
+        """
+        active_skill_id = self._active_skill_id(context)
+        if self._has_pending_native_questionnaire(context) and active_skill_id in definition.authorized_skill_ids:
+            self._event(context, "expert_skill_route_selected", {
+                "expert_id": definition.agent_id,
+                "mode": "execute_skill",
+                "skill_id": active_skill_id,
+                "reason": "active_skill_pending_questionnaire",
+            })
+            self._execute_skill(definition, state, context, active_skill_id, user_message, None)
+            return
+
+        decision = self._decide_authorized_skill(
+            definition, user_message, context, client, active_skill_id=active_skill_id,
+        )
+        state["skill_route_decision"] = decision
+        mode = str(decision.get("mode") or "")
+        skill_id = str(decision.get("skill_id") or "")
+        if mode == "execute_skill":
+            self._execute_skill(definition, state, context, skill_id, user_message, None)
+            return
+        if mode != "direct_reply":
+            self._event(context, "expert_decision_unavailable", {
+                "expert_id": definition.agent_id, "reason": "invalid_structured_route",
+            })
+            raise AgentScopeRuntimeUnavailable("专家路由决策暂不可用，请稍后重试")
+        state["execution_mode"] = "expert_direct"
+        state["agent_reply"] = self._generate_expert_direct_reply(
+            definition, user_message, context, client, decision,
+        )
+
+    def _decide_authorized_skill(
+        self,
+        definition: ExpertDefinition,
+        user_message: str,
+        context,
+        client,
+        *,
+        active_skill_id: str = "",
+        retry_after_direct_block: bool = False,
+        inspected_skill_ids: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Return only a validated internal route, never user-visible text."""
+        from hailiang_skills.skill_runtime.models import ChatMessage
+
+        cards = self._skill_capability_cards(definition)
+        inspected = tuple(skill_id for skill_id in inspected_skill_ids if skill_id in definition.authorized_skill_ids)
+        inspection = self._full_skill_instructions(inspected) if inspected else ""
+        retry_note = (
+            "上一次直答决定被服务端拦截：存在高相关授权 Skill，但没有可验证的 AGENT.md 直答例外。"
+            "本次必须选择该 Skill，除非能逐字引用 AGENT.md 中明确的直答规则。\n"
+            if retry_after_direct_block else ""
+        )
+        prompt = (
+            f"你是 {definition.name} 的内部路由器。你不能向用户作答，只能输出一个 JSON 对象。\n"
+            "先遵循 AGENT.md；默认规则是：只要已授权 Skill 能处理本轮任务，必须选择 execute_skill。"
+            "仅在没有适用 Skill，或 AGENT.md 明确要求此类问题由专家直答时，才选择 direct_reply。"
+            "当前 Skill 的表单答案、选项、补充资料或连续追问优先继续当前 Skill；意图真正改变才重选。\n"
+            "JSON 格式：{\"mode\":\"execute_skill|direct_reply|inspect_skills\",\"skill_id\":\"授权 skill id 或空\","
+            "\"candidate_skill_ids\":[\"...\"],\"confidence\":0.0,\"agent_policy_basis\":\"AGENT.md 原文短引或空\","
+            "\"direct_reply_reason\":\"仅 direct_reply 时填写\",\"reason\":\"简短内部依据\"}。\n"
+            "多项匹配时选择最匹配的一项；只有目录不足以判断时用 inspect_skills，并在 candidate_skill_ids 中给出最多两个授权 ID。"
+            "direct_reply 时 agent_policy_basis 必须是 AGENT.md 中可核验的原文短引；不要编造。\n"
+            f"# AGENT.md\n{definition.rules_markdown}\n\n# 授权 Skill 能力目录\n{json.dumps(cards, ensure_ascii=False)}\n"
+            f"# 当前活动 Skill\n{active_skill_id or '无'}\n{retry_note}"
+            f"{inspection}\n# 最近对话\n{self._expert_conversation_history(context)}"
+        )
+        try:
+            raw = str(client.complete([
+                ChatMessage(role="system", content=prompt),
+                ChatMessage(role="user", content=user_message),
+            ], request_purpose="expert_authorized_skill_route") or "")
+        except Exception as exc:
+            raise AgentScopeRuntimeUnavailable(f"专家路由模型调用失败: {exc}") from exc
+        self._record_model_completion(
+            context, result=None,
+            metrics=client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {},
+            source="expert_authorized_skill_route", expert_id=definition.agent_id, returned_chars=len(raw),
+        )
+        decision = self._parse_route_decision(raw)
+        if decision is None:
+            self._event(context, "expert_decision_unavailable", {
+                "expert_id": definition.agent_id, "reason": "route_json_invalid",
+            })
+            raise AgentScopeRuntimeUnavailable("专家路由决策暂不可用，请稍后重试")
+        if decision["mode"] == "inspect_skills":
+            requested = tuple(decision.get("candidate_skill_ids") or ())[:2]
+            safe = tuple(skill_id for skill_id in requested if skill_id in definition.authorized_skill_ids)
+            if not safe:
+                raise AgentScopeRuntimeUnavailable("专家路由决策暂不可用，请稍后重试")
+            self._event(context, "expert_skill_full_instruction_inspected", {
+                "expert_id": definition.agent_id, "skill_ids": list(safe),
+            })
+            return self._decide_authorized_skill(
+                definition, user_message, context, client, active_skill_id=active_skill_id,
+                inspected_skill_ids=safe,
+            )
+        if decision["mode"] == "execute_skill" and decision["skill_id"] not in definition.authorized_skill_ids:
+            self._event(context, "expert_skill_handoff_rejected", {
+                "expert_id": definition.agent_id, "skill_id": decision["skill_id"], "reason": "route_not_authorized",
+            })
+            raise AgentScopeRuntimeUnavailable("专家路由决策暂不可用，请稍后重试")
+        if decision["mode"] == "direct_reply":
+            model_candidate = next(
+                (skill_id for skill_id in decision.get("candidate_skill_ids") or () if skill_id in definition.authorized_skill_ids),
+                None,
+            )
+            high_match = model_candidate or self._high_relevance_skill(user_message, cards)
+            policy_ok = self._policy_quote_is_valid(definition.rules_markdown, decision.get("agent_policy_basis", ""))
+            if high_match and not policy_ok:
+                self._event(context, "expert_direct_reply_blocked", {
+                    "expert_id": definition.agent_id, "candidate_skill_id": high_match,
+                    "reason": "high_relevance_skill_without_agent_override",
+                })
+                if not retry_after_direct_block:
+                    return self._decide_authorized_skill(
+                        definition, user_message, context, client, active_skill_id=active_skill_id,
+                        retry_after_direct_block=True,
+                    )
+                # The safe final fallback is the deterministically best locked
+                # Skill, never an unverified direct reply.
+                decision = {**decision, "mode": "execute_skill", "skill_id": high_match,
+                            "reason": "server_enforced_high_relevance_skill"}
+            elif policy_ok:
+                self._event(context, "expert_agent_direct_override", {
+                    "expert_id": definition.agent_id,
+                    "policy_basis": str(decision.get("agent_policy_basis") or "")[:240],
+                })
+        self._event(context, "expert_skill_route_selected", {
+            "expert_id": definition.agent_id,
+            "mode": decision["mode"], "skill_id": decision.get("skill_id") or None,
+            "candidate_skill_ids": decision.get("candidate_skill_ids") or [],
+            "capability_catalog_version": self._capability_catalog_version(cards),
+            "execute_skill_registered": bool(definition.authorized_skill_ids),
+            "confidence": decision.get("confidence"),
+            "reason": str(decision.get("reason") or "")[:300],
+        })
+        return decision
+
+    @staticmethod
+    def _parse_route_decision(raw: str) -> dict[str, Any] | None:
+        text = str(raw or "").strip()
+        match = re.search(r"\{[\s\S]*\}", text)
+        if not match:
+            return None
+        try:
+            value = json.loads(match.group(0))
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(value, dict):
+            return None
+        mode = str(value.get("mode") or "").strip()
+        if mode not in {"execute_skill", "direct_reply", "inspect_skills"}:
+            return None
+        candidates = value.get("candidate_skill_ids")
+        if not isinstance(candidates, list):
+            candidates = []
+        try:
+            confidence = float(value.get("confidence") or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return {
+            "mode": mode, "skill_id": str(value.get("skill_id") or "").strip(),
+            "candidate_skill_ids": [str(item).strip() for item in candidates if str(item).strip()],
+            "confidence": max(0.0, min(1.0, confidence)),
+            "agent_policy_basis": str(value.get("agent_policy_basis") or "").strip(),
+            "direct_reply_reason": str(value.get("direct_reply_reason") or "").strip(),
+            "reason": str(value.get("reason") or "").strip(),
+        }
+
+    def _generate_expert_direct_reply(self, definition: ExpertDefinition, user_message: str, context, client, decision: dict[str, Any]) -> str:
+        from hailiang_skills.skill_runtime.models import ChatMessage
+
+        prompt = (
+            f"你是 {definition.name}。现在可对用户作答，因为内部路由已确认不应调用授权 Skill。"
+            "严格遵循 AGENT.md，不要复刻任何 Skill 的表单、计算或既定流程；不要提及内部路由、Skill 或系统。"
+            "承接最近对话，避免重复已经收集的事实；只在真正缺一项关键信息时追问一个最小问题。\n"
+            f"# AGENT.md\n{definition.rules_markdown}\n"
+            f"# 已核验直答依据\n{decision.get('agent_policy_basis') or decision.get('direct_reply_reason') or '没有适用的授权 Skill'}\n"
+            f"# 有效事实\n{json.dumps(self._read_effective_facts(context), ensure_ascii=False, default=str)}\n"
+            f"# 最近对话\n{self._expert_conversation_history(context)}"
+        )
+        try:
+            reply = str(client.complete([
+                ChatMessage(role="system", content=prompt), ChatMessage(role="user", content=user_message),
+            ], request_purpose="expert_direct_reply") or "").strip()
+        except Exception as exc:
+            raise AgentScopeRuntimeUnavailable(f"专家回复生成失败: {exc}") from exc
+        if not reply:
+            raise AgentScopeRuntimeUnavailable("专家回复生成失败：模型返回为空")
+        self._record_model_completion(
+            context, result=None,
+            metrics=client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {},
+            source="expert_direct_reply", expert_id=definition.agent_id, returned_chars=len(reply),
+        )
+        return self._limit_reply(reply, context=context, source="expert_direct_reply", expert_id=definition.agent_id)
+
+    def _skill_capability_cards(self, definition: ExpertDefinition) -> list[dict[str, Any]]:
+        cards: list[dict[str, Any]] = []
         for skill_id in definition.authorized_skill_ids:
             bundle = self.runtime_registry.get(skill_id)
             if bundle is None:
                 continue
             meta = bundle.runtime_metadata
-            lines.append(f"- {skill_id}: {meta.name or skill_id}。{meta.description or ''}")
-        return "\n".join(lines)
+            routing = meta.routing
+            markdown = self._skill_markdown(bundle)
+            headings = re.findall(r"^#{1,3}\s+(.{1,120})$", markdown, flags=re.MULTILINE)[:12]
+            cards.append({
+                "skill_id": skill_id, "name": meta.name or skill_id,
+                "description": meta.description or meta.brief or "",
+                "triggers": list(meta.triggers)[:16], "tags": list(meta.tags)[:16],
+                "routing_examples": list(routing.routing_examples)[:8],
+                "key_sections": headings,
+                # Headings alone are not enough for natural-language Skill
+                # authors: routing scope is commonly written as prose below
+                # “适用场景 / 使用时机 / 工作流”.  This bounded semantic card
+                # is intentionally loaded before the optional full read.
+                "semantic_summary": self._skill_routing_summary(markdown),
+            })
+        return cards
+
+    @staticmethod
+    def _skill_routing_summary(markdown: str) -> str:
+        lines = [line.strip() for line in str(markdown or "").splitlines() if line.strip()]
+        selected: list[str] = []
+        for line in lines:
+            normalized = line.lstrip("#-*> 0123456789.）)(").strip()
+            if any(marker in normalized for marker in (
+                "适用", "使用", "触发", "场景", "目标", "路由", "流程", "收集", "表单", "必须", "不要",
+            )):
+                selected.append(normalized)
+            if len("\n".join(selected)) >= 4_000:
+                break
+        # Short Skill documents may express their only routing constraint in
+        # unlabelled prose. Include their opening material as a fallback.
+        if not selected:
+            selected = lines[:40]
+        return "\n".join(selected)[:4_000]
+
+    @staticmethod
+    def _capability_catalog_version(cards: list[dict[str, Any]]) -> str:
+        """Stable, non-content audit marker for the locked routing directory."""
+        return "skills:" + ",".join(str(card.get("skill_id") or "") for card in cards)
+
+    @staticmethod
+    def _skill_markdown(bundle) -> str:
+        try:
+            return bundle.skill_file.read_text(encoding="utf-8")
+        except (AttributeError, OSError, UnicodeDecodeError):
+            return ""
+
+    def _full_skill_instructions(self, skill_ids: tuple[str, ...]) -> str:
+        parts: list[str] = []
+        for skill_id in skill_ids:
+            bundle = self.runtime_registry.get(skill_id)
+            if bundle is None:
+                continue
+            # This second pass is restricted to at most two locked IDs by the
+            # caller, so it can expose the complete instruction rather than a
+            # lossy excerpt. Native execution still reloads its authoritative
+            # bundle independently.
+            parts.append(f"# {skill_id} 的 SKILL.md（受控读取）\n{self._skill_markdown(bundle)}")
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _policy_quote_is_valid(agent_rules: str, quote: str) -> bool:
+        quote = re.sub(r"\s+", " ", str(quote or "").strip())
+        rules = re.sub(r"\s+", " ", str(agent_rules or "").strip())
+        return len(quote) >= 8 and quote in rules
+
+    @staticmethod
+    def _high_relevance_skill(user_message: str, cards: list[dict[str, Any]]) -> str | None:
+        query = str(user_message or "").lower()
+        best_id, best_score = "", 0
+        for card in cards:
+            fields = [card.get("name"), card.get("description"), *(card.get("triggers") or []), *(card.get("tags") or []), *(card.get("routing_examples") or [])]
+            score = 0
+            for field in fields:
+                text = str(field or "").lower().strip()
+                if len(text) >= 2 and text in query:
+                    score += min(12, len(text))
+                for token in re.findall(r"[\u4e00-\u9fff]{2,}|[a-z0-9_]{3,}", text):
+                    if token in query:
+                        score += min(6, len(token))
+            if score > best_score:
+                best_id, best_score = str(card.get("skill_id") or ""), score
+        return best_id if best_score >= 4 else None
+
+    def _catalog(self, definition: ExpertDefinition) -> str:
+        return "\n".join(
+            f"- {card['skill_id']}: {card['name']}。{card['description']}；触发：{'、'.join(card['triggers'])}；标签：{'、'.join(card['tags'])}"
+            for card in self._skill_capability_cards(definition)
+        )
 
     @staticmethod
     def _state(context, definition: ExpertDefinition, *, team: ExpertTeamDefinition | None = None) -> dict[str, Any]:

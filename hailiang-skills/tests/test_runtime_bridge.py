@@ -38,6 +38,8 @@ from hailiang_skills.runtime_bridge.main_planner import (
     _IncrementalAssistantMessageExtractor,
     _QuestionnaireContinuationExtractor,
     _RuntimePlannerLLM,
+    _apply_skill_progress_patch,
+    _normalize_skill_progress_patch,
     _normalize_runtime_planner_response,
     _authorize_requested_tool_specs,
     _tool_intent_label,
@@ -401,6 +403,103 @@ def build_orchestrator_with_config(llm_config) -> MainPlannerOrchestrator:
 
 
 class RuntimeBridgeTest(unittest.TestCase):
+    def test_native_skill_progress_is_opaque_and_prevents_resolved_topics_from_returning(self) -> None:
+        state = SessionState(session_id="skill_progress")
+        patch = _normalize_skill_progress_patch(
+            {
+                "stage_label": "补采完成，输出校准结论",
+                "confirmed_facts": {
+                    "city": "杭州",
+                    "past_talent_activity": {"name": "游泳", "stop_reason": "身体原因"},
+                },
+                "resolved_topics": ["city", "past_talent_activity"],
+                "pending_topics": ["past_talent_activity", "dance_attitude"],
+                "next_action": "输出校准结论",
+            }
+        )
+
+        progress = _apply_skill_progress_patch(state, "interest_explore", patch)
+
+        self.assertEqual(progress["stage_label"], "补采完成，输出校准结论")
+        self.assertEqual(state.skill_facts["interest_explore"]["city"], "杭州")
+        self.assertEqual(
+            state.skill_facts["interest_explore"]["past_talent_activity"]["stop_reason"],
+            "身体原因",
+        )
+        self.assertEqual(progress["pending_topics"], ["dance_attitude"])
+        self.assertEqual(progress["resolved_topics"], ["city", "past_talent_activity"])
+
+        cleared = _apply_skill_progress_patch(
+            state,
+            "interest_explore",
+            {"resolved_topics": ["dance_attitude"], "pending_topics": []},
+        )
+        self.assertEqual(cleared["pending_topics"], [])
+        self.assertIn("dance_attitude", cleared["resolved_topics"])
+
+    def test_runtime_planner_captures_private_skill_progress_from_its_json(self) -> None:
+        class PlannerClient:
+            def complete(self, _messages, *, logger=None) -> str:
+                del logger
+                return json.dumps(
+                    {
+                        "can_handle": True,
+                        "required_scripts": [],
+                        "required_references": [],
+                        "required_resources": [],
+                        "required_packages": [],
+                        "tool_routing": {"required": False, "candidates": []},
+                        "assistant_message": "",
+                        "plan_summary_short": "正在整理信息",
+                        "plan_summary": "记录已回答信息",
+                        "steps": [],
+                        "parameters": {},
+                        "reasoning": "unit test",
+                        "questionnaire_response": None,
+                        "skill_progress": {
+                            "stage_label": "R3 已完成",
+                            "confirmed_facts": {"city": "杭州"},
+                            "resolved_topics": ["city"],
+                            "pending_topics": ["budget"],
+                            "next_action": "给出结论",
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+
+        planner = _RuntimePlannerLLM(PlannerClient())
+        planner.generate([ChatMessage(role="user", content="测试")])
+
+        self.assertEqual(planner.last_skill_progress_patch["confirmed_facts"], {"city": "杭州"})
+        self.assertEqual(planner.last_skill_progress_patch["pending_topics"], ["budget"])
+
+    def test_reference_context_records_required_and_selected_references(self) -> None:
+        orchestrator = MainPlannerOrchestrator.__new__(MainPlannerOrchestrator)
+        orchestrator._record_events = lambda context, events: context.event_trace.extend(events)
+        context = SessionContext(session_id="sess_reference_trace")
+        loaded = SimpleNamespace(
+            plan={"required_references": ["references/rules.md", "references/rules.md"]},
+            references=[
+                {"path": "references/rules.md", "content": "rule content"},
+                {"path": "references/output.md", "content": "output content"},
+            ],
+        )
+
+        orchestrator._record_ms_agent_reference_context_event(
+            context,
+            skill_name="demo_skill",
+            loaded_context=loaded,
+        )
+
+        event = context.event_trace[-1]
+        self.assertEqual(event["event_type"], "reference_context")
+        payload = event["payload"]
+        self.assertEqual(payload["required_references"], ["references/rules.md"])
+        self.assertEqual(
+            payload["selected_references"],
+            ["references/rules.md", "references/output.md"],
+        )
+
     def test_expert_direct_reply_is_not_persisted_as_general_chat(self) -> None:
         orchestrator = build_orchestrator()
         context = SessionContext(user_id="u1")

@@ -1115,9 +1115,39 @@ class WorkbenchService:
                     "root": self._candidate_root_debug(snapshot),
                 },
             )
+            candidate_runtime_mounts = self._mount_candidate_snapshot_skills(snapshot, context)
             try:
                 assistant_message = self._execute_snapshot_message(snapshot, message, context)
             except Exception as exc:
+                # A candidate test is a diagnostic artifact.  Previously an
+                # Expert routing failure was converted to the public generic
+                # error before this transient context was persisted, so the
+                # exported JSON contained neither the failed route decision
+                # nor the underlying safe error category.
+                failure_payload = {
+                    "exception_type": type(exc).__name__,
+                    "reason": str(exc)[:800],
+                    "stage": "candidate_runtime_execution",
+                }
+                self._record_candidate_turn_event(context, "candidate_turn_failed", failure_payload)
+                failed_events = copy.deepcopy(context.event_trace[event_count_before:])
+                row.runtime_context = self._revision_test_context_payload(context)
+                trace = list(row.trace or [])
+                trace.append({
+                    "turn": len([item for item in context.messages if isinstance(item, dict) and item.get("role") == "user"]),
+                    "events": failed_events,
+                    "debug": self._candidate_turn_debug(
+                        snapshot, context, failed_events,
+                        elapsed_ms=round((datetime.now().timestamp() - turn_started) * 1000, 2),
+                    ),
+                    "error": failure_payload,
+                })
+                row.trace = trace
+                self._audit(
+                    db, actor_id, "revision_test.turn_failed", "debug_session", debug_session_id,
+                    {"revision_id": row.revision_id, "exception_type": failure_payload["exception_type"]},
+                )
+                db.commit()
                 if candidate_stream_generation:
                     with self._active_candidate_streams_lock:
                         active = self._active_candidate_streams.get(debug_session_id)
@@ -1133,8 +1163,11 @@ class WorkbenchService:
                     raise WorkbenchError(
                         "专家决策暂不可用，请稍后重试。",
                         code="EXPERT_DECISION_UNAVAILABLE",
+                        details={"reason": str(exc)[:800]},
                     ) from exc
                 raise
+            finally:
+                self._restore_candidate_snapshot_skills(candidate_runtime_mounts)
             was_stopped = bool(
                 candidate_stream_generation
                 and context.session_meta.get("cancelled_stream_generation") == candidate_stream_generation
@@ -2362,13 +2395,60 @@ class WorkbenchService:
                     scripts_available.append(path)
 
         reference_uses: list[dict[str, Any]] = []
+        required_references: set[str] = set()
+        selected_references: set[str] = set()
+        skill_progress: dict[str, Any] = {}
         script_runs: list[dict[str, Any]] = []
+        expert_routing: dict[str, Any] = {}
+        execution_error: dict[str, Any] = {}
         for event in turn_events:
             if not isinstance(event, dict):
                 continue
             event_type = str(event.get("event_type") or "")
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-            if event_type in {"reference_context", "retrieval_context"}:
+            if event_type == "expert_skill_route_selected":
+                expert_routing = {
+                    "mode": str(payload.get("mode") or ""),
+                    "skill_id": str(payload.get("skill_id") or "") or None,
+                    "candidate_skill_ids": list(payload.get("candidate_skill_ids") or []),
+                    "confidence": payload.get("confidence"),
+                    "reason": str(payload.get("reason") or ""),
+                    "capability_catalog_version": str(payload.get("capability_catalog_version") or ""),
+                    "execute_skill_registered": bool(payload.get("execute_skill_registered")),
+                }
+            elif event_type == "expert_direct_reply_blocked":
+                expert_routing["direct_reply_blocked"] = {
+                    "candidate_skill_id": str(payload.get("candidate_skill_id") or ""),
+                    "reason": str(payload.get("reason") or ""),
+                }
+            elif event_type in {"expert_decision_unavailable", "candidate_turn_failed"}:
+                execution_error = {
+                    "event_type": event_type,
+                    "reason": str(payload.get("reason") or "")[:800],
+                    "exception_type": str(payload.get("exception_type") or ""),
+                }
+            if event_type == "runtime_skill_progress_updated":
+                skill_progress = {
+                    "stage_label": str(payload.get("stage_label") or ""),
+                    "confirmed_fact_keys": list(payload.get("confirmed_fact_keys") or []),
+                    "resolved_topics": list(payload.get("resolved_topics") or []),
+                    "pending_topics": list(payload.get("pending_topics") or []),
+                    "next_action": str(payload.get("next_action") or ""),
+                }
+            if event_type in {"reference_context", "retrieval_context", "ms_agent_plan_summary"}:
+                for path in payload.get("required_references") if isinstance(payload.get("required_references"), list) else []:
+                    if str(path).strip():
+                        required_references.add(str(path).strip())
+                for path in payload.get("selected_references") if isinstance(payload.get("selected_references"), list) else []:
+                    if str(path).strip():
+                        selected_references.add(str(path).strip())
+                plan_payload = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+                for path in plan_payload.get("required_references") if isinstance(plan_payload.get("required_references"), list) else []:
+                    if str(path).strip():
+                        required_references.add(str(path).strip())
+                for path in plan_payload.get("selected_references") if isinstance(plan_payload.get("selected_references"), list) else []:
+                    if str(path).strip():
+                        selected_references.add(str(path).strip())
                 for item in payload.get("items") if isinstance(payload.get("items"), list) else []:
                     if not isinstance(item, dict):
                         continue
@@ -2380,6 +2460,14 @@ class WorkbenchService:
                             "source_type": str(item.get("source_type") or "reference"),
                             "snippet": str(item.get("snippet") or ""),
                         })
+            if event_type == "ms_agent_runtime":
+                step_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+                for path in step_payload.get("required_references") if isinstance(step_payload.get("required_references"), list) else []:
+                    if str(path).strip():
+                        required_references.add(str(path).strip())
+                for path in step_payload.get("selected_references") if isinstance(step_payload.get("selected_references"), list) else []:
+                    if str(path).strip():
+                        selected_references.add(str(path).strip())
             if event_type == "ms_agent_runtime" and str(payload.get("step") or "") == "script_execution":
                 step_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
                 for output in step_payload.get("outputs") if isinstance(step_payload.get("outputs"), list) else []:
@@ -2416,15 +2504,88 @@ class WorkbenchService:
             "expert": self._entry_debug(by_key.get(expert_id)),
             "skill": self._entry_debug(skill_entry),
             "references": {
+                "required_references": sorted(required_references),
+                "selected_references": sorted(selected_references),
                 "used": reference_uses,
                 "available_but_not_used": [
                     item for item in references_available
                     if item["path"] not in {str(used.get("path") or "") for used in reference_uses}
                 ],
             },
+            "skill_progress": skill_progress,
+            "expert_routing": expert_routing,
+            "execution_error": execution_error,
             "scripts": script_runs,
             "elapsed_ms": elapsed_ms,
         }
+
+    def _mount_candidate_snapshot_skills(self, snapshot: dict[str, Any], context: SessionContext) -> dict[str, Any] | None:
+        """Expose candidate Skills before Expert routing, then restore them.
+
+        The old candidate overlay was mounted only after an Expert had chosen
+        a Skill. Consequently unpublished dependency locks were authorised but
+        absent from the capability directory used to make that choice.
+        """
+        runtime_registry = getattr(self.orchestrator, "runtime_registry", None)
+        if runtime_registry is None:
+            return None
+        entries = [
+            item for item in snapshot.get("entries", [])
+            if isinstance(item, dict) and item.get("object_type") == "skill" and str(item.get("object_key") or "")
+        ]
+        if not entries:
+            return None
+        template = runtime_registry.get_raw("general_chat") or getattr(self.orchestrator, "main_bundle", None)
+        if template is None:
+            return None
+        self._candidate_runtime_mount_lock.acquire()
+        previous: dict[str, Any] = {}
+        mounted: list[str] = []
+        try:
+            for entry in entries:
+                skill_id = str(entry.get("object_key") or "")
+                previous[skill_id] = runtime_registry.bundles.get(skill_id)
+                bundle = copy.copy(configured_skill_bundle(template, entry))
+                bundle.contract = replace(bundle.contract, skill_id=skill_id)
+                bundle.runtime_metadata = replace(
+                    bundle.runtime_metadata,
+                    skill_id=skill_id,
+                    name=str(entry.get("name") or skill_id),
+                    version=f"candidate-{str(entry.get('revision_id') or '')[:12]}",
+                )
+                runtime_registry.bundles[skill_id] = bundle
+                mounted.append(skill_id)
+                self._record_candidate_turn_event(context, "candidate_runtime_temporary_mount", {
+                    "skill_id": skill_id,
+                    "revision_id": entry.get("revision_id"),
+                    "mode": "expert_routing_overlay",
+                })
+        except Exception:
+            for skill_id in mounted:
+                original = previous.get(skill_id)
+                if original is None:
+                    runtime_registry.bundles.pop(skill_id, None)
+                else:
+                    runtime_registry.bundles[skill_id] = original
+            self._candidate_runtime_mount_lock.release()
+            raise
+        return {"registry": runtime_registry, "previous": previous, "mounted": mounted}
+
+    def _restore_candidate_snapshot_skills(self, mounts: dict[str, Any] | None) -> None:
+        if not isinstance(mounts, dict):
+            return
+        runtime_registry = mounts.get("registry")
+        previous = mounts.get("previous") if isinstance(mounts.get("previous"), dict) else {}
+        mounted = mounts.get("mounted") if isinstance(mounts.get("mounted"), list) else []
+        try:
+            for skill_id in mounted:
+                original = previous.get(skill_id)
+                if original is None:
+                    runtime_registry.bundles.pop(skill_id, None)
+                else:
+                    runtime_registry.bundles[skill_id] = original
+        finally:
+            self._candidate_runtime_mount_lock.release()
 
     def _execute_candidate_skill(self, entry: dict[str, Any], message: str, context: SessionContext) -> str:
         """Execute a candidate Skill through the formal Runtime whenever possible.
@@ -2909,7 +3070,11 @@ class WorkbenchService:
             return self._deployment_dict(deployment)
 
     def import_object_package(self, package_bytes: bytes, *, actor_id: str) -> dict[str, Any]:
-        validated = self._validated_package_contents(package_bytes, materialize_entries=False)
+        validated = self._validated_package_contents(
+            package_bytes,
+            materialize_entries=False,
+            defer_script_validation=True,
+        )
         manifest = validated["manifest"]
         package_hash = validated["package_hash"]
         root_source_release_id = str((manifest.get("root") or {}).get("release_id") or "")
@@ -2954,6 +3119,7 @@ class WorkbenchService:
                     local_dependency_locks=local_locks,
                     package_hash=package_hash,
                     actor_id=actor_id,
+                    defer_script_validation=True,
                 )
                 # A package is an exchange artifact, never an implicit
                 # publication. Keep the root as a candidate revision so the
@@ -3935,6 +4101,7 @@ class WorkbenchService:
         assets: list[dict[str, Any]],
         *,
         object_type: str,
+        allow_misplaced_python: bool = False,
     ) -> list[tuple[str, str, bytes]]:
         result: list[tuple[str, str, bytes]] = []
         seen: set[str] = set()
@@ -3950,6 +4117,8 @@ class WorkbenchService:
                     raise WorkbenchError("scripts/ 仅支持 .py 和 requirements.txt", code="INVALID_ASSET_PATH")
                 if PurePosixPath(path).suffix.lower() == ".txt" and PurePosixPath(path).name != "requirements.txt":
                     raise WorkbenchError("scripts/ 下只允许 requirements.txt 文本文件", code="INVALID_ASSET_PATH")
+            elif PurePosixPath(path).suffix.lower() == ".py" and not allow_misplaced_python:
+                raise WorkbenchError("Python 脚本只能位于 Skill 的 scripts/ 目录", code="INVALID_ASSET_PATH")
             if PurePosixPath(path).suffix.lower() in EXECUTABLE_SUFFIXES:
                 raise WorkbenchError("资料附件不得包含可执行代码", code="EXECUTABLE_CONTENT_FORBIDDEN")
             try:
@@ -4168,7 +4337,13 @@ class WorkbenchService:
                 archive.writestr(info, content)
         return output.getvalue()
 
-    def _validated_package_contents(self, package_bytes: bytes, *, materialize_entries: bool = True) -> dict[str, Any]:
+    def _validated_package_contents(
+        self,
+        package_bytes: bytes,
+        *,
+        materialize_entries: bool = True,
+        defer_script_validation: bool = False,
+    ) -> dict[str, Any]:
         if not package_bytes or len(package_bytes) > MAX_PACKAGE_BYTES:
             raise WorkbenchError("配置包为空或超过大小限制", code="PACKAGE_TOO_LARGE")
         files = self._read_zip(package_bytes)
@@ -4244,7 +4419,12 @@ class WorkbenchService:
                 declared_paths.add(path)
                 content = files.get(path)
                 if content is None or hashlib.sha256(content).hexdigest() != declared.get("sha256"):
-                    raise WorkbenchError("配置包文件缺失或哈希不匹配", code="PACKAGE_FILE_HASH_MISMATCH")
+                    reason = "文件缺失" if content is None else "文件哈希不匹配"
+                    raise WorkbenchError(
+                        f"配置包文件{reason}: {path}",
+                        code="PACKAGE_FILE_HASH_MISMATCH",
+                        details={"path": path, "reason": reason},
+                    )
                 if path.endswith("/object.json"):
                     object_files.append((path, content))
                 declared_contents.append((path, content))
@@ -4274,12 +4454,13 @@ class WorkbenchService:
             for path, content in declared_contents:
                 relative_path = path[len(prefix):] if path.startswith(prefix) else path
                 if PurePosixPath(relative_path).suffix.lower() == ".py":
-                    if declaration.get("object_type") != "skill" or not relative_path.startswith("scripts/"):
+                    if not defer_script_validation and (declaration.get("object_type") != "skill" or not relative_path.startswith("scripts/")):
                         raise WorkbenchError("Python 脚本只能位于 Skill 的 scripts/ 目录", code="EXECUTABLE_CONTENT_FORBIDDEN")
-                    script_sources.append((relative_path, "text/x-python", content))
+                    if relative_path.startswith("scripts/"):
+                        script_sources.append((relative_path, "text/x-python", content))
                 elif relative_path == "scripts/requirements.txt":
                     script_sources.append((relative_path, "text/plain", content))
-            script_errors = self._script_validation_errors(script_sources)
+            script_errors = [] if defer_script_validation else self._script_validation_errors(script_sources)
             if script_errors:
                 raise WorkbenchError(
                     "Python 脚本安全校验未通过",
@@ -4414,6 +4595,7 @@ class WorkbenchService:
         package_hash: str,
         actor_id: str,
         select_new_as_current: bool = True,
+        defer_script_validation: bool = False,
     ) -> dict[str, Any]:
         self._validate_unique_dependency_objects(local_dependency_locks)
         object_type = str(entry.get("object_type") or "")
@@ -4474,6 +4656,7 @@ class WorkbenchService:
         decoded_assets = self._decode_assets(
             entry.get("files") if isinstance(entry.get("files"), list) else [],
             object_type=object_type,
+            allow_misplaced_python=defer_script_validation,
         )
         imported_capabilities: set[str] | None = None
         if object_type == "skill":
@@ -4496,12 +4679,23 @@ class WorkbenchService:
         )
         if object_type == "skill":
             questionnaire_errors = _questionnaire_asset_errors(payload, decoded_assets)
-            script_errors = self._script_validation_errors(decoded_assets)
+            script_errors = [] if defer_script_validation else self._script_validation_errors(decoded_assets)
             if questionnaire_errors or script_errors:
                 validation = {
                     **validation,
                     "valid": False,
                     "errors": [*validation.get("errors", []), *questionnaire_errors, *script_errors],
+                }
+            if defer_script_validation and any(
+                PurePosixPath(path).suffix.lower() == ".py" and not path.startswith("scripts/")
+                for path, _media_type, _content in decoded_assets
+            ):
+                validation = {
+                    **validation,
+                    "warnings": [
+                        *list(validation.get("warnings") or []),
+                        "Python 脚本尚未完成目录与安全审查，请在 Skill 编辑区整理到 scripts/ 后再测试或发布",
+                    ],
                 }
         if not validation.get("valid", False) and not str(entry.get("release_id") or "").startswith("revision:"):
             raise WorkbenchError(
@@ -4664,21 +4858,62 @@ class WorkbenchService:
     def _read_zip(package_bytes: bytes) -> dict[str, bytes]:
         try:
             with ZipFile(io.BytesIO(package_bytes)) as archive:
-                files: dict[str, bytes] = {}
+                raw_files: dict[str, bytes] = {}
                 total = 0
                 for info in archive.infolist():
-                    path = _safe_relative_path(info.filename)
-                    if path in files:
+                    path = WorkbenchService._repair_zip_filename(info.filename)
+                    path = _safe_relative_path(path)
+                    # macOS adds Finder metadata when a directory is zipped
+                    # from Finder.  It is not part of the signed package and
+                    # must not make an otherwise valid archive fail the
+                    # manifest/declared-files check.
+                    if path == "__MACOSX" or path.startswith("__MACOSX/") or PurePosixPath(path).name == ".DS_Store":
+                        continue
+                    if path in raw_files:
                         raise WorkbenchError("配置包包含重复文件", code="DUPLICATE_PACKAGE_FILE")
                     if info.is_dir():
                         continue
                     total += info.file_size
                     if total > MAX_PACKAGE_BYTES:
                         raise WorkbenchError("配置包解压后超过大小限制", code="PACKAGE_TOO_LARGE")
-                    files[path] = archive.read(info)
+                    raw_files[path] = archive.read(info)
+
+                # Finder and common ZIP tools preserve the selected folder as
+                # a single top-level directory.  Exported manifests, however,
+                # intentionally use package-relative paths.  Normalize exactly
+                # one such wrapper directory while rejecting mixed layouts.
+                files = raw_files
+                if "manifest.json" not in files:
+                    candidates = [
+                        path for path in files
+                        if path.endswith("/manifest.json")
+                        and path.count("/") >= 1
+                    ]
+                    if len(candidates) == 1:
+                        manifest_path = candidates[0]
+                        prefix = manifest_path[: -len("manifest.json")]
+                        if prefix and all(path.startswith(prefix) for path in files):
+                            files = {
+                                path[len(prefix):]: content
+                                for path, content in files.items()
+                            }
                 return files
         except BadZipFile as exc:
             raise WorkbenchError("不是合法的 ZIP 配置包", code="INVALID_PACKAGE") from exc
+
+    @staticmethod
+    def _repair_zip_filename(filename: str) -> str:
+        """Repair the reversible UTF-8-as-CP437 filename corruption.
+
+        Some macOS ZIP tools write UTF-8 bytes without the UTF-8 flag. Python
+        then exposes names such as ``τ║ó...``. If the round-trip is lossless,
+        recover the intended UTF-8 name; valid Unicode names remain unchanged.
+        """
+        try:
+            repaired = filename.encode("cp437").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return filename
+        return repaired if repaired != filename else filename
 
     @staticmethod
     def _json_file(path) -> dict[str, Any]:

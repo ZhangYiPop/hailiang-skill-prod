@@ -334,6 +334,10 @@ class _RuntimePlannerLLM:
         self.require_tool_routing_gate = require_tool_routing_gate
         self.streamed_combined_response = False
         self.last_tool_routing_payload: dict[str, Any] | None = None
+        # This is deliberately kept outside the MS-Agent loading plan.  The
+        # latter has a fixed schema, while a native Skill may use arbitrary
+        # stage names and fact keys in its own instructions.
+        self.last_skill_progress_patch: dict[str, Any] | None = None
         self.first_visible_delta_ms: int | None = None
 
     def generate(self, messages: list[Any]) -> _PlanningMessage:
@@ -344,7 +348,7 @@ class _RuntimePlannerLLM:
             "references/scripts/resources，判断是否需要工具，再根据当前 Skill 和上下文生成最终用户回复。\n"
             "必须只返回 JSON 对象，并严格按以下字段顺序输出：can_handle、required_scripts、"
             "required_references、required_resources、required_packages、tool_routing、assistant_message、"
-            "plan_summary_short、plan_summary、steps、parameters、reasoning、questionnaire_response。\n"
+            "plan_summary_short、plan_summary、steps、parameters、reasoning、questionnaire_response、skill_progress。\n"
             "所有依赖选择字段和 tool_routing 必须出现在 assistant_message 之前；"
             "详细规划字段必须放在 assistant_message 之后，以便正文尽早开始流式输出。\n"
             "plan_summary_short 必须是最多 12 个中文字符，并以‘正在’开头，用来展示当前执行动作。\n"
@@ -368,6 +372,13 @@ class _RuntimePlannerLLM:
             "assistant_message 必须是面向用户的最终正文，不要包含内部规划、JSON 或文件名。\n"
             "如果当前 Skill 启用了 Native Questionnaire Protocol，额外返回 questionnaire_response 对象，"
             "其内容必须严格遵循该协议；普通回答时 questionnaire_response 返回 null。\n\n"
+            "skill_progress 必须始终是对象，用于保存当前 Skill 私有的对话进度，格式为"
+            '{"stage_label":"...","confirmed_facts":{},"resolved_topics":[],"pending_topics":[],"next_action":"..."}。'
+            "它不是面向用户的内容，也不是平台预定义状态机：stage_label、事实键和 topic 名称必须沿用当前 SKILL.md"
+            "自己的定义；Skill 没有显式阶段名时可使用简短、稳定的内部标签。"
+            "必须把用户本轮明确回答的、上一轮待补的信息写入 confirmed_facts，并从 pending_topics 移除对应 topic。"
+            "已确认事实绝不可重新列为待补，也不得因为 Skill 使用不同阶段命名而重启先前模板。"
+            "当 Skill 规定补采完成后应给结论时，next_action 必须反映推进到结论而不是再次收集。\n\n"
             "# MS-Agent 原始规划 prompt\n"
             f"{prompt}"
         )
@@ -397,6 +408,11 @@ class _RuntimePlannerLLM:
         self.last_raw_response = content
         self.last_combined_response = self._extract_combined_response(content)
         payload = _try_parse_json(content) or _extract_json_object(content)
+        self.last_skill_progress_patch = (
+            _normalize_skill_progress_patch(payload.get("skill_progress"))
+            if isinstance(payload, dict)
+            else None
+        )
         self.last_tool_routing_payload = (
             payload.get("tool_routing")
             if isinstance(payload, dict) and isinstance(payload.get("tool_routing"), dict)
@@ -549,6 +565,101 @@ def _normalize_runtime_planner_response(value: str) -> str:
     if not normalized["steps"]:
         normalized["steps"] = [{"step": 1, "action": "continue with SKILL.md only", "type": "code"}]
     return json.dumps(normalized, ensure_ascii=False)
+
+
+def _normalize_skill_progress_value(value: Any, *, depth: int = 0) -> Any | None:
+    """Keep model-maintained Skill progress small, JSON-safe, and session-private."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        return text[:600] if text else None
+    if depth >= 2:
+        return None
+    if isinstance(value, list):
+        items = [
+            normalized
+            for item in value[:12]
+            if (normalized := _normalize_skill_progress_value(item, depth=depth + 1)) is not None
+        ]
+        return items or None
+    if isinstance(value, dict):
+        normalized_items: dict[str, Any] = {}
+        for key, item in list(value.items())[:24]:
+            name = str(key).strip()
+            normalized = _normalize_skill_progress_value(item, depth=depth + 1)
+            if name and normalized is not None:
+                normalized_items[name[:100]] = normalized
+        return normalized_items or None
+    return None
+
+
+def _normalize_skill_progress_patch(value: Any) -> dict[str, Any] | None:
+    """Normalize opaque Skill-owned progress without imposing platform stage names."""
+    if not isinstance(value, dict):
+        return None
+    patch: dict[str, Any] = {}
+    stage_label = str(value.get("stage_label") or value.get("stage") or "").strip()
+    if stage_label:
+        patch["stage_label"] = stage_label[:120]
+    confirmed = _normalize_skill_progress_value(value.get("confirmed_facts"))
+    if isinstance(confirmed, dict):
+        patch["confirmed_facts"] = confirmed
+    for key in ("resolved_topics", "pending_topics"):
+        raw_items = value.get(key)
+        if not isinstance(raw_items, list):
+            continue
+        items = list(dict.fromkeys(
+            str(item).strip()[:120]
+            for item in raw_items
+            if str(item).strip()
+        ))[:16]
+        # An explicit [] is meaningful: it closes the previous pending list.
+        patch[key] = items
+    next_action = str(value.get("next_action") or "").strip()
+    if next_action:
+        patch["next_action"] = next_action[:160]
+    return patch or None
+
+
+def _apply_skill_progress_patch(state: SessionState, skill_id: str, patch: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Merge a native Skill's opaque progress ledger without changing ``state.stage``.
+
+    ``state.stage`` belongs to formal runtime contracts.  Native SKILL.md files
+    are free-form, so their stage labels live in a separate, per-Skill ledger.
+    """
+    patch = _normalize_skill_progress_patch(patch)
+    if not patch:
+        return None
+    progress_by_skill = state.status_flags.setdefault("runtime_skill_progress", {})
+    if not isinstance(progress_by_skill, dict):
+        progress_by_skill = {}
+        state.status_flags["runtime_skill_progress"] = progress_by_skill
+    previous = progress_by_skill.get(skill_id)
+    progress = dict(previous) if isinstance(previous, dict) else {}
+    previous_confirmed = progress.get("confirmed_facts")
+    confirmed = dict(previous_confirmed) if isinstance(previous_confirmed, dict) else {}
+    confirmed.update(dict(patch.get("confirmed_facts") or {}))
+    if confirmed:
+        progress["confirmed_facts"] = confirmed
+        # Keep the facts in the current Skill's normal fact projection as
+        # well, so every prompt path receives them as authoritative context.
+        state.skill_facts.setdefault(skill_id, {}).update(confirmed)
+    for key in ("stage_label", "next_action"):
+        if patch.get(key):
+            progress[key] = patch[key]
+    previous_resolved = progress.get("resolved_topics")
+    resolved = list(previous_resolved) if isinstance(previous_resolved, list) else []
+    resolved.extend(patch.get("resolved_topics") or [])
+    resolved = list(dict.fromkeys(str(item) for item in resolved if str(item).strip()))[:24]
+    if resolved:
+        progress["resolved_topics"] = resolved
+    pending = patch.get("pending_topics")
+    if isinstance(pending, list):
+        resolved_set = set(resolved)
+        progress["pending_topics"] = [item for item in pending if item not in resolved_set]
+    progress_by_skill[skill_id] = progress
+    return progress
 
 
 def _extract_partial_planner_dependencies(value: str) -> dict[str, list[str]]:
@@ -1580,14 +1691,21 @@ class MainPlannerOrchestrator:
         skill_name: str,
         assembly: PromptAssembly,
     ) -> None:
-        if not assembly.retrieved_items:
-            return
+        selected_references = list(dict.fromkeys(
+            str(item.source_path)
+            for item in assembly.retrieved_items
+            if str(item.source_type or "").lower() == "reference"
+            or str(item.source_path or "").startswith("references/")
+            or "/references/" in str(item.source_path or "")
+        ))
         payload = {
             "phase": phase,
             "skill_name": skill_name,
             "skill_id": bundle.runtime_metadata.skill_id or skill_name,
             "skill_type": bundle.runtime_metadata.skill_type,
             "retrieved_count": len(assembly.retrieved_items),
+            "required_references": [],
+            "selected_references": selected_references,
             "generated_asset_domains": list(assembly.generated_asset_domains),
             "local_asset_paths": list(assembly.local_asset_paths),
             "items": [
@@ -1613,6 +1731,10 @@ class MainPlannerOrchestrator:
         reference_payload = {
             **payload,
             "retrieved_count": len(reference_items),
+            "selected_references": list(dict.fromkeys(
+                str(item.get("source_path") or "") for item in reference_items
+                if str(item.get("source_path") or "")
+            )),
             "items": reference_items,
             "source_event_type": "retrieval_context",
         }
@@ -1623,8 +1745,12 @@ class MainPlannerOrchestrator:
 
     def _record_ms_agent_reference_context_event(self, context, *, skill_name: str, loaded_context) -> None:
         references = getattr(loaded_context, "references", None) or []
-        if not references:
-            return
+        plan = getattr(loaded_context, "plan", None)
+        required_references = list(dict.fromkeys(
+            str(item).strip()
+            for item in (plan.get("required_references", []) if isinstance(plan, dict) else [])
+            if str(item).strip()
+        ))
         items: list[dict[str, Any]] = []
         for index, reference in enumerate(references, start=1):
             path = str(reference.get("path") or reference.get("name") or "")
@@ -1645,6 +1771,8 @@ class MainPlannerOrchestrator:
             "skill_id": skill_name,
             "skill_type": "native",
             "retrieved_count": len(items),
+            "required_references": required_references,
+            "selected_references": [str(item["source_path"]) for item in items],
             "generated_asset_domains": [],
             "local_asset_paths": [],
             "items": items,
@@ -1870,6 +1998,11 @@ class MainPlannerOrchestrator:
             ),
             "active_skill_id": skill_name,
             "stage": state.stage,
+            "skill_progress": (
+                dict(state.status_flags.get("runtime_skill_progress", {}).get(skill_name) or {})
+                if isinstance(state.status_flags.get("runtime_skill_progress"), dict)
+                else {}
+            ),
         }
         try:
             planner_messages = self._conversation_messages_for_model(state)
@@ -1957,6 +2090,69 @@ class MainPlannerOrchestrator:
         # when its auxiliary LLM call fails. Keep that diagnostic in the runtime
         # trace, but do not emit a client-facing model error after recovery.
 
+        raw_skill_progress = _normalize_skill_progress_patch(planner_llm.last_skill_progress_patch)
+        prior_progress_by_skill = state.status_flags.get("runtime_skill_progress")
+        prior_progress = (
+            prior_progress_by_skill.get(skill_name)
+            if isinstance(prior_progress_by_skill, dict)
+            and isinstance(prior_progress_by_skill.get(skill_name), dict)
+            else {}
+        )
+        prior_resolved_topics = {
+            str(item)
+            for item in prior_progress.get("resolved_topics", [])
+            if str(item).strip()
+        }
+        repeated_topics = sorted(
+            prior_resolved_topics.intersection(raw_skill_progress.get("pending_topics", []))
+            if raw_skill_progress
+            else set()
+        )
+        skill_progress = _apply_skill_progress_patch(
+            state,
+            skill_name,
+            raw_skill_progress,
+        )
+        if skill_progress is not None:
+            self._record_events(
+                context,
+                [
+                    make_event(
+                        "runtime_skill_progress_updated",
+                        {
+                            "skill_id": skill_name,
+                            "stage_label": skill_progress.get("stage_label", ""),
+                            "confirmed_fact_keys": sorted(
+                                str(key) for key in dict(skill_progress.get("confirmed_facts") or {})
+                            ),
+                            "resolved_topics": list(skill_progress.get("resolved_topics") or []),
+                            "pending_topics": list(skill_progress.get("pending_topics") or []),
+                            "next_action": skill_progress.get("next_action", ""),
+                        },
+                    )
+                ],
+            )
+        if repeated_topics:
+            # Do not stream or return a combined answer whose own structured
+            # progress says it is asking an already resolved topic.  Continue
+            # through the normal final-response path, where the persisted
+            # progress ledger is a high-priority guardrail.
+            loaded_context.combined_response = ""
+            planner_llm.last_combined_response = ""
+            self._record_events(
+                context,
+                [
+                    make_event(
+                        "runtime_skill_progress_repeat_blocked",
+                        {
+                            "skill_id": skill_name,
+                            "repeated_topics": repeated_topics,
+                            "reason": "planner marked an already resolved topic as pending",
+                        },
+                    )
+                ],
+            )
+
         planner_routing_decision = parse_ms_agent_tool_routing(
             planner_llm.last_tool_routing_payload
         )
@@ -2024,6 +2220,16 @@ class MainPlannerOrchestrator:
                 state.status_flags["ms_agent_combined_response_streamed"] = True
         plan = state.status_flags["ms_agent_runtime"].get("plan")
         if isinstance(plan, dict):
+            if skill_progress is not None:
+                plan["skill_progress"] = {
+                    "stage_label": skill_progress.get("stage_label", ""),
+                    "confirmed_fact_keys": sorted(
+                        str(key) for key in dict(skill_progress.get("confirmed_facts") or {})
+                    ),
+                    "resolved_topics": list(skill_progress.get("resolved_topics") or []),
+                    "pending_topics": list(skill_progress.get("pending_topics") or []),
+                    "next_action": skill_progress.get("next_action", ""),
+                }
             last_metrics = getattr(client, "last_request_metrics", None)
             llm_metrics = last_metrics() if callable(last_metrics) else {}
             if llm_metrics:
@@ -2033,6 +2239,11 @@ class MainPlannerOrchestrator:
                 str(item.get("path") or item.get("name") or "")
                 for item in _ms_agent_loaded_reference_context(loaded_context)
             ]
+            plan["required_references"] = list(dict.fromkeys(
+                str(item).strip()
+                for item in plan.get("required_references", [])
+                if str(item).strip()
+            ))
             raw_planner_plan = _try_parse_json(planner_llm.last_raw_response or "")
             if isinstance(raw_planner_plan, dict):
                 if raw_planner_plan.get("plan_summary_short") and not plan.get("plan_summary_short"):
@@ -2063,6 +2274,8 @@ class MainPlannerOrchestrator:
                             "plan_summary_short_source": plan_summary_source,
                             "summary_limit": "5-10 chars",
                             "steps_count": len(plan.get("steps") or []),
+                            "required_references": list(plan.get("required_references") or []),
+                            "selected_references": list(plan.get("selected_references") or []),
                             "request_purpose": llm_metrics.get("request_purpose"),
                             "prompt_chars": llm_metrics.get("prompt_chars"),
                             "input_tokens": llm_metrics.get("input_tokens"),

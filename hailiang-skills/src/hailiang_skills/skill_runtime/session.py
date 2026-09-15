@@ -323,6 +323,7 @@ def _build_prompt_assembly(
             f"# External Asset Domains\n{asset_overview}\n\n",
             f"# Matched External Assets For This Turn\n{matched_assets_text}\n\n",
             f"# Runtime Facts\n{_build_runtime_facts_text(bundle, state)}\n\n",
+            f"# Skill Progress Guard\n{_build_skill_progress_guard(bundle, state)}\n\n",
         ]
     )
     if runtime_metadata.prompt_loading.include_route_targets:
@@ -676,6 +677,28 @@ def _build_runtime_facts_text(bundle: SkillBundle, state: SessionState) -> str:
         f"stage_facts={json.dumps(current_stage_facts, ensure_ascii=False)}\n"
         f"status_flags={json.dumps(_status_flags_for_prompt(state.status_flags), ensure_ascii=False)}\n"
         f"route_history={json.dumps(route_history, ensure_ascii=False)}"
+    )
+
+
+def _build_skill_progress_guard(bundle: SkillBundle, state: SessionState) -> str:
+    """Render opaque native-Skill progress without assigning business meaning to stages."""
+    active_skill_id = state.active_skill_id or bundle.contract.skill_id or bundle.root_name
+    progress_by_skill = state.status_flags.get("runtime_skill_progress")
+    progress = (
+        progress_by_skill.get(active_skill_id)
+        if isinstance(progress_by_skill, dict) and isinstance(progress_by_skill.get(active_skill_id), dict)
+        else {}
+    )
+    if not progress:
+        return (
+            "No persisted private progress yet. Follow the current SKILL.md; after this turn, "
+            "record any concrete user answer before asking the next question."
+        )
+    return (
+        "This is an opaque, Skill-owned progress ledger. Do not reinterpret its stage label using "
+        "platform conventions. Confirmed facts and resolved topics are already answered: never ask "
+        "for them again or restart an earlier template. Follow the Skill's own next step.\n"
+        + json.dumps(progress, ensure_ascii=False)
     )
 
 

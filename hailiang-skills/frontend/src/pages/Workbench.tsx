@@ -700,6 +700,26 @@ export default function Workbench() {
           ...(event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {}),
         }));
     });
+    const expertRoutingEvents = trace.flatMap((turn) => {
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return events
+        .filter((event) => event && typeof event === "object")
+        .map((event) => event as Record<string, unknown>)
+        .filter((event) => [
+          "expert_skill_route_selected",
+          "expert_skill_executed",
+          "expert_agent_direct_override",
+          "expert_direct_reply_blocked",
+          "expert_decision_unavailable",
+          "candidate_turn_failed",
+        ].includes(String(event.event_type ?? "")))
+        .map((event) => ({
+          turn: turn.turn ?? null,
+          event_type: event.event_type,
+          timestamp: event.timestamp ?? event.created_at ?? null,
+          ...(event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {}),
+        }));
+    });
     const url = URL.createObjectURL(new Blob([JSON.stringify({
       revision_id: revisionId,
       debug_session_id: debugSessionId,
@@ -712,6 +732,10 @@ export default function Workbench() {
       // was cut so the same session can be looked up in diagnostics.
       output_diagnostics: outputDiagnostics,
       context_archive_events: contextArchiveEvents,
+      // Route decisions and failures are metadata only: they make an
+      // uncalled Skill or a generic retryable failure diagnosable without
+      // exporting AGENT.md, SKILL.md, or model prompt bodies.
+      expert_routing_events: expertRoutingEvents,
     }, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;

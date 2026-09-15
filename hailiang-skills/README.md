@@ -2,7 +2,16 @@
 
 面向升学咨询场景的 Skill Runtime 融合版对话引擎。
 
+## 管理汇报材料
+
+如果需要向业务管理层或技术管理层介绍这套 Agent 系统，建议优先阅读：
+
+- [Agent 系统向上汇报讲稿](guides/AGENT_SYSTEM_BRIEFING_SPEECH.md)
+
+这份讲稿采用“统一调度层 + 规划中枢 + 专项能力模块”的高层口径，重点解释系统的架构分层、智能调度、按需调用，以及它如何体现生涯规划能力，同时刻意避开不适合对上展开的底层运行时细节。
+
 当前项目已经从原先 hailiang 自研 `RouterSkill -> FactsExtractorSkill -> PlannerSkill -> 业务 Skill` 的主链路，升级为 `Intent Router -> skill-runtime` 的前置路由架构。新会话先进入 `general_chat`；用户意图命中专项场景时，当前轮仍由自由问答回答，并在 assistant 回复下展示 `route_suggestions` 按钮，用户点击后才进入目标 Skill。原 `main_planner` 的公开 Skill ID 已统一为 `career_plan_entity`（升学规划顾问），它现在是可被推荐和直达的专项 Skill，同时保留画像问诊和子场景引导能力。`main_planner` 仅作为历史数据与旧请求的兼容别名。
+
 
 更细的架构和新增场景接入步骤见：
 

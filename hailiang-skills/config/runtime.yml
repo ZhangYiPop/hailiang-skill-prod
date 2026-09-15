@@ -19,7 +19,7 @@ sync_compression_ratio: 0.80
 # Expert routing is a separate model pass. These bounds prevent it from
 # silently discarding a long conversation before the model context limit.
 expert_history_messages: 200
-expert_history_message_chars: 12000
+expert_history_message_chars: 120000
 expert_history_max_chars: 900000
 expert_reply_max_chars: 1500000
 tool_routing:
