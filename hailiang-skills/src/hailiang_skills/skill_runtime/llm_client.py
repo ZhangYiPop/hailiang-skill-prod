@@ -53,6 +53,7 @@ class OpenAICompatibleChatClient:
         *,
         logger: RuntimeLogger | None = None,
         request_purpose: str = "unspecified",
+        max_tokens: int | None = None,
     ) -> str:
         result = self.complete_with_tools(
             messages,
@@ -60,6 +61,7 @@ class OpenAICompatibleChatClient:
             preferred_mode="none",
             logger=logger,
             request_purpose=request_purpose,
+            max_tokens=max_tokens,
         )
         return result.final_text
 
@@ -71,6 +73,7 @@ class OpenAICompatibleChatClient:
         preferred_mode: str = "native",
         logger: RuntimeLogger | None = None,
         request_purpose: str = "unspecified",
+        max_tokens: int | None = None,
     ) -> AssistantTurnResult:
         if not messages:
             raise LLMRequestError("模型请求消息不能为空")
@@ -82,6 +85,7 @@ class OpenAICompatibleChatClient:
                 tool_mode="none",
                 logger=logger,
                 request_purpose=request_purpose,
+                max_tokens=max_tokens,
             )
             if logger:
                 logger.log("llm.response.none", raw_body_preview=preview_text(raw_body, limit=800))
@@ -95,6 +99,7 @@ class OpenAICompatibleChatClient:
                     tool_mode="native",
                     logger=logger,
                     request_purpose=request_purpose,
+                    max_tokens=max_tokens,
                 )
                 if logger:
                     logger.log("llm.response.native", raw_body_preview=preview_text(raw_body, limit=800))
@@ -122,6 +127,7 @@ class OpenAICompatibleChatClient:
             tool_mode="json_action",
             logger=logger,
             request_purpose=request_purpose,
+            max_tokens=max_tokens,
         )
         if logger:
             logger.log("llm.response.json_action", raw_body_preview=preview_text(raw_body, limit=800))
@@ -145,13 +151,14 @@ class OpenAICompatibleChatClient:
         tool_mode: str,
         logger: RuntimeLogger | None = None,
         request_purpose: str = "unspecified",
+        max_tokens: int | None = None,
     ) -> str:
         get_llm_rate_limiter().acquire()
         endpoint = f"{self._config.base_url}/chat/completions"
         payload = _build_chat_payload(
             self._config.model,
             self._config.temperature,
-            self._config.max_tokens,
+            max(1, int(max_tokens)) if max_tokens is not None else self._config.max_tokens,
             messages,
             tool_specs=tool_specs,
             tool_mode=tool_mode,

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import copy
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import inspect
 from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 import re
 import threading
 import time
@@ -74,6 +75,10 @@ from hailiang_skills.runtime_bridge.conversation_memory import (  # noqa: E402
     supplement_questionnaire_evidence,
 )
 from hailiang_skills.runtime_bridge.ms_agent_adapter import MSAgentRuntimeAdapter  # noqa: E402
+from hailiang_skills.runtime_bridge.skill_instruction_index import (  # noqa: E402
+    SkillInstructionIndex,
+    build_skill_instruction_index,
+)
 from hailiang_skills.skill_runtime.cli import (  # noqa: E402
     MAX_TOOL_CALLS_PER_TURN,
     _is_empty_tool_call,
@@ -125,6 +130,151 @@ from hailiang_skills.skill_runtime.tools import build_status_track_payload, buil
 class _PlanningMessage:
     def __init__(self, content: str) -> None:
         self.content = content
+
+
+REFERENCE_PREFLIGHT_TIMEOUT_S = max(
+    1, int(os.getenv("HAILIANG_REFERENCE_PREFLIGHT_TIMEOUT_S", "8") or 8)
+)
+REFERENCE_PREFLIGHT_MAX_TOKENS = max(
+    128, int(os.getenv("HAILIANG_REFERENCE_PREFLIGHT_MAX_TOKENS", "512") or 512)
+)
+
+
+def _reference_preflight(
+    client: OpenAICompatibleChatClient,
+    *,
+    index: SkillInstructionIndex,
+    available_paths: set[str],
+    user_message: str,
+    stage: str,
+    next_action: str,
+    draft: str,
+    logger: RuntimeLogger,
+) -> dict[str, Any]:
+    """Ask a bounded auxiliary judgement only for explicit author evidence rules."""
+    obligations = [
+        {"path": item.path, "section": item.section, "directive": item.directive}
+        for item in index.references
+    ]
+    prompt = (
+        "你是 Skill 资料预检器。只能返回 JSON："
+        '{"allow_draft":true,"required_references":[],"applicable_sections":[],"forbidden_output_categories":[],"reason":""}。\n'
+        "根据业务人员写在 SKILL.md 中的明确规则，判断当前草案是否必须先读取本地资料。"
+        "仅可选择 available_reference_paths 中的路径；资料、规则或阶段不确定时保守地要求相关资料。"
+        "不要回答用户，不要编造路径。\n"
+        f"current_user_message={user_message!r}\ncurrent_stage={stage!r}\nnext_action={next_action!r}\n"
+        f"draft={draft!r}\nexplicit_reference_instructions={json.dumps(obligations, ensure_ascii=False)}\n"
+        f"explicit_prohibitions={json.dumps(list(index.prohibitions), ensure_ascii=False)}\n"
+        f"available_reference_paths={json.dumps(sorted(available_paths), ensure_ascii=False)}"
+    )
+    messages = [
+        ChatMessage(role="system", content="You are a strict JSON evidence preflight checker."),
+        ChatMessage(role="user", content=prompt),
+    ]
+
+    def complete() -> str:
+        kwargs: dict[str, Any] = {"logger": logger}
+        try:
+            if "request_purpose" in inspect.signature(client.complete).parameters:
+                kwargs["request_purpose"] = "reference_preflight"
+            if "max_tokens" in inspect.signature(client.complete).parameters:
+                kwargs["max_tokens"] = REFERENCE_PREFLIGHT_MAX_TOKENS
+        except (TypeError, ValueError):
+            pass
+        return str(client.complete(messages, **kwargs) or "")
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hailiang-reference-preflight")
+    future = executor.submit(complete)
+    try:
+        raw = future.result(timeout=REFERENCE_PREFLIGHT_TIMEOUT_S)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(f"reference preflight timed out after {REFERENCE_PREFLIGHT_TIMEOUT_S}s") from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    payload = _try_parse_json(raw) or _extract_json_object(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("reference preflight returned invalid JSON")
+    required = [
+        path for path in _normalize_planner_list(payload.get("required_references"))
+        if path in available_paths
+    ]
+    return {
+        "allow_draft": bool(payload.get("allow_draft", not required)),
+        "required_references": list(dict.fromkeys(required)),
+        "applicable_sections": [
+            str(value)[:200]
+            for value in _normalize_planner_list(payload.get("applicable_sections"))
+            if str(value).strip()
+        ][:12],
+        "forbidden_output_categories": [
+            str(value)[:160]
+            for value in _normalize_planner_list(payload.get("forbidden_output_categories"))
+            if str(value).strip()
+        ][:12],
+        "reason": str(payload.get("reason") or "")[:800],
+    }
+
+
+def _inject_preflight_references(loaded_context, bundle, required_paths: list[str]) -> tuple[list[str], list[str]]:
+    """Make validated local references available to the normal final prompt."""
+    references = getattr(loaded_context, "references", None)
+    if not isinstance(references, list):
+        references = []
+        loaded_context.references = references
+    selected = {
+        str(item.get("path") or item.get("name") or "")
+        for item in references
+        if isinstance(item, dict)
+    }
+    loaded: list[str] = []
+    unavailable: list[str] = []
+    source = getattr(bundle, "references", {}) or {}
+    for path in required_paths:
+        if path in selected:
+            loaded.append(path)
+            continue
+        content = source.get(path)
+        if not isinstance(content, str):
+            unavailable.append(path)
+            continue
+        references.append({
+            "path": path,
+            "name": PurePath(path).name,
+            "content": content,
+            "preflight_required": True,
+        })
+        selected.add(path)
+        loaded.append(path)
+    plan = getattr(loaded_context, "plan", None)
+    if isinstance(plan, dict):
+        existing = _normalize_planner_list(plan.get("required_references"))
+        plan["required_references"] = list(dict.fromkeys([*existing, *required_paths]))
+        plan["selected_references"] = list(dict.fromkeys([
+            *(_normalize_planner_list(plan.get("selected_references"))),
+            *loaded,
+        ]))
+    return loaded, unavailable
+
+
+def _reference_response_evidence_event(state: SessionState, *, skill_id: str, reply: str) -> dict[str, Any] | None:
+    # The full source excerpt is a one-turn implementation detail. Persist
+    # the audit metadata, not source bodies, in the durable session state.
+    preflight = state.status_flags.pop("reference_preflight", None)
+    if not isinstance(preflight, dict):
+        return None
+    reference_context = state.status_flags.get("ms_agent_loaded_reference_context")
+    if isinstance(reference_context, list):
+        for item in reference_context:
+            if isinstance(item, dict):
+                item.pop("content", None)
+    return make_event("reference_response_evidence", {
+        "skill_id": skill_id,
+        "required_references": list(preflight.get("required_references") or []),
+        "selected_references": list(preflight.get("loaded_references") or []),
+        "result_injected_into_final_generation": True,
+        "response_chars": len(reply or ""),
+    })
 
 
 class _IncrementalAssistantMessageExtractor:
@@ -878,6 +1028,10 @@ def _ms_agent_loaded_reference_context(loaded_context) -> list[dict[str, str]]:
                 "path": path,
                 "name": Path(path).name,
                 "title": _reference_title_from_path(path),
+                # Only preflight-selected sources retain their original text
+                # for query-aware excerpting below. Existing lazy-load
+                # behavior stays compact for ordinary Skills.
+                **({"content": content} if reference.get("preflight_required") else {}),
                 "snippet": _truncate_debug_text(content.strip(), limit=1400),
             }
         )
@@ -1908,6 +2062,9 @@ class MainPlannerOrchestrator:
             return None
 
         skill_name = bundle.contract.skill_id or bundle.root_name
+        # Evidence is scoped to exactly one user turn.  A previous controlled
+        # reply must never make a later, unrelated reply appear evidenced.
+        state.status_flags.pop("reference_preflight", None)
         if not self.ms_agent_probe.available:
             detail = self.ms_agent_probe.error or self.ms_agent_probe.status
             reply = (
@@ -1942,7 +2099,20 @@ class MainPlannerOrchestrator:
         stream_reply_callback = None
         scripts_dir = bundle.root_dir / "scripts"
         has_declared_scripts = scripts_dir.is_dir() and any(scripts_dir.glob("*.py"))
-        if stream_combined_response and not questionnaire_enabled(bundle) and not has_declared_scripts:
+        reference_instruction_index = build_skill_instruction_index(
+            bundle.skill_markdown,
+            available_reference_paths=set((getattr(bundle, "references", {}) or {}).keys()),
+        )
+        # A Skill with explicit evidence rules may still need one bounded
+        # preflight after the combined planner produces its draft. Buffer its
+        # text until that decision, while every ordinary Skill keeps TTFT.
+        has_possible_reference_preflight = reference_instruction_index.has_explicit_evidence_rules
+        if (
+            stream_combined_response
+            and not questionnaire_enabled(bundle)
+            and not has_declared_scripts
+            and not has_possible_reference_preflight
+        ):
             callback = (context.session_meta or {}).get("reply_delta_callback")
             if (context.session_meta or {}).get("stream_final_reply") and callable(callback):
                 stream_reply_callback = callback
@@ -2059,7 +2229,18 @@ class MainPlannerOrchestrator:
                                 "detail": "MS-Agent planner failed; continued with Hailiang prompt assembly",
                                 "error": detail,
                             },
-                        )
+                        ),
+                        *(
+                            [evidence]
+                            if (
+                                evidence := _reference_response_evidence_event(
+                                    state,
+                                    skill_id=current_bundle.contract.skill_id or current_bundle.root_name,
+                                    reply=reply,
+                                )
+                            )
+                            else []
+                        ),
                     ],
                 )
                 return None
@@ -2208,6 +2389,71 @@ class MainPlannerOrchestrator:
             or planner_llm.last_combined_response
             or ""
         )
+        plan = state.status_flags["ms_agent_runtime"].get("plan")
+        if (
+            combined_response
+            and has_possible_reference_preflight
+            and not questionnaire_enabled(bundle)
+            and isinstance(plan, dict)
+            and reference_instruction_index.is_sensitive_turn(
+                draft=combined_response,
+                stage=str((skill_progress or {}).get("stage_label") or state.stage or ""),
+                next_action=str((skill_progress or {}).get("next_action") or ""),
+                user_message=latest_user_message,
+            )
+        ):
+            started_preflight = time.perf_counter()
+            try:
+                preflight = _reference_preflight(
+                    client,
+                    index=reference_instruction_index,
+                    available_paths=set((getattr(bundle, "references", {}) or {}).keys()),
+                    user_message=latest_user_message,
+                    stage=str((skill_progress or {}).get("stage_label") or state.stage or ""),
+                    next_action=str((skill_progress or {}).get("next_action") or ""),
+                    draft=combined_response,
+                    logger=logger,
+                )
+                required_paths = list(preflight["required_references"])
+                loaded_paths, unavailable_paths = _inject_preflight_references(loaded_context, bundle, required_paths)
+                # The prompt assembly reads this state projection rather than
+                # the adapter object. Refresh it after conditional injection
+                # so the final response receives the same verified sources
+                # recorded by the trace.
+                state.status_flags["ms_agent_loaded_reference_context"] = (
+                    _ms_agent_loaded_reference_context(loaded_context)
+                )
+                payload = {
+                    "skill_id": skill_name,
+                    **preflight,
+                    "loaded_references": loaded_paths,
+                    "unavailable_references": unavailable_paths,
+                    "duration_ms": int((time.perf_counter() - started_preflight) * 1000),
+                }
+                if unavailable_paths:
+                    self._record_events(context, [make_event("reference_evidence_unavailable", payload)])
+                else:
+                    self._record_events(context, [make_event("reference_preflight", payload)])
+                if required_paths and not unavailable_paths:
+                    # Do not publish the planner draft: it was produced before
+                    # the mandatory evidence was available. The regular final
+                    # response path below now receives the injected sources.
+                    combined_response = ""
+                    loaded_context.combined_response = ""
+                    planner_llm.last_combined_response = ""
+                    state.status_flags["reference_preflight"] = payload
+                elif not preflight["allow_draft"]:
+                    self._record_events(context, [make_event("reference_compliance_degraded", {
+                        **payload,
+                        "reason": "preflight disallowed draft but selected no usable local reference",
+                    })])
+            except Exception as exc:  # noqa: BLE001 - fail open by product decision
+                self._record_events(context, [make_event("reference_preflight_degraded", {
+                    "skill_id": skill_name,
+                    "reason": f"{type(exc).__name__}: {exc}"[:800],
+                    "duration_ms": int((time.perf_counter() - started_preflight) * 1000),
+                    "fallback": "release_existing_direct_reply",
+                })])
         has_loaded_dependencies = bool(
             loaded_context.scripts
             or getattr(loaded_context, "references", None)
@@ -2218,7 +2464,6 @@ class MainPlannerOrchestrator:
             state.status_flags["ms_agent_combined_response"] = combined_response
             if planner_llm.streamed_combined_response:
                 state.status_flags["ms_agent_combined_response_streamed"] = True
-        plan = state.status_flags["ms_agent_runtime"].get("plan")
         if isinstance(plan, dict):
             if skill_progress is not None:
                 plan["skill_progress"] = {
@@ -2541,7 +2786,18 @@ class MainPlannerOrchestrator:
                                 "detail": "MS-Agent plan and runtime response completed in one model call",
                                 "payload": {"stream": combined_response_streamed},
                             },
-                        )
+                        ),
+                        *(
+                            [evidence]
+                            if (
+                                evidence := _reference_response_evidence_event(
+                                    state,
+                                    skill_id=current_bundle.contract.skill_id or current_bundle.root_name,
+                                    reply=reply,
+                                )
+                            )
+                            else []
+                        ),
                     ],
                 )
                 return reply, ""
@@ -3259,6 +3515,17 @@ class MainPlannerOrchestrator:
                             },
                         },
                     ),
+                    *(
+                        [evidence]
+                        if (
+                            evidence := _reference_response_evidence_event(
+                                state,
+                                skill_id=skill_name,
+                                reply=reply,
+                            )
+                        )
+                        else []
+                    ),
                 ],
             )
             self._record_runtime_prompt(
@@ -3411,6 +3678,17 @@ class MainPlannerOrchestrator:
                             "empty_stream_retry": empty_stream_retry,
                         },
                     },
+                ),
+                *(
+                    [evidence]
+                    if (
+                        evidence := _reference_response_evidence_event(
+                            state,
+                            skill_id=skill_name,
+                            reply=reply,
+                        )
+                    )
+                    else []
                 ),
             ],
         )

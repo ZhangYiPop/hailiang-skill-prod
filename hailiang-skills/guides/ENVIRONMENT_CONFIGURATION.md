@@ -16,6 +16,8 @@ sudo nano /etc/hailiang-skills/test.env
 | `DASHSCOPE_API_KEY` | 大模型服务密钥 | 测试密钥或共享密钥 | 生产密钥 |
 | `HAILIANG_CONTEXT_WINDOW_TOKENS` | 单孩子分支的上下文预算 | `32000` | 按模型窗口设置 |
 | `HAILIANG_WORKING_CONTEXT_TOKENS` | 单轮完整工作上下文预算 | `160000` | `160000` |
+| `HAILIANG_REFERENCE_PREFLIGHT_TIMEOUT_S` | 资料敏感回合的引用预检超时（秒） | `8` | 超时后放行原回复并记录 `reference_preflight_degraded`。 |
+| `HAILIANG_REFERENCE_PREFLIGHT_MAX_TOKENS` | 引用预检最大输出 token | `512` | 仅约束 JSON 判定，不影响正常模型输出。 |
 | `HAILIANG_ASYNC_CHECKPOINT_RATIO` | 异步检查点触发比例 | `0.60` | `0.60` |
 | `HAILIANG_SYNC_COMPRESSION_RATIO` | 同步压缩触发比例 | `0.80` | `0.80` |
 | `HAILIANG_TEST_LLM_ENABLED` | 是否启用测试模型白名单分流 | `false` | 必须为 `false` |

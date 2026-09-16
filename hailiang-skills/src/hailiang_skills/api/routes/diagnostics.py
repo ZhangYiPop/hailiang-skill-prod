@@ -23,13 +23,14 @@ from hailiang_skills.core.session_logging import (
     get_session_run_sse_log_path,
     get_session_sse_aggregate_log_path,
 )
-from hailiang_skills.storage.database import ChatRunRow
+from hailiang_skills.storage.database import ChatRunRow, WorkbenchDebugSessionRow
 from hailiang_skills.storage.event_store import read_events
 
 
 _CONTENT_KEYS = {
     "content", "input", "output", "raw_sse", "reasoning", "messages",
-    "payload", "prompt", "response", "tool_input", "tool_output",
+    "payload", "prompt", "response", "tool_input", "tool_output", "stdout", "stderr",
+    "stdin_payload", "json_output", "return_value", "execution_trace",
 }
 _SECRET_MARKERS = ("authorization", "password", "secret", "api_key", "cookie")
 
@@ -165,6 +166,32 @@ def _session_events(session_id: str, *, limit: int, include_content: bool) -> tu
         path = log_root() / "sessions" / session_id / "events.jsonl"
         return _read_jsonl(path, predicate=lambda _: True, limit=limit, include_content=include_content), "file"
     return [_redact(event, include_content=include_content) for event in events[-limit:]], "postgres"
+
+
+def _candidate_trace(engine, session_id: str, *, limit: int, include_content: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Expose candidate-test evidence via the same session-id diagnostics API."""
+    prefix = "revision_test_dbg_"
+    if engine is None or not session_id.startswith(prefix):
+        return [], []
+    debug_session_id = "dbg_" + session_id[len(prefix):]
+    from sqlalchemy.orm import Session
+
+    try:
+        with Session(engine) as db:
+            row = db.get(WorkbenchDebugSessionRow, debug_session_id)
+            if row is None:
+                return [], []
+            trace = list(row.trace or [])[-limit:]
+    except Exception:
+        return [], []
+    events: list[dict[str, Any]] = []
+    for turn in trace:
+        if not isinstance(turn, dict):
+            continue
+        for event in turn.get("events") if isinstance(turn.get("events"), list) else []:
+            if isinstance(event, dict):
+                events.append(event)
+    return _redact(trace, include_content=include_content), _redact(events[-limit:], include_content=include_content)
 
 
 def _sse_records(session_id: str, run_id: str | None, *, limit: int, include_content: bool) -> list[dict[str, Any]]:
@@ -331,6 +358,21 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
         # repository itself is the incident being investigated.
         context = None
     events, event_source = _session_events(session_id, limit=limit, include_content=include_content)
+    candidate_trace, candidate_events = _candidate_trace(
+        engine, session_id, limit=limit, include_content=include_content,
+    )
+    if candidate_events:
+        seen = {
+            str(item.get("event_id") or "") or json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            for item in events
+        }
+        for item in candidate_events:
+            key = str(item.get("event_id") or "") or json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            if key not in seen:
+                events.append(item)
+                seen.add(key)
+        events = events[-limit:]
+        event_source = "postgres+workbench_candidate"
     http_records = _http_records(field="session_id", value=session_id, limit=limit, include_content=include_content)
     runs: list[dict[str, Any]] = []
     ledger = (getattr(context, "session_meta", {}) or {}).get("run_ledger", {}) if context else {}
@@ -346,7 +388,7 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
     sse_records = _sse_records(session_id, run_id, limit=limit, include_content=include_content)
     return {
         "session_id": session_id,
-        "found": context is not None or bool(events) or bool(http_records) or bool(runs),
+        "found": context is not None or bool(events) or bool(http_records) or bool(runs) or bool(candidate_trace),
         "session": _redact({
             "user_id": getattr(context, "user_id", "") if context else "",
             "active_profile_id": getattr(context, "profile_id", None) if context else None,
@@ -372,6 +414,7 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
             limit=limit,
         ),
         "output_diagnostics": _output_diagnostics(events=events, limit=limit),
+        "candidate_execution_trace": candidate_trace,
     }
 
 

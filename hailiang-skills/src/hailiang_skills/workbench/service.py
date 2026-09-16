@@ -2447,7 +2447,15 @@ class WorkbenchService:
                     "pending_topics": list(payload.get("pending_topics") or []),
                     "next_action": str(payload.get("next_action") or ""),
                 }
-            if event_type in {"reference_context", "retrieval_context", "ms_agent_plan_summary"}:
+            if event_type in {
+                "reference_context",
+                "retrieval_context",
+                "ms_agent_plan_summary",
+                "reference_preflight",
+                "reference_response_evidence",
+                "reference_evidence_unavailable",
+                "reference_compliance_degraded",
+            }:
                 for path in payload.get("required_references") if isinstance(payload.get("required_references"), list) else []:
                     if str(path).strip():
                         required_references.add(str(path).strip())
@@ -2472,6 +2480,9 @@ class WorkbenchService:
                             "source_type": str(item.get("source_type") or "reference"),
                             "snippet": str(item.get("snippet") or ""),
                         })
+                for path in payload.get("loaded_references") if isinstance(payload.get("loaded_references"), list) else []:
+                    if str(path).strip():
+                        selected_references.add(str(path).strip())
             if event_type == "ms_agent_runtime":
                 step_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
                 for path in step_payload.get("required_references") if isinstance(step_payload.get("required_references"), list) else []:
@@ -2486,12 +2497,22 @@ class WorkbenchService:
                     if not isinstance(output, dict):
                         continue
                     script_runs.append({
+                        "skill_id": str(payload.get("skill_id") or skill_id),
                         "path": str(output.get("script") or ""),
                         "status": "success" if _script_execution_succeeded(output) else "failed",
-                        "input": output.get("stdin_payload") or output.get("args") or {},
-                        "output": output.get("json_output") or output.get("return_value") or output.get("stdout") or "",
-                        "error": str(output.get("error") or output.get("stderr") or ""),
+                        "execution_mode": str(output.get("execution_mode") or step_payload.get("execution_mode") or ""),
+                        "planner_selected": True,
+                        "planner_reason": str(step_payload.get("reason") or ""),
+                        "stdin_payload": output.get("stdin_payload"),
+                        "args": output.get("args"),
+                        "stdout": output.get("stdout"),
+                        "stderr": output.get("stderr"),
+                        "json_output": output.get("json_output"),
+                        "return_value": output.get("return_value"),
+                        "exit_code": output.get("exit_code"),
+                        "error": str(output.get("error") or ""),
                         "duration_ms": output.get("duration_ms"),
+                        "result_injected_into_prompt": True,
                     })
 
         # Direct preview executions intentionally do not run arbitrary package

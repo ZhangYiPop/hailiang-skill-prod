@@ -202,10 +202,20 @@ type CandidateTurnDebug = {
     available_but_not_used?: Array<{ path?: string; media_type?: string; content_hash?: string }>;
   };
   scripts?: Array<{
+    skill_id?: string;
     path?: string;
     status?: string;
-    input?: unknown;
-    output?: unknown;
+    execution_mode?: string;
+    planner_selected?: boolean;
+    planner_reason?: string;
+    stdin_payload?: unknown;
+    args?: unknown;
+    stdout?: unknown;
+    stderr?: unknown;
+    json_output?: unknown;
+    return_value?: unknown;
+    exit_code?: number | null;
+    result_injected_into_prompt?: boolean;
     error?: string;
     duration_ms?: number | null;
   }>;
@@ -260,8 +270,13 @@ function CandidateTurnTrace({ turn }: { turn: Record<string, unknown> }) {
             <details key={`${script.path}-${index}`} className="rounded-lg border border-white/10 p-2">
               <summary className="cursor-pointer break-all"><span className={script.status === "success" ? "text-emerald-200" : script.status === "failed" ? "text-rose-200" : "text-amber-200"}>{script.status === "success" ? "成功" : script.status === "failed" ? "失败" : "未执行"}</span><span className="ml-2 font-mono text-slate-300">{script.path || "未命名脚本"}</span>{typeof script.duration_ms === "number" ? <span className="ml-2 text-slate-500">{script.duration_ms} ms</span> : null}</summary>
               <div className="mt-3 grid gap-2">
-                <label className="text-slate-500">输入<pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-slate-300">{debugValue(script.input)}</pre></label>
-                <label className="text-slate-500">输出<pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-slate-300">{debugValue(script.output)}</pre></label>
+                <label className="text-slate-500">标准输入<pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-slate-300">{debugValue(script.stdin_payload)}</pre></label>
+                <label className="text-slate-500">参数<pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-slate-300">{debugValue(script.args)}</pre></label>
+                <label className="text-slate-500">stdout<pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-slate-300">{debugValue(script.stdout)}</pre></label>
+                <label className="text-slate-500">stderr<pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-slate-300">{debugValue(script.stderr)}</pre></label>
+                <label className="text-slate-500">JSON 输出<pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-slate-300">{debugValue(script.json_output)}</pre></label>
+                <label className="text-slate-500">return value<pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-slate-300">{debugValue(script.return_value)}</pre></label>
+                <p className="text-slate-500">退出码：{script.exit_code ?? "—"} · 结果已注入最终提示：{script.result_injected_into_prompt ? "是" : "否"}</p>
                 {script.error ? <p className="text-amber-200">说明：{script.error}</p> : null}
               </div>
             </details>
@@ -743,6 +758,25 @@ export default function Workbench() {
           ...(event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {}),
         }));
     });
+    const executionTrace = trace.map((turn) => {
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return {
+        turn: turn.turn ?? null,
+        debug: turn.debug ?? {},
+        events: events.filter((event) => {
+          if (!event || typeof event !== "object") return false;
+          return [
+            "ms_agent_runtime",
+            "reference_context",
+            "reference_preflight",
+            "reference_preflight_degraded",
+            "reference_evidence_unavailable",
+            "reference_compliance_degraded",
+            "tool_result",
+          ].includes(String((event as Record<string, unknown>).event_type ?? ""));
+        }),
+      };
+    });
     const url = URL.createObjectURL(new Blob([JSON.stringify({
       revision_id: revisionId,
       debug_session_id: debugSessionId,
@@ -755,6 +789,9 @@ export default function Workbench() {
       // was cut so the same session can be looked up in diagnostics.
       output_diagnostics: outputDiagnostics,
       context_archive_events: contextArchiveEvents,
+      // Per-turn execution evidence deliberately includes full candidate
+      // script input/output so it can be correlated with diagnostics.
+      execution_trace: executionTrace,
       // Route decisions and failures are metadata only: they make an
       // uncalled Skill or a generic retryable failure diagnosable without
       // exporting AGENT.md, SKILL.md, or model prompt bodies.
@@ -1229,6 +1266,10 @@ export default function Workbench() {
   ) {
     const message = (submittedInput ?? revisionTestInput).trim();
     if (!actor || !selectedTestRevision || (!message && !formSubmission && !teamHandoffSelection && !expertSelection)) return;
+    // Clear at submission time so a slow SSE response cannot make the sent
+    // question appear duplicated in the editor.
+    const editorValueBeforeSubmit = revisionTestInput;
+    setRevisionTestInput("");
     setBusy(true);
     let streamAbortController: AbortController | null = null;
     try {
@@ -1335,7 +1376,6 @@ export default function Workbench() {
         { signal: streamAbortController.signal },
       );
       if (streamError) throw new Error(streamError);
-      setRevisionTestInput("");
       setCandidateTargetExpertId("");
       setNotice({
         tone: "ok",
@@ -1344,7 +1384,15 @@ export default function Workbench() {
     } catch (error) {
       // Stopping a candidate turn intentionally aborts this browser-side SSE
       // reader. It is not a user-visible request failure.
-      if (streamAbortController?.signal.aborted) return;
+      if (streamAbortController?.signal.aborted) {
+        if (!formSubmission && !teamHandoffSelection && !expertSelection && !revisionTestInput) {
+          setRevisionTestInput(editorValueBeforeSubmit);
+        }
+        return;
+      }
+      if (!formSubmission && !teamHandoffSelection && !expertSelection && !revisionTestInput) {
+        setRevisionTestInput(editorValueBeforeSubmit);
+      }
       setNotice({
         tone: "error",
         text: error instanceof Error ? error.message : "候选修订测试失败",

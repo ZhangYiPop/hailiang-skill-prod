@@ -146,6 +146,26 @@ def test_session_diagnostics_surfaces_skill_unavailable_fallback(monkeypatch, tm
     )
 
 
+def test_candidate_script_trace_is_redacted_unless_content_is_requested() -> None:
+    trace = {
+        "debug": {
+            "scripts": [{
+                "path": "scripts/calculate.py",
+                "stdin_payload": {"budget": 100000},
+                "stdout": '{"total": 100000}',
+                "stderr": "",
+                "json_output": {"total": 100000},
+                "return_value": {"currency": "CNY"},
+            }]
+        }
+    }
+
+    redacted = diagnostics._redact(trace, include_content=False)
+    assert redacted["debug"]["scripts"][0]["stdout"] == "[OMITTED: set include_content=true]"
+    assert redacted["debug"]["scripts"][0]["json_output"] == "[OMITTED: set include_content=true]"
+    assert diagnostics._redact(trace, include_content=True) == trace
+
+
 def test_request_diagnostics_handles_pre_session_failure(monkeypatch, tmp_path) -> None:
     client = _client(monkeypatch, tmp_path)
     response = client.post(

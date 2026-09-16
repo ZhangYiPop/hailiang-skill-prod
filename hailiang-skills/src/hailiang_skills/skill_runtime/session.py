@@ -969,11 +969,16 @@ def _ms_agent_reference_items_for_prompt(
     if not isinstance(reference_context, list):
         return []
     items: list[RetrievedContextItem] = []
+    query_tokens = _tokenize_for_retrieval(_latest_user_message(state))
     for reference in reference_context:
         if not isinstance(reference, dict):
             continue
         path = str(reference.get("path") or "")
-        snippet = str(reference.get("snippet") or "")[:snippet_chars].strip()
+        # Preflight-selected references may be large.  Search within their
+        # full local content before taking the normal prompt budget so a
+        # required table/rule near the end is not silently lost.
+        content = str(reference.get("content") or reference.get("snippet") or "")
+        snippet = _best_snippet(content, query_tokens, snippet_chars)
         if not path or not snippet:
             continue
         items.append(
