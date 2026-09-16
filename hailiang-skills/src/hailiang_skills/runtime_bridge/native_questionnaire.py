@@ -36,6 +36,7 @@ _DEFAULT_FACT_BINDINGS = {
     "外语科目": ("foreign_language",),
     "英语水平": ("english_exam_score",),
 }
+_DECISION_UNSET = object()
 
 
 def questionnaire_config(bundle: Any) -> dict[str, Any]:
@@ -134,9 +135,16 @@ def available_question_specs(bundle: Any, state: Any) -> list[dict[str, Any]]:
     skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
     answers = _answers(state, skill_id)
     tier = _derive_tier(bundle, answers)
+    # A Skill may declare a machine-readable decision table directly from its
+    # SKILL.md.  Its cases are business-authored and define the only allowed
+    # question IDs for the current mode/stage.  This prevents a generic
+    # questionnaire's `required: true` fields from being treated as globally
+    # required simply because they are present in the overall field pool.
+    policy_question_ids = _decision_table_question_ids(bundle, state, answers, tier)
     specs = [
         _materialize_spec(spec, answers, tier)
         for spec in question_specs(bundle)
+        if policy_question_ids is None or str(spec.get("question_id") or "") in policy_question_ids
         if _question_visible(spec, answers, tier)
     ]
     # Assessments may contain a large fixed catalog (for example MBTI's 93
@@ -147,6 +155,238 @@ def available_question_specs(bundle: Any, state: Any) -> list[dict[str, Any]]:
         unanswered = [item for item in specs if str(item["question_id"]) not in answers]
         return unanswered[:page_size]
     return specs
+
+
+def _decision_table_question_ids(
+    bundle: Any,
+    state: Any,
+    answers: dict[str, Any],
+    derived_tier: str,
+) -> set[str] | None:
+    """Return the current form batch from a declared generic decision table.
+
+    No business Skill is named here.  Discovery is deliberately conservative:
+    only JSON assets directly mentioned in SKILL.md and shaped like a decision
+    table are evaluated.  A Skill without such a table preserves the existing
+    model-directed questionnaire behaviour.
+    """
+    table = _declared_questionnaire_decision_table(bundle)
+    if table is None:
+        return None
+    cases = table.get("cases")
+    if not isinstance(cases, list):
+        return set()
+    skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
+    skill_state = getattr(state, "skill_facts", {}).get(skill_id, {})
+    skill_state = skill_state if isinstance(skill_state, dict) else {}
+    effective_tier = str(skill_state.get("tier") or derived_tier or "").strip()
+    flags = dict(skill_state.get("flags") or {})
+    flags.update({
+        key: value
+        for key, value in _derived_decision_flags(bundle, cases, answers, derived_tier, flags).items()
+        if key not in flags
+    })
+    values: dict[str, Any] = {
+        "mode": skill_state.get("mode"),
+        "stage": str(getattr(state, "stage", "") or skill_state.get("stage") or ""),
+        "tier": effective_tier,
+        "collected": {**dict(skill_state.get("collected") or {}), **answers},
+        "flags": flags,
+        "context": dict(skill_state.get("context") or {}),
+    }
+    values["batch"] = _decision_table_batch_states(cases, answers)
+    ordered = sorted(
+        (item for item in cases if isinstance(item, dict)),
+        key=lambda item: (int(item.get("priority") or 10_000), cases.index(item)),
+    )
+    for case in ordered:
+        when = case.get("when")
+        if not isinstance(when, list) or not _decision_conditions_match(when, values):
+            continue
+        return _decision_case_fields(case)
+
+    # Some decision tables use transient flags which the current runtime is
+    # unable to derive deterministically (for example a model's semantic
+    # assessment of a special condition). Do not let an unset flag select a
+    # later "no form" case, and do not open the whole questionnaire instead.
+    # We can still safely select the table's form batch when its stable
+    # mode/stage/tier gate matches; the field display_condition remains the
+    # final server-side filter.
+    for case in ordered:
+        if _decision_case_matches_stable_gate(case, values):
+            return _decision_case_fields(case)
+    # A declared table explicitly says that no matching case must not invent
+    # a follow-up.  Returning an empty set is thus distinct from no table.
+    return set()
+
+
+def _decision_case_fields(case: dict[str, Any]) -> set[str]:
+    ask = case.get("ask") if isinstance(case.get("ask"), dict) else {}
+    if str(ask.get("mode") or "") != "form_batch":
+        return set()
+    fields = ask.get("fields")
+    return {
+        str(item).strip()
+        for item in fields
+        if str(item).strip()
+    } if isinstance(fields, list) else set()
+
+
+def _decision_case_matches_stable_gate(case: dict[str, Any], values: dict[str, Any]) -> bool:
+    """Safely select a form batch when only transient semantic state is unknown."""
+    ask = case.get("ask") if isinstance(case.get("ask"), dict) else {}
+    if str(ask.get("mode") or "") != "form_batch":
+        return False
+    conditions = case.get("when")
+    if not isinstance(conditions, list):
+        return False
+    stable_seen = False
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            continue
+        subject = str(condition.get("subject") or "")
+        if subject not in {"mode", "stage", "tier"}:
+            continue
+        stable_seen = True
+        if not _decision_condition_match(condition, values):
+            return False
+    # A stage gate is required so generic form cases cannot turn into an
+    # unintended questionnaire on every turn.
+    return stable_seen and any(
+        isinstance(condition, dict) and str(condition.get("subject") or "") == "stage"
+        for condition in conditions
+    )
+
+
+def _declared_questionnaire_decision_table(bundle: Any) -> dict[str, Any] | None:
+    markdown = str(getattr(bundle, "skill_markdown", "") or "")
+    root = Path(getattr(bundle, "root_dir", ""))
+    if not markdown or not root:
+        return None
+    paths = list(dict.fromkeys(re.findall(r"(?:^|[\s`(（])((?:assets/)[^\s`）),，]+\.json)", markdown)))
+    for relative_path in paths:
+        candidate = (root / relative_path).resolve()
+        try:
+            candidate.relative_to(root.resolve())
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("cases"), list):
+            continue
+        if not any(isinstance(item, dict) and isinstance(item.get("ask"), dict) for item in payload["cases"]):
+            continue
+        return payload
+    return None
+
+
+def _decision_table_batch_states(cases: list[Any], answers: dict[str, Any]) -> dict[str, str]:
+    batches: dict[str, set[str]] = {}
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        ask = case.get("ask") if isinstance(case.get("ask"), dict) else {}
+        batch = str(ask.get("batch") or "").strip()
+        fields = ask.get("fields") if isinstance(ask.get("fields"), list) else []
+        if batch and fields:
+            batches.setdefault(batch, set()).update(str(item) for item in fields if str(item).strip())
+    states: dict[str, str] = {}
+    for batch, fields in batches.items():
+        answered = {field for field in fields if answers.get(field) not in (None, "", [], {})}
+        states[batch] = "not_presented" if not answered else "answered" if answered == fields else "partially_answered"
+    return states
+
+
+def _derived_decision_flags(
+    bundle: Any,
+    cases: list[Any],
+    answers: dict[str, Any],
+    tier: str,
+    explicit_flags: dict[str, Any],
+) -> dict[str, bool]:
+    """Derive only form-visibility flags whose truth is structural.
+
+    A decision table may use a flag to express "show this form batch iff one
+    of its conditionally rendered fields is visible". The result is already
+    deterministically available from questionnaire.json, so calculate it on
+    the server rather than asking the model to guess. Other semantic flags
+    remain model-owned state and are never inferred here.
+    """
+    specs = {str(item.get("question_id") or ""): item for item in question_specs(bundle)}
+    derived: dict[str, bool] = {}
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        ask = case.get("ask") if isinstance(case.get("ask"), dict) else {}
+        if str(ask.get("mode") or "") != "form_batch":
+            continue
+        fields = ask.get("fields") if isinstance(ask.get("fields"), list) else []
+        flag_keys = {
+            str(condition.get("subject") or "").split(".", 1)[1]
+            for condition in (case.get("when") if isinstance(case.get("when"), list) else [])
+            if isinstance(condition, dict)
+            and str(condition.get("subject") or "").startswith("flags.")
+            and str(condition.get("op") or "") == "is_true"
+        }
+        if not flag_keys:
+            continue
+        visible = any(
+            spec is not None and _question_visible(spec, answers, tier)
+            for field in fields
+            for spec in [specs.get(str(field))]
+        )
+        for flag_key in flag_keys:
+            if flag_key and flag_key not in explicit_flags:
+                derived[flag_key] = visible
+    return derived
+
+
+def _decision_conditions_match(conditions: list[Any], values: dict[str, Any]) -> bool:
+    return all(_decision_condition_match(condition, values) for condition in conditions if isinstance(condition, dict))
+
+
+def _decision_condition_match(condition: dict[str, Any], values: dict[str, Any]) -> bool:
+    if isinstance(condition.get("any"), list):
+        return any(_decision_condition_match(item, values) for item in condition["any"] if isinstance(item, dict))
+    subject = str(condition.get("subject") or "").strip()
+    operator = str(condition.get("op") or "eq").strip()
+    actual = _decision_value(subject, values)
+    expected = condition.get("value")
+    actual_values = actual if isinstance(actual, list) else [actual]
+    if operator == "eq":
+        return actual is not _DECISION_UNSET and actual == expected
+    if operator == "ne":
+        return actual is not _DECISION_UNSET and actual != expected
+    if operator == "in":
+        return actual is not _DECISION_UNSET and actual in (expected if isinstance(expected, list) else [expected])
+    if operator == "not_in":
+        return actual is not _DECISION_UNSET and actual not in (expected if isinstance(expected, list) else [expected])
+    if operator == "contains":
+        return actual is not _DECISION_UNSET and expected in actual_values
+    if operator == "not_contains":
+        return actual is not _DECISION_UNSET and expected not in actual_values
+    if operator == "is_true":
+        return actual is not _DECISION_UNSET and bool(actual)
+    if operator == "is_false":
+        return actual is _DECISION_UNSET or not bool(actual)
+    if operator == "is_missing":
+        return actual is _DECISION_UNSET or actual in (None, "", [], {})
+    if operator == "is_answered":
+        return actual is not _DECISION_UNSET and actual not in (None, "", [], {})
+    try:
+        return float(actual) >= float(expected) if operator == "gte" else float(actual) < float(expected) if operator == "lt" else False
+    except (TypeError, ValueError):
+        return False
+
+
+def _decision_value(subject: str, values: dict[str, Any]) -> Any:
+    current: Any = values
+    for part in subject.split("."):
+        if not isinstance(current, dict):
+            return _DECISION_UNSET
+        if part not in current:
+            return _DECISION_UNSET
+        current = current[part]
+    return current
 
 
 def questionnaire_continuation_context(bundle: Any, state: Any) -> dict[str, Any] | None:
@@ -166,6 +406,7 @@ def questionnaire_continuation_context(bundle: Any, state: Any) -> dict[str, Any
         "skill_id": skill_id,
         "answers": dict(answers),
         "tier": str(skill_state.get("tier") or _derive_tier(bundle, answers)),
+        "decision_table_applied": _declared_questionnaire_decision_table(bundle) is not None,
         "max_fields_per_form": _max_fields_per_form(bundle),
         "question_catalog": [
             {
@@ -314,8 +555,14 @@ def resolve_questionnaire_continuation(
     reply: str,
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any]]:
     """Validate a lightweight model decision against the current question catalog."""
-    continuation = questionnaire_continuation_context(bundle, state)
     payload = _json_object(reply)
+    # The lightweight continuation is also allowed to advance the Skill's
+    # declared mode/stage. Apply that patch before asking the policy layer for
+    # its authorized batch, otherwise a transition to (for example)
+    # preference still sees profile's or the entire questionnaire pool.
+    if isinstance(payload, dict):
+        _apply_state_patch(state, bundle, payload.get("state_patch"))
+    continuation = questionnaire_continuation_context(bundle, state)
     if continuation is None:
         text = str(payload.get("assistant_message") or "") if isinstance(payload, dict) else ""
         return text.strip(), None, {"valid": True, "collection_complete": True, "fallback_used": False}
@@ -379,6 +626,8 @@ def resolve_questionnaire_continuation(
         "fallback_used": fallback_used,
         "requested_question_ids": requested_ids,
         "selected_question_ids": selected_ids,
+        "allowed_question_ids": catalog_ids,
+        "decision_table_applied": bool(refreshed.get("decision_table_applied")),
         "resolved_answers": resolved,
         "rejected_resolved_answers": _rejected_resolved_answers(payload, resolved),
     }
@@ -820,7 +1069,7 @@ def _apply_state_patch(state: Any, bundle: Any, patch: Any) -> None:
         return
     skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
     skill_state = state.skill_facts.setdefault(skill_id, {})
-    for key in ("mode", "collected", "tier", "target_path", "matched_paths"):
+    for key in ("mode", "collected", "tier", "target_path", "matched_paths", "flags", "context", "sub_state"):
         if key in patch and isinstance(patch[key], (str, int, float, bool, list, dict)):
             skill_state[key] = patch[key]
     stage = str(patch.get("stage") or "").strip()

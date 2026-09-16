@@ -1385,21 +1385,28 @@ def _looks_like_planning_request(text: str) -> bool:
 def _questionnaire_decision_table_context(bundle) -> dict[str, Any] | None:
     """Load an optional Skill-owned decision table for the questionnaire model.
 
-    The table is not evaluated by the server. The active Skill receives it
-    with the session context and decides whether a Case applies and whether
-    this turn needs a form at all.
+    Only a JSON asset directly referenced by SKILL.md is eligible. This keeps
+    the decision source owned by the Skill package rather than treating a
+    conventional asset filename as platform configuration.
     """
     root_dir = getattr(bundle, "root_dir", None)
-    if root_dir is None:
+    markdown = str(getattr(bundle, "skill_markdown", "") or "")
+    if root_dir is None or not markdown:
         return None
-    table_path = Path(root_dir) / "assets" / "ask_decision_table.json"
-    try:
-        if not table_path.is_file() or table_path.stat().st_size > 256_000:
-            return None
-        payload = json.loads(table_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+    root = Path(root_dir).resolve()
+    paths = list(dict.fromkeys(re.findall(r"(?:^|[\\s`(（])((?:assets/)[^\\s`）),，]+\\.json)", markdown)))
+    for relative_path in paths:
+        table_path = (root / relative_path).resolve()
+        try:
+            table_path.relative_to(root)
+            if not table_path.is_file() or table_path.stat().st_size > 256_000:
+                continue
+            payload = json.loads(table_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("cases"), list):
+            return payload
+    return None
 
 
 class MainPlannerOrchestrator:
@@ -3044,8 +3051,9 @@ class MainPlannerOrchestrator:
                     "profile_candidate_archive 是当前孩子的长期候选档案，不是已确认事实；仅在当前问题相关时自然确认或忽略，"
                     "绝不把它直接当作已经确定的答案或业务前提。"
                     "必须遵守 skill.instructions 中的流程、开场和红线。若提供 ask_decision_table，"
-                    "你必须结合本轮输入与会话状态自行判断应命中的 Case；该表是模型的决策依据，"
-                    "不是服务端自动执行的规则。若 Case 要求本轮不开表单，可返回空 question_ids。"
+                    "服务端已按其当前可确定的 Case 将 question_catalog 收窄为本轮允许的字段；"
+                    "你仍须结合本轮输入与会话状态判断下一阶段和 state_patch，不能请求目录外字段。"
+                    "若 Case 要求本轮不开表单，可返回空 question_ids。"
                     "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题。"
                     "assistant_message 应直接推进当前对话：已有明确答案时不要再次复述或确认，"
                     "除非该答案存在矛盾、时间变化或确有必要消歧；不需要表单时直接回答，不要添加历史事实摘要。"
@@ -3054,8 +3062,11 @@ class MainPlannerOrchestrator:
                     '{"assistant_message":"面向用户的阶段性说明和引导",'
                     '"resolved_answers":[{"question_id":"合法问题ID","value":"答案",'
                     '"source_id":"给定来源ID","evidence":"用户原话或空字符串","confidence":0.95}],'
+                    '"state_patch":{"mode":"当前模式","stage":"下一阶段","tier":"已确定档位",'
+                    '"flags":{},"context":{},"sub_state":""},'
                     '"question_ids":["合法问题ID"],"collection_complete":false}。'
                     "不启用答案对齐或没有可靠答案时 resolved_answers 必须为 []。"
+                    "state_patch 只在你能依据 Skill 规则确定状态变化时填写；不能确定的字段不要写。"
                     "question_ids 只能来自 question_catalog，数量不得超过 max_fields_per_form。"
                     "question_ids 不得包含 resolved_answers 中的项目。只要仍有未回答项目，collection_complete 必须为 false。"
                     "不要输出 Markdown 代码块。"
@@ -3148,6 +3159,8 @@ class MainPlannerOrchestrator:
             first_delta_ms=first_delta_ms,
             prompt_chars=sum(len(item.content) for item in messages),
             selected_question_ids=decision.get("selected_question_ids", []),
+            allowed_question_ids=decision.get("allowed_question_ids", []),
+            decision_table_applied=decision.get("decision_table_applied", False),
             resolved_question_ids=[
                 item.get("question_id") for item in decision.get("resolved_answers", [])
             ],
@@ -3166,6 +3179,8 @@ class MainPlannerOrchestrator:
                         "form_emitted": bool(block),
                         "request_purpose": "questionnaire_continuation",
                         "fallback_used": bool(decision.get("fallback_used")),
+                        "decision_table_applied": bool(decision.get("decision_table_applied")),
+                        "allowed_question_ids": decision.get("allowed_question_ids", []),
                         "question_ids": decision.get("selected_question_ids", []),
                         "resolved_question_ids": [
                             item.get("question_id") for item in decision.get("resolved_answers", [])

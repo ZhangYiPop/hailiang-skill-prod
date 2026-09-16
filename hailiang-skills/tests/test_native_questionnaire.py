@@ -74,6 +74,110 @@ def test_generic_config_json_supports_all_input_types_and_conditions():
     assert "detail" in {item["question_id"] for item in available_question_specs(bundle, state)}
 
 
+def test_skill_declared_decision_table_limits_each_dynamic_questionnaire_batch(tmp_path):
+    """A referenced policy table, not global `required`, owns the form batch."""
+    bundle = _config_bundle()
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    decision_table = {
+        "cases": [
+            {
+                "priority": 10,
+                "when": [
+                    {"subject": "mode", "op": "eq", "value": "recommend"},
+                    {"subject": "stage", "op": "eq", "value": "profile"},
+                ],
+                "ask": {"mode": "form_batch", "fields": ["profile_required", "profile_optional"]},
+            },
+            {
+                "priority": 20,
+                "when": [
+                    {"subject": "mode", "op": "eq", "value": "recommend"},
+                    {"subject": "stage", "op": "eq", "value": "preference"},
+                    {"subject": "tier", "op": "eq", "value": "T3"},
+                ],
+                "ask": {"mode": "form_batch", "fields": ["preference_required"]},
+            },
+            {
+                "priority": 30,
+                "when": [
+                    {"subject": "mode", "op": "eq", "value": "recommend"},
+                    {"subject": "stage", "op": "eq", "value": "supplement"},
+                    {"subject": "flags.supplement_visible", "op": "is_true"},
+                ],
+                "ask": {"mode": "form_batch", "fields": ["supplement_conditional"]},
+            },
+        ],
+    }
+    (assets / "question_policy.json").write_text(json.dumps(decision_table), encoding="utf-8")
+    bundle.root_dir = tmp_path
+    bundle._skill_markdown = "本 Skill 发问必须执行 `assets/question_policy.json`。"
+    bundle.metadata["questionnaire"]["config_json"] = {
+        "schema_version": 1,
+        "questions": [
+            {"id": "profile_required", "label": "档案", "input_type": "text", "required": True},
+            {"id": "profile_optional", "label": "补充", "input_type": "text", "required": False},
+            {"id": "preference_required", "label": "偏好", "input_type": "text", "required": True},
+            {
+                "id": "supplement_conditional", "label": "条件补充", "input_type": "text", "required": True,
+                "display_condition": {"question_id": "profile_optional", "operator": "equals", "value": "需要"},
+            },
+        ],
+    }
+    state = SessionState(session_id="policy_table", active_skill_id="mock_admission")
+    state.stage = "profile"
+    state.skill_facts["mock_admission"] = {"mode": "recommend"}
+    assert [item["question_id"] for item in available_question_specs(bundle, state)] == [
+        "profile_required", "profile_optional"
+    ]
+
+    state.stage = "preference"
+    state.skill_facts["mock_admission"] = {"mode": "recommend", "tier": "T3"}
+    assert [item["question_id"] for item in available_question_specs(bundle, state)] == ["preference_required"]
+
+    # The same policy table may use a semantic flag. When it is present, the
+    # runtime still applies the field's structured display condition.
+    state.stage = "supplement"
+    state.skill_facts["mock_admission"] = {
+        "mode": "recommend", "flags": {"supplement_visible": True},
+        "answers": {"profile_optional": "需要"},
+    }
+    assert [item["question_id"] for item in available_question_specs(bundle, state)] == ["supplement_conditional"]
+
+
+def test_questionnaire_state_patch_advances_to_declared_next_batch(tmp_path):
+    bundle = _config_bundle()
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "question_policy.json").write_text(json.dumps({"cases": [
+        {
+            "priority": 10,
+            "when": [{"subject": "stage", "op": "eq", "value": "init"}],
+            "ask": {"mode": "form_batch", "fields": ["kind"]},
+        },
+        {
+            "priority": 20,
+            "when": [{"subject": "stage", "op": "eq", "value": "collect"}],
+            "ask": {"mode": "form_batch", "fields": ["tags"]},
+        },
+    ]}), encoding="utf-8")
+    bundle.root_dir = tmp_path
+    bundle._skill_markdown = "策略文件：assets/question_policy.json"
+    state = SessionState(session_id="policy_transition", active_skill_id="mock_admission")
+    state.stage = "init"
+
+    _text, block, decision = resolve_questionnaire_continuation(
+        bundle,
+        state,
+        '{"assistant_message":"继续收集偏好。","state_patch":{"stage":"collect"},'
+        '"question_ids":["tags"],"collection_complete":false}',
+    )
+
+    assert state.stage == "collect"
+    assert decision["selected_question_ids"] == ["tags"]
+    assert [field["question_id"] for field in block["payload"]["fields"]] == ["tags"]
+
+
 def test_generic_config_json_answers_validate_options_limits_and_ranges():
     bundle = _config_bundle()
     state = SessionState(session_id="generic_answers", active_skill_id="mock_admission")
