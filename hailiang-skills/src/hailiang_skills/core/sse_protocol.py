@@ -80,6 +80,9 @@ def empty_message_state(*, session_id: str, run_id: str) -> dict[str, Any]:
         "expert": {"mode": "none", "team": {}, "active": {}, "activation": {}, "transition": {}},
         "expert_context": {"expert_team_id": None, "expert_id": None, "branch_version": 0, "selection_version": 0},
         "skill_transition": {},
+        # Questionnaire planning is a diagnostic projection.  It never
+        # contains prompt text, script input or personal facts.
+        "questionnaire": {},
         "session": {"active_skill": {}},
         "risk": empty_risk_state(),
         "error": empty_error_state(),
@@ -375,7 +378,7 @@ class SseEnvelopeBuilder:
     def presentation(self) -> dict[str, Any]:
         return {
             key: deepcopy(self.state[key])
-            for key in ("assistant", "intent", "form", "path_options", "skill_rooms", "team_handoff", "expert", "expert_context", "skill_transition", "session", "risk", "error")
+            for key in ("assistant", "intent", "form", "path_options", "skill_rooms", "team_handoff", "expert", "expert_context", "skill_transition", "questionnaire", "session", "risk", "error")
         }
 
     def encode(self, event: str, data: dict[str, Any]) -> str | None:
@@ -544,6 +547,9 @@ class SseEnvelopeBuilder:
 
         if event == "team_handoff":
             return self._set("team_handoff", _as_mapping(data))
+
+        if event == "questionnaire_plan":
+            return self._set("questionnaire", _as_mapping(data))
 
         if event == "expert_context":
             changed |= self._set("expert", {

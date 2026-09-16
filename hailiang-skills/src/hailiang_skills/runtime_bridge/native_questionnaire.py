@@ -48,6 +48,79 @@ def questionnaire_enabled(bundle: Any) -> bool:
     return bool(questionnaire_config(bundle).get("enabled", False))
 
 
+def questionnaire_plan_summary(bundle: Any, state: Any) -> dict[str, Any]:
+    """Return the public, audit-safe planning state for the active Skill.
+
+    This deliberately lives beside the form protocol rather than in a page
+    specific handler: formal chat and candidate revisions both persist the
+    same ``SessionState`` and therefore expose the same decision semantics.
+    """
+    skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
+    skill_state = getattr(state, "skill_facts", {}).get(skill_id, {})
+    plan = skill_state.get("_questionnaire_plan", {}) if isinstance(skill_state, dict) else {}
+    plan = plan if isinstance(plan, dict) else {}
+    return {
+        "goal": str(plan.get("goal") or ""),
+        "mode": str(plan.get("mode") or skill_state.get("mode") or ""),
+        "target": plan.get("target"),
+        "status": str(plan.get("status") or "collecting"),
+        "decision_source": str(plan.get("decision_source") or ""),
+        "question_ids": list(plan.get("question_ids") or []),
+        "skipped_question_ids": list(plan.get("skipped_question_ids") or []),
+        "completion_action": str(plan.get("completion_action") or ""),
+        "result_valid": plan.get("result_valid"),
+        "error": str(plan.get("error") or ""),
+        # Kept in the internal continuation payload as well as diagnostics;
+        # IDs are catalog identifiers, not user data or protected prompts.
+        "script_action": str(plan.get("script_action") or ""),
+        "script_question_ids": list(plan.get("script_question_ids") or []),
+    }
+
+
+def _questionnaire_plan(state: Any, bundle: Any) -> dict[str, Any]:
+    skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
+    skill_state = state.skill_facts.setdefault(skill_id, {})
+    plan = skill_state.setdefault("_questionnaire_plan", {})
+    if not isinstance(plan, dict):
+        plan = {}
+        skill_state["_questionnaire_plan"] = plan
+    plan.setdefault("status", "collecting")
+    return plan
+
+
+def begin_questionnaire_turn(bundle: Any, state: Any, user_message: str) -> dict[str, Any]:
+    """Create or deliberately reset the durable goal for a questionnaire turn.
+
+    Semantic classification remains with the constrained planner.  This small
+    server-side guard only prevents an established goal from disappearing on
+    a plain form submission or a short follow-up such as “继续”.
+    """
+    plan = _questionnaire_plan(state, bundle)
+    text = str(user_message or "").strip()
+    reset = any(token in text for token in ("重新开始", "换个目标", "换一种", "改成", "重置"))
+    if text and (not plan.get("goal") or reset):
+        plan["goal"] = text[:1000]
+        plan["status"] = "collecting"
+        if reset:
+            plan.pop("target", None)
+            plan.pop("completion_action", None)
+            plan["reset_reason"] = "user_explicit_change"
+    return questionnaire_plan_summary(bundle, state)
+
+
+def _apply_questionnaire_plan_patch(state: Any, bundle: Any, payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Apply only an auditable, bounded planner patch from the model/script."""
+    plan = _questionnaire_plan(state, bundle)
+    patch = payload.get("questionnaire_plan") if isinstance(payload, dict) else None
+    patch = patch if isinstance(patch, dict) else {}
+    for key in ("goal", "mode", "target", "status", "completion_action"):
+        value = patch.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            if value not in (None, ""):
+                plan[key] = value
+    return plan
+
+
 def build_questionnaire_protocol(bundle: Any, state: Any) -> str:
     if not questionnaire_enabled(bundle):
         return ""
@@ -81,6 +154,7 @@ def build_questionnaire_protocol(bundle: Any, state: Any) -> str:
         "canonical path_id values from path_catalog into state_patch.matched_paths; use [] when no "
         "path option should be shown. The runtime, not the model, builds UI cards from those IDs.\n"
         f"session_private_answers={json.dumps(answers, ensure_ascii=False)}\n"
+        f"questionnaire_plan={json.dumps(questionnaire_plan_summary(bundle, state), ensure_ascii=False)}\n"
         f"question_catalog={json.dumps(catalog, ensure_ascii=False)}\n"
     )
     if skill_id == MULTI_PATH_SKILL_ID:
@@ -402,6 +476,7 @@ def questionnaire_continuation_context(bundle: Any, state: Any) -> dict[str, Any
     if not unanswered:
         return None
     skill_state = getattr(state, "skill_facts", {}).get(skill_id, {})
+    plan = _questionnaire_plan(state, bundle)
     return {
         "skill_id": skill_id,
         "answers": dict(answers),
@@ -421,6 +496,12 @@ def questionnaire_continuation_context(bundle: Any, state: Any) -> dict[str, Any
             for item in unanswered
         ],
         "answer_reconciliation": _answer_reconciliation_context(bundle, state, answers),
+        # The plan is intentionally persisted between forms.  It prevents a
+        # broad question catalog from silently replacing a user's narrower
+        # goal (for example, a single-path eligibility check) on the next
+        # form submission.
+        "questionnaire_plan": questionnaire_plan_summary(bundle, state),
+        "all_answered_question_ids": sorted(answers),
     }
 
 
@@ -556,6 +637,12 @@ def resolve_questionnaire_continuation(
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any]]:
     """Validate a lightweight model decision against the current question catalog."""
     payload = _json_object(reply)
+    plan = _questionnaire_plan(state, bundle)
+    if isinstance(payload, dict):
+        _apply_questionnaire_plan_patch(state, bundle, payload)
+    action = str(payload.get("action") or "").strip() if isinstance(payload, dict) else ""
+    if action not in {"ask", "complete", "answer_directly"}:
+        action = ""
     # The lightweight continuation is also allowed to advance the Skill's
     # declared mode/stage. Apply that patch before asking the policy layer for
     # its authorized batch, otherwise a transition to (for example)
@@ -565,7 +652,11 @@ def resolve_questionnaire_continuation(
     continuation = questionnaire_continuation_context(bundle, state)
     if continuation is None:
         text = str(payload.get("assistant_message") or "") if isinstance(payload, dict) else ""
-        return text.strip(), None, {"valid": True, "collection_complete": True, "fallback_used": False}
+        plan.update({"status": "completed", "decision_source": "llm_planner", "question_ids": []})
+        return text.strip(), None, {
+            "valid": True, "collection_complete": True, "fallback_used": False,
+            "action": "complete", "questionnaire_plan": questionnaire_plan_summary(bundle, state),
+        }
 
     reconciliation = continuation.get("answer_reconciliation", {})
     # A well-formed model envelope already contains reviewed evidence. The
@@ -591,16 +682,56 @@ def resolve_questionnaire_continuation(
     requested_ids = _requested_question_ids(payload) if isinstance(payload, dict) else None
     requested_ids = requested_ids if isinstance(requested_ids, list) else []
     collection_complete = bool(payload.get("collection_complete")) if isinstance(payload, dict) else False
+    script_action = str(plan.get("script_action") or "").strip()
+    script_ids = list(plan.get("script_question_ids") or [])
+    if script_action == "ask":
+        requested_ids = script_ids
+        collection_complete = False
+        action = "ask"
+    elif script_action == "complete":
+        requested_ids = []
+        collection_complete = True
+        action = "complete"
+    requested_completion = collection_complete or action in {"complete", "answer_directly"}
     selected_ids = [item for item in requested_ids if item in allowed_ids]
-    explicit_no_question = isinstance(payload, dict) and requested_ids == [] and not collection_complete
+    explicit_no_question = isinstance(payload, dict) and requested_ids == [] and not requested_completion
     valid = bool(
         isinstance(payload, dict)
         and isinstance(payload.get("assistant_message"), str)
-        and not collection_complete
-        and (selected_ids or explicit_no_question)
+        and ((requested_completion and not requested_ids) or (not requested_completion and (selected_ids or explicit_no_question)))
         and len(selected_ids) == len(requested_ids)
     )
     fallback_used = not valid
+    if requested_completion and valid:
+        # Completion is an explicit, final planner decision.  It is not a
+        # pagination shortcut: preserve unanswered catalog fields for future
+        # goal changes, but never display another confirmation form.
+        completion_action = str(plan.get("completion_action") or _default_completion_action(bundle)).strip()
+        if completion_action not in {"structured_analysis", "match_single_path", "assessment_score", "final_answer", "transition"}:
+            completion_action = _default_completion_action(bundle)
+        plan.update({
+            "status": "completed",
+            "decision_source": "skill_script" if script_action == "complete" else "llm_planner",
+            "question_ids": [],
+            "skipped_question_ids": [item for item in catalog_ids if item not in selected_ids],
+            "completion_action": completion_action,
+            "result_valid": bool(str(payload.get("assistant_message") or "").strip()),
+            "error": "",
+        })
+        plan.pop("script_action", None)
+        plan.pop("script_question_ids", None)
+        state.skill_facts.setdefault(str(refreshed["skill_id"]), {}).pop("_pending_questionnaire", None)
+        text = str(payload.get("assistant_message") or "").strip()
+        if not text:
+            plan.update({"status": "failed", "result_valid": False, "error": "completion_result_empty"})
+            text = "本轮无法生成完整结果，请补充你的具体诉求后再试一次。"
+        return text, None, {
+            "valid": True, "collection_complete": True, "fallback_used": False,
+            "action": action or "complete", "requested_question_ids": [], "selected_question_ids": [],
+            "allowed_question_ids": catalog_ids, "questionnaire_plan": questionnaire_plan_summary(bundle, state),
+            "resolved_answers": resolved,
+            "rejected_resolved_answers": _rejected_resolved_answers(payload, resolved),
+        }
     if not valid:
         selected_ids = catalog_ids[: int(refreshed["max_fields_per_form"])]
     else:
@@ -620,6 +751,16 @@ def resolve_questionnaire_continuation(
         if isinstance(payload, dict) and isinstance(payload.get("assistant_message"), str)
         else "请通过下面的表单继续补充关键信息。"
     )
+    plan.update({
+        "status": "collecting",
+        "decision_source": "safe_fallback" if fallback_used else "skill_script" if script_action == "ask" else "llm_planner",
+        "question_ids": selected_ids,
+        "skipped_question_ids": [item for item in catalog_ids if item not in selected_ids],
+        "error": "invalid_planner_response" if fallback_used else "",
+    })
+    if script_action == "ask":
+        plan.pop("script_action", None)
+        plan.pop("script_question_ids", None)
     return text or "请通过下面的表单继续补充关键信息。", (_form_block(skill_id, selected) if selected else None), {
         "valid": valid,
         "collection_complete": False,
@@ -630,7 +771,21 @@ def resolve_questionnaire_continuation(
         "decision_table_applied": bool(refreshed.get("decision_table_applied")),
         "resolved_answers": resolved,
         "rejected_resolved_answers": _rejected_resolved_answers(payload, resolved),
+        "action": action or "ask",
+        "questionnaire_plan": questionnaire_plan_summary(bundle, state),
     }
+
+
+def _default_completion_action(bundle: Any) -> str:
+    config = questionnaire_config(bundle)
+    completion = config.get("completion") if isinstance(config.get("completion"), dict) else {}
+    configured = str(completion.get("action") or "").strip()
+    if configured:
+        return configured
+    stages = {str(item.id) for item in getattr(bundle.contract, "stages", [])}
+    if {"analysis", "summary"} & stages:
+        return "structured_analysis"
+    return "final_answer"
 
 
 def _apply_explicit_message_answers(bundle: Any, state: Any, reconciliation: Any) -> list[dict[str, Any]]:

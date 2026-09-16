@@ -58,6 +58,7 @@ from hailiang_skills.workbench.runtime_overlay import (
     skill_markdown_with_metadata,
 )
 from hailiang_skills.runtime_bridge.script_review import review_scripts
+from hailiang_skills.runtime_bridge.native_questionnaire import questionnaire_plan_summary
 from hailiang_skills.runtime_bridge.agentscope_expert_runtime import AgentScopeRuntimeUnavailable
 from hailiang_skills.runtime_bridge.agent_frontmatter import validate_agent_skill_routing
 
@@ -110,16 +111,28 @@ def _questionnaire_asset_errors(payload: dict[str, Any], assets: list[tuple[str,
         # configuration moved out of runtime_contract.json.
         questionnaire = contract.get("questionnaire") if isinstance(contract.get("questionnaire"), dict) else {}
     config_path = str(questionnaire.get("config_path") or "").strip()
+    decision_script = questionnaire.get("decision_script") if isinstance(questionnaire, dict) else None
+    errors: list[str] = []
+    if isinstance(decision_script, dict) and decision_script.get("enabled"):
+        entrypoint = str(decision_script.get("entrypoint") or "").strip()
+        function = str(decision_script.get("function") or "decide").strip()
+        asset_paths = {path for path, _media_type, _content in assets}
+        if not entrypoint or not entrypoint.endswith(".py"):
+            errors.append("questionnaire.decision_script.entrypoint 必须是 Python 文件")
+        elif entrypoint not in asset_paths:
+            errors.append(f"questionnaire.decision_script 指向的文件不存在：{entrypoint}")
+        if not function:
+            errors.append("questionnaire.decision_script.function 不能为空")
     if not config_path:
-        return []
+        return errors
     asset = next((content for path, _media_type, content in assets if path == config_path), None)
     if asset is None:
-        return [f"questionnaire.config_path 指向的文件不存在：{config_path}"]
+        return [*errors, f"questionnaire.config_path 指向的文件不存在：{config_path}"]
     try:
         config = json.loads(asset.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return [f"问卷配置不是合法 UTF-8 JSON：{config_path}"]
-    return [f"{config_path}: {error}" for error in validate_questionnaire_config(config)]
+        return [*errors, f"问卷配置不是合法 UTF-8 JSON：{config_path}"]
+    return [*errors, *(f"{config_path}: {error}" for error in validate_questionnaire_config(config))]
 
 
 class WorkbenchError(ValueError):
@@ -1087,10 +1100,15 @@ class WorkbenchService:
                     on_event("team_handoff", payload if isinstance(payload, dict) else {})
                     emit_candidate_state()
 
+                def questionnaire_callback(payload: Any) -> None:
+                    on_event("questionnaire_plan", payload if isinstance(payload, dict) else {})
+                    emit_candidate_state()
+
                 context.session_meta["reply_delta_callback"] = reply_delta_callback
                 context.session_meta["reasoning_delta_callback"] = reasoning_delta_callback
                 context.session_meta["status_callback"] = status_callback
                 context.session_meta["team_handoff_callback"] = team_handoff_callback
+                context.session_meta["questionnaire_callback"] = questionnaire_callback
             message = self._revision_test_input_message(
                 context,
                 user_message,
@@ -1217,6 +1235,7 @@ class WorkbenchService:
                     "reasoning_delta_callback",
                     "status_callback",
                     "team_handoff_callback",
+                    "questionnaire_callback",
                     "stream_cancel_check",
                     "workbench_candidate_llm_timeout_s",
                     "workbench_candidate_llm_max_tokens",
@@ -1798,6 +1817,13 @@ class WorkbenchService:
             context,
             runtime_registry=getattr(self.orchestrator, "runtime_registry", None),
         )
+        questionnaire_plan: dict[str, Any] = {}
+        runtime_state = context.skill_states.get("runtime_state") if isinstance(context.skill_states, dict) else None
+        skill_id = str(active_skill.get("skill_id") or "")
+        registry = getattr(self.orchestrator, "runtime_registry", None)
+        bundle = registry.get(skill_id) if registry is not None and skill_id else None
+        if bundle is not None and runtime_state is not None:
+            questionnaire_plan = questionnaire_plan_summary(bundle, runtime_state)
         state.update({
             "profile_id": None,
             "profile_name": None,
@@ -1833,6 +1859,7 @@ class WorkbenchService:
             }),
             "risk": copy.deepcopy(presentation.get("risk") or state["risk"]),
             "error": copy.deepcopy(error or presentation.get("error") or state["error"]),
+            "questionnaire": questionnaire_plan,
         })
         return state
 

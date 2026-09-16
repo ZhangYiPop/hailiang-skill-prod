@@ -43,12 +43,14 @@ from hailiang_skills.runtime_bridge.facts import (
 )
 from hailiang_skills.runtime_bridge.native_questionnaire import (
     attach_staged_questionnaire_form,
+    begin_questionnaire_turn,
     consume_pending_questionnaire_answer,
     decode_questionnaire_reply,
     deterministic_questionnaire_fallback,
     flush_deferred_questionnaire_promotions,
     questionnaire_continuation_context,
     questionnaire_enabled,
+    questionnaire_plan_summary,
     questionnaire_reply_is_valid,
     resolve_questionnaire_continuation,
     stage_questionnaire_form,
@@ -3020,10 +3022,18 @@ class MainPlannerOrchestrator:
                 "recent_messages": [] if reconciliation_enabled else recent_messages,
             },
             "latest_user_answer": user_message,
+            "questionnaire_plan": continuation.get("questionnaire_plan", {}),
             "max_fields_per_form": continuation["max_fields_per_form"],
             "question_catalog": continuation["question_catalog"],
             "answer_reconciliation": reconciliation,
         }
+        script_constraint = continuation.get("questionnaire_plan", {})
+        if isinstance(script_constraint, dict) and script_constraint.get("script_action"):
+            payload["script_decision"] = {
+                "action": script_constraint.get("script_action"),
+                "question_ids": script_constraint.get("script_question_ids", []),
+                "completion_action": script_constraint.get("completion_action", ""),
+            }
         if decision_table is not None:
             payload["ask_decision_table"] = decision_table
         return [
@@ -3041,25 +3051,36 @@ class MainPlannerOrchestrator:
                     "message 来源的 evidence 必须是用户原话中的短句，并明确包含答案值。不得从助手消息、旧总结或常识猜测答案。"
                     "profile_candidate_archive 是当前孩子的长期候选档案，不是已确认事实；仅在当前问题相关时自然确认或忽略，"
                     "绝不把它直接当作已经确定的答案或业务前提。"
-                    "必须遵守 skill.instructions 中的流程、开场和红线。若提供 ask_decision_table，"
+                    "必须遵守 skill.instructions 中的流程、开场和红线。questionnaire_plan 是跨轮的"
+                    "业务目标约束：普通补充、表单提交和追问都必须继承它；只有用户明确改目标、重置或"
+                    "改任务时才可更新 goal/mode/target。尤其单路径匹配不能因为题库中还有其他字段"
+                    "就扩展为完整推荐。若提供 ask_decision_table，"
+                    "若提供 script_decision，它已经通过服务端沙箱和题库校验：必须严格采用其中的 action 与"
+                    "question_ids；action=complete 时写出最终结论，不得追加问题。"
                     "服务端已按其当前可确定的 Case 将 question_catalog 收窄为本轮允许的字段；"
                     "你仍须结合本轮输入与会话状态判断下一阶段和 state_patch，不能请求目录外字段。"
                     "若 Case 要求本轮不开表单，可返回空 question_ids。"
                     "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题。"
                     "assistant_message 应直接推进当前对话：已有明确答案时不要再次复述或确认，"
                     "除非该答案存在矛盾、时间变化或确有必要消歧；不需要表单时直接回答，不要添加历史事实摘要。"
-                    "不得虚构、改写或直接在正文中提问；不得给出最终专业结论。"
+                    "不得虚构、改写或直接在正文中提问。表单提交即表示用户确认，若已有信息足以"
+                    "完成当前 goal，必须返回 action=complete、question_ids=[] 和可展示的最终结论，"
+                    "不得再问“信息是否准确”、不得承诺稍后给结果。"
                     "只返回一个 JSON 对象，字段必须严格按以下顺序："
                     '{"assistant_message":"面向用户的阶段性说明和引导",'
                     '"resolved_answers":[{"question_id":"合法问题ID","value":"答案",'
                     '"source_id":"给定来源ID","evidence":"用户原话或空字符串","confidence":0.95}],'
                     '"state_patch":{"mode":"当前模式","stage":"下一阶段","tier":"已确定档位",'
                     '"flags":{},"context":{},"sub_state":""},'
-                    '"question_ids":["合法问题ID"],"collection_complete":false}。'
+                    '"questionnaire_plan":{"goal":"当前目标","mode":"模式","target":"可选目标",'
+                    '"status":"collecting|completed","completion_action":"可选白名单动作"},'
+                    '"action":"ask|complete|answer_directly","question_ids":["合法问题ID"],'
+                    '"collection_complete":false}。'
                     "不启用答案对齐或没有可靠答案时 resolved_answers 必须为 []。"
                     "state_patch 只在你能依据 Skill 规则确定状态变化时填写；不能确定的字段不要写。"
                     "question_ids 只能来自 question_catalog，数量不得超过 max_fields_per_form。"
-                    "question_ids 不得包含 resolved_answers 中的项目。只要仍有未回答项目，collection_complete 必须为 false。"
+                    "question_ids 不得包含 resolved_answers 中的项目。未答字段并不等于必须收集："
+                    "只收集完成当前 goal 的必要字段；action=complete/answer_directly 时可保留未答字段。"
                     "不要输出 Markdown 代码块。"
                 ),
             ),
@@ -3074,15 +3095,14 @@ class MainPlannerOrchestrator:
         context,
         user_message: str,
     ) -> tuple[str, str] | None:
+        begin_questionnaire_turn(bundle, state, user_message)
         continuation = questionnaire_continuation_context(bundle, state)
         if continuation is None:
             return None
-        messages = self._questionnaire_continuation_messages(
-            bundle,
-            state,
-            user_message,
-            continuation,
+        script_reply = self._questionnaire_decision_script_reply(
+            bundle, state, context, user_message, continuation
         )
+        messages = self._questionnaire_continuation_messages(bundle, state, user_message, continuation)
         self._emit_runtime_status(context, "response", "正在生成回复")
         started = time.perf_counter()
         first_delta_ms: int | None = None
@@ -3094,7 +3114,9 @@ class MainPlannerOrchestrator:
             {"enable_thinking": False, "return_reasoning": False, "temperature": 0.2, "max_tokens": 600},
         )
         try:
-            if client is None:
+            if script_reply is not None:
+                raw_reply = script_reply
+            elif client is None:
                 raw_reply = ""
             elif callable(getattr(client, "stream_complete", None)):
                 extractor = _QuestionnaireContinuationExtractor(
@@ -3176,11 +3198,113 @@ class MainPlannerOrchestrator:
                         "resolved_question_ids": [
                             item.get("question_id") for item in decision.get("resolved_answers", [])
                         ],
+                        "questionnaire_plan": decision.get("questionnaire_plan") or questionnaire_plan_summary(bundle, state),
                     },
                 )
             ],
         )
+        questionnaire_callback = (context.session_meta or {}).get("questionnaire_callback")
+        if callable(questionnaire_callback):
+            questionnaire_callback(copy.deepcopy(decision.get("questionnaire_plan") or questionnaire_plan_summary(bundle, state)))
         return reply, ""
+
+    def _questionnaire_decision_script_reply(
+        self,
+        bundle,
+        state: SessionState,
+        context,
+        user_message: str,
+        continuation: dict[str, Any],
+    ) -> str | None:
+        """Run the optional, audited questionnaire selector before the LLM.
+
+        The sandbox contract is intentionally narrower than normal Skill
+        scripts: JSON only, no UI text, no facts/profile access and no ability
+        to name a question outside the server-provided catalog.  ``defer`` and
+        every failure use the LLM planner rather than interrupting a user.
+        """
+        config = getattr(bundle, "metadata", {}).get("questionnaire", {})
+        config = config if isinstance(config, dict) else {}
+        declaration = config.get("decision_script")
+        declaration = declaration if isinstance(declaration, dict) else {}
+        if not declaration.get("enabled"):
+            return None
+        relative = str(declaration.get("entrypoint") or "").strip()
+        if not relative:
+            return None
+        path = (Path(bundle.root_dir) / relative).resolve()
+        try:
+            path.relative_to(Path(bundle.root_dir).resolve())
+        except ValueError:
+            self._record_events(context, [make_event("questionnaire_decision_script", {
+                "status": "invalid", "error": "entrypoint_outside_skill", "decision_source": "llm_planner",
+            })])
+            return None
+        if not path.is_file() or path.suffix != ".py":
+            self._record_events(context, [make_event("questionnaire_decision_script", {
+                "status": "invalid", "error": "entrypoint_missing", "decision_source": "llm_planner",
+            })])
+            return None
+        allowed_ids = [str(item["question_id"]) for item in continuation["question_catalog"]]
+        script_input = {
+            "questionnaire_decision": {
+                "function": str(declaration.get("function") or "decide"),
+                "goal": continuation.get("questionnaire_plan", {}).get("goal", ""),
+                "mode": continuation.get("questionnaire_plan", {}).get("mode", ""),
+                "target": continuation.get("questionnaire_plan", {}).get("target"),
+                "answers": continuation.get("answers", {}),
+                "allowed_question_ids": allowed_ids,
+                "latest_user_message": str(user_message)[:2000],
+            }
+        }
+        started = time.perf_counter()
+        try:
+            outputs, steps = self.ms_agent_runtime.execute_scripts_in_sandbox(
+                skill_id=str(bundle.contract.skill_id or bundle.root_name),
+                skill_dir=Path(bundle.root_dir),
+                loaded_scripts=[{"name": path.name, "path": relative, "abs_path": str(path)}],
+                execute_scripts=True,
+                script_inputs={path.name: script_input},
+            )
+            output = next((item for item in outputs if isinstance(item, dict)), {})
+            result = output.get("return_value", output.get("json_output")) if isinstance(output, dict) else None
+            if not isinstance(result, dict):
+                raise ValueError("script_result_not_json_object")
+            action = str(result.get("action") or "").strip()
+            question_ids = result.get("question_ids", [])
+            if action not in {"ask", "complete", "defer"} or not isinstance(question_ids, list):
+                raise ValueError("script_result_schema_invalid")
+            ids = list(dict.fromkeys(str(item).strip() for item in question_ids if str(item).strip()))
+            if action == "ask" and (not ids or any(item not in allowed_ids for item in ids)):
+                raise ValueError("script_question_id_not_allowed")
+            if action == "defer":
+                self._record_events(context, [make_event("questionnaire_decision_script", {
+                    "status": "deferred", "duration_ms": int((time.perf_counter() - started) * 1000),
+                    "decision_source": "llm_planner", "steps": [step.name for step in steps],
+                })])
+                return None
+            skill_state = state.skill_facts.setdefault(str(bundle.contract.skill_id or bundle.root_name), {})
+            plan = skill_state.setdefault("_questionnaire_plan", {})
+            # The script chooses *what* to ask/complete; the LLM still writes
+            # the user-facing conclusion.  This avoids turning a structured
+            # rule script into an unreviewable UI/content generator.
+            plan.update({
+                "decision_source": "skill_script",
+                "script_action": action,
+                "script_question_ids": ids,
+                "completion_action": str(result.get("completion_action") or plan.get("completion_action") or ""),
+            })
+            self._record_events(context, [make_event("questionnaire_decision_script", {
+                "status": "success", "duration_ms": int((time.perf_counter() - started) * 1000),
+                "decision_source": "skill_script", "action": action, "question_ids": ids,
+            })])
+            return None
+        except Exception as exc:  # noqa: BLE001
+            self._record_events(context, [make_event("questionnaire_decision_script", {
+                "status": "fallback", "duration_ms": int((time.perf_counter() - started) * 1000),
+                "decision_source": "llm_planner", "error": f"{type(exc).__name__}: {exc}"[:300],
+            })])
+            return None
 
     def _archive_questionnaire_context(self, context, bundle, decision: dict[str, Any], user_message: str) -> None:
         """Store declared-option observations as profile-scoped durable evidence."""

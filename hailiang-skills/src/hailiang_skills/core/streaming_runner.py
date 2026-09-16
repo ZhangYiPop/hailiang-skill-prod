@@ -1072,6 +1072,7 @@ class StreamingRunner:
             context.session_meta.pop("security_callback", None)
             context.session_meta.pop("model_error_callback", None)
             context.session_meta.pop("team_handoff_callback", None)
+            context.session_meta.pop("questionnaire_callback", None)
             context.session_meta.pop("stream_cancel_check", None)
             context.session_meta.pop("streamed_reply_parts", None)
             context.session_meta.pop("streamed_reasoning_parts", None)
@@ -1123,6 +1124,9 @@ class StreamingRunner:
                 context.session_meta["model_error_callback"] = push_model_error
                 context.session_meta["team_handoff_callback"] = lambda payload: push(
                     "team_handoff", payload
+                )
+                context.session_meta["questionnaire_callback"] = lambda payload: push(
+                    "questionnaire_plan", payload
                 )
                 context.session_meta["streamed_reply_parts"] = []
                 context.session_meta["streamed_reasoning_parts"] = []

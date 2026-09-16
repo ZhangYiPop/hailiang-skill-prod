@@ -17,6 +17,7 @@ from hailiang_skills.runtime_bridge.main_planner import (
 )
 from hailiang_skills.runtime_bridge.native_questionnaire import (
     available_question_specs,
+    begin_questionnaire_turn,
     build_questionnaire_protocol,
     consume_pending_questionnaire_answer,
     decode_questionnaire_reply,
@@ -72,6 +73,32 @@ def test_generic_config_json_supports_all_input_types_and_conditions():
     assert "detail" not in specs
     state.skill_facts["mock_admission"] = {"answers": {"kind": "A"}}
     assert "detail" in {item["question_id"] for item in available_question_specs(bundle, state)}
+
+
+def test_dynamic_planner_keeps_goal_and_can_complete_without_exhausting_catalog():
+    bundle = _config_bundle()
+    state = SessionState(session_id="questionnaire_goal", active_skill_id="mock_admission")
+    begin_questionnaire_turn(bundle, state, "我只想判断是否符合某一条路径")
+    text, block, decision = resolve_questionnaire_continuation(
+        bundle,
+        state,
+        json.dumps({
+            "assistant_message": "根据你已确认的信息，符合这条路径的基础条件。",
+            "action": "complete",
+            "collection_complete": True,
+            "question_ids": [],
+            "questionnaire_plan": {
+                "mode": "match_single",
+                "target": "目标路径",
+                "completion_action": "match_single_path",
+            },
+        }, ensure_ascii=False),
+    )
+    assert "符合" in text
+    assert block is None
+    assert decision["collection_complete"] is True
+    assert decision["questionnaire_plan"]["mode"] == "match_single"
+    assert decision["questionnaire_plan"]["status"] == "completed"
 
 
 def test_skill_declared_decision_table_limits_each_dynamic_questionnaire_batch(tmp_path):
