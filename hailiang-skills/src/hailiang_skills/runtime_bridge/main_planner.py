@@ -2237,17 +2237,6 @@ class MainPlannerOrchestrator:
                                 "error": detail,
                             },
                         ),
-                        *(
-                            [evidence]
-                            if (
-                                evidence := _reference_response_evidence_event(
-                                    state,
-                                    skill_id=current_bundle.contract.skill_id or current_bundle.root_name,
-                                    reply=reply,
-                                )
-                            )
-                            else []
-                        ),
                     ],
                 )
                 return None
@@ -2826,6 +2815,7 @@ class MainPlannerOrchestrator:
                 messages = self._messages_from_assembly(state, assembly, transient_messages)
                 return self._stream_runtime_final_text(
                     current_bundle,
+                    state,
                     current_bundle.contract.skill_id or current_bundle.root_name,
                     assembly,
                     messages,
@@ -2860,6 +2850,7 @@ class MainPlannerOrchestrator:
             if not enabled_tool_specs:
                 return self._stream_runtime_final_text(
                     current_bundle,
+                    state,
                     current_bundle.contract.skill_id or current_bundle.root_name,
                     assembly,
                     messages,
@@ -3470,6 +3461,7 @@ class MainPlannerOrchestrator:
     def _stream_runtime_final_text(
         self,
         bundle,
+        state: SessionState,
         skill_name: str,
         assembly: PromptAssembly,
         messages: list[ChatMessage],
