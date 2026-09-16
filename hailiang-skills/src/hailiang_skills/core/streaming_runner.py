@@ -1127,9 +1127,40 @@ class StreamingRunner:
                 context.session_meta["streamed_reply_parts"] = []
                 context.session_meta["streamed_reasoning_parts"] = []
                 context.session_meta["skill_intro_emitted"] = False
-                with span("orchestrator.handle_message", node="orchestrator", skill_id=str(requested_target_skill_id or "")):
-                    result = self.orchestrator.handle_message(content, context)
-                invitation = build_skill_invitation(
+                control_reply = context.session_meta.pop("control_reply", None)
+                control_handoff = context.session_meta.pop("control_handoff", None)
+                if isinstance(control_reply, str) and control_reply.strip():
+                    from types import SimpleNamespace
+                    # A text acknowledgement is a control turn, not a model
+                    # turn. Persist both user text and the replacement card so
+                    # the new card has a real source_message_id to confirm.
+                    context.add_message("user", content)
+                    context.add_message("assistant", control_reply.strip(), {
+                        "message_type": "team_handoff_text_confirmation_blocked",
+                    })
+                    if isinstance(control_handoff, dict):
+                        assistant_record = context.messages[-1]
+                        handoff = dict(control_handoff)
+                        handoff["source_message_id"] = assistant_record["message_id"]
+                        handoff["presentation_status"] = "presented"
+                        assistant_record["team_handoff"] = handoff
+                        metadata = assistant_record.setdefault("metadata", {})
+                        if isinstance(metadata, dict):
+                            metadata["team_handoff"] = dict(handoff)
+                        ensure_message_interactions(assistant_record)
+                        context.session_meta["pending_team_handoff"] = handoff
+                        context.session_meta["pending_team_handoff_intent"] = handoff
+                        callback = context.session_meta.get("team_handoff_callback")
+                        if callable(callback):
+                            callback(dict(handoff))
+                    result = SimpleNamespace(
+                        assistant_message=control_reply.strip(), blocks=[], events=[], suggested_paths=[],
+                    )
+                    push_reply_delta(result.assistant_message)
+                else:
+                    with span("orchestrator.handle_message", node="orchestrator", skill_id=str(requested_target_skill_id or "")):
+                        result = self.orchestrator.handle_message(content, context)
+                invitation = None if isinstance(control_reply, str) and control_reply.strip() else build_skill_invitation(
                     context,
                     assistant_message=result.assistant_message,
                     runtime_registry=getattr(self.orchestrator, "runtime_registry", None),

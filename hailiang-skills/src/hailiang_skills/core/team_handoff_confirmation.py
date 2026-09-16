@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from uuid import uuid4
 
 
 _ACKNOWLEDGEMENTS = {
     "继续", "请继续", "好的", "好", "可以", "行", "没问题", "就按这个来",
-    "按这个来", "麻烦你", "麻烦了", "拜托了", "同意", "确认", "请帮我转交", "好的请继续",
+    "按这个来", "麻烦你", "麻烦了", "拜托了", "同意", "同意的", "确认", "请帮我转交", "好的请继续",
 }
 _NEGATIVE_OR_UNCERTAIN = ("不", "先不用", "等等", "等一下", "考虑", "再想想", "但是", "可是", "还是")
 
@@ -63,3 +64,40 @@ def active_handoff_decision(context: Any, *, team_id: str, text: str) -> dict[st
         return {"kind": "none"}
     candidates = [item for item in intent.get("candidates", []) if isinstance(item, dict) and item.get("expert_id")]
     return {"kind": "single_recovery" if len(candidates) == 1 else "multiple", "handoff": intent, "source": None, "candidates": candidates}
+
+
+def block_text_handoff_confirmation(context: Any, decision: dict[str, Any]) -> dict[str, Any] | None:
+    """Expire the acknowledged card and issue a fresh card without switching.
+
+    Text acknowledgements are deliberately non-authoritative.  The returned
+    card is a new interaction so a delayed click on the old card cannot mutate
+    the active expert.
+    """
+    handoff = decision.get("handoff") if isinstance(decision, dict) else None
+    source = decision.get("source") if isinstance(decision, dict) else None
+    if not isinstance(handoff, dict):
+        return None
+    if isinstance(source, dict):
+        interactions = source.get("interactions")
+        interaction = interactions.get("team_handoff") if isinstance(interactions, dict) else None
+        if isinstance(interaction, dict):
+            interaction["status"] = "expired"
+        source_handoff = source.get("team_handoff")
+        if isinstance(source_handoff, dict):
+            source_handoff["status"] = "expired"
+        metadata = source.get("metadata")
+        if isinstance(metadata, dict) and isinstance(metadata.get("team_handoff"), dict):
+            metadata["team_handoff"]["status"] = "expired"
+    fresh = dict(handoff)
+    fresh["previous_handoff_id"] = str(handoff.get("handoff_id") or "")
+    fresh["handoff_id"] = f"handoff_{uuid4().hex[:16]}"
+    fresh["interaction_id"] = "team_handoff"
+    fresh["source_message_id"] = None
+    fresh["status"] = "active"
+    fresh["confirmation_mode"] = "card_only"
+    fresh["text_confirmation_action"] = "blocked"
+    fresh.pop("selected_target_expert_id", None)
+    fresh["presentation_status"] = "pending"
+    context.session_meta["pending_team_handoff"] = fresh
+    context.session_meta["pending_team_handoff_intent"] = fresh
+    return fresh

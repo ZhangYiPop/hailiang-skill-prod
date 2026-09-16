@@ -32,7 +32,7 @@ from hailiang_skills.core.message_interactions import (
     update_interaction,
 )
 from hailiang_skills.core.sse_protocol import empty_message_state, presentation_from_message
-from hailiang_skills.core.team_handoff_confirmation import active_handoff_decision
+from hailiang_skills.core.team_handoff_confirmation import active_handoff_decision, block_text_handoff_confirmation
 from hailiang_skills.core.skill_display import build_skill_display
 from hailiang_skills.schemas.facts import KnownFacts
 from hailiang_skills.schemas.questionnaire import validate_questionnaire_config
@@ -1007,26 +1007,16 @@ class WorkbenchService:
                 team_id = str(context.session_meta.get("expert_team_id") or "")
                 decision = active_handoff_decision(context, team_id=team_id, text=user_message) if team_id else {"kind": "none"}
                 if decision.get("kind") == "single_card":
-                    handoff = decision["handoff"]
-                    team_handoff_selection = {
-                        "handoff_id": handoff.get("handoff_id"),
-                        "target_expert_id": decision["candidates"][0].get("expert_id"),
-                        "source_message_id": (decision.get("source") or {}).get("message_id"),
-                        "team_id": team_id,
-                        "text_confirmation": user_message,
-                    }
-                    text_handoff_mode = "team_handoff_ack"
+                    stream_handoff = block_text_handoff_confirmation(context, decision)
+                    text_handoff_mode = "team_handoff_text_confirmation_blocked"
                 elif decision.get("kind") == "multiple":
                     # Keep the active choice visible; never guess which expert
                     # the user meant by a generic "继续".
-                    stream_handoff = copy.deepcopy(decision.get("handoff") or {})
-                    text_handoff_mode = "team_handoff_ack_ambiguous"
+                    stream_handoff = block_text_handoff_confirmation(context, decision)
+                    text_handoff_mode = "team_handoff_text_confirmation_blocked"
                 elif decision.get("kind") == "single_recovery":
-                    candidate = decision["candidates"][0]
-                    self._apply_candidate_recovered_team_handoff(
-                        context, decision["handoff"], candidate, user_message,
-                    )
-                    text_handoff_mode = "team_handoff_ack_recovered"
+                    stream_handoff = block_text_handoff_confirmation(context, decision)
+                    text_handoff_mode = "team_handoff_text_confirmation_blocked"
                 else:
                     expire_active_interactions(context.messages)
             turn_started = datetime.now().timestamp()
@@ -1129,7 +1119,40 @@ class WorkbenchService:
             )
             candidate_runtime_mounts = self._mount_candidate_snapshot_skills(snapshot, context)
             try:
-                assistant_message = self._execute_snapshot_message(snapshot, message, context)
+                if text_handoff_mode == "team_handoff_text_confirmation_blocked":
+                    # Match the formal control turn: do not invoke the model
+                    # for an acknowledgement that cannot select an Expert.
+                    context.add_message("user", message)
+                    context.add_message(
+                        "assistant",
+                        "如需切换专家，请点击专家转交卡片完成确认；如果不切换，也可以继续描述您的问题。",
+                        {"message_type": "team_handoff_text_confirmation_blocked"},
+                    )
+                    if isinstance(stream_handoff, dict):
+                        assistant_record = context.messages[-1]
+                        handoff = copy.deepcopy(stream_handoff)
+                        handoff["source_message_id"] = assistant_record["message_id"]
+                        handoff["presentation_status"] = "presented"
+                        assistant_record["team_handoff"] = handoff
+                        metadata = assistant_record.setdefault("metadata", {})
+                        if isinstance(metadata, dict):
+                            metadata["team_handoff"] = copy.deepcopy(handoff)
+                        ensure_message_interactions(assistant_record)
+                        context.session_meta["pending_team_handoff"] = handoff
+                        context.session_meta["pending_team_handoff_intent"] = handoff
+                        stream_handoff = handoff
+                        if callable(on_event):
+                            on_event("team_handoff", copy.deepcopy(handoff))
+                    self._record_candidate_turn_event(context, "team_handoff_text_confirmation_blocked", {
+                        "old_handoff_id": str((stream_handoff or {}).get("previous_handoff_id") or ""),
+                        "new_handoff_id": str((stream_handoff or {}).get("handoff_id") or ""),
+                        "reason": "card_only_confirmation",
+                    })
+                    assistant_message = str(context.messages[-1].get("content") or "")
+                    if callable(on_event):
+                        on_event("reply_delta", {"delta": assistant_message})
+                else:
+                    assistant_message = self._execute_snapshot_message(snapshot, message, context)
             except Exception as exc:
                 # A candidate test is a diagnostic artifact.  Previously an
                 # Expert routing failure was converted to the public generic

@@ -19,7 +19,7 @@ from hailiang_skills.core.rate_limit import LLMRateLimitError, LLMRateLimiter
 from hailiang_skills.core.logging import make_event
 from hailiang_skills.core.message_interactions import ACTIVE, SELECTED, ensure_message_interactions, expire_active_interactions, update_interaction
 from hailiang_skills.core.session_logging import append_session_events
-from hailiang_skills.core.team_handoff_confirmation import active_handoff_decision
+from hailiang_skills.core.team_handoff_confirmation import active_handoff_decision, block_text_handoff_confirmation
 
 
 class StrictInput(BaseModel):
@@ -708,73 +708,15 @@ def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffI
 
 
 def _acknowledge_team_handoff_text(context, orchestrator, acknowledgement: str) -> tuple[dict | None, dict | None]:
-    """Consume a valid one-member handoff using an ordinary chat message.
-
-    Returns ``(switch, replay_handoff)``.  The latter is used for a multiple
-    candidate card: it stays active and is emitted again instead of expiring.
-    """
+    """Recognize a text acknowledgement, but never use it to switch Expert."""
     team_id = str(context.session_meta.get("expert_team_id") or "").strip()
     if not team_id:
         return None, None
     decision = active_handoff_decision(context, team_id=team_id, text=acknowledgement)
     if decision.get("kind") == "none":
         return None, None
-    if decision.get("kind") == "multiple":
-        return None, decision.get("handoff") if isinstance(decision.get("handoff"), dict) else None
-    _experts, teams = _snapshot_expert_registries(context, orchestrator)
-    team = teams.get(team_id) if teams is not None else None
-    if team is None:
-        return None, None
-    handoff = decision["handoff"]
-    candidates = decision.get("candidates") or []
-    candidate = candidates[0]
-    target_expert_id = str(candidate.get("expert_id") or "")
-    if not target_expert_id or team.member_for_expert(target_expert_id) is None:
-        return None, None
-    source = decision.get("source")
-    recovered = decision.get("kind") == "single_recovery"
-    source_index = context.messages.index(source) if isinstance(source, dict) and source in context.messages else None
-    if isinstance(source, dict):
-        try:
-            interaction = update_interaction(source, "team_handoff", status=SELECTED, selected_target_skill_id=target_expert_id)
-            interaction["selected_target_expert_id"] = target_expert_id
-        except KeyError:
-            return None, None
-        handoff["status"] = "selected"
-        handoff["selected_target_expert_id"] = target_expert_id
-        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
-        if isinstance(metadata.get("team_handoff"), dict):
-            metadata["team_handoff"].update({"status": "selected", "selected_target_expert_id": target_expert_id})
-    from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
-    if from_expert_id != target_expert_id:
-        context.abandon_active_interactions_for_expert_change(
-            reason="confirm_team_handoff_text",
-            from_expert_id=from_expert_id,
-            target_expert_id=target_expert_id,
-        )
-    context.session_meta["active_expert_id"] = target_expert_id
-    context.session_meta["expert_id"] = target_expert_id
-    context.session_meta["expert_selection_source"] = "handoff_text_confirmation"
-    context.set_session_agent_selection(expert_team_id=team_id, expert_id=target_expert_id, selection_source="handoff_card")
-    context.session_meta.pop("pending_team_handoff", None)
-    context.session_meta.pop("pending_team_handoff_intent", None)
-    source_user_message = str(handoff.get("original_user_message") or "").strip()
-    if not source_user_message and source_index is not None:
-        for message in reversed(context.messages[:source_index]):
-            if message.get("role") == "user" and not (message.get("metadata") or {}).get("hidden"):
-                source_user_message = str(message.get("content") or "").strip()
-                break
-    return {
-        "source": "team_handoff_ack_recovered" if recovered else "team_handoff_ack",
-        "from_expert_id": from_expert_id,
-        "target_expert_id": target_expert_id,
-        "mention_name": str(candidate.get("mention_name") or candidate.get("name") or "专家").strip(),
-        "visible_user_message": acknowledgement,
-        "source_user_message": source_user_message,
-        "coordinator_reason": str(handoff.get("reason") or ""),
-        "source_message_id": str(handoff.get("source_message_id") or ""),
-        "conversation_excerpt": _conversation_excerpt(context, end_index=source_index),
-    }, None
+    fresh = block_text_handoff_confirmation(context, decision)
+    return ({"blocked": True, "handoff": fresh} if fresh else None), None
 
 
 def _switch_team_member(context, orchestrator, input_data: SwitchTeamMemberInput) -> dict:
@@ -1098,6 +1040,18 @@ def build_chat_stream_router(
                     current_context, orchestrator, input_data.content,
                 )
                 if switch is not None:
+                    if switch.get("blocked"):
+                        fresh_handoff = switch.get("handoff") if isinstance(switch.get("handoff"), dict) else None
+                        event = make_event("team_handoff_text_confirmation_blocked", {
+                            "team_id": str(current_context.session_meta.get("expert_team_id") or ""),
+                            "old_handoff_id": str((switch.get("handoff") or {}).get("previous_handoff_id") or ""),
+                            "new_handoff_id": str((switch.get("handoff") or {}).get("handoff_id") or ""),
+                            "reason": "card_only_confirmation",
+                        })
+                        current_context.event_trace.append(event)
+                        current_context.session_meta["control_reply"] = "如需切换专家，请点击专家转交卡片完成确认；如果不切换，也可以继续描述您的问题。"
+                        current_context.session_meta["control_handoff"] = fresh_handoff
+                        return {"switch": None, "replay_handoff": fresh_handoff, "event": event, "blocked": True}
                     event = make_event("team_handoff_text_confirmed", {
                         "team_id": str(current_context.session_meta.get("expert_team_id") or ""),
                         "expert_id": str(switch.get("target_expert_id") or ""),
@@ -1126,6 +1080,7 @@ def build_chat_stream_router(
                 apply=apply_free_form_turn,
             )
             team_member_switch = free_form_result.get("switch") if isinstance(free_form_result, dict) else None
+            control_handoff = bool(free_form_result.get("blocked")) if isinstance(free_form_result, dict) else False
             replay_handoff = free_form_result.get("replay_handoff") if isinstance(free_form_result, dict) else None
             event = free_form_result.get("event") if isinstance(free_form_result, dict) else None
             if event:
@@ -1144,7 +1099,7 @@ def build_chat_stream_router(
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
                 source_endpoint="sessions/chat/stream",
-                initial_events=([("profile_context", profile_context_event)] + ([ ("team_handoff", replay_handoff) ] if replay_handoff else [])),
+                initial_events=([("profile_context", profile_context_event)] + ([ ("team_handoff", replay_handoff) ] if replay_handoff and not control_handoff else [])),
             )
         else:
             action = "enter" if input_data.action == "enter_skill" else "exit"
