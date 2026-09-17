@@ -152,7 +152,7 @@ class SessionContext:
         """
         changes = expire_active_interactions(
             self.messages,
-            preserve_kinds={"team_handoff"} if preserve_team_handoff else None,
+            preserve_kinds={"team_handoff", "route_suggestions"} if preserve_team_handoff else None,
         )
         abandoned_forms = [
             change

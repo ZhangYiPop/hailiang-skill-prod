@@ -1631,6 +1631,8 @@ class StreamingRunner:
         source_message_id: str | None = None,
         source_interaction_id: str | None = None,
         run_id: str = "",
+        source_profile_id: str | None = None,
+        execution_profile_id: str | None = None,
     ) -> dict[str, Any]:
         context = self.repository.get(session_id)
         context.user_id = user_id
@@ -1665,16 +1667,35 @@ class StreamingRunner:
             "facts_snapshot": _transition_facts_snapshot(context),
         }
         if source == "route_suggestion":
+            source_messages = context.messages
+            route_source_profile_id = str(context.profile_id or "") or None
             source_message = next(
                 (
-                    item
-                    for item in context.messages
+                    item for item in source_messages
                     if item.get("role") == "assistant" and item.get("message_id") == source_message_id
                 ),
                 None,
             )
+            if source_message is None:
+                for profile_id, branch in (context.profile_branches or {}).items():
+                    if not isinstance(branch, dict):
+                        continue
+                    messages = branch.get("messages")
+                    if not isinstance(messages, list):
+                        continue
+                    candidate = next((
+                        item for item in messages
+                        if isinstance(item, dict)
+                        and item.get("role") == "assistant"
+                        and item.get("message_id") == source_message_id
+                    ), None)
+                    if candidate is not None:
+                        source_message = candidate
+                        source_messages = messages
+                        route_source_profile_id = str(profile_id or "") or None
+                        break
             latest_assistant = next(
-                (item for item in reversed(context.messages) if item.get("role") == "assistant"),
+                (item for item in reversed(source_messages) if item.get("role") == "assistant"),
                 None,
             )
             if source_message is None or latest_assistant is not source_message:
@@ -1695,16 +1716,23 @@ class StreamingRunner:
             metadata = source_message.setdefault("metadata", {})
             if isinstance(metadata, dict):
                 metadata["selected_route_suggestion"] = target
-            message_context, context_message_ids = _message_context_for_transition(
-                context,
-                source_message=source_message,
-                target_skill_id=target,
-            )
+            cross_profile_route = route_source_profile_id != (str(context.profile_id or "") or None)
+            if cross_profile_route:
+                message_context, context_message_ids = {}, []
+            else:
+                message_context, context_message_ids = _message_context_for_transition(
+                    context,
+                    source_message=source_message,
+                    target_skill_id=target,
+                )
             transition_context.update(
                 {
                     "context_source_message_id": source_message_id,
                     "context_message_ids": context_message_ids,
                     "handoff_context": message_context,
+                    "source_profile_id": route_source_profile_id,
+                    "execution_profile_id": str(context.profile_id or "") or None,
+                    "cross_profile": cross_profile_route,
                 }
             )
         elif source not in {"toolbar", "exit_button"}:
@@ -1719,6 +1747,12 @@ class StreamingRunner:
             "created_at": utc_now_iso(),
             **transition_context,
         }
+        if source_profile_id is not None or execution_profile_id is not None:
+            transition.update({
+                "source_profile_id": source_profile_id,
+                "execution_profile_id": execution_profile_id or (str(context.profile_id or "") or None),
+                "cross_profile": str(source_profile_id or "") != str(execution_profile_id or context.profile_id or ""),
+            })
         target_display = build_skill_display(
             context,
             active_skill=target,

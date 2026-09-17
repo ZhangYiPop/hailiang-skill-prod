@@ -1260,6 +1260,16 @@ def test_chat_stream_api_validates_input_contract(api_client) -> None:
     assert bad_source.status_code == 422
 
 
+def test_profile_bound_actions_default_to_auto_context_activation() -> None:
+    expert_context = '{"expert_team_id":null,"expert_id":null,"operation":"continue"}'
+    for payload in (
+        '{"action":"switch_team_member","source":"toolbar","target_expert_id":"member","content":"你好","expert_context":' + expert_context + '}',
+        '{"action":"enter_skill","target_skill_id":"interest_explore","source":"toolbar","expert_context":' + expert_context + '}',
+        '{"action":"quit_skill","target_skill_id":"interest_explore","source":"exit_button","expert_context":' + expert_context + '}',
+    ):
+        assert _parse_input(payload).context_activation == "auto"
+
+
 def test_stop_accepts_session_and_run_id_without_context_data(api_client) -> None:
     client, _repository = api_client
     initial = client.post("/api/v2/sessions/chat/stream", json=_api_payload(run_id="initial_run"))

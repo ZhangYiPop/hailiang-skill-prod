@@ -109,9 +109,9 @@ def expire_active_interactions(
     """Expire active message interactions, optionally retaining safe kinds.
 
     A profile switch must end branch-local forms and Skill work, but a
-    structured team-handoff card can safely remain an authorization record.
-    Its later confirmation still validates the original card and executes in
-    the currently selected profile branch.
+    structured team-handoff or Skill recommendation can safely remain an
+    authorization record. Its later confirmation still validates the original
+    card and executes in the currently selected profile branch.
     """
     preserve_kinds = preserve_kinds or set()
     changes: list[dict[str, str]] = []

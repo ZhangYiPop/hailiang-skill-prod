@@ -1376,18 +1376,20 @@ class AgentScopeExpertRuntime:
         context.session_meta.pop("pending_team_handoff_intent", None)
         source = str(switch.get("source") or "toolbar")
         cross_profile = bool(switch.get("cross_profile"))
+        is_handoff_source = source in {"team_handoff", "team_handoff_ack", "team_handoff_ack_recovered"}
+        branch_local_handoff = cross_profile and is_handoff_source
         # A same-branch confirmed handoff/tool-bar selection is a user-visible
         # Agent choice and persists at session scope.  A cross-child card is
         # intentionally different: it authorizes the target member only for
         # the execution branch, while facts/forms/Skill state stay local.
         set_selection = getattr(context, "set_session_agent_selection", None)
-        if callable(set_selection) and not cross_profile:
+        if callable(set_selection) and not branch_local_handoff:
             set_selection(
                 expert_team_id=team.team_id,
                 expert_id=member.expert_id,
-                selection_source="handoff_card" if source in {"team_handoff", "team_handoff_ack", "team_handoff_ack_recovered"} else "manual",
+                selection_source="handoff_card" if is_handoff_source else "manual",
             )
-        if cross_profile:
+        if branch_local_handoff:
             context.session_meta["branch_expert_override"] = {
                 "expert_team_id": team.team_id,
                 "expert_id": member.expert_id,
@@ -1398,7 +1400,6 @@ class AgentScopeExpertRuntime:
         context.session_meta["team_handoff_visible_user_message"] = str(
             switch.get("visible_user_message") or f"@{member.mention_name}"
         )
-        is_handoff_source = source in {"team_handoff", "team_handoff_ack", "team_handoff_ack_recovered"}
         if is_handoff_source:
             # This is a timeline/audit event, not a new semantic question.
             # Keep it visible for history restoration while the planner

@@ -251,6 +251,25 @@ post_stream
 `input`：这是切孩子与显式选择成员同时发生的写法：`context_activation:"auto"` 加
 `select_expert`，同时传目标团队和目标专家 ID。
 
+## 7.1 切换孩子后由工具栏切换团内成员并提问
+
+```bash
+# 已在孩子 A 进入 student_growth_expert_team；下一次请求直接切至孩子 B。
+CONTEXT_DATA='{"user_id":"manual-test-user","profile_id":"profile_child_b","student_name":"小明"}'
+RUN_ID="run-$(date +%s)-$RANDOM"
+INNER_INPUT=$(jq -nc '{
+  action: "switch_team_member", context_scope: "profile",
+  content: "哈哈哈", source: "toolbar", target_expert_id: "study_abroad_consultant",
+  expert_context: {
+    expert_team_id: "student_growth_expert_team", expert_id: "e_career_planner", operation: "continue"
+  }, enable_thinking: false, return_reasoning: false
+}')
+post_stream
+```
+
+`context_activation` 可省略，省略即 `auto`。服务端先切入孩子 B，再校验并切换至目标成员；
+不使用孩子 A 的历史或 Facts。
+
 ## 8. 未绑定孩子聊天
 
 ```bash
@@ -283,7 +302,7 @@ post_stream
 ```
 
 `input`：这是普通 `chat + continue`，不传卡片 ID 或目标专家 ID，也不回传当前团队与专家。
-唯一候选时服务端会按既有规则识别“好的”等确认文字；多候选时必须点击卡片。
+服务端不会以文字确认自动转交：旧卡失效并生成新卡，必须点击新卡确认。
 
 ## 10. 停止当前流式回答
 

@@ -39,6 +39,10 @@ class ExpertContextInput(StrictInput):
 
 class ProfileBoundInput(StrictInput):
     context_scope: Literal["profile", "unbound"] | None = None
+    # Every non-stop action can activate the child selected by outer
+    # context_data. Omitting this field remains equivalent to auto for older
+    # clients.
+    context_activation: Literal["auto", "strict"] = "auto"
     expert_context: ExpertContextInput
 
 
@@ -48,7 +52,6 @@ class ChatInput(ProfileBoundInput):
     source: Literal["chat", "toolbar"]
     enable_thinking: bool = False
     return_reasoning: bool = False
-    context_activation: Literal["auto", "strict"] = "auto"
 
 
 class EnterSkillInput(ProfileBoundInput):
@@ -899,11 +902,7 @@ def build_chat_stream_router(
         # by context_data.  The card itself is looked up safely by message ID
         # after the target branch is active, so this remains input-compatible
         # with existing clients.
-        requested_context_activation = (
-            input_data.context_activation
-            if isinstance(input_data, ChatInput)
-            else ("auto" if isinstance(input_data, ConfirmTeamHandoffInput) else "strict")
-        )
+        requested_context_activation = input_data.context_activation
         requested_target_key = str(target_profile_id or "")
         if (
             existing_context is not None
@@ -920,6 +919,37 @@ def build_chat_stream_router(
             ]
             if running:
                 raise HTTPException(status_code=409, detail="ACTIVE_RUN_MUST_STOP")
+
+        source_profile_id_before_activation = (
+            str(existing_context.profile_id or "") or None
+            if existing_context is not None
+            else None
+        )
+        cross_profile_exit = bool(
+            isinstance(input_data, QuitSkillInput)
+            and existing_context is not None
+            and requested_context_activation == "auto"
+            and str(existing_context.profile_id or "") != str(target_profile_id or "")
+        )
+        prepared_cross_profile_exit = None
+        if cross_profile_exit:
+            # Exit belongs to the currently active source branch. Persist it
+            # before activating the execution child selected by context_data.
+            try:
+                prepared_cross_profile_exit = runner.prepare_skill_transition(
+                    request.session_id,
+                    existing_context.user_id,
+                    action="exit",
+                    target_skill_id=input_data.target_skill_id,
+                    source=input_data.source,
+                    run_id=request.run_id,
+                    source_profile_id=source_profile_id_before_activation,
+                    execution_profile_id=target_profile_id,
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         context, session_created = open_or_resume_session(
             repository,
@@ -976,15 +1006,8 @@ def build_chat_stream_router(
         profile_switched = bool(context.session_meta.get("_profile_switched"))
         profile_branch_created = bool(context.session_meta.get("_profile_branch_created"))
         automatic_context_activation = bool(
-            (
-                isinstance(input_data, ChatInput)
-                and input_data.context_activation == "auto"
-                and (session_created or profile_switched or profile_branch_created)
-            )
-            or (
-                isinstance(input_data, ConfirmTeamHandoffInput)
-                and profile_switched
-            )
+            input_data.context_activation == "auto"
+            and (session_created or profile_switched or profile_branch_created)
         )
 
         # Every action carries the client-rendered expert state.  A normal
@@ -1091,6 +1114,11 @@ def build_chat_stream_router(
         elif isinstance(input_data, SwitchTeamMemberInput):
             def apply_member_switch(current_context):
                 team_member_switch = _switch_team_member(current_context, orchestrator, input_data)
+                team_member_switch.update({
+                    "source_profile_id": source_profile_id_before_activation,
+                    "execution_profile_id": current_context.profile_id,
+                    "cross_profile": bool(profile_switched and source_profile_id_before_activation != current_context.profile_id),
+                })
                 event = make_event("team_member_selected_from_toolbar", {
                     "team_id": str(current_context.session_meta.get("expert_team_id") or ""),
                     "from_expert_id": team_member_switch["from_expert_id"],
@@ -1198,19 +1226,20 @@ def build_chat_stream_router(
             )
         else:
             action = "enter" if input_data.action == "enter_skill" else "exit"
-            if isinstance(input_data, EnterSkillInput) and context.session_meta.get("expert_team_id"):
-                raise HTTPException(status_code=409, detail="SKILL_ENTRY_BLOCKED_IN_EXPERT_TEAM")
-            if isinstance(input_data, EnterSkillInput) and context.session_meta.get("expert_id"):
+            if isinstance(input_data, EnterSkillInput) and (
+                context.session_meta.get("expert_team_id") or context.session_meta.get("expert_id")
+            ):
                 # Toolbar/route-suggestion Skill entry is an explicit
-                # standalone debug action.  Leave expert mode first so this
-                # direct selection cannot accidentally bypass an expert's
-                # locked Skill set.
+                # standalone action. It deliberately leaves the current
+                # team/expert before entering the selected Skill, including
+                # after an automatic child activation.
                 from_expert_id = str(context.session_meta.get("active_expert_id") or context.session_meta.get("expert_id") or "")
                 context.abandon_active_interactions_for_expert_change(
                     reason="enter_direct_skill",
                     from_expert_id=from_expert_id,
                     target_expert_id=None,
                 )
+                context.session_meta.pop("expert_team_id", None)
                 context.session_meta.pop("expert_id", None)
                 context.session_meta.pop("active_expert_id", None)
                 context.session_meta.pop("expert_requested_skill_id", None)
@@ -1220,7 +1249,7 @@ def build_chat_stream_router(
                     selection_source="direct_skill",
                 )
                 repository.save(context)
-            if isinstance(input_data, QuitSkillInput):
+            if isinstance(input_data, QuitSkillInput) and prepared_cross_profile_exit is None:
                 active_skill = str(
                     context.interaction_state.get("active_skill")
                     or context.skill_states.get("skill_runtime", {}).get("active_skill_id")
@@ -1230,7 +1259,7 @@ def build_chat_stream_router(
                 if input_data.target_skill_id != active_skill:
                     raise HTTPException(status_code=409, detail="QUIT_SKILL_TARGET_MISMATCH")
             try:
-                prepared = runner.prepare_skill_transition(
+                prepared = prepared_cross_profile_exit or runner.prepare_skill_transition(
                     request.session_id,
                     context.user_id,
                     action=action,
@@ -1239,6 +1268,8 @@ def build_chat_stream_router(
                     source_message_id=getattr(input_data, "source_message_id", None),
                     source_interaction_id=getattr(input_data, "source_interaction_id", None),
                     run_id=request.run_id,
+                    source_profile_id=source_profile_id_before_activation if profile_switched else None,
+                    execution_profile_id=context.profile_id if profile_switched else None,
                 )
             except RuntimeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc

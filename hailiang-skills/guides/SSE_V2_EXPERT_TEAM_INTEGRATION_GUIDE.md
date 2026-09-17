@@ -329,8 +329,9 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
 | 切到 B，不重新选择 | `expert_team_id:null` + `expert_id:null` + `operation:"continue"` | `chat` | B 继承 session 当前实际承接专家。 |
 
 上述三种都必须使用 `action="chat"` 和 `context_activation="auto"`。不能为了“切孩子后换成员”
-发送 `switch_team_member`；该动作只允许在已激活的当前孩子范围执行。例外是用户点击既有专家
-转交卡：`confirm_team_handoff` 的内层 `input` 保持卡片产生时的内容不变，BFF 只把顶层
+发送 `switch_team_member`；该动作可在外层 `context_data.profile_id` 切换孩子的同一请求中执行，
+省略 `context_activation` 时默认 `auto`。例外是用户点击既有专家转交卡：`confirm_team_handoff`
+的内层 `input` 保持卡片产生时的内容不变，BFF 只把顶层
 `context_data.profile_id` 改为执行孩子 B。服务端以 A 的卡片作为授权记录，在 B 分支绑定目标
 专家并回答原问题，但不会把 A 的档案、Facts、表单或历史传给 B 的 Runtime。
 
@@ -447,7 +448,7 @@ curl -N -X POST "$BASE_URL/api/v2/sessions/chat/stream" \
 | 首条消息选择团内成员 | `chat` | `select_expert` | `expert_context.expert_team_id` + 团内 `expert_id`，`source=toolbar` | 同一请求自动激活团队；不传其他团队的专家 ID。 |
 | 主协调/成员普通追问 | `chat` | `continue` | `content`、`context_activation=auto`、`expert_team_id:null`、`expert_id:null` | 不重复 `select_team`，不读取本地专家缓存。 |
 | 切换孩子后的首聊 | `chat` | `continue` | `context_scope`；BFF 改 `context_data`；`context_activation=auto`；双 `null` | 不预检 B 分支、不自动重发。 |
-| 工具栏选择成员并问问题 | `switch_team_member` | `continue` | `target_expert_id`、`content`、`source=toolbar`、当前 `expert_context.expert_team_id/expert_id` | 不发送 `context_activation`，不把 @ 写入普通聊天。 |
+| 工具栏选择成员并问问题 | `switch_team_member` | `continue` | `target_expert_id`、`content`、`source=toolbar`、当前 `expert_context.expert_team_id/expert_id`；可省略 `context_activation`（默认 `auto`） | 外层孩子变化时同一请求切入目标孩子，再切换成员；不把 @ 写入普通聊天。 |
 | 点击转交卡 | `confirm_team_handoff` | `continue` | `source_message_id`、`target_expert_id`、`source=team_handoff`、当前 `expert_context.expert_team_id/expert_id` | 不把 `@专家` 当作 `content`。 |
 | 成员承接后的追问 | `chat` | `continue` | `content`、`context_activation=auto`、双 `null`、`operation:"continue"` | 不沿用转交前的 coordinator ID；双 `null` 为固定三字段的继承写法。 |
 

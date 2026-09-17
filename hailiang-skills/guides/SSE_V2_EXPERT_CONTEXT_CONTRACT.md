@@ -132,11 +132,11 @@
 
 ### 3.1 `context_activation`：同一条请求完成孩子切换
 
-`action="chat"` 可选传 `context_activation`：
+所有非 `stop` 动作均可选传 `context_activation`：
 
 | 值 | 中文含义 | 适用场景 |
 | --- | --- | --- |
-| `auto`（默认） | 服务端在本轮需要新建 session、创建目标孩子分支或切换孩子分支时，先完成激活并恢复 session 级最后活跃 Agent，然后直接回答本条消息。 | 业务前端/BFF 固定使用，无需预检接口或重发。 |
+| `auto`（默认） | 服务端在本轮需要新建 session、创建目标孩子分支或切换孩子分支时，先完成激活并恢复必要状态，再执行本动作。省略本字段等同于 `auto`。 | 业务前端/BFF 无需预检接口或重发。 |
 | `strict` | 拒绝会导致范围切换的请求，返回 `409 CONTEXT_ACTIVATION_REQUIRED`。 | 需要完全禁止隐式切换的管理端或批处理调用。 |
 
 首次进入新孩子分支时，若 session 已选择专家团或专家，服务端沿用该选择（包括已确认
@@ -283,8 +283,8 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 
 `input.profile_id` 不能出现。以下三种请求都可直接作为这次切换的同一条 `chat` 请求：
 
-`switch_team_member` 不是 `chat`，不能在同一条请求中切换孩子。`confirm_team_handoff` 则保持内层
-`input` 不变，并允许由外层 `context_data.profile_id` 指定执行孩子；前端无需先预检或改写卡片参数。
+`switch_team_member`、`confirm_team_handoff`、`enter_skill` 和 `quit_skill` 均可在同一条请求中
+切换孩子。前端无需预检或改写既有卡片参数；省略 `context_activation` 即使用默认 `auto`。
 当执行孩子与卡片来源不同，响应会补充 `source_profile_id`、`execution_profile_id` 与
 `cross_profile:true` 供审计，旧前端可忽略这些新增字段。
 
@@ -294,6 +294,9 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 | 手动选择单专家 | `chat` | `expert_team_id:null` + `expert_id` + `operation:"select_expert"` | 在 B 的单专家模式处理；若当前已有团队，必须改为下一行的显式团队形式。 |
 | 切换专家团，但不指定成员 | `chat` | `expert_team_id` + `expert_id:null` + `operation:"select_team"` | 切入 B 后激活新团队的主协调专家。 |
 | 选择/切换专家团并指定成员 | `toolbar` | `expert_team_id` + 团内 `expert_id` + `operation:"select_expert"` | 切入 B 后原子激活目标团队并选目标成员。无需区分 B 是否第一次进入。 |
+| 团内切换成员并提问 | `toolbar` | `switch_team_member` 的当前团队/专家断言 + `target_expert_id` | 切入 B，恢复团队后切换目标成员并用同一 `content` 回答。 |
+| 工具栏或推荐卡进入 Skill | `toolbar` / `route_suggestion` | `enter_skill` | 切入 B 后进入 Skill；推荐卡仅作授权，不带 A 的历史或 Facts。 |
+| 退出 Skill | `exit_button` | `quit_skill` | 先在来源孩子 A 退出当前 Skill，再切入 B；SSE 返回来源/执行孩子标识。 |
 
 切换孩子时如果前端没有目标孩子的本地 `branch_version` / `selection_version`，必须省略它们；服务端在
 切换完成后使用目标分支权威版本。前端已缓存目标孩子的最新权威状态时才可携带断言，以防旧页面覆盖。
