@@ -101,13 +101,27 @@ def backfill_interactions(messages: list[dict[str, Any]]) -> None:
         ensure_message_interactions(message, default_status=default_status)
 
 
-def expire_active_interactions(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+def expire_active_interactions(
+    messages: list[dict[str, Any]],
+    *,
+    preserve_kinds: set[str] | None = None,
+) -> list[dict[str, str]]:
+    """Expire active message interactions, optionally retaining safe kinds.
+
+    A profile switch must end branch-local forms and Skill work, but a
+    structured team-handoff card can safely remain an authorization record.
+    Its later confirmation still validates the original card and executes in
+    the currently selected profile branch.
+    """
+    preserve_kinds = preserve_kinds or set()
     changes: list[dict[str, str]] = []
     for message in messages:
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
         for interaction_id, state in ensure_message_interactions(message).items():
             if state.get("status") != ACTIVE:
+                continue
+            if str(state.get("kind") or "") in preserve_kinds:
                 continue
             state["status"] = EXPIRED
             state["updated_at"] = utc_now_iso()

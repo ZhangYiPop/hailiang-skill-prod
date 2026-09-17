@@ -604,6 +604,25 @@ def test_cross_child_handoff_override_survives_null_continue() -> None:
     assert context.session_meta["active_expert_id"] == "expert_from_handoff"
 
 
+def test_profile_switch_expires_forms_but_preserves_team_handoff_card() -> None:
+    context = SessionContext(session_id="sess_profile_switch", user_id="u1", profile_id="p1")
+    context.messages.append({
+        "message_id": "msg_handoff",
+        "role": "assistant",
+        "team_handoff": {"team_id": "team_1", "candidates": [{"expert_id": "expert_2"}]},
+    })
+    context.messages.append({
+        "message_id": "msg_form",
+        "role": "assistant",
+        "blocks": [{"type": "fact_form", "payload": {"form_id": "form_1"}}],
+    })
+
+    context.activate_profile_branch("p2")
+    source_messages = context.profile_branches["p1"]["messages"]
+    assert source_messages[0]["interaction_states"]["team_handoff"]["status"] == "active"
+    assert source_messages[1]["interaction_states"]["fact_form:form_1"]["status"] == "expired"
+
+
 def test_team_interaction_commit_retries_from_a_fresh_session_snapshot() -> None:
     """A card confirmation must not expose an internal optimistic-lock retry."""
 

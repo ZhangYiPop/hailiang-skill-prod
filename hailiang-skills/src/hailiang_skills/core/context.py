@@ -140,6 +140,7 @@ class SessionContext:
         reason: str,
         from_expert_id: str | None,
         target_expert_id: str | None,
+        preserve_team_handoff: bool = False,
     ) -> list[dict[str, str]]:
         """End branch-local work that cannot safely move to another expert.
 
@@ -149,7 +150,10 @@ class SessionContext:
         Route and handoff cards use the same interaction lifecycle and are
         expired alongside the form, matching the existing switch semantics.
         """
-        changes = expire_active_interactions(self.messages)
+        changes = expire_active_interactions(
+            self.messages,
+            preserve_kinds={"team_handoff"} if preserve_team_handoff else None,
+        )
         abandoned_forms = [
             change
             for change in changes
@@ -410,6 +414,10 @@ class SessionContext:
                 reason="profile_switch",
                 from_expert_id=str(self.session_meta.get("active_expert_id") or "") or None,
                 target_expert_id=None,
+                # Unlike a form, a team-handoff card is a structured
+                # authorization record and can be confirmed for the target
+                # child without exposing this branch's context.
+                preserve_team_handoff=True,
             )
         # The active branch may be the unbound branch (whose public profile
         # id is ``None``), so it must be persisted before entering a child as
@@ -455,6 +463,7 @@ class SessionContext:
                 reason="profile_switch",
                 from_expert_id=str(self.session_meta.get("active_expert_id") or "") or None,
                 target_expert_id=None,
+                preserve_team_handoff=True,
             )
             self.sync_active_branch()
         global_meta = self._global_session_meta()
