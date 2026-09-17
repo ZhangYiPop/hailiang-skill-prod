@@ -1375,17 +1375,26 @@ class AgentScopeExpertRuntime:
         context.session_meta.pop("pending_team_handoff", None)
         context.session_meta.pop("pending_team_handoff_intent", None)
         source = str(switch.get("source") or "toolbar")
-        # A confirmed handoff/tool-bar selection is a user-visible Agent
-        # choice. Preserve it at session scope so entering another child's
-        # isolated branch continues with the same member, while that branch's
-        # facts/forms/Skill state remain local.
+        cross_profile = bool(switch.get("cross_profile"))
+        # A same-branch confirmed handoff/tool-bar selection is a user-visible
+        # Agent choice and persists at session scope.  A cross-child card is
+        # intentionally different: it authorizes the target member only for
+        # the execution branch, while facts/forms/Skill state stay local.
         set_selection = getattr(context, "set_session_agent_selection", None)
-        if callable(set_selection):
+        if callable(set_selection) and not cross_profile:
             set_selection(
                 expert_team_id=team.team_id,
                 expert_id=member.expert_id,
                 selection_source="handoff_card" if source in {"team_handoff", "team_handoff_ack", "team_handoff_ack_recovered"} else "manual",
             )
+        if cross_profile:
+            context.session_meta["branch_expert_override"] = {
+                "expert_team_id": team.team_id,
+                "expert_id": member.expert_id,
+                "source": "cross_profile_handoff",
+                "source_profile_id": switch.get("source_profile_id"),
+                "source_message_id": switch.get("source_message_id"),
+            }
         context.session_meta["team_handoff_visible_user_message"] = str(
             switch.get("visible_user_message") or f"@{member.mention_name}"
         )
@@ -1400,6 +1409,9 @@ class AgentScopeExpertRuntime:
                 "target_expert_id": member.expert_id,
                 "expert_team_id": team.team_id,
                 "source": source,
+                "source_profile_id": switch.get("source_profile_id"),
+                "execution_profile_id": switch.get("execution_profile_id"),
+                "cross_profile": cross_profile,
             }
         state = context.skill_states.setdefault(AGENT_RUNTIME_STATE_KEY, {})
         if isinstance(state, dict):
@@ -1409,6 +1421,9 @@ class AgentScopeExpertRuntime:
             "expert_id": member.expert_id,
             "source": source,
             "from_expert_id": str(switch.get("from_expert_id") or ""),
+            "source_profile_id": switch.get("source_profile_id"),
+            "execution_profile_id": switch.get("execution_profile_id"),
+            "cross_profile": cross_profile,
         })
         excerpt = str(switch.get("conversation_excerpt") or "").strip()
         if is_handoff_source:

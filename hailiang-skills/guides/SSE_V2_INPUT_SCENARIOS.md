@@ -192,6 +192,33 @@ post_stream
 `context_activation:"auto"` 时服务端会恢复/创建 B 分支并继承 session 的当前 Agent；不要在
 `input` 传 `profile_id`。
 
+## 6.1 切换孩子时点击原孩子产生的专家转交卡
+
+卡片的 `INNER_INPUT` 不需要改写。仅将外层 `CONTEXT_DATA` 改为实际执行孩子 B；服务端会把
+卡片作为授权记录，在 B 分支由目标专家回答卡片对应的原问题。回答只读取 B 的档案、Facts 和
+对话历史，不混入 A 的上下文。响应新增的 `source_profile_id`、`execution_profile_id`、
+`cross_profile` 仅用于审计，旧前端可忽略。
+
+```bash
+# 假定上一轮在孩子 A 已返回 active 转交卡；三个变量都取自该卡片所在 SSE state。
+CONTEXT_DATA='{"user_id":"manual-test-user","profile_id":"profile_child_b","student_name":"小明"}'
+SOURCE_MESSAGE_ID='msg_handoff_from_child_a'
+TARGET_EXPERT_ID='family_education_expert'
+CURRENT_EXPERT_ID='coordinator_expert_id_from_card_state'
+RUN_ID="run-$(date +%s)-$RANDOM"
+INNER_INPUT=$(jq -nc \
+  --arg source_message_id "$SOURCE_MESSAGE_ID" \
+  --arg target_expert_id "$TARGET_EXPERT_ID" \
+  --arg current_expert_id "$CURRENT_EXPERT_ID" '{
+    action: "confirm_team_handoff", context_scope: "profile", source: "team_handoff",
+    source_message_id: $source_message_id, target_expert_id: $target_expert_id,
+    expert_context: {
+      expert_team_id: "student_growth_expert_team", expert_id: $current_expert_id, operation: "continue"
+    }, enable_thinking: false, return_reasoning: false
+  }')
+post_stream
+```
+
 ## 7. 同一 Session 切换到另一位孩子，并在同一条消息指定团内专家
 
 ```bash

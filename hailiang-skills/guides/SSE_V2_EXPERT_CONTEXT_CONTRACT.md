@@ -11,7 +11,8 @@
 
 - 同一个 `session_id` 可以分别保存“未绑定孩子”、孩子 A、孩子 B 的分支。
   每个分支独立保存模型历史、Facts、当前 Skill、表单和交互卡；专家团及最后实际承接
-  的专家是 session 级选择，会在切换孩子后延续。
+  的专家通常是 session 级选择，会在切换孩子后延续。例外是跨孩子点击专家转交卡：卡片
+  只在目标孩子分支绑定被选专家，不改变其他孩子或 session 级选择。
 - 本轮孩子身份只能来自 BFF 写入的 `context_data.profile_id`。`input` 中不得
   出现 `profile_id`。
 - 除 `stop` 外，每个动作都必须带 `expert_context`，且**固定同时包含**
@@ -212,7 +213,7 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
   "context_scope": "profile",
   "content": "继续说说具体怎么做。",
   "source": "chat",
-  "expert_context": {"expert_team_id": "student_growth_expert_team", "expert_id": "career_plan_expert", "operation": "continue"}
+  "expert_context": {"expert_team_id": null, "expert_id": null, "operation": "continue"}
 }
 ```
 
@@ -266,8 +267,9 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 }
 ```
 
-服务端会校验卡片来源、卡片活跃状态、当前团队及目标候选资格；不能用旧卡、其他孩子的卡或手工伪造
-的目标 ID 切换。
+服务端会校验卡片来源、卡片活跃状态、当前团队及目标候选资格；不能用旧卡或手工伪造
+的目标 ID 切换。外层 `context_data.profile_id` 始终是本轮执行孩子：若它不同于卡片来源孩子，
+服务端只把卡片作为授权记录，在目标孩子分支激活候选专家，不读取来源孩子的档案、Facts、表单或历史。
 
 ### 4.3 切换孩子时：不选专家、选专家、切团队
 
@@ -279,10 +281,10 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 
 `input.profile_id` 不能出现。以下三种请求都可直接作为这次切换的同一条 `chat` 请求：
 
-`switch_team_member` 与 `confirm_team_handoff` 不是 `chat`，其上下文激活固定为严格模式：它们
-**不能**在同一条请求中切换孩子。前端须先以 `chat + context_activation:"auto"` 切入目标孩子并收到
-权威 `state`，再在该孩子范围内点击工具栏或转交卡；否则返回
-`409 CONTEXT_ACTIVATION_REQUIRED`。
+`switch_team_member` 不是 `chat`，不能在同一条请求中切换孩子。`confirm_team_handoff` 则保持内层
+`input` 不变，并允许由外层 `context_data.profile_id` 指定执行孩子；前端无需先预检或改写卡片参数。
+当执行孩子与卡片来源不同，响应会补充 `source_profile_id`、`execution_profile_id` 与
+`cross_profile:true` 供审计，旧前端可忽略这些新增字段。
 
 | 用户意图 | `source` | `EC` | 服务端行为 |
 | --- | --- | --- | --- |

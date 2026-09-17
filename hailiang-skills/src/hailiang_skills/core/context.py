@@ -230,10 +230,27 @@ class SessionContext:
         form, handoff card or active Skill created under another Agent can no
         longer be submitted against the new execution owner.
         """
-        selection_present = isinstance(self.session_meta.get("session_agent_selection"), dict)
-        selection = self.session_agent_selection()
-        team_id = selection["expert_team_id"]
-        expert_id = selection["expert_id"]
+        # A cross-child handoff is authorized by a card produced in another
+        # branch, but its selected Expert must belong only to the execution
+        # branch.  Prefer that branch-local override for ordinary
+        # ``null/null/continue`` follow-ups; otherwise a later chat would
+        # incorrectly restore the session-wide Agent and undo the handoff.
+        override = self.session_meta.get("branch_expert_override")
+        if isinstance(override, dict):
+            team_id = str(override.get("expert_team_id") or "").strip() or None
+            expert_id = str(override.get("expert_id") or "").strip() or None
+            if team_id or expert_id:
+                selection_present = True
+                selection_source = str(override.get("source") or "cross_profile_handoff").strip()
+            else:
+                selection_present = False
+                selection_source = ""
+        else:
+            selection_present = isinstance(self.session_meta.get("session_agent_selection"), dict)
+            selection = self.session_agent_selection()
+            team_id = selection["expert_team_id"]
+            expert_id = selection["expert_id"]
+            selection_source = selection["selection_source"]
         if not selection_present:
             return False
         current_team_id = str(self.session_meta.get("expert_team_id") or "").strip() or None
@@ -245,11 +262,11 @@ class SessionContext:
             self.session_meta["expert_team_id"] = team_id
             self.session_meta["expert_id"] = expert_id
             self.session_meta["active_expert_id"] = expert_id
-            self.session_meta["expert_selection_source"] = selection["selection_source"]
+            self.session_meta["expert_selection_source"] = selection_source
         else:
             for key in ("expert_team_id", "expert_id", "active_expert_id", "expert_requested_skill_id", "pending_team_handoff"):
                 self.session_meta.pop(key, None)
-            self.session_meta["expert_selection_source"] = selection["selection_source"]
+            self.session_meta["expert_selection_source"] = selection_source
         if not changed:
             return False
         self.abandon_active_interactions_for_expert_change(

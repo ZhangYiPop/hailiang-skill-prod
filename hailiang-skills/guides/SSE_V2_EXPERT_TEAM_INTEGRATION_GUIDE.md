@@ -31,7 +31,7 @@
    明确命中一个专项时必须生成仅含该成员的 `team_handoff` 卡片；同时命中多个专项时生成 2～3 位候选。
    纯问候、泛泛迷茫或专项信息不足时才由协调专家直接澄清。上一轮卡片未点击也不阻止再次建议。
 4. `team_handoff` 是唯一的专家移交入口。前端不能仅从回复正文里的“建议转交”文字判断或自行切换专家；服务端工具失败、未知候选或 ReAct 迭代上限时，也会回退到新的受控卡片，或由主协调专家结合最近对话动态生成澄清回复，不会使用固定分类话术，也不会把框架诊断或“本轮没有完成处理”当作移交结果。
-5. 用户点击转交卡后，前端发送 `confirm_team_handoff`；服务端校验该卡仍有效、目标专家仍属于当前团队后，才切换专家并让目标专家回答原问题。对于**唯一候选**卡片，用户也可以直接发送普通 `chat + continue` 的短确认文字（如“好的”“继续”“请继续”）；前端无需额外识别或调用新接口。
+5. 用户点击转交卡后，前端发送 `confirm_team_handoff`；服务端校验该卡仍有效、目标专家仍属于当前团队后，才切换专家并让目标专家回答原问题。文字“好的”“继续”“请继续”不会切换专家：服务端会使旧卡失效并给出一张新的可确认卡，必须由用户明确点击该卡。
 6. 文本确认采用保守精确匹配：包含新业务问题、否定或犹豫（如“但是”“先不用”“我再想想”）的消息不会自动转交。多候选卡片收到“继续”也绝不自动选人，服务端会保留并重新推送卡片要求用户点击选择。
 7. 服务端会先保存结构化转交意图，再渲染卡片。若卡片写入或 SSE 推送失败，下一条有效的单候选确认仍会恢复转交；前端只以权威 SSE 状态刷新，不应从正文猜测专家或自行拼装目标 ID。
    转交正文不会使用“上方/下方/这里的卡片”等布局方位词；前端可以按自己的界面结构放置候选交互。
@@ -329,8 +329,10 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
 | 切到 B，不重新选择 | `expert_team_id:null` + `expert_id:null` + `operation:"continue"` | `chat` | B 继承 session 当前实际承接专家。 |
 
 上述三种都必须使用 `action="chat"` 和 `context_activation="auto"`。不能为了“切孩子后换成员”
-发送 `switch_team_member`，也不能携带 A 的 `source_message_id` 发送 `confirm_team_handoff`；这两种
-动作只允许在已激活的当前孩子范围执行，跨孩子返回 `409 CONTEXT_ACTIVATION_REQUIRED`。
+发送 `switch_team_member`；该动作只允许在已激活的当前孩子范围执行。例外是用户点击既有专家
+转交卡：`confirm_team_handoff` 的内层 `input` 保持卡片产生时的内容不变，BFF 只把顶层
+`context_data.profile_id` 改为执行孩子 B。服务端以 A 的卡片作为授权记录，在 B 分支绑定目标
+专家并回答原问题，但不会把 A 的档案、Facts、表单或历史传给 B 的 Runtime。
 
 #### 孩子档案结合提示：`context_notice`
 
@@ -391,14 +393,17 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
   }'
 ```
 
-服务端会校验卡片属于当前孩子分支、仍为 active、目标专家仍属于该团队。成功后历史会新增
+服务端会校验卡片仍为 active、目标专家仍属于该团队。成功后历史会新增
 展示事件 `@家庭教育专家`（它不是模型的后续 `chat.content`），并以新 state 返回
-`expert_id="family_education_expert"`、`transition.source="team_handoff"` 和递增后的
-`selection_version`。
+`expert_id="family_education_expert"` 与 `transition.source="team_handoff"`。同一孩子内的
+确认会更新 session 级选择及其 `selection_version`；跨孩子确认只绑定本次执行孩子分支，不改变
+其他孩子和 session 级选择。
 
-若用户先切换到孩子 B，A 的卡片不能在 B 中确认：不传 A 的 `source_message_id`，也不发送
-`confirm_team_handoff`。应按本节的 `chat` 规则先进入 B；B 只有在自己范围内存在
-`team_handoff.status="active"` 的卡片时，才可确认 B 自己卡片中的候选。
+若用户先切换到孩子 B，仍可点击 A 产生的卡片：内层 `input` 不需要改写，BFF 只在顶层传
+孩子 B 的 `context_data.profile_id` 与 `student_name`。响应会额外带
+`team_handoff.source_profile_id`、`team_handoff.execution_profile_id`、
+`team_handoff.cross_profile:true`；旧前端可忽略它们。卡片只授权目标专家接管，B 的回答仅使用
+B 自己的上下文；A 卡片会标记为已选择，不能重复提交。
 
 ### 4.7 成员专家承接后的普通追问
 
@@ -416,10 +421,11 @@ curl --no-buffer -N -X POST "http://127.0.0.1:8013/api/v2/sessions/chat/stream" 
   }'
 ```
 
-### 4.8 文本确认唯一候选转交（无需新接口）
+### 4.8 文字确认不会切换专家
 
 卡片尚未点击时，用户若发送短同意语，仍使用普通聊天请求；不要携带卡片 ID、专家 ID，也不要把
-“继续”改写成 `confirm_team_handoff`。服务端在处理自由文本前检查当前卡片或可恢复转交意图。
+“继续”改写成 `confirm_team_handoff`。服务端不会据此切换专家、不会调用模型，而会作废旧卡并
+生成新的可点击卡，同时提示用户需通过专家转交卡片确认。
 
 ```bash
 curl -N -X POST "$BASE_URL/api/v2/sessions/chat/stream" \
@@ -430,9 +436,8 @@ curl -N -X POST "$BASE_URL/api/v2/sessions/chat/stream" \
   }'
 ```
 
-成功后，`expert.transition.source` 为 `team_handoff_ack`；若来自卡片未成功呈现时保存的意图，则为
-`team_handoff_ack_recovered`。时间线仍展示用户实际发送的确认文字，但该条作为
-`team_handoff_confirmation` 排除在后续模型语义历史之外；目标专家收到的仍是原始问题、协调原因和必要摘录。
+结果保持当前协调专家不变；时间线保留用户的确认文字和卡片失效/新卡生成关系，但该条作为
+`team_handoff_confirmation` 排除在后续模型语义历史之外。
 
 ### 4.9 输入参数速查与不可做的事
 

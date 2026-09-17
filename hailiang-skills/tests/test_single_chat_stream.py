@@ -580,6 +580,30 @@ def test_session_agent_selection_clears_an_old_child_agent_on_switch() -> None:
     assert context.interaction_state["active_skill"] == "general_chat"
 
 
+def test_cross_child_handoff_override_survives_null_continue() -> None:
+    """A card can select an Expert only for its execution child branch."""
+    context = SessionContext(session_id="sess_cross_handoff", user_id="u1", profile_id="p2")
+    context.set_session_agent_selection(
+        expert_team_id="team_global",
+        expert_id="expert_global",
+        selection_source="manual",
+    )
+    context.session_meta["branch_expert_override"] = {
+        "expert_team_id": "team_from_handoff",
+        "expert_id": "expert_from_handoff",
+        "source": "cross_profile_handoff",
+        "source_profile_id": "p1",
+    }
+
+    assert context.apply_session_agent_selection() is True
+    assert context.session_meta["expert_team_id"] == "team_from_handoff"
+    assert context.session_meta["active_expert_id"] == "expert_from_handoff"
+    # The next ordinary null/null/continue must keep the execution-branch
+    # selection rather than restoring the session-wide Agent.
+    assert context.apply_session_agent_selection() is False
+    assert context.session_meta["active_expert_id"] == "expert_from_handoff"
+
+
 def test_team_interaction_commit_retries_from_a_fresh_session_snapshot() -> None:
     """A card confirmation must not expose an internal optimistic-lock retry."""
 

@@ -308,6 +308,7 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
             expert_id=None,
             selection_source="clear_expert",
         )
+        context.session_meta.pop("branch_expert_override", None)
         changed = context.apply_session_agent_selection()
         context.session_meta.pop("pending_team_handoff_intent", None)
         context.event_trace.append(make_event("expert_mode_cleared", {
@@ -346,6 +347,7 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
         context.session_meta["expert_id"] = selected_expert_id
         context.session_meta["active_expert_id"] = selected_expert_id
         context.session_meta["expert_selection_source"] = "manual_team"
+        context.session_meta.pop("branch_expert_override", None)
         context.set_session_agent_selection(
             expert_team_id=team.team_id,
             expert_id=selected_expert_id,
@@ -386,6 +388,7 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
         context.session_meta["expert_id"] = definition.agent_id
         context.session_meta["active_expert_id"] = definition.agent_id
         context.session_meta["expert_selection_source"] = "manual"
+        context.session_meta.pop("branch_expert_override", None)
         context.set_session_agent_selection(
             expert_team_id=team_id or None,
             expert_id=definition.agent_id,
@@ -634,22 +637,49 @@ def _conversation_excerpt(context, *, end_index: int | None = None) -> str:
     return "\n".join(excerpt_lines)[-4000:]
 
 
+def _find_team_handoff_source(context, source_message_id: str) -> tuple[dict, list[dict], str | None, str | None, dict | None] | None:
+    """Find a handoff card in the active or an archived child branch.
+
+    The card remains the authorization record even when the caller chose a
+    different target child through top-level ``context_data.profile_id``.
+    """
+    candidates: list[tuple[list[dict], str | None, str | None, dict | None]] = [
+        (context.messages, context.profile_id, context.profile_name, None),
+    ]
+    for profile_id, branch in (context.profile_branches or {}).items():
+        if not isinstance(branch, dict) or str(profile_id or "") == str(context.profile_id or ""):
+            continue
+        messages = branch.get("messages")
+        if isinstance(messages, list):
+            candidates.append((messages, str(profile_id or "") or None, branch.get("profile_name"), branch))
+    for messages, profile_id, profile_name, branch in candidates:
+        source = next((
+            message for message in messages
+            if isinstance(message, dict)
+            and str(message.get("message_id") or "") == source_message_id
+            and message.get("role") == "assistant"
+        ), None)
+        if source is not None:
+            return source, messages, profile_id, profile_name, branch
+    return None
+
+
 def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffInput) -> dict:
-    team_id = str(context.session_meta.get("expert_team_id") or "").strip()
-    _experts, teams = _snapshot_expert_registries(context, orchestrator)
-    team = teams.get(team_id) if teams is not None else None
-    if team is None:
-        raise HTTPException(status_code=409, detail="EXPERT_TEAM_NOT_ACTIVE")
-    source = next((
-        message for message in context.messages
-        if str(message.get("message_id") or "") == input_data.source_message_id and message.get("role") == "assistant"
-    ), None)
-    if source is None:
+    located = _find_team_handoff_source(context, input_data.source_message_id)
+    if located is None:
         raise HTTPException(status_code=404, detail="TEAM_HANDOFF_SOURCE_NOT_FOUND")
+    source, source_messages, source_profile_id, _source_profile_name, source_branch = located
+    execution_profile_id = str(context.profile_id or "") or None
+    cross_profile = source_profile_id != execution_profile_id
     handoff = source.get("team_handoff")
     if not isinstance(handoff, dict):
         metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
         handoff = metadata.get("team_handoff")
+    team_id = str(handoff.get("team_id") or "").strip() if isinstance(handoff, dict) else ""
+    _experts, teams = _snapshot_expert_registries(context, orchestrator)
+    team = teams.get(team_id) if teams is not None else None
+    if team is None:
+        raise HTTPException(status_code=409, detail="EXPERT_TEAM_NOT_ACTIVE")
     if not isinstance(handoff, dict) or str(handoff.get("team_id") or "") != team.team_id:
         raise HTTPException(status_code=409, detail="TEAM_HANDOFF_NOT_ACTIVE")
     candidates = handoff.get("candidates") if isinstance(handoff.get("candidates"), list) else []
@@ -672,24 +702,50 @@ def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffI
         raise HTTPException(status_code=409, detail="TEAM_HANDOFF_NOT_ACTIVE") from None
     handoff["status"] = "selected"
     handoff["selected_target_expert_id"] = input_data.target_expert_id
+    handoff.update({
+        "source_profile_id": source_profile_id,
+        "execution_profile_id": execution_profile_id,
+        "cross_profile": cross_profile,
+    })
     metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
     if isinstance(metadata.get("team_handoff"), dict):
         metadata["team_handoff"].update({
             "status": "selected",
             "selected_target_expert_id": input_data.target_expert_id,
+            "source_profile_id": source_profile_id,
+            "execution_profile_id": execution_profile_id,
+            "cross_profile": cross_profile,
         })
+    context.session_meta["expert_team_id"] = team_id
     context.session_meta["active_expert_id"] = input_data.target_expert_id
     context.session_meta["expert_id"] = input_data.target_expert_id
-    context.session_meta["expert_selection_source"] = "handoff_card"
-    context.set_session_agent_selection(
-        expert_team_id=team_id,
-        expert_id=input_data.target_expert_id,
-        selection_source="handoff_card",
-    )
+    context.session_meta["expert_selection_source"] = "cross_profile_handoff" if cross_profile else "handoff_card"
+    if cross_profile:
+        # Cross-child confirmation is an authorization transfer, not a
+        # session-wide Agent preference change.  It applies only to the
+        # execution child selected by context_data.profile_id.
+        context.session_meta["branch_expert_override"] = {
+            "expert_team_id": team_id,
+            "expert_id": input_data.target_expert_id,
+            "source": "cross_profile_handoff",
+            "source_profile_id": source_profile_id,
+            "source_message_id": input_data.source_message_id,
+        }
+    else:
+        context.set_session_agent_selection(
+            expert_team_id=team_id,
+            expert_id=input_data.target_expert_id,
+            selection_source="handoff_card",
+        )
     context.session_meta.pop("pending_team_handoff", None)
+    if isinstance(source_branch, dict):
+        branch_meta = source_branch.get("session_meta")
+        if isinstance(branch_meta, dict):
+            branch_meta.pop("pending_team_handoff", None)
+            branch_meta.pop("pending_team_handoff_intent", None)
     source_user_message = ""
-    source_index = context.messages.index(source)
-    for message in reversed(context.messages[:source_index]):
+    source_index = source_messages.index(source)
+    for message in reversed(source_messages[:source_index]):
         if message.get("role") == "user" and not (message.get("metadata") or {}).get("hidden"):
             source_user_message = str(message.get("content") or "")
             break
@@ -702,7 +758,12 @@ def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffI
         "source_user_message": source_user_message,
         "coordinator_reason": str(handoff.get("reason") or ""),
         "source_message_id": input_data.source_message_id,
-        "conversation_excerpt": _conversation_excerpt(context, end_index=source_index),
+        # Do not carry source-child history into another child's runtime.
+        # The original question is the only permitted cross-branch payload.
+        "conversation_excerpt": "" if cross_profile else _conversation_excerpt(context, end_index=source_index),
+        "source_profile_id": source_profile_id,
+        "execution_profile_id": execution_profile_id,
+        "cross_profile": cross_profile,
     }
     return switch_context
 
@@ -834,7 +895,15 @@ def build_chat_stream_router(
             existing_context = None
         if existing_context is not None and existing_context.user_id != request.context_data.user_id:
             raise HTTPException(status_code=409, detail="SESSION_ID_CONFLICT")
-        requested_context_activation = input_data.context_activation if isinstance(input_data, ChatInput) else "strict"
+        # A handoff card can authorize an Expert for the target child supplied
+        # by context_data.  The card itself is looked up safely by message ID
+        # after the target branch is active, so this remains input-compatible
+        # with existing clients.
+        requested_context_activation = (
+            input_data.context_activation
+            if isinstance(input_data, ChatInput)
+            else ("auto" if isinstance(input_data, ConfirmTeamHandoffInput) else "strict")
+        )
         requested_target_key = str(target_profile_id or "")
         if (
             existing_context is not None
@@ -907,9 +976,15 @@ def build_chat_stream_router(
         profile_switched = bool(context.session_meta.get("_profile_switched"))
         profile_branch_created = bool(context.session_meta.get("_profile_branch_created"))
         automatic_context_activation = bool(
-            isinstance(input_data, ChatInput)
-            and input_data.context_activation == "auto"
-            and (session_created or profile_switched or profile_branch_created)
+            (
+                isinstance(input_data, ChatInput)
+                and input_data.context_activation == "auto"
+                and (session_created or profile_switched or profile_branch_created)
+            )
+            or (
+                isinstance(input_data, ConfirmTeamHandoffInput)
+                and profile_switched
+            )
         )
 
         # Every action carries the client-rendered expert state.  A normal
@@ -917,7 +992,12 @@ def build_chat_stream_router(
         # entered a different branch. In that case this very request is the
         # context preflight: restore the session-wide Agent selection first,
         # return it as authoritative state, and never make the client retry.
-        if automatic_context_activation and input_data.expert_context.operation == "continue":
+        if isinstance(input_data, ConfirmTeamHandoffInput):
+            # The card is the authority for this action.  A cross-child click
+            # may carry the old branch's rendered expert_context, which must
+            # not reject activation of the target child before card validation.
+            expert_context_changed = False
+        elif automatic_context_activation and input_data.expert_context.operation == "continue":
             expert_context_changed = context.apply_session_agent_selection()
         else:
             expert_context_changed = _apply_expert_context_operation(context, orchestrator, input_data)
@@ -962,6 +1042,9 @@ def build_chat_stream_router(
                     "team_id": str(current_context.session_meta.get("expert_team_id") or ""),
                     "expert_id": input_data.target_expert_id,
                     "source_message_id": input_data.source_message_id,
+                    "source_profile_id": team_member_switch.get("source_profile_id"),
+                    "execution_profile_id": team_member_switch.get("execution_profile_id"),
+                    "cross_profile": bool(team_member_switch.get("cross_profile")),
                 })
                 # Keep the event in the same optimistic write as the selected
                 # card and active-expert state.  The file index is appended
@@ -981,6 +1064,15 @@ def build_chat_stream_router(
                 lease = runner.reserve_turn(request.session_id, context.user_id, run_id=request.run_id)
             except CapacityExceededError as exc:
                 raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "5"}) from exc
+            handoff_state = {
+                "status": "selected",
+                "team_id": str(team_member_switch.get("team_id") or ""),
+                "source_message_id": input_data.source_message_id,
+                "selected_target_expert_id": input_data.target_expert_id,
+                "source_profile_id": team_member_switch.get("source_profile_id"),
+                "execution_profile_id": team_member_switch.get("execution_profile_id"),
+                "cross_profile": bool(team_member_switch.get("cross_profile")),
+            }
             stream = runner.stream_message(
                 request.session_id,
                 context.user_id,
@@ -991,7 +1083,10 @@ def build_chat_stream_router(
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
                 source_endpoint="sessions/chat/stream",
-                initial_events=[("profile_context", profile_context_event)],
+                initial_events=[
+                    ("profile_context", profile_context_event),
+                    ("team_handoff", handoff_state),
+                ],
             )
         elif isinstance(input_data, SwitchTeamMemberInput):
             def apply_member_switch(current_context):
