@@ -124,6 +124,11 @@ from hailiang_skills.skill_runtime.runtime_router import (  # noqa: E402
 )
 from hailiang_skills.skill_runtime.session import run_status_hook_if_present  # noqa: E402
 from hailiang_skills.skill_runtime.session import build_prompt_assembly  # noqa: E402
+from hailiang_skills.core.fact_prompt_projection import (  # noqa: E402
+    build_effective_fact_ledger,
+    response_style_instruction,
+    visible_fact_recap_risk,
+)
 from hailiang_skills.skill_runtime.skill_registry import SkillRegistry as RuntimeSkillRegistry  # noqa: E402
 from hailiang_skills.skill_runtime.skill_registry import load_local_skill_registry  # noqa: E402
 from hailiang_skills.skill_runtime.state_tracker import ensure_runtime_state, mark_route_interruption  # noqa: E402
@@ -140,6 +145,62 @@ REFERENCE_PREFLIGHT_TIMEOUT_S = max(
 REFERENCE_PREFLIGHT_MAX_TOKENS = max(
     128, int(os.getenv("HAILIANG_REFERENCE_PREFLIGHT_MAX_TOKENS", "512") or 512)
 )
+
+
+def _fact_prompt_projection_event(
+    state: SessionState,
+    *,
+    skill_id: str,
+    resume_pending_only: bool = False,
+) -> dict[str, Any]:
+    progress_by_skill = state.status_flags.get("runtime_skill_progress", {})
+    progress = progress_by_skill.get(skill_id, {}) if isinstance(progress_by_skill, dict) else {}
+    _ledger, diagnostics = build_effective_fact_ledger(
+        global_facts=state.global_facts,
+        current_skill_facts=state.skill_facts.get(skill_id, {}),
+        memory_facts={
+            "conversation_memory": (state.conversation_memory or {}).get("facts", {}),
+            "legacy_collected_info": state.collected_info,
+        },
+        skill_progress=progress,
+    )
+    return make_event("fact_prompt_projection", {
+        "skill_id": skill_id,
+        "resume_pending_only": resume_pending_only,
+        **diagnostics,
+    })
+
+
+def _fact_recap_risk_event(state: SessionState, *, skill_id: str, reply: str) -> dict[str, Any]:
+    progress_by_skill = state.status_flags.get("runtime_skill_progress", {})
+    progress = progress_by_skill.get(skill_id, {}) if isinstance(progress_by_skill, dict) else {}
+    ledger, _diagnostics = build_effective_fact_ledger(
+        global_facts=state.global_facts,
+        current_skill_facts=state.skill_facts.get(skill_id, {}),
+        memory_facts={
+            "conversation_memory": (state.conversation_memory or {}).get("facts", {}),
+            "legacy_collected_info": state.collected_info,
+        },
+        skill_progress=progress,
+    )
+    return make_event("fact_recap_risk", {"skill_id": skill_id, **visible_fact_recap_risk(reply, ledger)})
+
+
+def _resume_continuity_instruction(state: SessionState, skill_id: str) -> str:
+    """Resume a branch through unresolved work, never a profile recap."""
+    progress_by_skill = state.status_flags.get("runtime_skill_progress", {})
+    progress = progress_by_skill.get(skill_id, {}) if isinstance(progress_by_skill, dict) else {}
+    pending_topics = progress.get("pending_topics", []) if isinstance(progress, dict) else []
+    pending_topics = [str(item) for item in pending_topics if str(item).strip()][:4]
+    if pending_topics:
+        return (
+            "This child branch was just resumed. Continue only these unresolved items: "
+            f"{'; '.join(pending_topics)}. Do not recap confirmed facts or profile details."
+        )
+    return (
+        "This child branch was just resumed. Answer the current request directly; do not recap confirmed facts, "
+        "profile details, or the prior conversation."
+    )
 
 
 def _reference_preflight(
@@ -522,6 +583,7 @@ class _RuntimePlannerLLM:
             "需要任何 reference、resource、package、script 或工具时 assistant_message 返回空字符串，"
             "等待服务端加载或执行后再生成正文；完全不需要依赖和工具时才直接生成完整 assistant_message。\n\n"
             "assistant_message 必须是面向用户的最终正文，不要包含内部规划、JSON 或文件名。\n"
+            f"{response_style_instruction()}\n"
             "如果当前 Skill 启用了 Native Questionnaire Protocol，额外返回 questionnaire_response 对象，"
             "其内容必须严格遵循该协议；普通回答时 questionnaire_response 返回 null。\n\n"
             "skill_progress 必须始终是对象，用于保存当前 Skill 私有的对话进度，格式为"
@@ -3063,6 +3125,7 @@ class MainPlannerOrchestrator:
                     "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题。"
                     "assistant_message 应直接推进当前对话：已有明确答案时不要再次复述或确认，"
                     "除非该答案存在矛盾、时间变化或确有必要消歧；不需要表单时直接回答，不要添加历史事实摘要。"
+                    f"{response_style_instruction()}"
                     "不得虚构、改写或直接在正文中提问。表单提交即表示用户确认，若已有信息足以"
                     "完成当前 goal，必须返回 action=complete、question_ids=[] 和可展示的最终结论，"
                     "不得再问“信息是否准确”、不得承诺稍后给结果。"
@@ -3200,7 +3263,12 @@ class MainPlannerOrchestrator:
                         ],
                         "questionnaire_plan": decision.get("questionnaire_plan") or questionnaire_plan_summary(bundle, state),
                     },
-                )
+                ),
+                _fact_recap_risk_event(
+                    state,
+                    skill_id=bundle.contract.skill_id or bundle.root_name,
+                    reply=reply,
+                ),
             ],
         )
         questionnaire_callback = (context.session_meta or {}).get("questionnaire_callback")
@@ -3469,7 +3537,12 @@ class MainPlannerOrchestrator:
                         "first_delta_ms": first_delta_ms,
                         "request_purpose": "skill_entry_response",
                     },
-                )
+                ),
+                _fact_recap_risk_event(
+                    state,
+                    skill_id=state.active_skill_id or bundle.contract.skill_id or bundle.root_name,
+                    reply=reply,
+                ),
             ],
         )
         return reply, ""
@@ -3577,7 +3650,12 @@ class MainPlannerOrchestrator:
                         "fallback_used": bool(invalid_replies and not questionnaire_reply_is_valid(raw_reply)),
                         "deferred_promotions": deferred_promotions,
                     },
-                )
+                ),
+                _fact_recap_risk_event(
+                    state,
+                    skill_id=bundle.contract.skill_id or bundle.root_name,
+                    reply=reply,
+                ),
             ],
         )
         return reply, ""
@@ -3657,6 +3735,7 @@ class MainPlannerOrchestrator:
                         )
                         else []
                     ),
+                    _fact_recap_risk_event(state, skill_id=skill_name, reply=reply),
                 ],
             )
             self._record_runtime_prompt(
@@ -3821,6 +3900,7 @@ class MainPlannerOrchestrator:
                     )
                     else []
                 ),
+                _fact_recap_risk_event(state, skill_id=skill_name, reply=reply),
             ],
         )
         self._record_runtime_prompt(
@@ -3960,12 +4040,18 @@ class MainPlannerOrchestrator:
             "trimmed_sections": budget_status["trimmed_sections"],
             "current_message_rejected": budget_status["current_message_rejected"],
         })])
-        if bool((getattr(context, "session_meta", {}) or {}).get("resume_recap_pending")):
-            memory_context["continuity_instruction"] = (
-                "This child branch was just resumed. Begin the next answer with a concise one- or two-sentence Chinese recap "
-                "of the prior topic, unresolved items, and the restored Skill/expert state, then answer the current request."
+        resume_pending = bool((getattr(context, "session_meta", {}) or {}).get("resume_recap_pending"))
+        if resume_pending:
+            memory_context["continuity_instruction"] = _resume_continuity_instruction(
+                state,
+                active_skill_id or MAIN_PLANNER_ID,
             )
         state.conversation_memory = memory_context
+        self._record_events(context, [_fact_prompt_projection_event(
+            state,
+            skill_id=active_skill_id or MAIN_PLANNER_ID,
+            resume_pending_only=resume_pending,
+        )])
         memory_summary = str(memory_context.get("summary") or "")
         memory_facts = memory_context.get("facts") if isinstance(memory_context.get("facts"), dict) else {}
         memory_recent = (

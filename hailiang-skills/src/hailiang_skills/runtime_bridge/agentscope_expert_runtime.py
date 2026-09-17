@@ -16,6 +16,11 @@ from hailiang_skills.runtime_bridge.expert_team_bundle import ExpertTeamDefiniti
 from hailiang_skills.runtime_bridge.expert_models import ExpertMember, SkillObservation
 from hailiang_skills.runtime_bridge.native_skill_executor import NativeSkillExecutor
 from hailiang_skills.runtime_bridge.agent_frontmatter import AgentFrontMatter, AgentRoutingRule, parse_agent_frontmatter
+from hailiang_skills.core.fact_prompt_projection import (
+    build_effective_fact_ledger,
+    response_style_instruction,
+    visible_fact_recap_risk,
+)
 
 
 AGENT_RUNTIME_STATE_KEY = "agent_runtime"
@@ -731,9 +736,27 @@ class AgentScopeExpertRuntime:
                 current_message=user_message,
                 activity_state={"expert_id": definition.agent_id},
             )
+        effective_fact_values = self._read_effective_facts(context)
+        runtime_skill_state = getattr(context, "skill_states", {}).get("skill_runtime", {})
+        runtime_skill_state = runtime_skill_state if isinstance(runtime_skill_state, dict) else {}
+        active_skill_id = str(runtime_skill_state.get("active_skill_id") or "")
+        current_skill_facts = (
+            (runtime_skill_state.get("skill_facts") or {}).get(active_skill_id, {})
+            if isinstance(runtime_skill_state.get("skill_facts"), dict)
+            else {}
+        )
+        ledger, projection = build_effective_fact_ledger(
+            global_facts=effective_fact_values,
+            current_skill_facts=current_skill_facts,
+            memory_facts=composed_memory.get("facts", {}),
+        )
+        self._event(context, "fact_prompt_projection", {
+            "expert_id": definition.agent_id,
+            **projection,
+        })
         effective_facts = json.dumps(
             {
-                "confirmed_facts": self._read_effective_facts(context),
+                "effective_fact_ledger": ledger,
                 "profile_candidate_archive": composed_memory.get("profile_candidate_archive", archive),
                 "conversation_summary": composed_memory.get("summary", ""),
             },
@@ -770,6 +793,7 @@ class AgentScopeExpertRuntime:
             "当用户表达了与孩子相关、可在未来复用但尚不应视为确定结论的特质、偏好或倾向时，可调用 record_candidate_fact 保存候选观察；"
             "必须使用简短语义键、忠实的证据摘要和 0 到 1 的置信度，不得把候选当作已确认事实。"
             "不得重复询问下方已经有明确值的资料（例如年级、学年）；只有资料缺失或存在冲突时才追问。\n"
+            f"{response_style_instruction()}\n"
             f"\n# 当前孩子的有效事实与候选档案\n{effective_facts}\n"
             "候选档案不是已确认事实；请只在当前问题确实相关时，以自然方式决定是否确认、更新或忽略，"
             "不得把候选内容直接当成结论，也不得照抄固定确认话术。\n"
@@ -796,6 +820,10 @@ class AgentScopeExpertRuntime:
             expert_id=definition.agent_id,
             expert_turn_id=str(state.get("turn_id") or ""),
         )
+        self._event(context, "fact_recap_risk", {
+            "expert_id": definition.agent_id,
+            **visible_fact_recap_risk(state["agent_reply"], ledger),
+        })
         self._event(context, "expert_agent_completed", {"expert_id": definition.agent_id, "tool_calls": state["budget"]["skill_calls"], "handoff_tool_calls": int(state.get("handoff_tool_calls") or 0), "structured_handoff": isinstance(state.get("team_handoff"), dict)})
 
     def _record_candidate_fact(
@@ -1728,6 +1756,7 @@ class AgentScopeExpertRuntime:
             f"你是 {definition.name}。现在可对用户作答，因为内部路由已确认不应调用授权 Skill。"
             "严格遵循 AGENT.md，不要复刻任何 Skill 的表单、计算或既定流程；不要提及内部路由、Skill 或系统。"
             "承接最近对话，避免重复已经收集的事实；只在真正缺一项关键信息时追问一个最小问题。\n"
+            f"{response_style_instruction()}\n"
             f"# AGENT.md\n{agent_rules}\n"
             f"# 已核验直答依据\n{decision.get('agent_policy_basis') or decision.get('direct_reply_reason') or '没有适用的授权 Skill'}\n"
             f"# 有效事实\n{json.dumps(self._read_effective_facts(context), ensure_ascii=False, default=str)}\n"
@@ -1741,6 +1770,15 @@ class AgentScopeExpertRuntime:
             raise AgentScopeRuntimeUnavailable(f"专家回复生成失败: {exc}") from exc
         if not reply:
             raise AgentScopeRuntimeUnavailable("专家回复生成失败：模型返回为空")
+        direct_ledger, _projection = build_effective_fact_ledger(
+            global_facts=self._read_effective_facts(context),
+            current_skill_facts={},
+            memory_facts={},
+        )
+        self._event(context, "fact_recap_risk", {
+            "expert_id": definition.agent_id,
+            **visible_fact_recap_risk(reply, direct_ledger),
+        })
         self._record_model_completion(
             context, result=None,
             metrics=client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {},

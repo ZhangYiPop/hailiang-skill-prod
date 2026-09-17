@@ -35,6 +35,7 @@ class PromptProgressiveLoadingTest(unittest.TestCase):
         self.assertEqual(assembly.core_prompt.count('"skill_id": "general_chat"'), 1)
         self.assertNotIn('"skill_id": "main_planner"', assembly.core_prompt)
         self.assertIn("Runtime Facts 中非空的事实已经由可信上游确认", assembly.core_prompt)
+        self.assertIn("事实呈现规则（平台最高优先级）", assembly.core_prompt)
 
     def test_known_grade_is_in_prompt_and_overrides_first_visit_question_template(self) -> None:
         registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
@@ -53,6 +54,26 @@ class PromptProgressiveLoadingTest(unittest.TestCase):
 
         self.assertIn('"grade": "高一"', assembly.core_prompt)
         self.assertIn("Runtime Facts 已有 grade 时，绝不能再问孩子几年级", assembly.core_prompt)
+        self.assertIn('"effective_fact_ledger"', assembly.core_prompt)
+
+    def test_prompt_projects_duplicate_memory_facts_once(self) -> None:
+        registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
+        bundle = registry.get("career_plan_entity")
+        assert bundle is not None
+        state = SessionState(
+            session_id="sess_fact_projection",
+            active_skill_id="career_plan_entity",
+            global_facts={"grade": "高一"},
+            skill_facts={"career_plan_entity": {"grade": "高一"}},
+            conversation_memory={"facts": {"global": {"grade": "高一"}, "memory_only": {"goal": "选科"}}},
+        )
+
+        assembly = build_prompt_assembly(bundle, state)
+
+        self.assertIn('"memory_only": {', assembly.core_prompt)
+        self.assertIn('"goal": "选科"', assembly.core_prompt)
+        self.assertNotIn('"global": {\n    "grade": "高一"\n  }', assembly.core_prompt)
+        self.assertEqual(state.status_flags["_fact_prompt_projection"]["deduplicated_memory_fact_count"], 1)
 
     def test_specialist_prompt_does_not_include_general_chat_catalog(self) -> None:
         registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)

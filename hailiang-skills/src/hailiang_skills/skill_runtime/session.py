@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from hailiang_skills.skill_runtime.asset_lookup import FALLBACK_MESSAGE, lookup_assets
+from hailiang_skills.core.fact_prompt_projection import (
+    build_effective_fact_ledger,
+    response_style_instruction,
+)
 from hailiang_skills.skill_runtime.models import (
     ChatMessage,
     PromptAssembly,
@@ -245,14 +249,40 @@ def _build_prompt_assembly(
         ensure_ascii=False,
         indent=2,
     )
+    active_skill_id = state.active_skill_id or bundle.contract.skill_id
+    skill_progress_by_skill = state.status_flags.get("runtime_skill_progress", {})
+    skill_progress = (
+        skill_progress_by_skill.get(active_skill_id, {})
+        if isinstance(skill_progress_by_skill, dict)
+        else {}
+    )
+    # collected_info is a legacy, broad bucket.  It may contain useful
+    # workflow-only values, but it often mirrors global/Skill facts.  Feed it
+    # through the same projection rather than serializing a second raw copy.
+    prompt_memory_facts = {
+        "conversation_memory": (state.conversation_memory or {}).get("facts", {}),
+        "legacy_collected_info": state.collected_info,
+    }
+    fact_ledger, fact_projection = build_effective_fact_ledger(
+        global_facts=state.global_facts,
+        current_skill_facts=state.skill_facts.get(active_skill_id, {}),
+        memory_facts=prompt_memory_facts,
+        skill_progress=skill_progress,
+    )
+    # This is diagnostic-only metadata. It deliberately keeps counts and
+    # source names, never fact values, so candidate exports can explain why a
+    # prompt became smaller without exposing another copy of the profile.
+    state.status_flags["_fact_prompt_projection"] = fact_projection
     state_json = json.dumps(
         {
             "session_id": state.session_id,
             "stage": state.stage,
-            "collected_info": state.collected_info,
-            "active_skill_id": state.active_skill_id or bundle.contract.skill_id,
-            "global_facts": state.global_facts,
-            "current_skill_facts": state.skill_facts.get(state.active_skill_id or bundle.contract.skill_id, {}),
+            # Values from the legacy collected_info bucket are deliberately
+            # represented through the effective ledger below.  Sending the
+            # raw bucket again made the same user fact appear twice.
+            "collected_info_keys": sorted(str(key) for key in state.collected_info),
+            "active_skill_id": active_skill_id,
+            "effective_fact_ledger": fact_ledger,
             "current_stage_facts": (
                 state.stage_facts.get(state.active_skill_id or bundle.contract.skill_id, {}).get(state.stage, {})
             ),
@@ -271,7 +301,10 @@ def _build_prompt_assembly(
     asset_overview = _build_asset_overview(bundle)
     runtime_clock_text = _build_runtime_clock_text()
     soul_text = _build_soul_context_text(state.soul_context)
-    conversation_memory_text = _build_conversation_memory_text(state.conversation_memory)
+    conversation_memory_text = _build_conversation_memory_text(
+        state.conversation_memory,
+        fact_ledger=fact_ledger,
+    )
     matched_assets_text = _build_matched_asset_text(asset_lookup.matched_assets)
     tool_text = _build_tool_capability_text(bundle, tool_specs)
     tool_protocol_text = _build_tool_protocol_text(tool_specs, tool_mode=tool_mode, max_tool_calls=max_tool_calls)
@@ -298,6 +331,7 @@ def _build_prompt_assembly(
         "【强制规则】Runtime Facts 中非空的事实已经由可信上游确认，必须直接使用，绝不可再次向用户索取。"
         "这条规则优先于 Skill Instructions 中的首次开场、示例问句或固定问诊话术：例如 Runtime Facts 已有 grade 时，绝不能再问孩子几年级。"
         "只能追问当前回答确实需要、且 Runtime Facts 中为空的事实。\n"
+        f"{response_style_instruction()}\n"
         "If a concrete path, school, province policy, or detailed planning request is not supported by matched local assets, do not guess. "
         f"Use this fallback style instead: {FALLBACK_MESSAGE}\n\n",
         f"# Skill Metadata\n{metadata_json}\n\n",
@@ -322,7 +356,7 @@ def _build_prompt_assembly(
             f"# Asset Registry Policy\n{asset_policy_text}\n\n",
             f"# External Asset Domains\n{asset_overview}\n\n",
             f"# Matched External Assets For This Turn\n{matched_assets_text}\n\n",
-            f"# Runtime Facts\n{_build_runtime_facts_text(bundle, state)}\n\n",
+            f"# Runtime Facts\n{_build_runtime_facts_text(bundle, state, fact_ledger=fact_ledger)}\n\n",
             f"# Skill Progress Guard\n{_build_skill_progress_guard(bundle, state)}\n\n",
         ]
     )
@@ -446,11 +480,20 @@ def _build_soul_context_text(soul_context: dict[str, Any]) -> str:
     return f"{header}{content}"
 
 
-def _build_conversation_memory_text(memory: dict[str, Any]) -> str:
+def _build_conversation_memory_text(
+    memory: dict[str, Any],
+    *,
+    fact_ledger: dict[str, Any] | None = None,
+) -> str:
     if not memory:
         return "(none)"
     summary = str(memory.get("summary") or "").strip() or "(none)"
     facts = memory.get("facts") if isinstance(memory.get("facts"), dict) else {}
+    memory_only_facts = (
+        (fact_ledger or {}).get("memory_only_facts", {})
+        if isinstance(fact_ledger, dict)
+        else facts
+    )
     status = memory.get("status") if isinstance(memory.get("status"), dict) else {}
     reference_messages = memory.get("reference_messages") if isinstance(memory.get("reference_messages"), list) else []
     archive = memory.get("profile_candidate_archive") if isinstance(memory.get("profile_candidate_archive"), list) else []
@@ -458,7 +501,8 @@ def _build_conversation_memory_text(memory: dict[str, Any]) -> str:
     continuity_instruction = str(memory.get("continuity_instruction") or "").strip()
     return (
         "Continuity policy:\n"
-        "The rolling summary, structured facts, and separately supplied unsummarized role messages are authoritative. "
+        "The rolling summary is background and unresolved-work context, not a user-facing fact recap. "
+        "The effective fact ledger, and separately supplied unsummarized role messages, are authoritative. "
         "Recent role messages take precedence when details conflict. Before asking for information, check all three sources; "
         "do not ask again for an answer the user already provided.\n\n"
         + (f"Branch resume instruction:\n{continuity_instruction}\n\n" if continuity_instruction else "")
@@ -469,8 +513,8 @@ def _build_conversation_memory_text(memory: dict[str, Any]) -> str:
         "Use it only to avoid asking again for a directly answered question; otherwise follow the active Skill's instructions and facts.\n\n"
         "Rolling summary:\n"
         f"{summary}\n\n"
-        "Structured facts:\n"
-        f"{json.dumps(facts or {}, ensure_ascii=False, indent=2)}\n\n"
+        "Memory-only facts (facts already present in the effective ledger are intentionally omitted):\n"
+        f"{json.dumps(memory_only_facts or {}, ensure_ascii=False, indent=2)}\n\n"
         "Retrieved profile archive evidence (candidate evidence only; never treat it as confirmed business fact):\n"
         f"{json.dumps(archive, ensure_ascii=False, indent=2)}\n\n"
         "Reference-only history from other Skills (grouped by source_skill_id):\n"
@@ -665,15 +709,27 @@ def _build_routing_hint_text(routing_decision: RoutingDecision | None) -> str:
     )
 
 
-def _build_runtime_facts_text(bundle: SkillBundle, state: SessionState) -> str:
+def _build_runtime_facts_text(
+    bundle: SkillBundle,
+    state: SessionState,
+    *,
+    fact_ledger: dict[str, Any] | None = None,
+) -> str:
     active_skill_id = state.active_skill_id or bundle.contract.skill_id or bundle.root_name
-    current_skill_facts = state.skill_facts.get(active_skill_id, {})
     current_stage_facts = state.stage_facts.get(active_skill_id, {}).get(state.stage, {})
     route_history = state.route_history[-3:]
+    if fact_ledger is None:
+        progress_by_skill = state.status_flags.get("runtime_skill_progress", {})
+        progress = progress_by_skill.get(active_skill_id, {}) if isinstance(progress_by_skill, dict) else {}
+        fact_ledger, _diagnostics = build_effective_fact_ledger(
+            global_facts=state.global_facts,
+            current_skill_facts=state.skill_facts.get(active_skill_id, {}),
+            memory_facts=(state.conversation_memory or {}).get("facts", {}),
+            skill_progress=progress,
+        )
     return (
         f"active_skill_id={active_skill_id}\n"
-        f"global_facts={json.dumps(state.global_facts, ensure_ascii=False)}\n"
-        f"skill_facts={json.dumps(current_skill_facts, ensure_ascii=False)}\n"
+        f"effective_fact_ledger={json.dumps(fact_ledger, ensure_ascii=False)}\n"
         f"stage_facts={json.dumps(current_stage_facts, ensure_ascii=False)}\n"
         f"status_flags={json.dumps(_status_flags_for_prompt(state.status_flags), ensure_ascii=False)}\n"
         f"route_history={json.dumps(route_history, ensure_ascii=False)}"
