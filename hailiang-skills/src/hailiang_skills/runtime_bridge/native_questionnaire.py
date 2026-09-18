@@ -40,8 +40,29 @@ _DECISION_UNSET = object()
 
 
 def questionnaire_config(bundle: Any) -> dict[str, Any]:
+    """Return the effective questionnaire contract.
+
+    ``SKILL.md`` only needs to point at ``assets/questionnaire.json``.  The
+    asset is the business-owned contract, so its top-level settings (such as
+    ``max_fields_per_form``) override compatibility metadata in front matter.
+    Keeping that merge here makes every caller -- native forms, expert tool
+    validation, and candidate revisions -- use the same effective limit.
+    """
     value = getattr(bundle, "metadata", {}).get("questionnaire", {})
-    return dict(value) if isinstance(value, dict) else {}
+    metadata = dict(value) if isinstance(value, dict) else {}
+    config_path = str(metadata.get("config_path") or "").strip()
+    if not config_path:
+        return metadata
+    path = Path(bundle.root_dir) / config_path
+    try:
+        asset = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return metadata
+    # Never let malformed assets silently change execution settings. The
+    # normal validation path reports the detailed business-facing errors.
+    if not isinstance(asset, dict) or validate_questionnaire_config(asset):
+        return metadata
+    return {**metadata, **asset}
 
 
 def questionnaire_enabled(bundle: Any) -> bool:

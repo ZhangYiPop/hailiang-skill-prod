@@ -24,6 +24,7 @@ from hailiang_skills.runtime_bridge.native_questionnaire import (
     flush_deferred_questionnaire_promotions,
     questionnaire_continuation_context,
     question_specs,
+    questionnaire_config,
     resolve_questionnaire_continuation,
     stage_questionnaire_form,
     unwrap_questionnaire_assistant_message,
@@ -73,6 +74,39 @@ def test_generic_config_json_supports_all_input_types_and_conditions():
     assert "detail" not in specs
     state.skill_facts["mock_admission"] = {"answers": {"kind": "A"}}
     assert "detail" in {item["question_id"] for item in available_question_specs(bundle, state)}
+
+
+def test_questionnaire_asset_settings_override_front_matter(tmp_path):
+    bundle = _config_bundle()
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    asset_config = {
+        "schema_version": 1,
+        "max_fields_per_form": 8,
+        "questions": [
+            {
+                "id": f"q{index}",
+                "label": f"问题 {index}",
+                "input_type": "single_select",
+                "options": [{"label": "选项 A", "value": "A"}],
+            }
+            for index in range(1, 9)
+        ],
+    }
+    (assets / "questionnaire.json").write_text(json.dumps(asset_config, ensure_ascii=False), encoding="utf-8")
+    bundle.root_dir = tmp_path
+    bundle.metadata["questionnaire"] = {
+        "enabled": True,
+        "config_path": "assets/questionnaire.json",
+        "max_fields_per_form": 6,
+    }
+    state = SessionState(session_id="asset_primary", active_skill_id="mock_admission")
+
+    assert questionnaire_config(bundle)["max_fields_per_form"] == 8
+    continuation = questionnaire_continuation_context(bundle, state)
+    assert continuation is not None
+    assert continuation["max_fields_per_form"] == 8
+    assert len(continuation["question_catalog"]) == 8
 
 
 def test_dynamic_planner_keeps_goal_and_can_complete_without_exhausting_catalog():
