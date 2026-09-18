@@ -70,6 +70,7 @@ def questionnaire_plan_summary(bundle: Any, state: Any) -> dict[str, Any]:
         "completion_action": str(plan.get("completion_action") or ""),
         "result_valid": plan.get("result_valid"),
         "error": str(plan.get("error") or ""),
+        "no_progress_reason": str(plan.get("no_progress_reason") or ""),
         # Kept in the internal continuation payload as well as diagnostics;
         # IDs are catalog identifiers, not user data or protected prompts.
         "script_action": str(plan.get("script_action") or ""),
@@ -652,7 +653,13 @@ def resolve_questionnaire_continuation(
     continuation = questionnaire_continuation_context(bundle, state)
     if continuation is None:
         text = str(payload.get("assistant_message") or "") if isinstance(payload, dict) else ""
-        plan.update({"status": "completed", "decision_source": "llm_planner", "question_ids": []})
+        plan.update({
+            "status": "completed",
+            "decision_source": "llm_planner",
+            "question_ids": [],
+            "error": "",
+            "no_progress_reason": "",
+        })
         return text.strip(), None, {
             "valid": True, "collection_complete": True, "fallback_used": False,
             "action": "complete", "questionnaire_plan": questionnaire_plan_summary(bundle, state),
@@ -692,13 +699,23 @@ def resolve_questionnaire_continuation(
         requested_ids = []
         collection_complete = True
         action = "complete"
-    requested_completion = collection_complete or action in {"complete", "answer_directly"}
+    requested_completion = collection_complete or action == "complete"
+    requested_direct_reply = action == "answer_directly" and not requested_completion
     selected_ids = [item for item in requested_ids if item in allowed_ids]
-    explicit_no_question = isinstance(payload, dict) and requested_ids == [] and not requested_completion
+    empty_collecting_plan = bool(
+        isinstance(payload, dict)
+        and not requested_completion
+        and not requested_direct_reply
+        and not requested_ids
+    )
     valid = bool(
         isinstance(payload, dict)
         and isinstance(payload.get("assistant_message"), str)
-        and ((requested_completion and not requested_ids) or (not requested_completion and (selected_ids or explicit_no_question)))
+        and (
+            (requested_completion and not requested_ids)
+            or (requested_direct_reply and not requested_ids)
+            or (not requested_completion and not requested_direct_reply and bool(selected_ids))
+        )
         and len(selected_ids) == len(requested_ids)
     )
     fallback_used = not valid
@@ -717,6 +734,7 @@ def resolve_questionnaire_continuation(
             "completion_action": completion_action,
             "result_valid": bool(str(payload.get("assistant_message") or "").strip()),
             "error": "",
+            "no_progress_reason": "",
         })
         plan.pop("script_action", None)
         plan.pop("script_question_ids", None)
@@ -731,6 +749,30 @@ def resolve_questionnaire_continuation(
             "allowed_question_ids": catalog_ids, "questionnaire_plan": questionnaire_plan_summary(bundle, state),
             "resolved_answers": resolved,
             "rejected_resolved_answers": _rejected_resolved_answers(payload, resolved),
+        }
+    if requested_direct_reply and valid:
+        # A Skill may intentionally answer a conceptual question without a
+        # form. This is explicitly different from an empty collecting plan:
+        # retain the pending goal and unanswered fields for a later turn.
+        plan.update({
+            "status": "collecting",
+            "decision_source": "llm_planner",
+            "question_ids": [],
+            "skipped_question_ids": catalog_ids,
+            "error": "",
+            "no_progress_reason": "",
+        })
+        return str(payload.get("assistant_message") or "").strip(), None, {
+            "valid": True,
+            "collection_complete": False,
+            "fallback_used": False,
+            "action": "answer_directly",
+            "requested_question_ids": [],
+            "selected_question_ids": [],
+            "allowed_question_ids": catalog_ids,
+            "resolved_answers": resolved,
+            "rejected_resolved_answers": _rejected_resolved_answers(payload, resolved),
+            "questionnaire_plan": questionnaire_plan_summary(bundle, state),
         }
     if not valid:
         selected_ids = catalog_ids[: int(refreshed["max_fields_per_form"])]
@@ -751,12 +793,15 @@ def resolve_questionnaire_continuation(
         if isinstance(payload, dict) and isinstance(payload.get("assistant_message"), str)
         else "请通过下面的表单继续补充关键信息。"
     )
+    if empty_collecting_plan:
+        text = "请补充以下关键信息，我会据此继续完成当前匹配。"
     plan.update({
         "status": "collecting",
         "decision_source": "safe_fallback" if fallback_used else "skill_script" if script_action == "ask" else "llm_planner",
         "question_ids": selected_ids,
         "skipped_question_ids": [item for item in catalog_ids if item not in selected_ids],
-        "error": "invalid_planner_response" if fallback_used else "",
+        "error": "empty_collecting_plan" if empty_collecting_plan else "invalid_planner_response" if fallback_used else "",
+        "no_progress_reason": "empty_question_ids_while_collecting" if empty_collecting_plan else "",
     })
     if script_action == "ask":
         plan.pop("script_action", None)
@@ -765,6 +810,7 @@ def resolve_questionnaire_continuation(
         "valid": valid,
         "collection_complete": False,
         "fallback_used": fallback_used,
+        "no_progress_reason": "empty_question_ids_while_collecting" if empty_collecting_plan else "",
         "requested_question_ids": requested_ids,
         "selected_question_ids": selected_ids,
         "allowed_question_ids": catalog_ids,

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Build and publish one immutable Hailiang Skills release.
-# Usage: deploy-version.sh test|prod VERSION SOURCE_ROOT
+# Usage: deploy-version.sh test|prod|test-<name> VERSION SOURCE_ROOT
 set -euo pipefail
 
-environment="${1:?environment required: test or prod}"
+environment="${1:?environment required: test, prod, or test-<name>}"
 version="${2:?version required}"
 source_root="${3:?source root required}"
 
 case "$environment" in
-  test|prod) ;;
-  *) echo "environment must be test or prod" >&2; exit 2 ;;
+  test|prod|test-[a-z0-9][a-z0-9-]*) ;;
+  *) echo "environment must be test, prod, or test-<name>" >&2; exit 2 ;;
 esac
 
 [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || {

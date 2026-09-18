@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 VALID_ENVIRONMENTS = {"test", "prod"}
+_PARALLEL_TEST_ENVIRONMENT = re.compile(r"test-[a-z0-9][a-z0-9-]*\Z")
+
+
+def is_valid_deployment_environment(value: str) -> bool:
+    """Allow the two primary environments and explicitly named test instances."""
+    return value in VALID_ENVIRONMENTS or bool(_PARALLEL_TEST_ENVIRONMENT.fullmatch(value))
 
 
 def deployment_environment() -> str:
     """Return the declared environment; local development defaults to test."""
     value = os.getenv("HAILIANG_DEPLOY_ENV", "test").strip().lower()
-    if value not in VALID_ENVIRONMENTS:
-        raise RuntimeError("HAILIANG_DEPLOY_ENV must be exactly test or prod")
+    if not is_valid_deployment_environment(value):
+        raise RuntimeError("HAILIANG_DEPLOY_ENV must be test, prod, or test-<name>")
     return value
 
 

@@ -3121,7 +3121,9 @@ class MainPlannerOrchestrator:
                     "question_ids；action=complete 时写出最终结论，不得追加问题。"
                     "服务端已按其当前可确定的 Case 将 question_catalog 收窄为本轮允许的字段；"
                     "你仍须结合本轮输入与会话状态判断下一阶段和 state_patch，不能请求目录外字段。"
-                    "若 Case 要求本轮不开表单，可返回空 question_ids。"
+                    "空 question_ids 仅允许 action=complete 或 action=answer_directly：前者必须给出最终结论，"
+                    "后者仅用于本轮确实无需表单的解释或科普。仍处于收集阶段时必须返回至少一个 question_id，"
+                    "否则服务端会按当前 Case 回退展示下一批必要字段。"
                     "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题。"
                     "assistant_message 应直接推进当前对话：已有明确答案时不要再次复述或确认，"
                     "除非该答案存在矛盾、时间变化或确有必要消歧；不需要表单时直接回答，不要添加历史事实摘要。"
@@ -3242,6 +3244,7 @@ class MainPlannerOrchestrator:
             ],
             rejected_resolved_question_ids=decision.get("rejected_resolved_answers", []),
             fallback_used=decision.get("fallback_used", False),
+            no_progress_reason=decision.get("no_progress_reason", ""),
         )
         self._record_events(
             context,
@@ -3258,6 +3261,7 @@ class MainPlannerOrchestrator:
                         "decision_table_applied": bool(decision.get("decision_table_applied")),
                         "allowed_question_ids": decision.get("allowed_question_ids", []),
                         "question_ids": decision.get("selected_question_ids", []),
+                        "no_progress_reason": decision.get("no_progress_reason", ""),
                         "resolved_question_ids": [
                             item.get("question_id") for item in decision.get("resolved_answers", [])
                         ],
@@ -4113,12 +4117,25 @@ class MainPlannerOrchestrator:
             or state.active_skill_id
             or MAIN_PLANNER_ID
         )
+        memory_assistant_message = assistant_message
+        skill_state = state.skill_facts.get(active_skill_id, {}) if isinstance(state.skill_facts, dict) else {}
+        questionnaire_plan = skill_state.get("_questionnaire_plan", {}) if isinstance(skill_state, dict) else {}
+        no_progress_filtered = (
+            isinstance(questionnaire_plan, dict)
+            and questionnaire_plan.get("error") == "empty_collecting_plan"
+        )
+        if no_progress_filtered:
+            # The visible reply may have been streamed before the JSON
+            # envelope was complete. Do not make an empty-plan transition
+            # sentence durable context; retain the turn shape and the fact
+            # that the filtered form was emitted.
+            memory_assistant_message = "已展示当前目标所需的下一批表单字段，等待用户补充。"
         memory = self.memory_store.append_turn(
             user_id=str(getattr(context, "user_id", "") or "anonymous"),
             session_id=self._profile_memory_scope_id(context, fallback=state.session_id),
             active_skill_id=active_skill_id,
             user_message=user_message,
-            assistant_message=assistant_message,
+            assistant_message=memory_assistant_message,
         )
         context.skill_states.setdefault(MAIN_PLANNER_ID, {})["conversation_memory"] = {
             "total_messages": len(memory.get("messages") or []),
@@ -4127,6 +4144,15 @@ class MainPlannerOrchestrator:
             "runtime_contract_hash": memory.get("runtime_contract_hash"),
             "runtime_contract_available": bool(memory.get("runtime_contract_available")),
         }
+        if no_progress_filtered:
+            self._record_events(context, [make_event(
+                "conversation_memory_no_progress_filtered",
+                {
+                    "skill_id": active_skill_id,
+                    "reason": "empty_question_ids_while_collecting",
+                    "replacement": "questionnaire_form_emitted",
+                },
+            )])
 
     @staticmethod
     def _profile_memory_scope_id(context, *, fallback: str) -> str:

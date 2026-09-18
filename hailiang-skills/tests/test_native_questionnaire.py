@@ -193,7 +193,7 @@ def test_questionnaire_state_patch_advances_to_declared_next_batch(tmp_path):
     state = SessionState(session_id="policy_transition", active_skill_id="mock_admission")
     state.stage = "init"
 
-    _text, block, decision = resolve_questionnaire_continuation(
+    text, block, decision = resolve_questionnaire_continuation(
         bundle,
         state,
         '{"assistant_message":"继续收集偏好。","state_patch":{"stage":"collect"},'
@@ -239,7 +239,7 @@ def test_questionnaire_allows_a_skill_directed_no_question_turn() -> None:
     text, block, decision = resolve_questionnaire_continuation(
         bundle,
         state,
-        '{"assistant_message":"你好，先选择路径推荐或科普答疑。","question_ids":[],"collection_complete":false}',
+        '{"assistant_message":"你好，先选择路径推荐或科普答疑。","action":"answer_directly","question_ids":[],"collection_complete":false}',
     )
 
     assert text == "你好，先选择路径推荐或科普答疑。"
@@ -247,6 +247,28 @@ def test_questionnaire_allows_a_skill_directed_no_question_turn() -> None:
     assert decision["valid"] is True
     assert decision["fallback_used"] is False
     assert decision["selected_question_ids"] == []
+    assert decision["action"] == "answer_directly"
+
+
+def test_questionnaire_empty_collecting_plan_falls_back_to_current_allowed_fields() -> None:
+    bundle = _bundle("multi_path_planning")
+    state = SessionState(session_id="sess_empty_collecting", active_skill_id="multi_path_planning")
+
+    text, block, decision = resolve_questionnaire_continuation(
+        bundle,
+        state,
+        '{"assistant_message":"好的，继续为你匹配。","action":"ask","question_ids":[],"collection_complete":false}',
+    )
+
+    assert decision["valid"] is False
+    assert decision["fallback_used"] is True
+    assert decision["no_progress_reason"] == "empty_question_ids_while_collecting"
+    assert text == "请补充以下关键信息，我会据此继续完成当前匹配。"
+    assert decision["selected_question_ids"]
+    assert set(decision["selected_question_ids"]).issubset(decision["allowed_question_ids"])
+    assert block is not None
+    assert decision["questionnaire_plan"]["decision_source"] == "safe_fallback"
+    assert decision["questionnaire_plan"]["error"] == "empty_collecting_plan"
 
 
 def test_questionnaire_stream_extractor_emits_only_envelope_content() -> None:

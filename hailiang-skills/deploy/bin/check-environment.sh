@@ -2,7 +2,10 @@
 set -euo pipefail
 
 expected_env="${1:?systemd instance env is required}"
-[ "$expected_env" = "test" ] || [ "$expected_env" = "prod" ] || { echo "invalid environment" >&2; exit 2; }
+case "$expected_env" in
+  test|prod|test-[a-z0-9][a-z0-9-]*) ;;
+  *) echo "invalid environment" >&2; exit 2 ;;
+esac
 [ "${HAILIANG_DEPLOY_ENV:-}" = "$expected_env" ] || { echo "HAILIANG_DEPLOY_ENV does not match service instance" >&2; exit 2; }
 [ -f "VERSION" ] || { echo "release VERSION file is required" >&2; exit 2; }
 [ -n "${DASHSCOPE_API_KEY:-}" ] || { echo "DASHSCOPE_API_KEY is required" >&2; exit 2; }
@@ -21,6 +24,13 @@ expected_env="${1:?systemd instance env is required}"
 case "$expected_env" in
   test) [[ "$HAILIANG_DATABASE_URL" == *"hailiang_skills_test_multi_profile_v1"* ]] && [[ "$HAILIANG_REDIS_URL" == */1 ]] && [[ "$HAILIANG_REDIS_KEY_PREFIX" == "hailiang:test:"* ]] ;;
   prod) [[ "$HAILIANG_DATABASE_URL" == *"hailiang_skills_multi_profile_v1"* && "$HAILIANG_DATABASE_URL" != *"hailiang_skills_test_"* ]] && [[ "$HAILIANG_REDIS_URL" == */2 ]] && [[ "$HAILIANG_REDIS_KEY_PREFIX" == "hailiang:prod:"* ]] ;;
+  test-*)
+    instance_name="${expected_env#test-}"
+    expected_database="hailiang_skills_test_multi_profile_v1_${instance_name//-/_}"
+    [[ "$HAILIANG_DATABASE_URL" == *"/$expected_database"* ]] \
+      && [[ "$HAILIANG_REDIS_URL" =~ /[3-9][0-9]*$ ]] \
+      && [[ "$HAILIANG_REDIS_KEY_PREFIX" == "hailiang:${expected_env}:"* ]]
+    ;;
 esac || { echo "database, Redis DB, or key prefix does not match $expected_env" >&2; exit 2; }
 
 for directory in "${HAILIANG_LOG_DIR:?}" "${HAILIANG_STATE_DIR:?}"; do

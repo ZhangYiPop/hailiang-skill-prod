@@ -110,7 +110,12 @@ def build_finalized_payload(
         if isinstance(skill_facts_map, dict) and isinstance(skill_facts_map.get(active_skill), dict)
         else {}
     )
-    conclusion_summary = _build_conclusion_summary(assistant_message)
+    no_progress_questionnaire_turn = _is_empty_questionnaire_plan_fallback(current_skill_facts)
+    conclusion_summary = (
+        "问卷已回退展示当前条件下的下一批字段，等待用户补充。"
+        if no_progress_questionnaire_turn
+        else _build_conclusion_summary(assistant_message)
+    )
     is_final_summary = _is_final_summary_turn(
         context,
         active_skill=active_skill,
@@ -130,6 +135,7 @@ def build_finalized_payload(
         "skill_facts": current_skill_facts,
         "handoff_notes": handoff_notes,
         "source_skill_id": active_skill,
+        "no_progress_reply_filtered": no_progress_questionnaire_turn,
     }
     is_expert_direct = active_skill == EXPERT_DIRECT_EXECUTION_ID
     is_specialist = active_skill not in {
@@ -248,6 +254,7 @@ def build_finalized_payload(
                 "facts_source_of_truth": "effective_facts",
                 "context_compression": context_compression,
                 "is_final_summary": is_final_summary,
+                "no_progress_reply_filtered": no_progress_questionnaire_turn,
             },
         )
     ]
@@ -1648,6 +1655,12 @@ def _build_conclusion_summary(assistant_message: str) -> str:
     if len(text) <= 220:
         return text
     return f"{text[:220]}..."
+
+
+def _is_empty_questionnaire_plan_fallback(skill_facts: dict[str, Any]) -> bool:
+    """Keep a rejected empty questionnaire plan out of durable summaries."""
+    plan = skill_facts.get("_questionnaire_plan") if isinstance(skill_facts, dict) else None
+    return isinstance(plan, dict) and plan.get("error") == "empty_collecting_plan"
 
 
 def _build_handoff_notes(*, agent_label: str, conclusion_summary: str, facts_delta: list[dict[str, Any]]) -> str:

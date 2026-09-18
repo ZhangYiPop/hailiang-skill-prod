@@ -39,6 +39,21 @@ class FactPromptProjectionTest(unittest.TestCase):
         self.assertTrue(visible_fact_recap_risk("已了解孩子目前初二，下面我来分析。", ledger)["detected"])
         self.assertFalse(visible_fact_recap_risk("游泳方向可以先从训练连续性和比赛层级看起。", ledger)["detected"])
 
+    def test_fact_recap_risk_detects_polite_then_recap_pattern(self) -> None:
+        ledger, _ = build_effective_fact_ledger(
+            global_facts={"identity": "华侨身份", "province": "江苏高考"},
+            current_skill_facts={},
+            memory_facts={},
+        )
+
+        risk = visible_fact_recap_risk(
+            "好的，继续为你匹配。根据你目前提供的信息（华侨身份、江苏高考），我继续为你匹配。",
+            ledger,
+        )
+
+        self.assertTrue(risk["detected"])
+        self.assertEqual(set(risk["matched_fact_keys"]), {"effective_facts.identity", "effective_facts.province"})
+
     def test_resume_instruction_keeps_only_unfinished_topics(self) -> None:
         state = SessionState(
             session_id="resume_fact_projection",

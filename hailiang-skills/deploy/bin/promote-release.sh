@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Usage: promote-release.sh test|prod <already-installed-version>
+# Usage: promote-release.sh test|prod|test-<name> <already-installed-version>
 set -euo pipefail
 environment="${1:?environment required}"
 version="${2:?version required}"
-[ "$environment" = test ] || [ "$environment" = prod ] || { echo "environment must be test or prod" >&2; exit 2; }
+case "$environment" in
+  test|prod|test-[a-z0-9][a-z0-9-]*) ;;
+  *) echo "environment must be test, prod, or test-<name>" >&2; exit 2 ;;
+esac
 release="/opt/hailiang-skills/releases/$version"
 [ -d "$release" ] || { echo "release does not exist: $release" >&2; exit 2; }
 [ -f "$release/frontend/package.json" ] || { echo "frontend source is missing from release" >&2; exit 2; }
