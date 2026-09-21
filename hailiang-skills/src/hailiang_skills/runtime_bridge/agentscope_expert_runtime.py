@@ -311,13 +311,16 @@ class AgentScopeExpertRuntime:
             agent_reply
             and handoff is None
             and team is not None
-            and self._can_propose_team_handoff(team, definition.agent_id)
-            and self._contains_unstructured_team_routing_text(agent_reply, team)
+            and self._contains_unstructured_team_routing_text(agent_reply, team, definition.agent_id)
         ):
             self._event(context, "team_handoff_text_suppressed", {
                 "team_id": team.team_id, "expert_id": definition.agent_id,
+                "reason": "unstructured_handoff_without_card_or_wrong_expert_identity",
             })
-            agent_reply = self._generate_team_clarification_reply(definition, team, user_message, context, client)
+            if self._can_propose_team_handoff(team, definition.agent_id):
+                agent_reply = self._generate_team_clarification_reply(definition, team, user_message, context, client)
+            else:
+                agent_reply = self._generate_member_direct_reply(definition, team, user_message, context, client)
             state["agent_reply"] = agent_reply
         has_native_handoff = bool(
             context.session_meta.get("expert_requested_skill_id")
@@ -777,7 +780,8 @@ class AgentScopeExpertRuntime:
                     "每次收到新的用户消息，都必须重新判断当前问题是否更适合团内成员；上一轮转交卡未点击，"
                     "也不能跳过本轮判断。只要某个成员比你更适合处理，必须调用 propose_member_handoff，"
                     "只给团内候选和简短原因，不得自动转交、不得调用成员的 Skill。调用后必须立即输出简短的用户说明，"
-                    "请用户确认由哪位候选专家承接；不要描述任何卡片或控件的位置，也不要再次调用该工具或继续推理。未调用该工具时，禁止在正文中输出"
+                    "请用户确认由哪位候选专家承接；统一使用‘这位专家’等中性称谓，禁止根据姓名或常识推断并使用‘他/她’。"
+                    "不要描述任何卡片或控件的位置，也不要再次调用该工具或继续推理。未调用该工具时，禁止在正文中输出"
                     "@专家名称、建议由某专家承接或已经转交等表达。"
                 )
             else:
@@ -1156,7 +1160,30 @@ class AgentScopeExpertRuntime:
         names = [name for name in names if name]
         target = "、".join(names) or "合适的团内专家"
         reason = str(handoff.get("reason") or "这个问题更适合由专项专家继续处理。").strip()
-        return f"我建议由{target}继续协助。{reason} 已为你准备转交卡，请确认是否由该专家接管回答。"
+        return AgentScopeExpertRuntime._neutralize_handoff_gendered_wording(
+            f"我建议由{target}继续协助。{reason} 已为你准备转交卡，请确认是否由该专家接管回答。"
+        )
+
+    @staticmethod
+    def _neutralize_handoff_gendered_wording(text: str) -> str:
+        """Normalize only bounded handoff phrases to gender-neutral wording."""
+        value = str(text or "")
+        # Keep the predicate after the pronoun (承接/处理/回答/负责) so the
+        # generated reason remains readable while removing gender inference.
+        value = re.sub(r"由[他她](来)?(承接|处理|回答|负责)", r"由这位专家\1\2", value)
+        replacements = (
+            ("由他来承接这个问题", "由这位专家来承接这个问题"),
+            ("由她来承接这个问题", "由这位专家来承接这个问题"),
+            ("由他承接这个问题", "由这位专家承接这个问题"),
+            ("由她承接这个问题", "由这位专家承接这个问题"),
+            ("他来承接这个问题", "这位专家来承接这个问题"),
+            ("她来承接这个问题", "这位专家来承接这个问题"),
+            ("他来承接", "这位专家来承接"),
+            ("她来承接", "这位专家来承接"),
+        )
+        for source, target in replacements:
+            value = value.replace(source, target)
+        return value
 
     def _generate_team_clarification_reply(
         self,
@@ -1214,6 +1241,28 @@ class AgentScopeExpertRuntime:
             source="team_coordinator_clarification",
             expert_id=definition.agent_id,
         )
+
+    def _generate_member_direct_reply(self, definition, team, user_message, context, client) -> str:
+        """Regenerate a member reply when it incorrectly recommends a handoff."""
+        from hailiang_skills.skill_runtime.models import ChatMessage
+        prompt = (
+            f"你是专家团中的“{definition.name}”，当前已经由你负责回答用户。\n"
+            f"专家团名称：{team.name}\n"
+            "请直接回答用户当前问题，或继续你已激活的 Skill。不要推荐、介绍、转交或暗示任何其他专家，"
+            "不要输出转交卡片话术；不要说‘建议由某专家承接’。如果问题超出你的职责，简短说明边界并建议用户"
+            "通过专家工具栏重新选择，而不是替用户指定专家。"
+        )
+        messages = [ChatMessage(role="system", content=prompt)]
+        for item in self._expert_history_messages(context):
+            messages.append(ChatMessage(role=item["role"], content=item["content"]))
+        messages.append(ChatMessage(role="user", content=str(user_message or "")))
+        try:
+            reply = str(client.complete(messages, request_purpose="team_member_direct_reply") or "").strip()
+        except Exception as exc:
+            raise AgentScopeRuntimeUnavailable(f"团内专家生成纠正回复失败: {exc}") from exc
+        if not reply:
+            raise AgentScopeRuntimeUnavailable("团内专家生成纠正回复失败：模型返回为空")
+        return self._limit_reply(reply, context=context, source="team_member_direct_reply", expert_id=definition.agent_id)
 
     def _limit_reply(
         self,
@@ -1297,11 +1346,16 @@ class AgentScopeExpertRuntime:
         return expert_id == team.coordinator_expert_id
 
     @staticmethod
-    def _contains_unstructured_team_routing_text(reply: str, team: ExpertTeamDefinition) -> bool:
+    def _contains_unstructured_team_routing_text(reply: str, team: ExpertTeamDefinition, current_expert_id: str = "") -> bool:
         text = str(reply or "")
         if not any(token in text for token in ("转交", "交给", "由", "建议您找", "请咨询")):
             return False
-        return any(member.mention_name and member.mention_name in text for member in team.members)
+        if any(member.mention_name and member.mention_name in text for member in team.members):
+            return True
+        # A non-coordinator has no handoff capability at all.  Any explicit
+        # transfer wording is therefore unstructured, even when it omits a
+        # member name (e.g. “建议由留学专家承接”).
+        return bool(current_expert_id and current_expert_id != team.coordinator_expert_id and "专家" in text)
 
     @staticmethod
     def _public_team_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
@@ -1447,6 +1501,8 @@ class AgentScopeExpertRuntime:
         for message in reversed(getattr(context, "messages", [])):
             if message.get("role") != "assistant":
                 continue
+            if message.get("content"):
+                message["content"] = AgentScopeExpertRuntime._neutralize_handoff_gendered_wording(message["content"])
             handoff = AgentScopeExpertRuntime._public_team_handoff(handoff)
             handoff["source_message_id"] = str(message.get("message_id") or "") or None
             message["team_handoff"] = handoff
