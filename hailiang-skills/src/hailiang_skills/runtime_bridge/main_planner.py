@@ -7,6 +7,7 @@ import inspect
 from dataclasses import replace
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path, PurePath
 import re
@@ -1497,6 +1498,7 @@ class MainPlannerOrchestrator:
         self.conversation_memory_repository = conversation_memory_repository
         self.scenario_engine = ScenarioEngine()
         self.loop_defense = LoopDefense()
+        self.runtime_catalog_fallback_skills: tuple[str, ...] = ()
         if business_config_entries is None:
             self.runtime_registry = self._load_runtime_registry()
             self.expert_registry = load_local_expert_registry(PROJECT_RUNTIME_AGENTS_ROOT, self.runtime_registry)
@@ -1510,6 +1512,43 @@ class MainPlannerOrchestrator:
                 enabled_by_id=self.runtime_bridge_config.skill_enabled_by_id,
             )
             self.business_config_source = "database"
+
+            # A Workbench package is an application deployment, not a copy of
+            # the platform runtime.  Expert-team exports normally contain the
+            # team, its experts and their locked business Skills, but do not
+            # repeat the two built-in entry Skills used by the planner shell.
+            # Keep database entries authoritative when they do contain these
+            # IDs, and supplement only missing built-ins from the checked-in
+            # runtime.  Without this, an older (or intentionally minimal)
+            # active deployment makes the process fail during import with
+            # "数据库当前发布缺少必需 Skill: career_plan_entity".
+            required_builtin_ids = (MAIN_PLANNER_ID, GENERAL_CHAT_ID)
+            missing_builtin_ids = tuple(
+                skill_id
+                for skill_id in required_builtin_ids
+                if self.runtime_registry.get_raw(skill_id) is None
+            )
+            if missing_builtin_ids:
+                filesystem_registry = self._load_runtime_registry()
+                unresolved: list[str] = []
+                supplemented: list[str] = []
+                for skill_id in missing_builtin_ids:
+                    fallback_bundle = filesystem_registry.get_raw(skill_id)
+                    if fallback_bundle is None:
+                        unresolved.append(skill_id)
+                        continue
+                    self.runtime_registry.bundles[skill_id] = fallback_bundle
+                    supplemented.append(skill_id)
+                if unresolved:
+                    raise RuntimeError(
+                        "数据库当前发布缺少必需 Skill: " + ", ".join(unresolved)
+                    )
+                self.runtime_catalog_fallback_skills = tuple(supplemented)
+                logging.getLogger("hailiang.main_planner").warning(
+                    "database deployment omitted built-in runtime Skills; "
+                    "supplemented from filesystem: %s",
+                    ", ".join(supplemented),
+                )
         self.main_bundle = self.runtime_registry.get_raw(MAIN_PLANNER_ID)
         if self.main_bundle is None:
             raise RuntimeError(f"数据库当前发布缺少必需 Skill: {MAIN_PLANNER_ID}" if business_config_entries is not None else "skill-runtime career_plan_entity skill is not available")

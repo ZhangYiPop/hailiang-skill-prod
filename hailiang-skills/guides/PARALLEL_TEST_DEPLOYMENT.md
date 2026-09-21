@@ -97,7 +97,7 @@ sudoedit /etc/hailiang-skills/test-next.env
 HAILIANG_BUSINESS_CONFIG_SOURCE=auto
 ```
 
-不要在 `auto` 模式下把数据库对象和文件目录逐个混合；只有 active 生产专家团部署完成后，数据库快照才会整体成为运行时来源。
+不要在 `auto` 模式下把数据库业务对象和文件目录逐个混合；只有 active 生产专家团部署完成后，数据库快照才会整体成为业务运行时来源。为兼容只携带专家团依赖闭包的旧配置包，平台运行壳缺少的 `career_plan_entity`、`general_chat` 会从源码内置运行时补齐；同 ID 的数据库版本优先。
 
 安装参数化服务单元（只需一次）：
 

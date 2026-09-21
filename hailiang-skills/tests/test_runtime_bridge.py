@@ -403,6 +403,21 @@ def build_orchestrator_with_config(llm_config) -> MainPlannerOrchestrator:
 
 
 class RuntimeBridgeTest(unittest.TestCase):
+    def test_database_catalog_supplements_builtin_runtime_skills(self) -> None:
+        """Minimal team packages must still boot on the planner runtime."""
+        orchestrator = MainPlannerOrchestrator(
+            SkillRegistry(),
+            load_llm_config(),
+            business_config_entries=[],
+        )
+
+        self.assertIsNotNone(orchestrator.runtime_registry.get_raw("career_plan_entity"))
+        self.assertIsNotNone(orchestrator.runtime_registry.get_raw("general_chat"))
+        self.assertEqual(
+            orchestrator.runtime_catalog_fallback_skills,
+            ("career_plan_entity", "general_chat"),
+        )
+
     def test_native_skill_progress_is_opaque_and_prevents_resolved_topics_from_returning(self) -> None:
         state = SessionState(session_id="skill_progress")
         patch = _normalize_skill_progress_patch(

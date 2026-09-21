@@ -24,7 +24,7 @@
 
 `GET /workbench/v1/kernel` 返回内核版本、能力目录及其摘要。配置包保存导出端内核指纹，供审计与排查；导入不要求两端指纹完全相同。Skill 脚本能力按包内已声明且经审查的脚本校验，不依赖接收端的全局文件目录。生产导入仍会拒绝未随包提供的能力、哈希篡改、依赖缺失、Schema 不兼容及未通过安全审查的脚本。
 
-启动自动回灌默认关闭。第一阶段用 `scripts/migrate_business_catalog.py` 预检并幂等迁入数据库；运行时默认使用 `HAILIANG_BUSINESS_CONFIG_SOURCE=auto`：有 active 生产专家团时使用数据库部署快照，没有 active 部署时完整回退到文件系统，方便新服务器先启动工作台完成首次导入和生产部署。也可显式指定 `filesystem` 或 `database` 进行对照和回滚；激活部署后只使用不可变部署快照，不与文件系统对象逐项混合。验收完成后的第二阶段删除业务目录和文件加载分支。
+启动自动回灌默认关闭。第一阶段用 `scripts/migrate_business_catalog.py` 预检并幂等迁入数据库；运行时默认使用 `HAILIANG_BUSINESS_CONFIG_SOURCE=auto`：有 active 生产专家团时使用数据库部署快照，没有 active 部署时完整回退到文件系统，方便新服务器先启动工作台完成首次导入和生产部署。也可显式指定 `filesystem` 或 `database` 进行对照和回滚；激活部署后业务对象只使用不可变部署快照，不与文件系统逐项混合。旧的精简专家团包若未携带平台运行壳所需的 `career_plan_entity`、`general_chat`，启动时仅从源码补齐这两个内置 Skill，同 ID 数据库版本优先。验收完成后的第二阶段删除业务目录和文件加载分支。
 
 ## 发布和部署流程
 
@@ -59,7 +59,7 @@ python -m uvicorn hailiang_skills.api.workbench_main:app --host 127.0.0.1 --port
 主要环境变量：
 
 - `WORKBENCH_PORT`：独立工作台进程端口。
-- `HAILIANG_BUSINESS_CONFIG_SOURCE`：可选来源覆盖，支持 `auto`（默认）、`filesystem`、`database`；`auto`/`database` 无 active 部署时完整回退文件系统，激活后使用部署快照，不做跨来源字段补齐。
+- `HAILIANG_BUSINESS_CONFIG_SOURCE`：可选来源覆盖，支持 `auto`（默认）、`filesystem`、`database`；`auto`/`database` 无 active 部署时完整回退文件系统，激活后使用部署快照，仅对平台内置运行壳 Skill 做兼容性补齐。
 - `HAILIANG_WORKBENCH_BOOTSTRAP`：遗留基线导入开关，默认 `false`；迁移应使用显式命令。
 - `HAILIANG_WORKBENCH_SQLITE_PATH`：文件存储模式下的本地数据库路径。
 - `HAILIANG_WORKBENCH_MAX_ASSET_BYTES`：单个资料文件上限，默认 20 MB。

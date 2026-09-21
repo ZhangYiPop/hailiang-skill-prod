@@ -341,14 +341,30 @@ def create_app() -> FastAPI:
             # The filesystem coordinator is a compatibility default only.  A
             # database deployment is authoritative for its expert-team
             # coordinator and may use a different expert ID.
-            effective_business_config_entries = database_entries
             active_entries = active_snapshot.get("entries", []) if isinstance(active_snapshot, dict) else []
+            # The immutable deployment ZIP is the source of truth once an
+            # active deployment exists.  Do not expose unrelated current DB
+            # releases (or a newer staged object) to routing.  Old rows from
+            # before package materialisation may not contain payload/files;
+            # retain the DB-catalog fallback only for that legacy case so a
+            # valid active deployment can still boot during migration.
+            materialized_active_entries = [
+                entry
+                for entry in active_entries
+                if isinstance(entry, dict)
+                and isinstance(entry.get("payload"), dict)
+                and isinstance(entry.get("dependency_locks"), list)
+            ] if isinstance(active_entries, list) else []
+            if materialized_active_entries and len(materialized_active_entries) == len(active_entries):
+                effective_business_config_entries = materialized_active_entries
+            else:
+                effective_business_config_entries = database_entries
             root = active_snapshot.get("root", {}) if isinstance(active_snapshot, dict) else {}
             preferred_team_id = str(root.get("object_key") or "") if isinstance(root, dict) and root.get("object_type") == "expert_team" else ""
             if not preferred_team_id:
                 preferred_team_id = default_expert_team_id()
             default_expert_id = resolve_default_expert_id(
-                active_entries if isinstance(active_entries, list) and active_entries else (database_entries or []),
+                effective_business_config_entries or [],
                 preferred_team_id=preferred_team_id,
             )
     orchestrator = MainPlannerOrchestrator(
@@ -508,6 +524,9 @@ def create_app() -> FastAPI:
                     key
                     for key in orchestrator.runtime_registry.enabled_bundles().keys()
                 ),
+                "filesystem_fallback_skills": list(
+                    getattr(orchestrator, "runtime_catalog_fallback_skills", ())
+                ),
             },
             "llm": {
                 "provider": llm_config.provider,
@@ -559,6 +578,9 @@ def create_app() -> FastAPI:
             "llm_rate_limiter": limiter_ready,
             "expert_runtime": expert_runtime,
             "ms_agent_available": orchestrator.ms_agent_probe.available,
+            "filesystem_fallback_skills": list(
+                getattr(orchestrator, "runtime_catalog_fallback_skills", ())
+            ),
             "environment": deployment_environment(),
             "version": release_version(),
             "node": node_name(),
