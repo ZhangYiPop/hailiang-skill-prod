@@ -520,7 +520,7 @@ def test_expert_explicit_grade_is_saved_to_session_scope_without_overwriting_pro
     assert any(event["event_type"] == "expert_explicit_fact_captured" for event in context.event_trace)
 
 
-def test_high_relevance_direct_reply_without_agent_quote_is_rerouted_to_skill():
+def test_high_relevance_direct_reply_without_agent_quote_is_scope_checked_not_forced():
     class RouteClient:
         def __init__(self):
             self.calls = 0
@@ -554,8 +554,50 @@ def test_high_relevance_direct_reply_without_agent_quote_is_rerouted_to_skill():
 
     runtime._route_answering_expert_turn(definition, "我想要一个数学提分计划", context, RouteClient(), state)
 
+    assert "expert_requested_skill_id" not in context.session_meta
+    assert any(event["event_type"] == "expert_skill_scope_inspection_requested" for event in context.event_trace)
+    assert any(event["event_type"] == "expert_direct_reply_preserved" for event in context.event_trace)
+
+
+def test_scope_check_allows_skill_only_when_full_skill_confirms_in_scope():
+    class RouteClient:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, _messages, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps({
+                    "mode": "direct_reply", "skill_id": "", "candidate_skill_ids": ["SCORE_IMPROVE"],
+                    "confidence": 0.8, "reason": "需要先复核 Skill 范围",
+                })
+            return json.dumps({
+                "mode": "direct_reply", "skill_id": "", "candidate_skill_ids": ["SCORE_IMPROVE"],
+                "confidence": 0.95, "scope_decision": "in_scope",
+                "skill_scope_basis": "当前版本是占位版子场景 skill，用于验证 runtime 的多 skill 路由、facts 继承与状态切换能力。",
+                "reason": "用户明确需要提分规划",
+            })
+
+        def last_request_metrics(self):
+            return {}
+
+    skill_registry = _runtime_registry()
+    definition = ExpertDefinition(
+        agent_id="score_expert_scope",
+        name="提分专家",
+        rules_markdown="需要专项提分计划时使用已授权 Skill。",
+        skills=(LockedSkill("score_improve", "v1"),),
+    )
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={definition.agent_id: definition}), skill_registry)
+    context = SessionContext()
+    state = runtime._state(context, definition)
+    state["budget"] = {"max_iters": 4, "max_skill_calls": 3, "skill_calls": 0}
+
+    runtime._route_answering_expert_turn(definition, "请帮我做数学提分规划", context, RouteClient(), state)
+
     assert context.session_meta["expert_requested_skill_id"] == "score_improve"
-    assert any(event["event_type"] == "expert_direct_reply_blocked" for event in context.event_trace)
+    selected = [e for e in context.event_trace if e["event_type"] == "expert_skill_route_selected"][-1]
+    assert selected["payload"]["forced_skill_execution"] is True
 
 
 def test_expert_does_not_bypass_agent_when_decision_client_is_unavailable():
@@ -901,6 +943,9 @@ def test_confirmed_team_handoff_carries_source_question_and_keeps_visible_mentio
         "target_expert_id": "family_education_expert",
         "expert_team_id": "student_growth_expert_team",
         "source": "team_handoff",
+        "source_profile_id": None,
+        "execution_profile_id": None,
+        "cross_profile": False,
     }
 
 

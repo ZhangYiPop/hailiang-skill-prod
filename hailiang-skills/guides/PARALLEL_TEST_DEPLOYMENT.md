@@ -78,11 +78,15 @@ CREATE DATABASE hailiang_skills_test_multi_profile_v1_next
 创建 `/etc/hailiang-skills/test-next.env`：
 
 ```bash
+export SOURCE_ROOT=/home/hljy/tmp/gitlab/tmp/hailiang-skill_sensitive_v02121
+test -f "$SOURCE_ROOT/hailiang-skills/deploy/env/test-next.env.example"
 sudo install -m 600 -o root -g hailiang \
-  /home/hljy/Project/hailiang-skill_sensitive_v02121/hailiang-skills/deploy/env/test-next.env.example \
+  "$SOURCE_ROOT/hailiang-skills/deploy/env/test-next.env.example" \
   /etc/hailiang-skills/test-next.env
 sudoedit /etc/hailiang-skills/test-next.env
 ```
+
+`SOURCE_ROOT` 必须是服务器上实际上传并解压的源码根目录，不是开发机上的 `/Users/ayi/...` 路径。如果之后使用版本暂存目录上传，则改成对应的 `/opt/hailiang-staging/<版本号>`。
 
 将其中的数据库用户名、密码、私有 IP、模型与安全配置替换为真实值。数据库 URL 必须指向 `hailiang_skills_test_multi_profile_v1_next`；不要指向任何已有 `test` 或 `prod` 数据库。
 

@@ -1678,21 +1678,27 @@ class AgentScopeExpertRuntime:
             definition,
             routing_rules=frontmatter.routing_rules if frontmatter is not None else (),
         )
-        inspected = tuple(skill_id for skill_id in inspected_skill_ids if skill_id in definition.authorized_skill_ids)
+        inspected = tuple(
+            actual for requested in inspected_skill_ids
+            if (actual := self._resolve_authorized_skill_id(definition, requested))
+        )
         inspection = self._full_skill_instructions(inspected) if inspected else ""
         retry_note = (
-            "上一次直答决定被服务端拦截：存在高相关授权 Skill，但没有可验证的 AGENT.md 直答例外。"
-            "本次必须选择该 Skill，除非能逐字引用 AGENT.md 中明确的直答规则。\n"
-            if retry_after_direct_block else ""
+            "这是一次 Skill 范围复核：必须阅读下方完整 SKILL.md，判断当前问题是否真的属于其能力范围。"
+            "如果属于范围，scope_decision 填 in_scope 并给出 Skill 原文依据；如果不属于或无法确认，保留 direct_reply。\n"
+            if inspected else ""
         )
         prompt = (
             f"你是 {definition.name} 的内部路由器。你不能向用户作答，只能输出一个 JSON 对象。\n"
             "先遵循 AGENT.md；默认规则是：只要已授权 Skill 能处理本轮任务，必须选择 execute_skill。"
             "仅在没有适用 Skill，或 AGENT.md 明确要求此类问题由专家直答时，才选择 direct_reply。"
             "当前 Skill 的表单答案、选项、补充资料或连续追问优先继续当前 Skill；意图真正改变才重选。\n"
+            "关键词命中只能作为候选信号，不能证明 Skill 适用。必须同时检查 Skill 的适用范围、禁止范围和交回规则；"
+            "仅当明确属于 Skill 能力范围时才选择 execute_skill。\n"
             "JSON 格式：{\"mode\":\"execute_skill|direct_reply|inspect_skills\",\"skill_id\":\"授权 skill id 或空\","
             "\"candidate_skill_ids\":[\"...\"],\"confidence\":0.0,\"agent_policy_basis\":\"AGENT.md 原文短引或空\","
-            "\"direct_reply_reason\":\"仅 direct_reply 时填写\",\"reason\":\"简短内部依据\"}。\n"
+            "\"direct_reply_reason\":\"仅 direct_reply 时填写\",\"skill_scope_basis\":\"Skill.md 原文短引或空\","
+            "\"scope_decision\":\"in_scope|out_of_scope|uncertain\",\"reason\":\"简短内部依据\"}。\n"
             "多项匹配时选择最匹配的一项；只有目录不足以判断时用 inspect_skills，并在 candidate_skill_ids 中给出最多两个授权 ID。"
             "direct_reply 时 agent_policy_basis 必须是 AGENT.md 中可核验的原文短引；不要编造。\n"
             f"# AGENT.md 正文\n{agent_rules}\n"
@@ -1721,7 +1727,10 @@ class AgentScopeExpertRuntime:
             raise AgentScopeRuntimeUnavailable("专家路由决策暂不可用，请稍后重试")
         if decision["mode"] == "inspect_skills":
             requested = tuple(decision.get("candidate_skill_ids") or ())[:2]
-            safe = tuple(skill_id for skill_id in requested if skill_id in definition.authorized_skill_ids)
+            safe = tuple(
+                actual for requested_id in requested
+                if (actual := self._resolve_authorized_skill_id(definition, requested_id))
+            )
             if not safe:
                 raise AgentScopeRuntimeUnavailable("专家路由决策暂不可用，请稍后重试")
             self._event(context, "expert_skill_full_instruction_inspected", {
@@ -1731,44 +1740,74 @@ class AgentScopeExpertRuntime:
                 definition, user_message, context, client, active_skill_id=active_skill_id,
                 inspected_skill_ids=safe,
             )
-        if decision["mode"] == "execute_skill" and decision["skill_id"] not in definition.authorized_skill_ids:
-            requested_skill_id = str(decision.get("skill_id") or "")
-            self._event(context, "expert_skill_unavailable_fallback", {
-                "expert_id": definition.agent_id,
-                "skill_id": decision["skill_id"],
-                "code": "EXPERT_SKILL_UNAVAILABLE_FALLBACK",
-                "reason": "route_not_authorized",
-                "message": "指定 Skill 不在专家当前可用范围，已由专家直接兜底",
-            })
-            return {
-                **decision,
-                "mode": "direct_reply",
-                "skill_id": "",
-                "direct_reply_reason": f"目标 Skill {requested_skill_id} 不在专家当前可用范围，由专家直接兜底",
-                "agent_policy_basis": "目标 Skill 不可用时由当前专家直接兜底",
-                "reason": "requested_skill_unavailable_fallback",
-            }
+        if decision["mode"] == "execute_skill":
+            resolved_skill_id = self._resolve_authorized_skill_id(definition, decision.get("skill_id"))
+            if resolved_skill_id and self.runtime_registry.get(resolved_skill_id) is not None:
+                decision["skill_id"] = resolved_skill_id
+            else:
+                requested_skill_id = str(decision.get("skill_id") or "")
+                self._event(context, "expert_skill_unavailable_fallback", {
+                    "expert_id": definition.agent_id,
+                    "skill_id": decision.get("skill_id"),
+                    "code": "EXPERT_SKILL_UNAVAILABLE_FALLBACK",
+                    "reason": "route_not_authorized",
+                    "message": "指定 Skill 不在专家当前可用范围，已由专家直接兜底",
+                })
+                return {
+                    **decision,
+                    "mode": "direct_reply",
+                    "skill_id": "",
+                    "direct_reply_reason": f"目标 Skill {requested_skill_id} 不在专家当前可用范围，由专家直接兜底",
+                    "agent_policy_basis": "目标 Skill 不可用时由当前专家直接兜底",
+                    "reason": "requested_skill_unavailable_fallback",
+                }
         if decision["mode"] == "direct_reply":
             model_candidate = next(
-                (skill_id for skill_id in decision.get("candidate_skill_ids") or () if skill_id in definition.authorized_skill_ids),
+                (skill_id for requested_id in decision.get("candidate_skill_ids") or ()
+                 if (skill_id := self._resolve_authorized_skill_id(definition, requested_id))),
                 None,
             )
             high_match = model_candidate or self._high_relevance_skill(user_message, cards)
             policy_ok = self._policy_quote_is_valid(agent_rules, decision.get("agent_policy_basis", ""))
-            if high_match and not policy_ok:
-                self._event(context, "expert_direct_reply_blocked", {
-                    "expert_id": definition.agent_id, "candidate_skill_id": high_match,
-                    "reason": "high_relevance_skill_without_agent_override",
+            scope_basis = str(decision.get("skill_scope_basis") or "").strip()
+            scope_decision = str(decision.get("scope_decision") or "uncertain").strip()
+            candidate_source = "semantic_catalog" if model_candidate else ("lexical_hint" if high_match else "")
+            full_skill_inspected = bool(high_match and high_match in inspected)
+            if high_match and not policy_ok and not full_skill_inspected:
+                self._event(context, "expert_skill_scope_inspection_requested", {
+                    "expert_id": definition.agent_id,
+                    "candidate_skill_id": high_match,
+                    "route_candidate_source": candidate_source,
+                    "reason": "direct_reply_needs_skill_boundary_check",
                 })
-                if not retry_after_direct_block:
-                    return self._decide_authorized_skill(
-                        definition, user_message, context, client, active_skill_id=active_skill_id,
-                        retry_after_direct_block=True,
-                    )
-                # The safe final fallback is the deterministically best locked
-                # Skill, never an unverified direct reply.
-                decision = {**decision, "mode": "execute_skill", "skill_id": high_match,
-                            "reason": "server_enforced_high_relevance_skill"}
+                self._event(context, "expert_skill_full_instruction_inspected", {
+                    "expert_id": definition.agent_id,
+                    "skill_ids": [high_match],
+                    "reason": "direct_reply_scope_check",
+                })
+                return self._decide_authorized_skill(
+                    definition, user_message, context, client,
+                    active_skill_id=active_skill_id,
+                    inspected_skill_ids=(high_match,),
+                )
+            scope_quote_ok = full_skill_inspected and self._policy_quote_is_valid(
+                self._full_skill_instructions((high_match,)) if high_match else "", scope_basis
+            )
+            if high_match and not policy_ok and scope_decision == "in_scope" and scope_quote_ok:
+                decision = {
+                    **decision, "mode": "execute_skill", "skill_id": high_match,
+                    "reason": "skill_scope_confirmed_in_scope",
+                }
+            elif high_match and not policy_ok:
+                self._event(context, "expert_direct_reply_preserved", {
+                    "expert_id": definition.agent_id,
+                    "candidate_skill_id": high_match,
+                    "route_candidate_source": candidate_source,
+                    "full_skill_inspected": full_skill_inspected,
+                    "scope_decision": scope_decision,
+                    "skill_scope_basis": scope_basis[:240] if scope_quote_ok else "",
+                    "reason": "skill_scope_not_proven_in_scope",
+                })
             elif policy_ok:
                 self._event(context, "expert_agent_direct_override", {
                     "expert_id": definition.agent_id,
@@ -1785,6 +1824,16 @@ class AgentScopeExpertRuntime:
             "frontmatter_fallback_to_agent_markdown": frontmatter is None or not bool(frontmatter.routing_rules),
             "confidence": decision.get("confidence"),
             "reason": str(decision.get("reason") or "")[:300],
+            "route_candidate_source": (
+                "semantic_catalog" if decision.get("candidate_skill_ids")
+                else ("lexical_hint" if self._high_relevance_skill(user_message, cards) else "")
+            ),
+            "full_skill_inspected": bool(inspected),
+            "scope_decision": str(decision.get("scope_decision") or "uncertain"),
+            "skill_scope_basis": str(decision.get("skill_scope_basis") or "")[:240],
+            "direct_reply_preserved": decision.get("mode") == "direct_reply",
+            "direct_reply_block_reason": "",
+            "forced_skill_execution": str(decision.get("reason") or "") == "skill_scope_confirmed_in_scope",
         })
         return decision
 
@@ -1816,6 +1865,8 @@ class AgentScopeExpertRuntime:
             "confidence": max(0.0, min(1.0, confidence)),
             "agent_policy_basis": str(value.get("agent_policy_basis") or "").strip(),
             "direct_reply_reason": str(value.get("direct_reply_reason") or "").strip(),
+            "skill_scope_basis": str(value.get("skill_scope_basis") or "").strip(),
+            "scope_decision": str(value.get("scope_decision") or "uncertain").strip(),
             "reason": str(value.get("reason") or "").strip(),
         }
 
@@ -1865,7 +1916,7 @@ class AgentScopeExpertRuntime:
         routing_rules: tuple[AgentRoutingRule, ...] = (),
     ) -> list[dict[str, Any]]:
         cards: list[dict[str, Any]] = []
-        rules_by_skill = {rule.skill_id: rule for rule in routing_rules}
+        rules_by_skill = {self._normalize_skill_id(rule.skill_id): rule for rule in routing_rules}
         for skill_id in definition.authorized_skill_ids:
             bundle = self.runtime_registry.get(skill_id)
             if bundle is None:
@@ -1885,8 +1936,8 @@ class AgentScopeExpertRuntime:
                 # “适用场景 / 使用时机 / 工作流”.  This bounded semantic card
                 # is intentionally loaded before the optional full read.
                 "semantic_summary": self._skill_routing_summary(markdown),
-                "agent_routing_rule": self._routing_rule_payload((rules_by_skill[skill_id],))[0]
-                if skill_id in rules_by_skill else None,
+                "agent_routing_rule": self._routing_rule_payload((rules_by_skill[self._normalize_skill_id(skill_id)],))[0]
+                if self._normalize_skill_id(skill_id) in rules_by_skill else None,
             })
         return cards
 
@@ -1911,7 +1962,8 @@ class AgentScopeExpertRuntime:
     def _routing_rule_index(frontmatter: AgentFrontMatter | None, skill_id: str) -> int | None:
         if frontmatter is None:
             return None
-        return next((rule.index for rule in frontmatter.routing_rules if rule.skill_id == skill_id), None)
+        normalized = AgentScopeExpertRuntime._normalize_skill_id(skill_id)
+        return next((rule.index for rule in frontmatter.routing_rules if AgentScopeExpertRuntime._normalize_skill_id(rule.skill_id) == normalized), None)
 
     @staticmethod
     def _skill_routing_summary(markdown: str) -> str:
@@ -1921,6 +1973,7 @@ class AgentScopeExpertRuntime:
             normalized = line.lstrip("#-*> 0123456789.）)(").strip()
             if any(marker in normalized for marker in (
                 "适用", "使用", "触发", "场景", "目标", "路由", "流程", "收集", "表单", "必须", "不要",
+                "不适用", "超出", "交回", "其他 Skill", "边界", "仅做", "支持", "禁止",
             )):
                 selected.append(normalized)
             if len("\n".join(selected)) >= 4_000:
@@ -1963,6 +2016,21 @@ class AgentScopeExpertRuntime:
         return len(quote) >= 8 and quote in rules
 
     @staticmethod
+    def _normalize_skill_id(value: Any) -> str:
+        return str(value or "").strip().casefold()
+
+    @classmethod
+    def _resolve_authorized_skill_id(cls, definition: ExpertDefinition, requested: Any) -> str | None:
+        normalized = cls._normalize_skill_id(requested)
+        if not normalized:
+            return None
+        return next(
+            (skill_id for skill_id in definition.authorized_skill_ids
+             if cls._normalize_skill_id(skill_id) == normalized),
+            None,
+        )
+
+    @staticmethod
     def _high_relevance_skill(user_message: str, cards: list[dict[str, Any]]) -> str | None:
         query = str(user_message or "").lower()
         best_id, best_score = "", 0
@@ -1982,7 +2050,9 @@ class AgentScopeExpertRuntime:
 
     def _catalog(self, definition: ExpertDefinition) -> str:
         return "\n".join(
-            f"- {card['skill_id']}: {card['name']}。{card['description']}；触发：{'、'.join(card['triggers'])}；标签：{'、'.join(card['tags'])}"
+            f"- {card['skill_id']}: {card['name']}。{card['description']}；触发：{'、'.join(card['triggers'])}；"
+            f"标签：{'、'.join(card['tags'])}；范围摘要：{card.get('semantic_summary') or '未提供'}；"
+            f"路由示例：{'、'.join(card.get('routing_examples') or [])}"
             for card in self._skill_capability_cards(definition)
         )
 

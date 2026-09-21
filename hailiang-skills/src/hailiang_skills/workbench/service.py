@@ -2477,10 +2477,32 @@ class WorkbenchService:
                     "reason": str(payload.get("reason") or ""),
                     "capability_catalog_version": str(payload.get("capability_catalog_version") or ""),
                     "execute_skill_registered": bool(payload.get("execute_skill_registered")),
+                    "route_candidate_source": str(payload.get("route_candidate_source") or ""),
+                    "full_skill_inspected": bool(payload.get("full_skill_inspected")),
+                    "scope_decision": str(payload.get("scope_decision") or "uncertain"),
+                    "skill_scope_basis": str(payload.get("skill_scope_basis") or ""),
+                    "direct_reply_preserved": bool(payload.get("direct_reply_preserved")),
+                    "direct_reply_block_reason": str(payload.get("direct_reply_block_reason") or ""),
+                    "forced_skill_execution": bool(payload.get("forced_skill_execution")),
                 }
             elif event_type == "expert_direct_reply_blocked":
                 expert_routing["direct_reply_blocked"] = {
                     "candidate_skill_id": str(payload.get("candidate_skill_id") or ""),
+                    "reason": str(payload.get("reason") or ""),
+                }
+            elif event_type == "expert_skill_scope_inspection_requested":
+                expert_routing["scope_inspection_requested"] = {
+                    "candidate_skill_id": str(payload.get("candidate_skill_id") or ""),
+                    "route_candidate_source": str(payload.get("route_candidate_source") or ""),
+                    "reason": str(payload.get("reason") or ""),
+                }
+            elif event_type == "expert_direct_reply_preserved":
+                expert_routing["direct_reply_preserved"] = {
+                    "candidate_skill_id": str(payload.get("candidate_skill_id") or ""),
+                    "route_candidate_source": str(payload.get("route_candidate_source") or ""),
+                    "full_skill_inspected": bool(payload.get("full_skill_inspected")),
+                    "scope_decision": str(payload.get("scope_decision") or "uncertain"),
+                    "skill_scope_basis": str(payload.get("skill_scope_basis") or ""),
                     "reason": str(payload.get("reason") or ""),
                 }
             elif event_type in {"expert_decision_unavailable", "candidate_turn_failed"}:
