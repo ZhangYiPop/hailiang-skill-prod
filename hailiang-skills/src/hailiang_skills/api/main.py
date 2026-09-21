@@ -69,7 +69,8 @@ from hailiang_skills.storage.repositories.profile_memory_repo import (
     PostgresProfileMemoryRepository,
 )
 from hailiang_skills.workbench.factory import build_workbench_service
-from hailiang_skills.workbench.catalog import load_current_release_entries
+from hailiang_skills.workbench.catalog import load_current_release_entries, resolve_default_expert_id
+from hailiang_skills.runtime_bridge.default_expert_team import default_expert_team_id
 from pathlib import Path
 import os
 import json
@@ -310,26 +311,61 @@ def create_app() -> FastAPI:
         quarantine_store=quarantine_store,
     )
     app.state.moderation_service = moderation_service
-    business_config_source = os.getenv("HAILIANG_BUSINESS_CONFIG_SOURCE", "filesystem").strip().lower()
-    if business_config_source not in {"filesystem", "database"}:
-        raise RuntimeError("HAILIANG_BUSINESS_CONFIG_SOURCE 仅支持 filesystem 或 database")
+    # ``auto`` is the normal deployment mode: an active production
+    # deployment is authoritative, while a fresh server falls back to the
+    # complete bundled filesystem runtime until the first deployment is
+    # activated.  The explicit values remain available for migration,
+    # comparison and emergency rollback.
+    business_config_source = os.getenv("HAILIANG_BUSINESS_CONFIG_SOURCE", "auto").strip().lower()
+    if business_config_source not in {"auto", "filesystem", "database"}:
+        raise RuntimeError("HAILIANG_BUSINESS_CONFIG_SOURCE 仅支持 auto、filesystem 或 database")
     # Workbench owns the local SQLite session factory in development, so it
     # must exist before a database-only runtime catalog can be read.
     workbench_service = build_workbench_service(storage, orchestrator=None)
-    database_entries = load_current_release_entries(workbench_service.session_factory) if business_config_source == "database" else None
+    source_uses_database = business_config_source in {"auto", "database"}
+    database_entries = load_current_release_entries(workbench_service.session_factory) if source_uses_database else None
+    active_snapshot = None
+    effective_business_config_source = business_config_source
+    effective_business_config_entries = None
+    default_expert_id = None
+    if source_uses_database:
+        active_snapshot = workbench_service.active_deployment_snapshot(deployment_environment())
+        if active_snapshot is None:
+            # A fresh server may have an empty database, or only staged/current
+            # workbench objects without a production deployment.  Keep the
+            # complete bundled runtime as the bootstrap source until an
+            # immutable expert-team deployment is activated; never merge a
+            # partial database catalog with filesystem objects.
+            effective_business_config_source = "filesystem_fallback"
+        else:
+            # The filesystem coordinator is a compatibility default only.  A
+            # database deployment is authoritative for its expert-team
+            # coordinator and may use a different expert ID.
+            effective_business_config_entries = database_entries
+            active_entries = active_snapshot.get("entries", []) if isinstance(active_snapshot, dict) else []
+            root = active_snapshot.get("root", {}) if isinstance(active_snapshot, dict) else {}
+            preferred_team_id = str(root.get("object_key") or "") if isinstance(root, dict) and root.get("object_type") == "expert_team" else ""
+            if not preferred_team_id:
+                preferred_team_id = default_expert_team_id()
+            default_expert_id = resolve_default_expert_id(
+                active_entries if isinstance(active_entries, list) and active_entries else (database_entries or []),
+                preferred_team_id=preferred_team_id,
+            )
     orchestrator = MainPlannerOrchestrator(
         registry,
         llm_config,
         moderation_service=moderation_service,
-        business_config_entries=database_entries,
+        business_config_entries=effective_business_config_entries,
+        default_expert_id=default_expert_id,
         profile_memory_repository=profile_memory_repository,
         conversation_memory_repository=conversation_memory_repository,
     )
     workbench_service.orchestrator = orchestrator
     app.state.workbench_service = workbench_service
-    if business_config_source == "filesystem" and os.getenv("HAILIANG_WORKBENCH_BOOTSTRAP", "false").lower() in {"1", "true", "yes", "on"}:
+    app.state.business_config_source = effective_business_config_source
+    if effective_business_config_source in {"filesystem", "filesystem_fallback"} and os.getenv("HAILIANG_WORKBENCH_BOOTSTRAP", "false").lower() in {"1", "true", "yes", "on"}:
         workbench_service.bootstrap_from_runtime()
-    if business_config_source == "database":
+    if source_uses_database and active_snapshot is not None:
         workbench_service.install_runtime_catalog()
         workbench_service.install_active_deployment_runtime(deployment_environment())
     configured_origins = [item.strip() for item in os.getenv("HAILIANG_CORS_ORIGINS", "").split(",") if item.strip()]
@@ -492,6 +528,7 @@ def create_app() -> FastAPI:
                 "quarantine_available": quarantine_store.available,
             },
             "storage": {"backend": storage.backend, "ready": storage.ready()},
+            "business_config_source": app.state.business_config_source,
             "deployment": {"environment": deployment_environment(), "version": release_version(), "node": node_name()},
             "workbench": {
                 "kernel_fingerprint": workbench_service.kernel_fingerprint,

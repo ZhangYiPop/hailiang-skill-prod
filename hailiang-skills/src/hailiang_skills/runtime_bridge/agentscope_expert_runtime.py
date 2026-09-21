@@ -322,11 +322,13 @@ class AgentScopeExpertRuntime:
             else:
                 agent_reply = self._generate_member_direct_reply(definition, team, user_message, context, client)
             state["agent_reply"] = agent_reply
+        route_decision = state.get("skill_route_decision")
+        direct_route = isinstance(route_decision, dict) and route_decision.get("mode") == "direct_reply"
         has_native_handoff = bool(
             context.session_meta.get("expert_requested_skill_id")
             or state.get("pending_form")
             or self._has_pending_native_questionnaire(context)
-        )
+        ) and not direct_route
         if not agent_reply and not has_native_handoff:
             # A completed ReAct call that neither answered nor selected an
             # authorized native action is not a decision.  Letting the legacy
@@ -1558,6 +1560,41 @@ class AgentScopeExpertRuntime:
         )
 
     @staticmethod
+    def _pending_native_questionnaire_summary(context) -> list[dict[str, Any]]:
+        """Return compact pending-form state for the Expert route decision.
+
+        A pending questionnaire is resumable state, not an unconditional
+        routing lock. The route model needs to know which Skill owns the
+        pending fields so it can distinguish an answer/clarification from a
+        new, unrelated user intent.
+        """
+        runtime = getattr(context, "skill_states", {}).get("skill_runtime", {})
+        if not isinstance(runtime, dict):
+            return []
+        active_skill_id = str(runtime.get("active_skill_id") or "").strip()
+        skill_facts = runtime.get("skill_facts")
+        if not active_skill_id or not isinstance(skill_facts, dict):
+            return []
+        active_facts = skill_facts.get(active_skill_id)
+        if not isinstance(active_facts, dict):
+            return []
+        pending = active_facts.get("_pending_questionnaire")
+        if not isinstance(pending, dict):
+            return []
+        question_ids = pending.get("question_ids")
+        if not isinstance(question_ids, list):
+            question_ids = []
+        answers = pending.get("answers")
+        if not isinstance(answers, dict):
+            answers = {}
+        return [{
+            "skill_id": active_skill_id,
+            "form_id": str(pending.get("form_id") or ""),
+            "question_ids": [str(item).strip() for item in question_ids if str(item).strip()][:32],
+            "answered_keys": sorted(str(key).strip() for key in answers if str(key).strip())[:32],
+        }]
+
+    @staticmethod
     def _is_supported_client(client) -> bool:
         """Do not consume legacy/test clients through the AgentScope adapter."""
         if client is None:
@@ -1581,39 +1618,6 @@ class AgentScopeExpertRuntime:
         # any value left by an earlier failed turn so an unavailable target
         # cannot accidentally re-run the previous Skill during fallback.
         context.session_meta.pop("expert_requested_skill_id", None)
-        if self._has_pending_native_questionnaire(context) and active_skill_id in definition.authorized_skill_ids:
-            self._event(context, "expert_skill_route_selected", {
-                "expert_id": definition.agent_id,
-                "mode": "execute_skill",
-                "skill_id": active_skill_id,
-                "reason": "active_skill_pending_questionnaire",
-            })
-            try:
-                self._execute_skill(definition, state, context, active_skill_id, user_message, None)
-            except ValueError as exc:
-                if not str(exc).startswith("Skill 不可用:"):
-                    raise
-                decision = {
-                    "mode": "direct_reply",
-                    "skill_id": "",
-                    "candidate_skill_ids": [],
-                    "direct_reply_reason": f"目标 Skill {active_skill_id} 当前不可用，由专家直接兜底",
-                    "agent_policy_basis": "目标 Skill 不可用时由当前专家直接兜底",
-                    "reason": "runtime_skill_unavailable_fallback",
-                }
-                state["skill_route_decision"] = decision
-                state["agent_reply"] = self._generate_expert_direct_reply(
-                    definition, user_message, context, client, decision,
-                )
-                self._event(context, "expert_skill_unavailable_fallback", {
-                    "expert_id": definition.agent_id,
-                    "skill_id": active_skill_id,
-                    "code": "EXPERT_SKILL_UNAVAILABLE_FALLBACK",
-                    "reason": "runtime_skill_missing",
-                    "error": str(exc)[:300],
-                    "message": "指定 Skill 当前不可用，已由专家直接兜底",
-                })
-            return
 
         decision = self._decide_authorized_skill(
             definition, user_message, context, client, active_skill_id=active_skill_id,
@@ -1692,9 +1696,12 @@ class AgentScopeExpertRuntime:
             f"你是 {definition.name} 的内部路由器。你不能向用户作答，只能输出一个 JSON 对象。\n"
             "先遵循 AGENT.md；默认规则是：只要已授权 Skill 能处理本轮任务，必须选择 execute_skill。"
             "仅在没有适用 Skill，或 AGENT.md 明确要求此类问题由专家直答时，才选择 direct_reply。"
-            "当前 Skill 的表单答案、选项、补充资料或连续追问优先继续当前 Skill；意图真正改变才重选。\n"
+            "当前 Skill 的表单答案、选项、补充资料或连续追问优先继续当前 Skill；意图真正改变才重选。"
+            "表单处于 pending 只代表可以恢复，不代表本轮必须执行该 Skill；如果用户改问该 Skill 不处理的事项，必须切换到 direct_reply 或另一项授权 Skill。\n"
             "关键词命中只能作为候选信号，不能证明 Skill 适用。必须同时检查 Skill 的适用范围、禁止范围和交回规则；"
-            "仅当明确属于 Skill 能力范围时才选择 execute_skill。\n"
+            "仅当明确属于 Skill 能力范围时才选择 execute_skill；只因为提到一个学校、国家、专业或产品名称，不足以证明属于该 Skill。"
+            "execute_skill 决定必须给出 SKILL.md 中支持当前用户意图的原文短引，并将 scope_decision 填为 in_scope；"
+            "若只能证明实体相同、不能证明任务相同，填 out_of_scope 或 uncertain。\n"
             "JSON 格式：{\"mode\":\"execute_skill|direct_reply|inspect_skills\",\"skill_id\":\"授权 skill id 或空\","
             "\"candidate_skill_ids\":[\"...\"],\"confidence\":0.0,\"agent_policy_basis\":\"AGENT.md 原文短引或空\","
             "\"direct_reply_reason\":\"仅 direct_reply 时填写\",\"skill_scope_basis\":\"Skill.md 原文短引或空\","
@@ -1705,6 +1712,7 @@ class AgentScopeExpertRuntime:
             + (f"\n# AGENT.md 路由前言\n{json.dumps(self._routing_rule_payload(frontmatter.routing_rules), ensure_ascii=False)}\n" if frontmatter is not None else "")
             + f"\n# 授权 Skill 能力目录\n{json.dumps(cards, ensure_ascii=False)}\n"
             f"# 当前活动 Skill\n{active_skill_id or '无'}\n{retry_note}"
+            f"# 当前可恢复的挂起表单\n{json.dumps(self._pending_native_questionnaire_summary(context), ensure_ascii=False)}\n"
             f"{inspection}\n# 最近对话\n{self._expert_conversation_history(context)}"
         )
         try:
@@ -1744,6 +1752,41 @@ class AgentScopeExpertRuntime:
             resolved_skill_id = self._resolve_authorized_skill_id(definition, decision.get("skill_id"))
             if resolved_skill_id and self.runtime_registry.get(resolved_skill_id) is not None:
                 decision["skill_id"] = resolved_skill_id
+                # An execute decision is also a semantic claim. Do not accept
+                # an entity-only match (for example, a school name) before
+                # reading the complete SKILL.md and asking the route model to
+                # prove that this *task* is in scope. This is especially
+                # important while a questionnaire is pending, but applies to
+                # every Skill handoff so the same boundary bug cannot recur in
+                # another expert.
+                if resolved_skill_id not in inspected:
+                    self._event(context, "expert_skill_scope_inspection_requested", {
+                        "expert_id": definition.agent_id,
+                        "candidate_skill_id": resolved_skill_id,
+                        "route_candidate_source": "semantic_catalog",
+                        "reason": "execute_skill_needs_skill_boundary_check",
+                    })
+                    self._event(context, "expert_skill_full_instruction_inspected", {
+                        "expert_id": definition.agent_id,
+                        "skill_ids": [resolved_skill_id],
+                        "reason": "execute_skill_scope_check",
+                    })
+                    return self._decide_authorized_skill(
+                        definition,
+                        user_message,
+                        context,
+                        client,
+                        active_skill_id=active_skill_id,
+                        inspected_skill_ids=tuple(dict.fromkeys((*inspected, resolved_skill_id))),
+                    )
+                if str(decision.get("scope_decision") or "uncertain").strip() != "in_scope":
+                    return {
+                        **decision,
+                        "mode": "direct_reply",
+                        "skill_id": "",
+                        "direct_reply_reason": "当前问题的任务边界未能证明属于该 Skill，由专家处理或澄清",
+                        "reason": "skill_scope_not_confirmed",
+                    }
             else:
                 requested_skill_id = str(decision.get("skill_id") or "")
                 self._event(context, "expert_skill_unavailable_fallback", {

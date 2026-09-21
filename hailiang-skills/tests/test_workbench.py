@@ -28,6 +28,7 @@ from hailiang_skills.workbench.runtime_overlay import (
     skill_bundle_from_entry,
     skill_markdown_with_metadata,
 )
+from hailiang_skills.workbench.catalog import resolve_default_expert_id
 from hailiang_skills.api.routes import workbench as workbench_routes
 from hailiang_skills.api.routes.workbench import build_deployment_router, build_workbench_router
 from hailiang_skills.core.context import SessionContext
@@ -49,6 +50,34 @@ def service() -> WorkbenchService:
 
 def _actor(service: WorkbenchService) -> str:
     return service.register_actor("业务测试员")["actor_id"]
+
+
+def test_database_catalog_resolves_default_to_deployed_team_coordinator():
+    entries = [
+        {"object_type": "expert", "object_key": "e_career_planner"},
+        {"object_type": "expert", "object_key": "study_abroad_consultant"},
+        {
+            "object_type": "expert_team",
+            "object_key": "student_growth_expert_team",
+            "payload": {"coordinator_expert_id": "expert-object-1"},
+            "dependency_locks": [
+                {"object_id": "expert-object-1", "object_key": "e_career_planner", "object_type": "expert"},
+                {"object_id": "expert-object-2", "object_key": "study_abroad_consultant", "object_type": "expert"},
+            ],
+        },
+    ]
+
+    assert resolve_default_expert_id(
+        entries,
+        preferred_team_id="student_growth_expert_team",
+    ) == "e_career_planner"
+
+
+def test_database_catalog_keeps_filesystem_default_when_it_is_present():
+    assert resolve_default_expert_id(
+        [{"object_type": "expert", "object_key": "career_plan_expert"}],
+        preferred_team_id="missing_team",
+    ) == "career_plan_expert"
 
 
 def test_database_bundle_needs_no_business_template(tmp_path, monkeypatch):

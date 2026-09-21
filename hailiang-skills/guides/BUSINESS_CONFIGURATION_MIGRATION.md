@@ -4,10 +4,14 @@
 
 业务配置包括 Skill、专家和专家团。Skill 的 `SKILL.md`、`runtime_contract.json`、`references/`、`assets/`、`scripts/` 以及根目录数据文件（例如 `professions.json`、`tools.yaml`）均随不可变修订保存。表单引擎、Facts、SSE、专家调度、公共工具和脚本沙箱仍属于程序代码。
 
-第一阶段保留文件目录用于迁移对照，但运行来源必须通过 `HAILIANG_BUSINESS_CONFIG_SOURCE` 明确选择：
+第一阶段保留文件目录用于迁移对照，运行来源默认自动选择；需要对照或回滚时可用 `HAILIANG_BUSINESS_CONFIG_SOURCE` 覆盖：
+
+- `auto`（默认）：有 active 生产专家团时使用数据库部署快照；新服务器尚未完成首次“暂存导入 → 生产部署”时完整使用文件系统内置运行时。
 
 - `filesystem`：只读取 `runtime_skills`、`runtime_agents`、`runtime_agent_teams`，用于迁移前对照。
-- `database`：只读取各对象的 `current_release_id`，不借用同名文件补字段。缺少 `general_chat` 或 `career_plan_entity` 当前发布时启动失败。
+- `database`：有 active 生产专家团时，读取数据库当前发布目录并挂载 active 部署 ZIP；不会把文件系统对象补进数据库运行时。新服务器尚未完成首次“暂存导入 → 生产部署”时，完整回退到 `filesystem`，以便先启动工作台完成初始化；一旦激活部署，后续新会话和重启均使用该部署快照。
+
+回退是整套运行时来源切换，不是按 Skill/专家逐项混合。数据库中只有草稿、暂存部署或不完整对象时，不会被拼接进文件系统运行时；只有 active 生产部署才会切换数据库运行时。一般部署不需要设置 `HAILIANG_BUSINESS_CONFIG_SOURCE`；保留该变量只是为了显式强制某个来源。
 
 启动自动回灌默认关闭。禁止把 `HAILIANG_WORKBENCH_BOOTSTRAP` 当作持续同步机制。
 

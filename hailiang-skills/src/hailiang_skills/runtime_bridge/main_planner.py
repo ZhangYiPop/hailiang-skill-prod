@@ -1476,7 +1476,17 @@ def _questionnaire_decision_table_context(bundle) -> dict[str, Any] | None:
 class MainPlannerOrchestrator:
     """Hailiang API orchestrator backed by the career/general-chat route model."""
 
-    def __init__(self, registry, llm_config, moderation_service=None, *, business_config_entries=None, profile_memory_repository=None, conversation_memory_repository=None) -> None:
+    def __init__(
+        self,
+        registry,
+        llm_config,
+        moderation_service=None,
+        *,
+        business_config_entries=None,
+        default_expert_id: str | None = None,
+        profile_memory_repository=None,
+        conversation_memory_repository=None,
+    ) -> None:
         self.registry = registry
         self.llm_config = llm_config
         self.test_llm_routing = TestLLMRoutingConfig.from_environment()
@@ -1564,7 +1574,7 @@ class MainPlannerOrchestrator:
             self.expert_registry,
             self.runtime_registry,
             team_registry=self.expert_team_registry,
-            default_expert_id=DEFAULT_EXPERT_ID,
+            default_expert_id=str(default_expert_id or DEFAULT_EXPERT_ID),
             client_factory=self._runtime_client_for_context,
             event_recorder=self._record_events,
             history_messages=self.runtime_bridge_config.expert_history_messages,

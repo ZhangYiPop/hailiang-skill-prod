@@ -90,6 +90,15 @@ sudoedit /etc/hailiang-skills/test-next.env
 
 将其中的数据库用户名、密码、私有 IP、模型与安全配置替换为真实值。数据库 URL 必须指向 `hailiang_skills_test_multi_profile_v1_next`；不要指向任何已有 `test` 或 `prod` 数据库。
 
+`HAILIANG_BUSINESS_CONFIG_SOURCE` 不再是必填项。省略时默认为 `auto`：如果数据库已有 active 生产专家团，运行时使用该部署快照；如果是新服务器、数据库还没有 active 部署，则完整使用源码内置的 Skill/专家/专家团，先启动工作台完成“暂存导入 → 生产部署”。如需临时强制某一来源，才在环境文件中增加以下一行：
+
+```ini
+# 可选：auto（默认）、filesystem、database
+HAILIANG_BUSINESS_CONFIG_SOURCE=auto
+```
+
+不要在 `auto` 模式下把数据库对象和文件目录逐个混合；只有 active 生产专家团部署完成后，数据库快照才会整体成为运行时来源。
+
 安装参数化服务单元（只需一次）：
 
 ```bash
@@ -335,6 +344,8 @@ WORKBENCH_PORT=新版正式工作台端口
 HAILIANG_DATABASE_URL=postgresql+psycopg://hailiang_prod_next:新密码@127.0.0.1:5432/hailiang_skills_multi_profile_v1_next
 HAILIANG_REDIS_URL=redis://127.0.0.1:6379/2
 HAILIANG_REDIS_KEY_PREFIX=hailiang:prod:next:
+# 可选；不设置时默认为 auto。首次无 active 部署时使用文件运行时，部署激活后使用数据库快照。
+# HAILIANG_BUSINESS_CONFIG_SOURCE=auto
 HAILIANG_LOG_DIR=/var/lib/hailiang-skills/prod/logs
 HAILIANG_STATE_DIR=/var/lib/hailiang-skills/prod/runtime
 PYTHONPATH=/opt/hailiang-skills/current-prod-next/src:/opt/agent-skill-runtime-core

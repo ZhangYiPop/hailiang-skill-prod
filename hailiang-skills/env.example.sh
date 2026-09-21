@@ -70,10 +70,16 @@ export HAILIANG_SECURITY_ADMIN_TOKEN=""
 export HAILIANG_STORAGE_BACKEND="postgres"
 export HAILIANG_DATABASE_URL="postgresql+psycopg://hailiang:hailiang@127.0.0.1:5432/hailiang_skills_multi_profile_v1"
 export HAILIANG_REDIS_URL="redis://127.0.0.1:6379/0"
+# 运行时业务配置来源。默认值为 auto：有 active 生产专家团时使用数据库部署快照，
+# 尚未完成首次“暂存导入 → 生产部署”时完整使用文件系统内置运行时；通常无需设置。
+# 需要强制对照或回滚时可显式设置为 filesystem / database。
+# export HAILIANG_BUSINESS_CONFIG_SOURCE="auto"
 export START_INFRA="1"
 
 # 仅服务器部署时通常需要覆盖。
 export BACKEND_PORT="8010"
+# 首次加载数据库部署包会预热多个 Skill；超过默认值时可在本机适当增加。
+export BACKEND_READY_TIMEOUT_SECONDS="120"
 export WORKBENCH_PORT="8020"
 export FRONTEND_PORT="4175"
 export PUBLIC_API_BASE_URL=""

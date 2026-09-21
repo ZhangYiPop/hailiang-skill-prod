@@ -19,6 +19,7 @@ BOOTSTRAP=0
 MIGRATE_FILE_LOGS=0
 START_INFRA=1
 BACKEND_PID=""
+BACKEND_READY_TIMEOUT_SECONDS="${BACKEND_READY_TIMEOUT_SECONDS:-120}"
 # Preserve explicitly exported port overrides. env.sh can also set them via
 # env.local.sh after these defaults are initialized.
 POSTGRES_HOST_PORT="${POSTGRES_HOST_PORT:-}"
@@ -252,7 +253,7 @@ PYTHONPATH="$PROJECT_DIR/src:$AGENT_SKILL_RUNTIME_CORE_PATH" \
   --host 0.0.0.0 --port "$BACKEND_PORT" > "$PROJECT_DIR/backend.local.log" 2>&1 &
 BACKEND_PID="$!"
 
-for _ in $(seq 1 30); do
+for _ in $(seq 1 "$BACKEND_READY_TIMEOUT_SECONDS"); do
   if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
     echo "❌ 后端进程已退出，请查看：tail -n 100 $PROJECT_DIR/backend.local.log"
     exit 1

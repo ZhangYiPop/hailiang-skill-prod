@@ -447,6 +447,8 @@ def test_structured_route_selects_authorized_skill_before_any_expert_reply():
                 "candidate_skill_ids": ["score_improve"],
                 "confidence": 0.94,
                 "agent_policy_basis": "",
+                "scope_decision": "in_scope",
+                "skill_scope_basis": "当前版本是占位版子场景 skill，用于验证 runtime 的多 skill 路由、facts 继承与状态切换能力。",
                 "reason": "用户明确咨询提分方案",
             })
 
@@ -467,6 +469,76 @@ def test_structured_route_selects_authorized_skill_before_any_expert_reply():
     assert "agent_reply" not in state
     assert any(event["event_type"] == "expert_skill_route_selected" for event in context.event_trace)
     assert any(event["event_type"] == "expert_skill_executed" for event in context.event_trace)
+
+
+def test_pending_questionnaire_does_not_lock_unrelated_expert_question_to_skill():
+    class RouteClient:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, _messages, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps({
+                    "mode": "execute_skill",
+                    "skill_id": "score_improve",
+                    "candidate_skill_ids": ["score_improve"],
+                    "confidence": 0.95,
+                    "reason": "沿用当前挂起表单",
+                })
+            return json.dumps({
+                "mode": "direct_reply",
+                "skill_id": "",
+                "candidate_skill_ids": ["score_improve"],
+                "confidence": 0.96,
+                "scope_decision": "out_of_scope",
+                "skill_scope_basis": "该 Skill 只处理学习提分，不处理学校综合实力评价。",
+                "direct_reply_reason": "用户改问学校综合实力",
+                "reason": "当前问题已改变",
+            })
+
+        def last_request_metrics(self):
+            return {}
+
+    skill_registry = _runtime_registry()
+    definition = ExpertDefinition(
+        agent_id="score_expert_pending",
+        name="提分专家",
+        rules_markdown="需要专项提分计划时使用已授权 Skill。",
+        skills=(LockedSkill("score_improve", "v1"),),
+    )
+    runtime = AgentScopeExpertRuntime(
+        ExpertRegistry(definitions={definition.agent_id: definition}),
+        skill_registry,
+    )
+    context = SessionContext()
+    context.skill_states["skill_runtime"] = {
+        "active_skill_id": "score_improve",
+        "skill_facts": {
+            "score_improve": {
+                "_pending_questionnaire": {
+                    "form_id": "score_context",
+                    "question_ids": ["subject", "target_score"],
+                },
+            },
+        },
+    }
+
+    decision = runtime._decide_authorized_skill(
+        definition,
+        "MIT 的综合实力如何？",
+        context,
+        RouteClient(),
+        active_skill_id="score_improve",
+    )
+
+    assert decision["mode"] == "direct_reply"
+    assert decision["reason"] == "当前问题已改变"
+    assert any(
+        event["event_type"] == "expert_skill_scope_inspection_requested"
+        and event["payload"]["reason"] == "execute_skill_needs_skill_boundary_check"
+        for event in context.event_trace
+    )
 
 
 def test_missing_requested_skill_falls_back_to_expert_and_records_event():

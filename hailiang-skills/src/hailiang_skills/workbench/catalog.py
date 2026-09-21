@@ -126,3 +126,74 @@ def build_runtime_registries(entries: list[dict[str, Any]], *, enabled_by_id: di
         )
         teams.definitions[definition.team_id] = definition
     return skills, experts, teams
+
+
+def resolve_default_expert_id(
+    entries: list[dict[str, Any]],
+    *,
+    preferred_team_id: str = "",
+    fallback_expert_id: str = "career_plan_expert",
+) -> str:
+    """Resolve the coordinator used when a database-backed session is new.
+
+    The filesystem runtime historically used ``career_plan_expert`` as its
+    internal coordinator.  Database deployments, however, are authoritative
+    expert-team packages and may use a different coordinator ID.  Resolve the
+    coordinator from the same immutable entries that will be installed into
+    the runtime, without changing any release or dependency-lock data.
+    """
+    rows = [item for item in entries if isinstance(item, dict)]
+    expert_ids = {
+        str(item.get("object_key") or "").strip()
+        for item in rows
+        if item.get("object_type") == "expert" and str(item.get("object_key") or "").strip()
+    }
+    if fallback_expert_id in expert_ids:
+        fallback = fallback_expert_id
+    else:
+        fallback = ""
+
+    teams = [item for item in rows if item.get("object_type") == "expert_team"]
+    preferred = str(preferred_team_id or "").strip()
+    ordered = sorted(
+        teams,
+        key=lambda item: 0 if preferred and str(item.get("object_key") or "") == preferred else 1,
+    )
+    for team in ordered:
+        if preferred and str(team.get("object_key") or "").strip() != preferred:
+            continue
+        payload = team.get("payload") if isinstance(team.get("payload"), dict) else {}
+        coordinator_object_id = str(payload.get("coordinator_expert_id") or "").strip()
+        locks = team.get("dependency_locks") if isinstance(team.get("dependency_locks"), list) else []
+        coordinator = next(
+            (
+                str(lock.get("object_key") or "").strip()
+                for lock in locks
+                if isinstance(lock, dict)
+                and str(lock.get("object_id") or "").strip() == coordinator_object_id
+                and str(lock.get("object_key") or "").strip()
+            ),
+            coordinator_object_id,
+        )
+        if coordinator in expert_ids:
+            return coordinator
+
+    # If no preferred team was supplied, accept a single unambiguous team. Do
+    # not silently select an arbitrary coordinator from a multi-team catalog.
+    if not preferred and len(teams) == 1:
+        team = teams[0]
+        payload = team.get("payload") if isinstance(team.get("payload"), dict) else {}
+        coordinator_object_id = str(payload.get("coordinator_expert_id") or "").strip()
+        locks = team.get("dependency_locks") if isinstance(team.get("dependency_locks"), list) else []
+        coordinator = next(
+            (
+                str(lock.get("object_key") or "").strip()
+                for lock in locks
+                if isinstance(lock, dict)
+                and str(lock.get("object_id") or "").strip() == coordinator_object_id
+            ),
+            coordinator_object_id,
+        )
+        if coordinator in expert_ids:
+            return coordinator
+    return fallback

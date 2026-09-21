@@ -3798,6 +3798,17 @@ class WorkbenchService:
             entries = [self._package_object_entry(item, files) for item in deployment.manifest.get("objects", [])]
             for entry in sorted(entries, key=lambda item: {"skill": 0, "expert": 1, "expert_team": 2}.get(item.get("object_type"), 9)):
                 self._install_runtime_entry(entry)
+            # A process may have booted from the filesystem fallback before
+            # the first production deployment.  Once an expert-team package
+            # is activated, make its coordinator the runtime default as well;
+            # new sessions and health checks then observe the same package
+            # without requiring a second process restart.
+            root = deployment.manifest.get("root") if isinstance(deployment.manifest, dict) else None
+            if isinstance(root, dict) and root.get("object_type") == "expert_team" and self.orchestrator is not None:
+                team_id = str(root.get("object_key") or "")
+                team = self.orchestrator.expert_team_registry.get(team_id)
+                if team is not None and getattr(self.orchestrator, "expert_runtime", None) is not None:
+                    self.orchestrator.expert_runtime.default_expert_id = team.coordinator_expert_id
         except (WorkbenchError, UnicodeDecodeError, json.JSONDecodeError):
             # The archive was fully validated at import; keep activation status
             # durable even if a runtime shell cannot currently be mounted.
