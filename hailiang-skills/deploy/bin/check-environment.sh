@@ -3,7 +3,7 @@ set -euo pipefail
 
 expected_env="${1:?systemd instance env is required}"
 case "$expected_env" in
-  test|prod|test-[a-z0-9][a-z0-9-]*) ;;
+  test|prod|test-[a-z0-9][a-z0-9-]*|prod-[a-z0-9][a-z0-9-]*) ;;
   *) echo "invalid environment" >&2; exit 2 ;;
 esac
 [ "${HAILIANG_DEPLOY_ENV:-}" = "$expected_env" ] || { echo "HAILIANG_DEPLOY_ENV does not match service instance" >&2; exit 2; }
@@ -27,6 +27,13 @@ case "$expected_env" in
   test-*)
     instance_name="${expected_env#test-}"
     expected_database="hailiang_skills_test_multi_profile_v1_${instance_name//-/_}"
+    [[ "$HAILIANG_DATABASE_URL" == *"/$expected_database"* ]] \
+      && [[ "$HAILIANG_REDIS_URL" =~ /[3-9][0-9]*$ ]] \
+      && [[ "$HAILIANG_REDIS_KEY_PREFIX" == "hailiang:${expected_env}:"* ]]
+    ;;
+  prod-*)
+    instance_name="${expected_env#prod-}"
+    expected_database="hailiang_skills_multi_profile_v1_${instance_name//-/_}"
     [[ "$HAILIANG_DATABASE_URL" == *"/$expected_database"* ]] \
       && [[ "$HAILIANG_REDIS_URL" =~ /[3-9][0-9]*$ ]] \
       && [[ "$HAILIANG_REDIS_KEY_PREFIX" == "hailiang:${expected_env}:"* ]]

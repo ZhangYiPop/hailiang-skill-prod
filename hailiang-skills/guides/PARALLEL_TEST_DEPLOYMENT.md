@@ -111,11 +111,17 @@ sudo systemctl enable hailiang-skills-web@test-next.service
 sudo systemctl enable hailiang-skills-workbench@test-next.service
 ```
 
-如果服务器上原来没有这些 unit，安装后可以先只启动新版测试实例；不要停止当前手工运行的旧正式进程：
+这里的 `enable` 只是在 systemd 中登记“开机自动启动”，不代表服务此刻已经可以运行。安装 unit 之后不要立刻手动 `start`。此时 `current-test-next` 还不存在，API 的启动前检查会失败；Web 又依赖 API，因此也会失败。应先执行下面的“每次发布”流程。`deploy-version.sh` 会创建 release、安装依赖、执行迁移、切换 `current-test-next`，然后自动重启测试 API、工作台和前端。
+
+如果之前已经过早执行过 `start`，先清理失败状态，再继续发布；不需要重新安装 unit：
 
 ```bash
-sudo systemctl start hailiang-skills-api@test-next.service
-sudo systemctl start hailiang-skills-web@test-next.service
+sudo systemctl stop hailiang-skills-api@test-next.service \
+  hailiang-skills-workbench@test-next.service \
+  hailiang-skills-web@test-next.service
+sudo systemctl reset-failed hailiang-skills-api@test-next.service \
+  hailiang-skills-workbench@test-next.service \
+  hailiang-skills-web@test-next.service
 ```
 
 ## 每次发布
@@ -127,7 +133,7 @@ sudo -i
 export SOURCE_ROOT=/home/hljy/Project/hailiang-skill_sensitive_v02121
 export VERSION=4.11.0.2
 cd "$SOURCE_ROOT/hailiang-skills"
-./deploy/bin/deploy-version.sh test-next "$VERSION" "$SOURCE_ROOT"
+sudo ./deploy/bin/deploy-version.sh test-next "$VERSION" "$SOURCE_ROOT"
 ```
 
 脚本只会对 `test-next` 的新空数据库执行迁移，随后切换 `current-test-next` 并启动三个 `@test-next` 服务；不会触碰 `current-test`、`current-prod`、旧数据库或旧 Redis 前缀。
@@ -190,7 +196,7 @@ test -f "$SOURCE_ROOT/hailiang-skills/pyproject.toml"
 
 ```bash
 cd "$SOURCE_ROOT/hailiang-skills"
-./deploy/bin/deploy-version.sh test-next "$VERSION" "$SOURCE_ROOT"
+sudo ./deploy/bin/deploy-version.sh test-next "$VERSION" "$SOURCE_ROOT"
 ```
 
 这个命令会自动完成：
@@ -231,12 +237,54 @@ curl --fail -I http://私网IP:5177/
 
 ### 第四步：发布正式版本
 
-如果允许新版替换当前正式服务，先完成旧正式数据库备份，然后执行：
+如果允许新版替换当前正式服务，先完成旧正式数据库备份，然后准备正式环境文件。正式环境不是使用 `test-next.env`，而是使用：
+
+```text
+/etc/hailiang-skills/prod.env
+```
+
+这个文件通常已经存在。先检查它：
+
+```bash
+sudo test -f /etc/hailiang-skills/prod.env \
+  && echo "prod.env 存在" \
+  || echo "prod.env 不存在，需要先从 deploy/env/prod.env.example 创建"
+```
+
+如果文件不存在，从模板创建：
+
+```bash
+sudo install -m 600 -o root -g hailiang \
+  "$SOURCE_ROOT/hailiang-skills/deploy/env/prod.env.example" \
+  /etc/hailiang-skills/prod.env
+```
+
+编辑正式环境配置：
+
+```bash
+sudoedit /etc/hailiang-skills/prod.env
+```
+
+至少确认这些字段指向正式环境，而不是 `test-next`：
+
+```ini
+HAILIANG_DEPLOY_ENV=prod
+HAILIANG_DATABASE_URL=正式数据库连接
+HAILIANG_REDIS_URL=redis://127.0.0.1:6379/2
+HAILIANG_REDIS_KEY_PREFIX=hailiang:prod:
+BACKEND_PORT=正式后端端口
+FRONTEND_PORT=正式前端端口
+WORKBENCH_PORT=正式工作台端口
+```
+
+完成环境文件检查后执行：
 
 ```bash
 cd "$SOURCE_ROOT/hailiang-skills"
-./deploy/bin/deploy-version.sh prod "$VERSION" "$SOURCE_ROOT"
+sudo ./deploy/bin/deploy-version.sh prod "$VERSION" "$SOURCE_ROOT"
 ```
+
+`deploy-version.sh` 会读取 `/etc/hailiang-skills/prod.env`，所以该文件必须存在且包含真实配置；不要把生产密码、模型 Key 或安全密钥写入代码包。
 
 该命令会对正式环境执行迁移、更新 `current-prod`、重启正式服务并检查健康状态。正式环境的数据库迁移由脚本执行，不要另外手动运行 Alembic。
 
@@ -275,7 +323,7 @@ sudo grep '^HAILIANG_DATABASE_URL=' /etc/hailiang-skills/test-next.env
 
 不要把新版迁移直接打到旧正式数据库，也不要停止旧正式服务。旧正式服务继续使用 `8015/4176` 和原数据库；新版正式服务必须使用独立端口、独立数据库、独立 Redis 前缀和独立 systemd 实例。旧 App 继续请求旧地址，新 App 或指定租户由 BFF 定向请求新版地址。
 
-> 注意：当前仓库已经支持 `test-next`，但还没有把 `prod-next` 作为正式环境实例加入发布脚本。要实现下面的双正式服务，需要先扩展环境校验、systemd 实例和发布脚本支持 `prod-next`；不能把 `test-next` 冒充正式环境，也不能让两个服务抢占同一个端口。
+`prod-next` 已作为独立正式实例加入发布脚本、环境校验和运行时。不能把 `prod-next` 配置写进旧 `prod.env`，也不能让两个服务抢占同一个端口。
 
 ### 1. 备份并保留旧正式配置
 
@@ -338,31 +386,86 @@ CREATE DATABASE hailiang_skills_multi_profile_v1_next
 
 ```ini
 HAILIANG_DEPLOY_ENV=prod-next
-BACKEND_PORT=新版正式服务端口（不能是8015）
-FRONTEND_PORT=新版正式前端端口（不能是4176）
-WORKBENCH_PORT=新版正式工作台端口
+BACKEND_PORT=8016
+FRONTEND_PORT=5178
+WORKBENCH_PORT=8023
 HAILIANG_DATABASE_URL=postgresql+psycopg://hailiang_prod_next:新密码@127.0.0.1:5432/hailiang_skills_multi_profile_v1_next
-HAILIANG_REDIS_URL=redis://127.0.0.1:6379/2
+HAILIANG_REDIS_URL=redis://127.0.0.1:6379/4
 HAILIANG_REDIS_KEY_PREFIX=hailiang:prod:next:
 # 可选；不设置时默认为 auto。首次无 active 部署时使用文件运行时，部署激活后使用数据库快照。
 # HAILIANG_BUSINESS_CONFIG_SOURCE=auto
-HAILIANG_LOG_DIR=/var/lib/hailiang-skills/prod/logs
-HAILIANG_STATE_DIR=/var/lib/hailiang-skills/prod/runtime
+HAILIANG_LOG_DIR=/var/lib/hailiang-skills/prod-next/logs
+HAILIANG_STATE_DIR=/var/lib/hailiang-skills/prod-next/runtime
 PYTHONPATH=/opt/hailiang-skills/current-prod-next/src:/opt/agent-skill-runtime-core
 ```
 
-当前代码还需要先扩展发布脚本和环境校验，使其支持 `prod-next`；完成这项支持后，再安装 `@prod-next` 的 systemd 实例并发布新版。不能把 `prod-next` 配置写进旧 `prod.env`，也不能让两个服务抢占同一个端口。
+当前发布脚本已支持 `prod-next`。不能把 `prod-next` 配置写进旧 `prod.env`，也不能让两个服务抢占同一个端口。
 
 当前服务器旧正式进程继续使用 `8015/4176`；`8010/5177` 仅属于 `test-next`，不能直接作为新版正式服务端口，除非明确将其作为新版正式实例的独立地址。
 
+从代码包中创建正式实例环境文件：
+
+```bash
+sudo install -m 600 -o root -g hailiang \
+  "$SOURCE_ROOT/hailiang-skills/deploy/env/prod-next.env.example" \
+  /etc/hailiang-skills/prod-next.env
+sudoedit /etc/hailiang-skills/prod-next.env
+```
+
+将其中的私网 IP、数据库密码、模型 Key、安全密钥替换为真实值。然后安装并登记参数化服务：
+
+```bash
+sudo install -m 644 deploy/systemd/hailiang-skills-api@.service /etc/systemd/system/
+sudo install -m 644 deploy/systemd/hailiang-skills-web@.service /etc/systemd/system/
+sudo install -m 644 deploy/systemd/hailiang-skills-workbench@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable hailiang-skills-api@prod-next.service
+sudo systemctl enable hailiang-skills-web@prod-next.service
+sudo systemctl enable hailiang-skills-workbench@prod-next.service
+```
+
 ### 4. 新正式实例发布和验证
 
-这一步必须在 `prod-next` 支持加入发布脚本后执行，目标是 `current-prod-next` 和：
+`test-next` 和 `prod-next` 使用同一份代码包时，必须使用同一个版本号。版本号代表代码包本身，不代表部署环境。例如测试已经验证 `2026930.0.1`，正式并行部署也继续使用 `2026930.0.1`，不需要改成 `2026930.0.2`。
+
+测试发布时已经创建了：
+
+```text
+/opt/hailiang-skills/releases/2026930.0.1
+```
+
+因此正式环境不要再次执行 `deploy-version.sh`，因为它会尝试重复创建同一个 release。正式环境应加载 `prod-next.env`，然后提升已经验证过的同一 release：
+
+```bash
+export VERSION=2026930.0.1
+
+sudo bash -lc "
+set -a
+source /etc/hailiang-skills/prod-next.env
+set +a
+/opt/hailiang-skills/releases/$VERSION/deploy/bin/promote-release.sh prod-next $VERSION
+"
+```
+
+只有代码发生新修改时，才创建新版本号，例如 `2026930.0.2`，重新执行“本地打包 → 上传 → test-next 测试 → prod-next 提升”。
+
+发布脚本会执行数据库迁移、构建前端、切换 `current-prod-next` 并启动：
 
 ```text
 hailiang-skills-api@prod-next.service
 hailiang-skills-workbench@prod-next.service
 hailiang-skills-web@prod-next.service
+```
+
+验证新版正式实例：
+
+```bash
+curl --fail http://服务器IP:8016/health/ready
+curl --fail -I http://服务器IP:5178/
+sudo systemctl status \
+  hailiang-skills-api@prod-next.service \
+  hailiang-skills-workbench@prod-next.service \
+  hailiang-skills-web@prod-next.service --no-pager
 ```
 
 新正式库创建后不含业务对象。完成服务健康检查后，先通过业务工作台导入并激活已验收的专家团/专家/Skill 发布包，确认存在默认专家团和锁定依赖。
