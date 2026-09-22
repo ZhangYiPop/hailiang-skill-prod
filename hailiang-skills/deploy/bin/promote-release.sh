@@ -4,8 +4,8 @@ set -euo pipefail
 environment="${1:?environment required}"
 version="${2:?version required}"
 case "$environment" in
-  test|prod|test-[a-z0-9][a-z0-9-]*) ;;
-  *) echo "environment must be test, prod, or test-<name>" >&2; exit 2 ;;
+  test|prod|test-[a-z0-9][a-z0-9-]*|prod-[a-z0-9][a-z0-9-]*) ;;
+  *) echo "environment must be test, prod, test-<name>, or prod-<name>" >&2; exit 2 ;;
 esac
 release="/opt/hailiang-skills/releases/$version"
 [ -d "$release" ] || { echo "release does not exist: $release" >&2; exit 2; }

@@ -8,8 +8,8 @@ version="${2:?version required}"
 source_root="${3:?source root required}"
 
 case "$environment" in
-  test|prod|test-[a-z0-9][a-z0-9-]*) ;;
-  *) echo "environment must be test, prod, or test-<name>" >&2; exit 2 ;;
+  test|prod|test-[a-z0-9][a-z0-9-]*|prod-[a-z0-9][a-z0-9-]*) ;;
+  *) echo "environment must be test, prod, test-<name>, or prod-<name>" >&2; exit 2 ;;
 esac
 
 [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || {
