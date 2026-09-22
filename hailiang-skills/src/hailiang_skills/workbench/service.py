@@ -32,7 +32,6 @@ from hailiang_skills.core.message_interactions import (
     update_interaction,
 )
 from hailiang_skills.core.sse_protocol import empty_message_state, presentation_from_message
-from hailiang_skills.core.team_handoff_confirmation import active_handoff_decision, block_text_handoff_confirmation
 from hailiang_skills.core.skill_display import build_skill_display
 from hailiang_skills.schemas.facts import KnownFacts
 from hailiang_skills.schemas.questionnaire import validate_questionnaire_config
@@ -409,6 +408,7 @@ class WorkbenchService:
         if questionnaire and not any(key in questionnaire for key in ("fields", "config_path", "config_json")):
             warnings.append("问卷定义无法映射为平台表单字段，请人工补充。")
         return {
+            "root": self._entry_debug(root),
             "source": {"entry_path": source_path, "files": sorted(files), "metadata": metadata},
             "draft": {"object_type": object_type, "object_key": object_key, "name": name, "description": str(metadata.get("description") or ""), "payload": payload, "assets": assets, "dependency_locks": []},
             "form_preview": questionnaire.get("fields", []) if isinstance(questionnaire.get("fields"), list) else [],
@@ -1004,34 +1004,40 @@ class WorkbenchService:
                 raise WorkbenchConflict("修订测试会话已经结束", code="DEBUG_SESSION_COMPLETED")
             snapshot = copy.deepcopy(row.snapshot or {})
             context = self._restore_revision_test_context(row, snapshot)
-            # Capture every structured interaction transition, including a
-            # text-confirmed/recovered handoff that is resolved before the
-            # normal input adapter below.  Evidence must not lose a
-            # form_abandoned event merely because the confirmation arrived as
-            # ordinary text instead of a card click.
+            # Capture every structured interaction transition before the
+            # normal input adapter below so evidence retains form and card
+            # state changes for this turn.
             event_count_before = len(context.event_trace)
             stream_handoff: dict[str, Any] | None = None
-            # Candidate messages use exactly the same interaction lifecycle as
-            # formal chat. A new free-text turn makes a previous form/card
-            # stale, while a structured form or handoff action consumes the
-            # active interaction instead.
+            # A team handoff card is an explicit authorization control. Free
+            # text is allowed while it is visible, but it must stay with the
+            # current coordinator; only the structured card selection below
+            # may change the active expert. Keep the card active so a later
+            # click remains possible.
             text_handoff_mode = ""
             if not form_submission and not team_handoff_selection and not expert_selection:
-                team_id = str(context.session_meta.get("expert_team_id") or "")
-                decision = active_handoff_decision(context, team_id=team_id, text=user_message) if team_id else {"kind": "none"}
-                if decision.get("kind") == "single_card":
-                    stream_handoff = block_text_handoff_confirmation(context, decision)
-                    text_handoff_mode = "team_handoff_text_confirmation_blocked"
-                elif decision.get("kind") == "multiple":
-                    # Keep the active choice visible; never guess which expert
-                    # the user meant by a generic "继续".
-                    stream_handoff = block_text_handoff_confirmation(context, decision)
-                    text_handoff_mode = "team_handoff_text_confirmation_blocked"
-                elif decision.get("kind") == "single_recovery":
-                    stream_handoff = block_text_handoff_confirmation(context, decision)
-                    text_handoff_mode = "team_handoff_text_confirmation_blocked"
-                else:
-                    expire_active_interactions(context.messages)
+                pending_handoff = context.session_meta.get("pending_team_handoff")
+                active_handoff = isinstance(pending_handoff, dict) and str(pending_handoff.get("status") or "active") == "active"
+                if not active_handoff:
+                    for candidate_message in reversed(context.messages):
+                        if not isinstance(candidate_message, dict) or candidate_message.get("role") != "assistant":
+                            continue
+                        candidate_handoff = candidate_message.get("team_handoff")
+                        if not isinstance(candidate_handoff, dict):
+                            metadata = candidate_message.get("metadata") if isinstance(candidate_message.get("metadata"), dict) else {}
+                            candidate_handoff = metadata.get("team_handoff")
+                        interaction = ensure_message_interactions(candidate_message).get("team_handoff")
+                        if (
+                            isinstance(candidate_handoff, dict)
+                            and str(candidate_handoff.get("status") or "active") == "active"
+                            and isinstance(interaction, dict)
+                            and interaction.get("status") == ACTIVE
+                        ):
+                            active_handoff = True
+                            break
+                if active_handoff:
+                    text_handoff_mode = "team_handoff_text_continued"
+                expire_active_interactions(context.messages, preserve_kinds={"team_handoff"})
             turn_started = datetime.now().timestamp()
             candidate_stream_generation: str | None = None
             candidate_stream_sequence = 0
@@ -1137,40 +1143,13 @@ class WorkbenchService:
             )
             candidate_runtime_mounts = self._mount_candidate_snapshot_skills(snapshot, context)
             try:
-                if text_handoff_mode == "team_handoff_text_confirmation_blocked":
-                    # Match the formal control turn: do not invoke the model
-                    # for an acknowledgement that cannot select an Expert.
-                    context.add_message("user", message)
-                    context.add_message(
-                        "assistant",
-                        "如需切换专家，请点击专家转交卡片完成确认；如果不切换，也可以继续描述您的问题。",
-                        {"message_type": "team_handoff_text_confirmation_blocked"},
-                    )
-                    if isinstance(stream_handoff, dict):
-                        assistant_record = context.messages[-1]
-                        handoff = copy.deepcopy(stream_handoff)
-                        handoff["source_message_id"] = assistant_record["message_id"]
-                        handoff["presentation_status"] = "presented"
-                        assistant_record["team_handoff"] = handoff
-                        metadata = assistant_record.setdefault("metadata", {})
-                        if isinstance(metadata, dict):
-                            metadata["team_handoff"] = copy.deepcopy(handoff)
-                        ensure_message_interactions(assistant_record)
-                        context.session_meta["pending_team_handoff"] = handoff
-                        context.session_meta["pending_team_handoff_intent"] = handoff
-                        stream_handoff = handoff
-                        if callable(on_event):
-                            on_event("team_handoff", copy.deepcopy(handoff))
-                    self._record_candidate_turn_event(context, "team_handoff_text_confirmation_blocked", {
-                        "old_handoff_id": str((stream_handoff or {}).get("previous_handoff_id") or ""),
-                        "new_handoff_id": str((stream_handoff or {}).get("handoff_id") or ""),
-                        "reason": "card_only_confirmation",
+                assistant_message = self._execute_snapshot_message(snapshot, message, context)
+                if text_handoff_mode == "team_handoff_text_continued":
+                    self._record_candidate_turn_event(context, "team_handoff_text_continued", {
+                        "reason": "free_text_does_not_authorize_expert_switch",
+                        "switch_requires": "team_handoff_card_click",
+                        "active_expert_id": str(context.session_meta.get("active_expert_id") or ""),
                     })
-                    assistant_message = str(context.messages[-1].get("content") or "")
-                    if callable(on_event):
-                        on_event("reply_delta", {"delta": assistant_message})
-                else:
-                    assistant_message = self._execute_snapshot_message(snapshot, message, context)
             except Exception as exc:
                 # A candidate test is a diagnostic artifact.  Previously an
                 # Expert routing failure was converted to the public generic
@@ -2463,6 +2442,19 @@ class WorkbenchService:
         script_runs: list[dict[str, Any]] = []
         expert_routing: dict[str, Any] = {}
         execution_error: dict[str, Any] = {}
+        timing: dict[str, Any] = {
+            "planner_ms": None,
+            "sandbox_prepare_ms": None,
+            "worker_acquire_ms": None,
+            "worker_startup_ms": None,
+            "process_spawn_ms": None,
+            "asset_load_ms": None,
+            "script_compute_ms": None,
+            "stdout_parse_ms": None,
+            "result_cache_lookup_ms": None,
+            "final_generation_ms": None,
+            "first_token_ms": None,
+        }
         for event in turn_events:
             if not isinstance(event, dict):
                 continue
@@ -2519,6 +2511,16 @@ class WorkbenchService:
                     "pending_topics": list(payload.get("pending_topics") or []),
                     "next_action": str(payload.get("next_action") or ""),
                 }
+            if event_type == "runtime_llm_timing":
+                phase = str(payload.get("phase") or "")
+                duration = payload.get("duration_ms")
+                if phase and duration is not None:
+                    timing["final_generation_ms" if "final" in phase or "response" in phase else phase] = duration
+                if payload.get("first_token_ms") is not None:
+                    timing["first_token_ms"] = payload.get("first_token_ms")
+            if event_type == "native_questionnaire_response" and payload.get("duration_ms") is not None:
+                timing["final_generation_ms"] = payload.get("duration_ms")
+                timing["first_token_ms"] = payload.get("duration_ms")
             if event_type in {
                 "reference_context",
                 "retrieval_context",
@@ -2584,8 +2586,35 @@ class WorkbenchService:
                         "exit_code": output.get("exit_code"),
                         "error": str(output.get("error") or ""),
                         "duration_ms": output.get("duration_ms"),
+                        "cache_hit": bool(output.get("cache_hit")),
+                        "cache_key_hash": str(output.get("cache_key_hash") or ""),
                         "result_injected_into_prompt": True,
                     })
+
+            if event_type == "ms_agent_runtime":
+                step = str(payload.get("step") or "")
+                step_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+                if step == "skill_plan" and step_payload.get("duration_ms") is not None:
+                    timing["planner_ms"] = step_payload.get("duration_ms")
+                if step == "sandbox_prepare" and step_payload.get("duration_ms") is not None:
+                    timing["sandbox_prepare_ms"] = step_payload.get("duration_ms")
+                if step == "sandbox_startup" and step_payload.get("duration_ms") is not None:
+                    timing["worker_startup_ms"] = step_payload.get("duration_ms")
+                if step == "script_execution":
+                    outputs = step_payload.get("outputs") if isinstance(step_payload.get("outputs"), list) else []
+                    durations = [item.get("duration_ms") for item in outputs if isinstance(item, dict) and item.get("duration_ms") is not None]
+                    if durations:
+                        timing["script_compute_ms"] = sum(durations)
+                    parse_durations = [item.get("stdout_parse_ms") for item in outputs if isinstance(item, dict) and item.get("stdout_parse_ms") is not None]
+                    if parse_durations:
+                        timing["stdout_parse_ms"] = sum(parse_durations)
+                    if step_payload.get("cache_lookup_duration_ms") is not None:
+                        timing["result_cache_lookup_ms"] = step_payload.get("cache_lookup_duration_ms")
+                    if step_payload.get("worker_acquire_ms") is not None:
+                        timing["worker_acquire_ms"] = step_payload.get("worker_acquire_ms")
+                    if step_payload.get("execution_mode"):
+                        timing["execution_mode"] = step_payload.get("execution_mode")
+                    timing["worker_reused"] = bool(step_payload.get("worker_reused"))
 
         # Direct preview executions intentionally do not run arbitrary package
         # scripts. Keep that fact visible in evidence rather than presenting a
@@ -2603,6 +2632,7 @@ class WorkbenchService:
                 for path in scripts_available
             ]
 
+        timing["total_ms"] = elapsed_ms
         return {
             "root": self._entry_debug(root),
             "expert_team": self._entry_debug(by_key.get(team_id)),
@@ -2621,6 +2651,7 @@ class WorkbenchService:
             "expert_routing": expert_routing,
             "execution_error": execution_error,
             "scripts": script_runs,
+            "timing": timing,
             "elapsed_ms": elapsed_ms,
         }
 

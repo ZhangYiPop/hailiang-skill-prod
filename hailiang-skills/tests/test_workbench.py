@@ -1819,6 +1819,39 @@ def test_candidate_team_handoff_turn_persists_the_formal_message_envelope():
     assert result["assistant_message_record"]["message_id"] == assistant["message_id"]
 
 
+def test_candidate_text_can_continue_while_handoff_card_is_pending_without_switching():
+    preview_service = _preview_service()
+    actor_id = _actor(preview_service)
+    team = preview_service.create_object(
+        object_type="expert_team", object_key="team_text_continuation", name="可继续输入的专家团", actor_id=actor_id,
+    )
+    revision = preview_service.save_revision(
+        team["object_id"],
+        base_revision_id=None,
+        payload={"rules_markdown": "需要时建议转交", "coordinator_expert_id": ""},
+        dependency_locks=[],
+        assets=[],
+        actor_id=actor_id,
+    )
+    preview_service.orchestrator = _TeamHandoffPreviewOrchestrator()
+    session = preview_service.create_revision_test_session(revision["revision_id"], actor_id=actor_id)
+
+    first = preview_service.run_revision_test_turn(
+        session["debug_session_id"], user_message="首轮问题", actor_id=actor_id,
+    )
+    follow_up = preview_service.run_revision_test_turn(
+        session["debug_session_id"], user_message="我还有一个补充问题", actor_id=actor_id,
+    )
+
+    assert first["assistant_message"] == "这个问题更适合由家庭教育专家继续处理。"
+    assert follow_up["assistant_message"] == "这个问题更适合由家庭教育专家继续处理。"
+    assert "请点击专家转交卡片" not in follow_up["assistant_message"]
+    assert any(
+        event["event_type"] == "team_handoff_text_continued"
+        for event in follow_up["trace"]
+    )
+
+
 def test_revision_test_supports_experts_and_teams_and_formal_chat_requires_published_team():
     preview_service = _preview_service()
     # Publishing updates runtime registries in production.  Build the fixture

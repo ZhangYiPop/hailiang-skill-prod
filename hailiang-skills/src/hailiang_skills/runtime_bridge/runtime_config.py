@@ -28,6 +28,15 @@ class RuntimeBridgeConfig:
     memory_async_update: bool = True
     sandbox_prewarm_enabled: bool = True
     local_fast_path_enabled: bool = True
+    sandbox_worker_reuse_enabled: bool = True
+    sandbox_worker_pool_size_per_key: int = 1
+    sandbox_worker_pool_max_total: int = 6
+    sandbox_worker_acquire_timeout_seconds: float = 5.0
+    sandbox_worker_idle_ttl_seconds: int = 120
+    sandbox_worker_max_lifetime_seconds: int = 900
+    script_result_cache_enabled: bool = True
+    script_result_cache_ttl_seconds: int = 600
+    script_result_cache_max_entries: int = 1000
     active_window_messages: int = 16
     context_window_tokens: int = 32_000
     working_context_tokens: int = 160_000
@@ -115,6 +124,50 @@ def load_runtime_bridge_config(path: Path | None = None) -> RuntimeBridgeConfig:
             os.getenv("HAILIANG_SANDBOX_PREWARM_ENABLED"),
             data.get("sandbox_prewarm_enabled"),
             default=True,
+        ),
+        sandbox_worker_reuse_enabled=_read_bool(
+            os.getenv("HAILIANG_SANDBOX_WORKER_REUSE_ENABLED"),
+            data.get("sandbox_worker_reuse_enabled"),
+            default=True,
+        ),
+        sandbox_worker_pool_size_per_key=_read_int(
+            os.getenv("HAILIANG_SANDBOX_WORKER_POOL_SIZE_PER_KEY"),
+            data.get("sandbox_worker_pool_size_per_key"), default=1, minimum=1, maximum=32,
+        ),
+        sandbox_worker_pool_max_total=_read_int(
+            os.getenv("HAILIANG_SANDBOX_WORKER_POOL_MAX_TOTAL"),
+            data.get("sandbox_worker_pool_max_total"), default=6, minimum=1, maximum=256,
+        ),
+        sandbox_worker_acquire_timeout_seconds=_read_float(
+            os.getenv("HAILIANG_SANDBOX_WORKER_ACQUIRE_TIMEOUT_SECONDS"),
+            data.get("sandbox_worker_acquire_timeout_seconds"), default=5.0, minimum=0.1, maximum=60.0,
+        ),
+        sandbox_worker_idle_ttl_seconds=_read_int(
+            os.getenv("HAILIANG_SANDBOX_WORKER_IDLE_TTL_SECONDS"),
+            data.get("sandbox_worker_idle_ttl_seconds"), default=120, minimum=1, maximum=86_400,
+        ),
+        sandbox_worker_max_lifetime_seconds=_read_int(
+            os.getenv("HAILIANG_SANDBOX_WORKER_MAX_LIFETIME_SECONDS"),
+            data.get("sandbox_worker_max_lifetime_seconds"), default=900, minimum=1, maximum=86_400,
+        ),
+        script_result_cache_enabled=_read_bool(
+            os.getenv("HAILIANG_SCRIPT_RESULT_CACHE_ENABLED"),
+            data.get("script_result_cache_enabled"),
+            default=True,
+        ),
+        script_result_cache_ttl_seconds=_read_int(
+            os.getenv("HAILIANG_SCRIPT_RESULT_CACHE_TTL_SECONDS"),
+            data.get("script_result_cache_ttl_seconds"),
+            default=600,
+            minimum=1,
+            maximum=86_400,
+        ),
+        script_result_cache_max_entries=_read_int(
+            os.getenv("HAILIANG_SCRIPT_RESULT_CACHE_MAX_ENTRIES"),
+            data.get("script_result_cache_max_entries"),
+            default=1_000,
+            minimum=1,
+            maximum=100_000,
         ),
         local_fast_path_enabled=_read_bool(
             os.getenv("HAILIANG_MS_AGENT_LOCAL_FAST_PATH"),

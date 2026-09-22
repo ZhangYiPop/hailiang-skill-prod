@@ -49,6 +49,7 @@ class SessionDiagnosticsInput(BaseModel):
     run_id: str | None = Field(default=None, min_length=1, max_length=160)
     limit: int = Field(default=200, ge=1, le=1000)
     include_content: bool = False
+    event_types: list[str] | None = Field(default=None, max_length=50)
 
 
 class RunDiagnosticsInput(BaseModel):
@@ -350,7 +351,8 @@ def _output_diagnostics(*, events: list[dict[str, Any]], limit: int) -> list[dic
     return records[-limit:]
 
 
-def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, limit: int, include_content: bool) -> dict[str, Any]:
+def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, limit: int, include_content: bool,
+                    event_types: list[str] | None = None) -> dict[str, Any]:
     try:
         context = repository.get(session_id)
     except Exception:
@@ -373,6 +375,9 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
                 seen.add(key)
         events = events[-limit:]
         event_source = "postgres+workbench_candidate"
+    if event_types:
+        allowed = {str(item).strip() for item in event_types if str(item).strip()}
+        events = [item for item in events if str(item.get("event_type") or item.get("event") or "") in allowed]
     http_records = _http_records(field="session_id", value=session_id, limit=limit, include_content=include_content)
     runs: list[dict[str, Any]] = []
     ledger = (getattr(context, "session_meta", {}) or {}).get("run_ledger", {}) if context else {}
@@ -386,6 +391,24 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
             runs.append(database_run)
     runs.sort(key=lambda item: str(item.get("started_at") or item.get("created_at") or item["run_id"]))
     sse_records = _sse_records(session_id, run_id, limit=limit, include_content=include_content)
+    sandbox_events = [
+        item for item in events
+        if str(item.get("event_type") or item.get("event") or "").startswith("sandbox_")
+    ]
+    latest_pressure: dict[str, Any] | None = None
+    for item in reversed(sandbox_events):
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+        if any(key in payload for key in ("pool_size", "busy_workers", "queue_depth")):
+            latest_pressure = {
+                "pool_key_hash": payload.get("worker_pool_key_hash"),
+                "pool_size": payload.get("pool_size", 0),
+                "busy_workers": payload.get("busy_workers", 0),
+                "idle_workers": payload.get("idle_workers", 0),
+                "queue_depth": payload.get("queue_depth", 0),
+                "acquire_wait_ms": payload.get("acquire_wait_ms", 0),
+                "status": "saturated" if payload.get("queue_depth", 0) else "healthy",
+            }
+            break
     return {
         "session_id": session_id,
         "found": context is not None or bool(events) or bool(http_records) or bool(runs) or bool(candidate_trace),
@@ -398,6 +421,8 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
         }, include_content=include_content) if context else None,
         "runs": runs[-limit:],
         "events": events,
+        "sandbox_events": sandbox_events,
+        "resource_pressure": latest_pressure,
         "event_source": event_source,
         "http_requests": http_records,
         "sse_records": sse_records,
@@ -415,6 +440,7 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
         ),
         "output_diagnostics": _output_diagnostics(events=events, limit=limit),
         "candidate_execution_trace": candidate_trace,
+        "execution_trace": candidate_trace,
     }
 
 
@@ -430,7 +456,8 @@ def build_diagnostics_router(repository, engine) -> APIRouter:
         _authorize(x_security_admin_token, authorization)
         session_id = _safe_id(body.session_id, label="session_id")
         run_id = _safe_id(body.run_id, label="run_id") if body.run_id else None
-        return _lookup_session(repository, engine, session_id, run_id=run_id, limit=body.limit, include_content=body.include_content)
+        return _lookup_session(repository, engine, session_id, run_id=run_id, limit=body.limit,
+                                include_content=body.include_content, event_types=body.event_types)
 
     @router.post("/runs/query")
     def get_run_diagnostics(

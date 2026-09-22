@@ -1579,6 +1579,15 @@ class MainPlannerOrchestrator:
         self.ms_agent_adapter = MSAgentRuntimeAdapter(
             runtime_dir=self.runtime_bridge_config.runtime_dir,
             sandbox_prewarm_enabled=self.runtime_bridge_config.sandbox_prewarm_enabled,
+            sandbox_worker_reuse_enabled=self.runtime_bridge_config.sandbox_worker_reuse_enabled,
+            sandbox_worker_pool_size_per_key=self.runtime_bridge_config.sandbox_worker_pool_size_per_key,
+            sandbox_worker_pool_max_total=self.runtime_bridge_config.sandbox_worker_pool_max_total,
+            sandbox_worker_acquire_timeout_seconds=self.runtime_bridge_config.sandbox_worker_acquire_timeout_seconds,
+            sandbox_worker_idle_ttl_seconds=self.runtime_bridge_config.sandbox_worker_idle_ttl_seconds,
+            sandbox_worker_max_lifetime_seconds=self.runtime_bridge_config.sandbox_worker_max_lifetime_seconds,
+            script_result_cache_enabled=self.runtime_bridge_config.script_result_cache_enabled,
+            script_result_cache_ttl_seconds=self.runtime_bridge_config.script_result_cache_ttl_seconds,
+            script_result_cache_max_entries=self.runtime_bridge_config.script_result_cache_max_entries,
             local_fast_path_enabled=self.runtime_bridge_config.local_fast_path_enabled,
         )
         self.ms_agent_probe = self.ms_agent_adapter.runtime_probe
@@ -1764,6 +1773,40 @@ class MainPlannerOrchestrator:
                 enriched_events.append(event)
         context.event_trace.extend(enriched_events)
         append_session_events(context.session_id, enriched_events)
+
+    def _sandbox_event_recorder(self, context):
+        """Adapt pooled sandbox lifecycle events to the normal session ledger."""
+        status_by_event = {
+            "sandbox_worker_created": ("正在准备脚本环境", "正在准备当前 Skill 的隔离执行环境"),
+            "sandbox_worker_reused": ("正在准备脚本环境", "正在复用已准备好的隔离执行环境"),
+            "sandbox_worker_acquire_queued": ("正在等待脚本执行", "当前计算资源繁忙，正在排队等待执行"),
+            "sandbox_worker_pool_saturated": ("正在等待脚本执行", "当前计算资源繁忙，正在排队等待执行"),
+            "sandbox_worker_acquire_timeout": ("正在切换执行方式", "预热执行环境等待超时，正在尝试安全回退"),
+            "sandbox_worker_execution_started": ("正在执行脚本", "正在根据当前信息进行计算"),
+            "sandbox_worker_execution_completed": ("正在整理计算结果", "脚本计算已完成，正在整理结果"),
+            "sandbox_worker_execution_failed": ("正在切换执行方式", "脚本执行未完成，正在使用安全回退"),
+            "sandbox_worker_destroyed": ("正在准备脚本环境", "原执行环境已释放，后续需要时会重新准备"),
+            "sandbox_cold_fallback": ("正在切换执行方式", "正在使用安全的临时执行环境继续处理"),
+        }
+
+        def record(event_type: str, payload: dict[str, Any], **_meta: Any) -> None:
+            enriched = dict(payload or {})
+            enriched.setdefault("session_id", context.session_id)
+            active_turn_id = (context.session_meta or {}).get("active_turn_id")
+            if active_turn_id:
+                enriched.setdefault("turn_id", active_turn_id)
+            self._record_events(context, [make_event(event_type, enriched)])
+            status = status_by_event.get(event_type)
+            if status:
+                extra = str(enriched.get("error_code") or "").strip()
+                detail = status[1]
+                queue_depth = enriched.get("queue_depth")
+                if event_type in {"sandbox_worker_acquire_queued", "sandbox_worker_pool_saturated"} and isinstance(queue_depth, int) and queue_depth > 0:
+                    detail = f"{detail}（当前排队数量：{queue_depth}）"
+                if extra and event_type in {"sandbox_worker_acquire_timeout", "sandbox_cold_fallback", "sandbox_worker_execution_failed"}:
+                    detail = f"{detail}（{extra}）"
+                self._emit_tool_status(context, name="script", label=status[0], detail=detail)
+        return record
 
     def _record_prompt_assembly_from_skill(self, context, skill) -> None:
         if not hasattr(skill, "get_prompt_for_llm"):
@@ -2472,6 +2515,9 @@ class MainPlannerOrchestrator:
                     latest_user_message=latest_user_message,
                     plan=loaded_context.plan,
                 ),
+                session_id=context.session_id,
+                turn_id=str((context.session_meta or {}).get("active_turn_id") or "") or None,
+                event_recorder=self._sandbox_event_recorder(context),
             )
             loaded_context.execution_outputs = execution_outputs
             loaded_context.raw_trace["execution_outputs"] = execution_outputs
@@ -3386,6 +3432,9 @@ class MainPlannerOrchestrator:
                 loaded_scripts=[{"name": path.name, "path": relative, "abs_path": str(path)}],
                 execute_scripts=True,
                 script_inputs={path.name: script_input},
+                session_id=context.session_id,
+                turn_id=str((context.session_meta or {}).get("active_turn_id") or "") or None,
+                event_recorder=self._sandbox_event_recorder(context),
             )
             output = next((item for item in outputs if isinstance(item, dict)), {})
             result = output.get("return_value", output.get("json_output")) if isinstance(output, dict) else None
@@ -3750,6 +3799,7 @@ class MainPlannerOrchestrator:
                 if not reply:
                     reply = "已完成本轮处理，但没有生成可安全展示的正文。请换一种说法再试一次。"
             duration_ms = int((time.perf_counter() - started) * 1000)
+            first_token_ms = duration_ms
             self._emit_reply_delta(context, reply)
             logger.log("turn.resolve.final_text.timing", phase=phase, duration_ms=duration_ms)
             self._record_events(
@@ -3761,6 +3811,7 @@ class MainPlannerOrchestrator:
                             "phase": phase,
                             "skill_id": skill_name,
                             "duration_ms": duration_ms,
+                            "first_token_ms": first_token_ms,
                         },
                     ),
                     make_event(
@@ -3773,6 +3824,7 @@ class MainPlannerOrchestrator:
                             "payload": {
                                 "phase": phase,
                                 "duration_ms": duration_ms,
+                                "first_token_ms": first_token_ms,
                                 "stream": False,
                             },
                         },
@@ -3807,6 +3859,7 @@ class MainPlannerOrchestrator:
             _QuestionnaireContinuationExtractor(set()) if questionnaire_enabled(bundle) else None
         )
         streamed_visible_reply = False
+        first_token_ms: int | None = None
         active_generation = str((context.session_meta or {}).get("active_stream_generation") or "")
         stream_kwargs = {"logger": logger}
         # Keep injected/fake clients used by existing integrations backward
@@ -3837,6 +3890,8 @@ class MainPlannerOrchestrator:
                 reasoning_parts.append(chunk.reasoning_delta)
                 self._emit_reasoning_delta(context, chunk.reasoning_delta)
             if chunk.content_delta:
+                if first_token_ms is None:
+                    first_token_ms = int((time.perf_counter() - started) * 1000)
                 reply_parts.append(chunk.content_delta)
                 callback = (context.session_meta or {}).get("reply_delta_callback")
                 if (
@@ -3864,6 +3919,8 @@ class MainPlannerOrchestrator:
             reply = _sanitize_script_execution_reply(reply)
         reasoning = "".join(reasoning_parts).strip()
         duration_ms = int((time.perf_counter() - started) * 1000)
+        if first_token_ms is None:
+            first_token_ms = duration_ms
         empty_stream_retry = False
         if not reply.strip():
             empty_stream_retry = True
@@ -3924,6 +3981,7 @@ class MainPlannerOrchestrator:
                         "phase": phase,
                         "skill_id": skill_name,
                         "duration_ms": duration_ms,
+                        "first_token_ms": first_token_ms,
                     },
                 ),
                 make_event(
@@ -3936,6 +3994,7 @@ class MainPlannerOrchestrator:
                         "payload": {
                             "phase": phase,
                             "duration_ms": duration_ms,
+                            "first_token_ms": first_token_ms,
                             "stream": True,
                             "reasoning_chars": len(reasoning),
                             "empty_stream_retry": empty_stream_retry,

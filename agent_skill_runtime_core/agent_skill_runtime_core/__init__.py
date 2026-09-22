@@ -1,4 +1,4 @@
-from agent_skill_runtime_core.core import AgentSkillRuntimeCore, parse_script_json_output
+from agent_skill_runtime_core.core import AgentSkillRuntimeCore, PersistentSandboxWorker, parse_script_json_output
 from agent_skill_runtime_core.models import (
     CoreTraceStep,
     LoadedSkillContext,
@@ -11,6 +11,7 @@ from agent_skill_runtime_core.validation import SkillPackageError, validate_skil
 
 __all__ = [
     "AgentSkillRuntimeCore",
+    "PersistentSandboxWorker",
     "CoreTraceStep",
     "LoadedSkillContext",
     "MSAgentRuntimeProbe",

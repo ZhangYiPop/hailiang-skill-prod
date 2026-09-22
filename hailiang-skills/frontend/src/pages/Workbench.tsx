@@ -2857,17 +2857,22 @@ export default function Workbench() {
                     <p className="mt-3 text-[11px] leading-5 text-slate-500">
                       匿名上下文：本会话会持续保留对话、表单状态、Facts 与运行时摘要；不读取、不创建、不写入孩子档案或正式 Profile。
                     </p>
+                    {activeCandidateHandoff ? (
+                      <p className="mt-3 rounded-xl border border-violet-300/20 bg-violet-300/[0.06] px-3 py-2 text-[11px] leading-5 text-violet-100/80">
+                        专家转交卡片仍待确认。你可以继续输入问题；文字只会由当前主协调专家处理，不会因此切换专家。需要切换时请点击卡片。
+                      </p>
+                    ) : null}
                     <textarea
                       value={revisionTestInput}
                       onChange={(event) => setRevisionTestInput(event.target.value)}
                       placeholder={selectedTestRevision ? `向 r${selectedTestRevision.revision_no} 输入测试问题…` : "请先选择要测试的修订"}
                       rows={3}
-                      disabled={!selectedTestRevision || busy || activeCandidateHandoff}
+                      disabled={!selectedTestRevision || busy}
                       className="mt-4 w-full rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 outline-none focus:border-sky-400/40 disabled:opacity-40"
                     />
                     <button
                       type="button"
-                      disabled={!selectedTestRevision || !revisionTestInput.trim() || busy || activeCandidateHandoff}
+                      disabled={!selectedTestRevision || !revisionTestInput.trim() || busy}
                       onClick={() => void runRevisionTestTurn(undefined, undefined, undefined, candidateTargetExpert ? { target_expert_id: candidateTargetExpert.expert_id } : undefined)}
                       className="mt-4 inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-40"
                     >

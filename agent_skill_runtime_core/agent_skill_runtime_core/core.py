@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -17,6 +18,100 @@ from agent_skill_runtime_core.models import CoreTraceStep, LoadedSkillContext, M
 
 ScriptReviewer = Callable[[Path], list[Any]]
 DockerChecker = Callable[[], tuple[bool, str]]
+
+
+class PersistentSandboxWorker:
+    """Keep one ms-enclave Docker context open and execute code on its loop.
+
+    ``SkillContainer._execute_in_sandbox`` creates an enclave context for every
+    call.  This small bridge owns that context for the lifetime of one pooled
+    worker while keeping all async objects on the same event loop.
+    """
+
+    def __init__(self, container: Any) -> None:
+        self.container = container
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ready = threading.Event()
+        self._startup_error: BaseException | None = None
+        self._sandbox: Any = None
+        self._context_manager: Any = None
+
+    def start(self, timeout: float = 30.0) -> None:
+        if self._thread is not None:
+            return
+
+        def runner() -> None:
+            loop = asyncio.new_event_loop()
+            self._loop = loop
+            asyncio.set_event_loop(loop)
+
+            async def open_context() -> None:
+                from ms_enclave.sandbox import SandboxFactory
+                from ms_enclave.sandbox.model import SandboxType
+
+                enclave = self.container._get_sandbox()
+                self._context_manager = SandboxFactory.create_sandbox(
+                    SandboxType.DOCKER, enclave.sandbox_config,
+                )
+                self._sandbox = await self._context_manager.__aenter__()
+
+            try:
+                loop.run_until_complete(open_context())
+            except BaseException as exc:  # pragma: no cover - runtime dependent
+                self._startup_error = exc
+                self._ready.set()
+                loop.close()
+                return
+            self._ready.set()
+            try:
+                loop.run_forever()
+            finally:
+                async def close_context() -> None:
+                    if self._context_manager is not None:
+                        await self._context_manager.__aexit__(None, None, None)
+                    self._sandbox = None
+
+                try:
+                    loop.run_until_complete(close_context())
+                except Exception:
+                    pass
+                loop.close()
+
+        self._thread = threading.Thread(target=runner, name="hailiang-sandbox-worker", daemon=True)
+        self._thread.start()
+        if not self._ready.wait(timeout):
+            raise TimeoutError("sandbox worker startup timed out")
+        if self._startup_error is not None:
+            raise RuntimeError(f"sandbox worker startup failed: {self._startup_error}") from self._startup_error
+
+    def execute(self, python_code: str, *, timeout: float | None = None) -> dict[str, Any]:
+        if self._loop is None or self._sandbox is None:
+            raise RuntimeError("sandbox worker is not started")
+
+        async def invoke() -> dict[str, Any]:
+            result = await self._sandbox.execute_tool("python_executor", {"code": python_code})
+            return {
+                "python_executor": [{
+                    "output": getattr(result, "output", ""),
+                    "error": getattr(result, "error", ""),
+                    "status": getattr(result, "status", 0),
+                }],
+                "shell_executor": [],
+            }
+
+        future = asyncio.run_coroutine_threadsafe(invoke(), self._loop)
+        return future.result(timeout=timeout)
+
+    def close(self, timeout: float = 5.0) -> None:
+        loop = self._loop
+        thread = self._thread
+        if loop is None or thread is None:
+            return
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=timeout)
+        self._loop = None
+        self._thread = None
 
 
 class AgentSkillRuntimeCore:
@@ -187,6 +282,9 @@ class AgentSkillRuntimeCore:
         loaded_scripts: list[dict[str, str]],
         execute_scripts: bool,
         script_inputs: dict[str, dict[str, Any]] | None = None,
+        sandbox_container: Any | None = None,
+        sandbox_worker: PersistentSandboxWorker | None = None,
+        worker_reused: bool = False,
     ) -> tuple[list[dict[str, Any]], list[CoreTraceStep]]:
         if not execute_scripts:
             return [], [
@@ -303,12 +401,15 @@ class AgentSkillRuntimeCore:
             )
         ]
         try:
-            container_cls = self._future_import_safe_container(self.runtime_probe.imports["SkillContainer"])  # type: ignore[index]
             execution_input_cls = self.runtime_probe.imports["ExecutionInput"]  # type: ignore[index]
-            workspace_dir = self.runtime_dir / "workspace_runs" / uuid.uuid4().hex[:12]
             container_started = time.perf_counter()
-            container = container_cls(workspace_dir=workspace_dir, use_sandbox=True)
-            container.mount_skill_directory(skill_id, skill_dir)
+            container = sandbox_container
+            workspace_dir = None
+            if container is None:
+                container_cls = self._future_import_safe_container(self.runtime_probe.imports["SkillContainer"])  # type: ignore[index]
+                workspace_dir = self.runtime_dir / "workspace_runs" / uuid.uuid4().hex[:12]
+                container = container_cls(workspace_dir=workspace_dir, use_sandbox=True)
+                container.mount_skill_directory(skill_id, skill_dir)
             if dependency_site_packages:
                 setattr(container, "_dependency_site_packages", dependency_site_packages)
             steps.append(
@@ -317,8 +418,9 @@ class AgentSkillRuntimeCore:
                     status="success",
                     detail="MS-Agent SkillContainer sandbox initialized",
                     payload={
-                        "workspace_dir": str(workspace_dir),
+                        "workspace_dir": str(workspace_dir or getattr(container, "workspace_dir", "")),
                         "duration_ms": _elapsed_ms(container_started),
+                        "worker_reused": bool(worker_reused),
                     },
                 )
             )
@@ -331,29 +433,49 @@ class AgentSkillRuntimeCore:
                 payload = self._script_input_for(script=script, script_path=script_path, script_inputs=script_inputs)
                 args = _script_args_from_payload(payload)
                 started = time.perf_counter()
-                output = asyncio.run(
-                    container.execute_python_script(
+                if sandbox_worker is not None:
+                    self._clean_worker_run_dirs(container)
+                input_spec = execution_input_cls(
+                    args=args,
+                    stdin=json.dumps(payload, ensure_ascii=False),
+                    working_dir=skill_dir,
+                    requirements=[],
+                )
+                if sandbox_worker is not None and hasattr(container, "_prepare_sandbox_script"):
+                    full_code = container._prepare_sandbox_script(
+                        script_path, skill_id, input_spec,
+                    )
+                    raw_result = sandbox_worker.execute(full_code, timeout=getattr(container, "timeout", 300))
+                    stdout, stderr, exit_code = container._parse_sandbox_result(raw_result)
+                    output_data = {
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "exit_code": exit_code,
+                    }
+                else:
+                    output = asyncio.run(container.execute_python_script(
                         script_path,
                         skill_id=skill_id,
-                        input_spec=execution_input_cls(
-                            args=args,
-                            stdin=json.dumps(payload, ensure_ascii=False),
-                            working_dir=skill_dir,
-                            requirements=[],
-                        ),
-                    )
-                )
-                output_data = output.to_dict() if hasattr(output, "to_dict") else dict(output)
+                        input_spec=input_spec,
+                    ))
+                    output_data = output.to_dict() if hasattr(output, "to_dict") else dict(output)
+                script_compute_ms = _elapsed_ms(started)
+                parse_started = time.perf_counter()
                 _attach_structured_stdout(output_data)
+                stdout_parse_ms = _elapsed_ms(parse_started)
                 outputs.append(
                     {
                         "script": script_path.name,
                         "args": args,
                         "stdin_payload": payload,
-                        "duration_ms": _elapsed_ms(started),
+                        "duration_ms": script_compute_ms,
+                        "script_compute_ms": script_compute_ms,
+                        "stdout_parse_ms": stdout_parse_ms,
                         **output_data,
                     }
                 )
+                if sandbox_worker is not None:
+                    self._clean_worker_run_dirs(container)
 
             status = "success" if all(_sandbox_result_success(item) for item in outputs) else "warning"
             steps.append(
@@ -361,7 +483,11 @@ class AgentSkillRuntimeCore:
                     name="script_execution",
                     status=status,  # type: ignore[arg-type]
                     detail="MS-Agent SkillContainer completed script execution",
-                    payload={"outputs": outputs},
+                    payload={
+                        "outputs": outputs,
+                        "execution_mode": "sandbox_warm_worker" if worker_reused else "sandbox_cold_fallback",
+                        "worker_reused": bool(worker_reused),
+                    },
                 )
             )
             return outputs, steps
@@ -375,6 +501,39 @@ class AgentSkillRuntimeCore:
                 )
             )
             return [], steps
+
+    @staticmethod
+    def _clean_worker_run_dirs(container: Any) -> None:
+        """Remove per-invocation output/log files before reusing a worker."""
+        for attr in ("output_dir", "logs_dir"):
+            root = getattr(container, attr, None)
+            if root is None:
+                continue
+            try:
+                for path in Path(root).iterdir():
+                    if path.is_dir():
+                        shutil.rmtree(path, ignore_errors=True)
+                    else:
+                        path.unlink(missing_ok=True)
+            except OSError:
+                continue
+
+    def create_sandbox_container(
+        self,
+        *,
+        skill_id: str,
+        skill_dir: Path,
+        workspace_dir: Path,
+        dependency_site_packages: Path | None = None,
+    ) -> Any:
+        """Create a reusable isolated container for one immutable Skill revision."""
+        self._assert_available()
+        container_cls = self._future_import_safe_container(self.runtime_probe.imports["SkillContainer"])  # type: ignore[index]
+        container = container_cls(workspace_dir=workspace_dir, use_sandbox=True)
+        container.mount_skill_directory(skill_id, skill_dir)
+        if dependency_site_packages:
+            setattr(container, "_dependency_site_packages", dependency_site_packages)
+        return container
 
     def _script_input_for(
         self,
@@ -493,18 +652,11 @@ class AgentSkillRuntimeCore:
 
     def _future_import_safe_container(self, container_cls):
         class FutureImportSafeSkillContainer(container_cls):
-            async def execute_python_script(self, script_path, *args, **kwargs):
+            def _prepare_sandbox_script(self, script_path, skill_id, input_spec):
                 path = Path(script_path)
-                if not getattr(self, "use_sandbox", False) or not path.exists():
-                    return await super().execute_python_script(script_path, *args, **kwargs)
-
                 code = path.read_text(encoding="utf-8")
                 lines = code.splitlines(keepends=True)
                 stripped = [line for line in lines if not line.lstrip().startswith("from __future__ import ")]
-                skill_id = kwargs.get("skill_id") or (args[0] if args else "unknown")
-                input_spec = kwargs.get("input_spec")
-                if input_spec is None and len(args) > 1:
-                    input_spec = args[1]
                 sandbox_file = self._sandbox_script_path(skill_id, path)
                 prefix_lines = []
                 if sandbox_file:
@@ -521,9 +673,20 @@ class AgentSkillRuntimeCore:
                     prefix += "\n"
                 if len(stripped) == len(lines):
                     stripped = lines
+                return prefix + "".join(stripped)
+
+            async def execute_python_script(self, script_path, *args, **kwargs):
+                path = Path(script_path)
+                if not getattr(self, "use_sandbox", False) or not path.exists():
+                    return await super().execute_python_script(script_path, *args, **kwargs)
+                skill_id = kwargs.get("skill_id") or (args[0] if args else "unknown")
+                input_spec = kwargs.get("input_spec")
+                if input_spec is None and len(args) > 1:
+                    input_spec = args[1]
+                code = self._prepare_sandbox_script(path, skill_id, input_spec)
 
                 temp_path = path.with_name(f".__exec_no_future_{uuid.uuid4().hex}_{path.name}")
-                temp_path.write_text(prefix + "".join(stripped), encoding="utf-8")
+                temp_path.write_text(code, encoding="utf-8")
                 try:
                     return await super().execute_python_script(temp_path, *args, **kwargs)
                 finally:

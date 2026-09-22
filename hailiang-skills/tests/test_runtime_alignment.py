@@ -402,6 +402,63 @@ def test_sandbox_prepare_blocks_execution_when_docker_is_missing(tmp_path: Path)
     )
 
 
+def test_sandbox_worker_reuse_and_deterministic_result_cache(tmp_path: Path) -> None:
+    skill_dir = _make_script_skill(tmp_path)
+    adapter = MSAgentRuntimeAdapter(
+        runtime_dir=tmp_path / "runtime",
+        runtime_probe=_runtime_probe(),
+        sandbox_worker_reuse_enabled=True,
+        script_result_cache_enabled=True,
+    )
+    adapter._docker_available = lambda: (True, "docker available")  # type: ignore[method-assign]
+    kwargs = {
+        "skill_id": "sample",
+        "skill_dir": skill_dir,
+        "loaded_scripts": [{"name": "tool.py", "path": "scripts/tool.py"}],
+        "execute_scripts": True,
+        "script_inputs": {"tool.py": {"query": "same"}},
+    }
+    first, first_steps = adapter.execute_scripts_in_sandbox(**kwargs)
+    second, second_steps = adapter.execute_scripts_in_sandbox(**kwargs)
+
+    assert first[0]["exit_code"] == 0
+    assert second[0]["execution_mode"] == "result_cache"
+    assert second[0]["cache_hit"] is True
+    assert any(
+        step.name == "script_execution" and step.payload.get("execution_mode") == "result_cache"
+        for step in second_steps
+    )
+    assert any(
+        step.name == "script_execution" and step.payload.get("execution_mode") == "sandbox_warm_worker"
+        for step in first_steps
+    )
+
+
+def test_script_result_cache_invalidates_when_input_changes(tmp_path: Path) -> None:
+    skill_dir = _make_script_skill(tmp_path)
+    adapter = MSAgentRuntimeAdapter(
+        runtime_dir=tmp_path / "runtime",
+        runtime_probe=_runtime_probe(),
+        sandbox_worker_reuse_enabled=True,
+        script_result_cache_enabled=True,
+    )
+    adapter._docker_available = lambda: (True, "docker available")  # type: ignore[method-assign]
+    base = {
+        "skill_id": "sample",
+        "skill_dir": skill_dir,
+        "loaded_scripts": [{"name": "tool.py", "path": "scripts/tool.py"}],
+        "execute_scripts": True,
+    }
+    first, _ = adapter.execute_scripts_in_sandbox(**base, script_inputs={"tool.py": {"query": "one"}})
+    second, second_steps = adapter.execute_scripts_in_sandbox(**base, script_inputs={"tool.py": {"query": "two"}})
+    assert first[0]["exit_code"] == 0
+    assert second[0].get("cache_hit") is not True
+    assert any(
+        step.name == "script_execution" and step.payload.get("execution_mode") == "sandbox_warm_worker"
+        for step in second_steps
+    )
+
+
 def test_conversation_memory_updates_summary_facts_and_contract_hash(tmp_path: Path) -> None:
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()

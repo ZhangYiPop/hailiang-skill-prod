@@ -5,6 +5,15 @@ memory_enabled: true
 # summary is pending or fails, the uncovered original messages remain in the prompt.
 memory_async_update: true
 sandbox_prewarm_enabled: true
+sandbox_worker_reuse_enabled: true
+sandbox_worker_pool_size_per_key: 1
+sandbox_worker_pool_max_total: 6
+sandbox_worker_acquire_timeout_seconds: 5
+sandbox_worker_idle_ttl_seconds: 120
+sandbox_worker_max_lifetime_seconds: 900
+script_result_cache_enabled: true
+script_result_cache_ttl_seconds: 600
+script_result_cache_max_entries: 1000
 local_fast_path_enabled: true
 # The active model accepts one million input/context tokens. Keep the latest
 # 100 user/assistant turns verbatim, then summarize older complete pairs.

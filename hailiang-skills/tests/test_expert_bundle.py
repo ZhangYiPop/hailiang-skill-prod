@@ -186,7 +186,7 @@ def test_team_handoff_replaces_agentscope_iteration_error_with_user_message():
     assert result == "expert-direct-result"
     assert "maximum reasoning" not in str(captured["reply"]).lower()
     assert "家庭教育专家" in str(captured["reply"])
-    assert "转交卡" in str(captured["reply"])
+    assert "请确认是否由这位专家接管回答" in str(captured["reply"])
     assert context.messages[-1]["team_handoff"]["candidates"][0]["expert_id"] == "family_education_expert"
     assert any(event["event_type"] == "expert_agent_reply_discarded" for event in context.event_trace)
 
@@ -792,6 +792,7 @@ def _controlled_student_team_runtime():
         "talent_dev_specialist": ExpertDefinition("talent_dev_specialist", "特长发展专家", "负责特长发展。", (skill,)),
         "career_explore_mentor": ExpertDefinition("career_explore_mentor", "职业探索导师", "负责职业探索。", (skill,)),
         "study_abroad_consultant": ExpertDefinition("study_abroad_consultant", "留学咨询师", "负责留学咨询。", (skill,)),
+        "admission_specialist": ExpertDefinition("admission_specialist", "升学指导专家", "负责选科与升学规划。", (skill,)),
     }
     team = ExpertTeamDefinition(
         team_id="student_growth_expert_team",
@@ -804,6 +805,7 @@ def _controlled_student_team_runtime():
             ExpertTeamMember("talent_dev_specialist", "特长发展专家", "绘画、艺术、特长发展"),
             ExpertTeamMember("career_explore_mentor", "职业探索导师", "职业方向、生涯探索"),
             ExpertTeamMember("study_abroad_consultant", "留学咨询师", "留学、海外院校"),
+            ExpertTeamMember("admission_specialist", "升学指导专家", "选科、志愿与升学规划"),
         ),
     )
     runtime = AgentScopeExpertRuntime(
@@ -823,12 +825,17 @@ def test_coordinator_forces_single_specialist_handoff_card_when_react_replies_di
     context = SessionContext()
     context.session_meta.update({"expert_team_id": team.team_id, "active_expert_id": "coordinator"})
     runtime._run_agent = lambda _definition, _message, _context, _client, state, **_kwargs: state.update(agent_reply="这里是未受控的专项结论")
+    runtime._decide_controlled_team_handoff = lambda *_args: {
+        "action": "handoff", "candidate_expert_ids": ["academic_coach"],
+        "confidence": 0.92, "reason": "学习提升问题更适合由学习指导师继续处理。",
+        "clarification_question": "", "uncertainty_reason": "",
+    }
 
     runtime.handle_message("高一数学提分怎么安排", context, lambda _message, received: received.add_message("assistant", received.session_meta["expert_direct_reply"]["reply"]) or "ok")
 
     handoff = context.messages[-1]["team_handoff"]
     assert [candidate["expert_id"] for candidate in handoff["candidates"]] == ["academic_coach"]
-    assert "转交卡" in context.messages[-1]["content"]
+    assert "请确认是否由这位专家接管回答" in context.messages[-1]["content"]
     assert any(event["event_type"] == "team_handoff_controlled_selected" for event in context.event_trace)
 
 
@@ -837,11 +844,104 @@ def test_coordinator_proposes_multiple_specialists_for_explicit_competing_topics
     context = SessionContext()
     context.session_meta.update({"expert_team_id": team.team_id, "active_expert_id": "coordinator"})
     runtime._run_agent = lambda *_args, **_kwargs: None
+    runtime._decide_controlled_team_handoff = lambda *_args: {
+        "action": "handoff", "candidate_expert_ids": ["career_explore_mentor", "study_abroad_consultant"],
+        "confidence": 0.90, "reason": "两个独立诉求分别需要职业与留学专项支持。",
+        "clarification_question": "", "uncertainty_reason": "",
+    }
 
     runtime.handle_message("我想同时了解职业方向和留学选择", context, lambda _message, received: received.add_message("assistant", received.session_meta["expert_direct_reply"]["reply"]) or "ok")
 
     candidates = context.messages[-1]["team_handoff"]["candidates"]
     assert {candidate["expert_id"] for candidate in candidates} == {"career_explore_mentor", "study_abroad_consultant"}
+
+
+def test_structured_team_handoff_preempts_same_turn_skill_execution_and_uses_transition_text():
+    runtime, team = _controlled_student_team_runtime()
+    context = SessionContext()
+    context.session_meta.update({"expert_team_id": team.team_id, "active_expert_id": "coordinator"})
+
+    def mixed_agent(_definition, _message, received_context, _client, state, **_kwargs):
+        # This models the problematic ordering from the exported candidate
+        # session: a coordinator schedules a Skill and then proposes a member.
+        received_context.session_meta["expert_requested_skill_id"] = "score_improve"
+        state["pending_form"] = {"skill_id": "score_improve", "question_ids": ["grade"]}
+        state["selected_skill_id"] = "score_improve"
+        state["agent_reply"] = "这里是不应展示的完整专项结论。"
+        runtime._propose_member_handoff(
+            team, state, received_context, ["admission_specialist"], "选科决策更适合由升学指导专家继续处理。"
+        )
+
+    runtime._run_agent = mixed_agent
+    result = runtime.handle_message(
+        "历史政治强、物理听不懂，是否选全文",
+        context,
+        lambda _message, received: received.add_message(
+            "assistant", received.session_meta["expert_direct_reply"]["reply"],
+        ) or "ok",
+    )
+
+    assert result == "ok"
+    reply = context.messages[-1]["content"]
+    assert "不应展示的完整专项结论" not in reply
+    assert "为了给你更专业、细致的解答" in reply
+    assert context.messages[-1]["team_handoff"]["candidates"][0]["expert_id"] == "admission_specialist"
+    assert "expert_requested_skill_id" not in context.session_meta
+    assert any(event["event_type"] == "team_handoff_preempted_skill_execution" for event in context.event_trace)
+
+
+def test_semantic_handoff_parser_uses_member_scope_not_keyword_overlap():
+    runtime, team = _controlled_student_team_runtime()
+
+    decision = runtime._parse_controlled_team_handoff_decision(json.dumps({
+        "action": "handoff",
+        "candidate_expert_ids": ["admission_specialist"],
+        "confidence": 0.94,
+        "reason": "选科规划属于升学决策。",
+        "clarification_question": "",
+        "uncertainty_reason": "",
+    }), team)
+
+    # The runtime does not re-rank by words such as “物理” or “艺术”: the
+    # semantic decision is authoritative, subject only to member validation.
+    assert decision is not None
+    assert decision["candidate_expert_ids"] == ["admission_specialist"]
+
+
+def test_low_confidence_semantic_handoff_becomes_clarification_not_card():
+    runtime, team = _controlled_student_team_runtime()
+
+    decision = runtime._parse_controlled_team_handoff_decision(json.dumps({
+        "action": "handoff",
+        "candidate_expert_ids": ["academic_coach"],
+        "confidence": 0.31,
+        "reason": "",
+        "clarification_question": "你更想优先解决选科还是学习方法？",
+        "uncertainty_reason": "两类任务都可能相关",
+    }), team)
+
+    assert decision is not None
+    assert decision["action"] == "clarify"
+    assert decision["candidate_expert_ids"] == []
+    assert "选科" in decision["clarification_question"]
+
+
+def test_expert_identity_intro_is_available_once_per_active_expert():
+    runtime, _team = _controlled_student_team_runtime()
+    context = SessionContext()
+    coordinator = runtime.expert_registry.require("coordinator")
+    academic = runtime.expert_registry.require("academic_coach")
+
+    runtime._prepare_expert_identity_intro(context, coordinator)
+    assert "首个用户可见回复" in runtime._expert_identity_instruction(context, coordinator)
+    runtime._consume_expert_identity_intro(context, coordinator)
+    assert "禁止以‘我是/作为某某专家’" in runtime._expert_identity_instruction(context, coordinator)
+
+    runtime._prepare_expert_identity_intro(context, coordinator)
+    assert "禁止以‘我是/作为某某专家’" in runtime._expert_identity_instruction(context, coordinator)
+    assert any(event["event_type"] == "expert_identity_intro_suppressed" for event in context.event_trace)
+    runtime._prepare_expert_identity_intro(context, academic)
+    assert "首个用户可见回复" in runtime._expert_identity_instruction(context, academic)
 
 
 def test_handoff_tool_normalizes_exact_name_and_records_unknown_alias_rejection():
