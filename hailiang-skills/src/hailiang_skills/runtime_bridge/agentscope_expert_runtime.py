@@ -109,6 +109,72 @@ class AgentScopeExpertRuntime:
             "topology": definition.topology if definition else None,
         }
 
+    def _skill_authorization_diagnostics(self, context, definition: ExpertDefinition, requested: Any) -> dict[str, Any]:
+        """Return non-content evidence for a rejected Skill route.
+
+        Keep this deliberately metadata-only: it is safe to expose through
+        diagnostics while making it possible to distinguish an authorization
+        mismatch from a missing runtime bundle or a stale session snapshot.
+        """
+        requested_id = str(requested or "").strip()
+        normalized = self._normalize_skill_id(requested_id)
+        authorized = [str(item) for item in definition.authorized_skill_ids]
+        resolved = self._resolve_authorized_skill_id(definition, requested_id)
+        runtime_matches = [
+            skill_id for skill_id in authorized
+            if self._normalize_skill_id(skill_id) == normalized
+            and self.runtime_registry.get(skill_id) is not None
+        ]
+        runtime_found = bool(
+            (self.runtime_registry.get(resolved) if resolved else None)
+            or (self.runtime_registry.get(requested_id) if requested_id else None)
+        )
+        metadata = getattr(context, "session_meta", {}) or {}
+        snapshot = metadata.get("configuration_snapshot") if isinstance(metadata, dict) else {}
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        deployment_id = str(
+            (metadata.get("active_deployment_id") if isinstance(metadata, dict) else "")
+            or snapshot.get("deployment_id")
+            or ""
+        ) or None
+        package_hash = str(
+            (metadata.get("active_package_hash") if isinstance(metadata, dict) else "")
+            or snapshot.get("package_hash")
+            or ""
+        ) or None
+        expert_entry = next(
+            (
+                item for item in snapshot.get("entries", [])
+                if isinstance(item, dict)
+                and item.get("object_type") == "expert"
+                and str(item.get("object_key") or "") == definition.agent_id
+            ),
+            None,
+        )
+        return {
+            "requested_skill_id": requested_id,
+            "normalized_requested_skill_id": normalized,
+            "resolved_skill_id": resolved,
+            "authorized_skill_ids": authorized,
+            "normalized_authorized_skill_ids": [self._normalize_skill_id(item) for item in authorized],
+            "runtime_skill_found": runtime_found,
+            "runtime_matching_authorized_skill_ids": runtime_matches,
+            "authorization_match": resolved is not None,
+            "runtime_lookup_id": resolved or requested_id or None,
+            "active_deployment_id": deployment_id,
+            "active_package_hash": package_hash,
+            "configuration_snapshot_deployment_id": str(snapshot.get("deployment_id") or "") or None,
+            "configuration_snapshot_package_hash": str(snapshot.get("package_hash") or "") or None,
+            "configuration_snapshot_expert_release_id": (
+                str((expert_entry or {}).get("release_id") or "") or None
+            ),
+            "configuration_snapshot_expert_skill_ids": [
+                str(item.get("object_key") or "")
+                for item in (expert_entry or {}).get("dependency_locks", [])
+                if isinstance(item, dict) and str(item.get("object_key") or "")
+            ],
+        }
+
     def handle_message(self, user_message: str, context, legacy_handler):
         # The API/UI may select a registered expert for a session.  In the
         # absence of a selection we retain the existing career expert as the
@@ -219,6 +285,7 @@ class AgentScopeExpertRuntime:
                     "reason": "runtime_skill_missing",
                     "error": str(exc)[:300],
                     "message": "指定 Skill 当前不可用，已由专家直接兜底",
+                    **self._skill_authorization_diagnostics(context, definition, missing_skill_id),
                 })
             else:
                 # Other AgentScope/model failures remain retryable runtime
@@ -644,6 +711,7 @@ class AgentScopeExpertRuntime:
                     "reason": "runtime_skill_missing",
                     "error": str(exc)[:300],
                     "message": "指定 Skill 当前不可用，已由专家直接兜底",
+                    **runtime._skill_authorization_diagnostics(context, definition, missing_skill_id),
                 })
                 state["skill_unavailable"] = {
                     "skill_id": missing_skill_id,
@@ -1638,6 +1706,7 @@ class AgentScopeExpertRuntime:
                     "reason": "runtime_skill_missing",
                     "error": str(exc)[:300],
                     "message": "指定 Skill 当前不可用，已由专家直接兜底",
+                    **self._skill_authorization_diagnostics(context, definition, skill_id),
                 })
                 decision = {
                     **decision,
@@ -1795,6 +1864,7 @@ class AgentScopeExpertRuntime:
                     "code": "EXPERT_SKILL_UNAVAILABLE_FALLBACK",
                     "reason": "route_not_authorized",
                     "message": "指定 Skill 不在专家当前可用范围，已由专家直接兜底",
+                    **self._skill_authorization_diagnostics(context, definition, requested_skill_id),
                 })
                 return {
                     **decision,

@@ -577,6 +577,16 @@ def test_missing_requested_skill_falls_back_to_expert_and_records_event():
         and event["payload"]["skill_id"] == "missing_skill"
         for event in context.event_trace
     )
+    event = next(
+        event for event in context.event_trace
+        if event["event_type"] == "expert_skill_unavailable_fallback"
+    )
+    payload = event["payload"]
+    assert payload["requested_skill_id"] == "missing_skill"
+    assert payload["normalized_requested_skill_id"] == "missing_skill"
+    assert payload["resolved_skill_id"] == "missing_skill"
+    assert payload["authorized_skill_ids"] == ["missing_skill"]
+    assert payload["runtime_skill_found"] is False
 
 
 def test_expert_explicit_grade_is_saved_to_session_scope_without_overwriting_profile():
