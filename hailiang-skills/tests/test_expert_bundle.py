@@ -186,9 +186,20 @@ def test_team_handoff_replaces_agentscope_iteration_error_with_user_message():
     assert result == "expert-direct-result"
     assert "maximum reasoning" not in str(captured["reply"]).lower()
     assert "家庭教育专家" in str(captured["reply"])
-    assert "转交卡" in str(captured["reply"])
+    assert "请确认是否由这位专家接管回答" in str(captured["reply"])
     assert context.messages[-1]["team_handoff"]["candidates"][0]["expert_id"] == "family_education_expert"
     assert any(event["event_type"] == "expert_agent_reply_discarded" for event in context.event_trace)
+
+
+def test_team_handoff_lead_in_does_not_repeat_card_reason():
+    reply = AgentScopeExpertRuntime._team_handoff_reply({
+        "reason": "用户正在询问选科决策，涉及学科优势和组合匹配。",
+        "candidates": [{"mention_name": "升学指导专家"}],
+    })
+
+    assert "为了给你更专业、细致的解答" in reply
+    assert "用户正在询问选科决策" not in reply
+    assert "升学指导专家" in reply
 
 
 def test_expert_direct_display_uses_active_expert_instead_of_legacy_fallback():

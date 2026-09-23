@@ -1161,9 +1161,12 @@ class AgentScopeExpertRuntime:
         ]
         names = [name for name in names if name]
         target = "、".join(names) or "合适的团内专家"
-        reason = str(handoff.get("reason") or "这个问题更适合由专项专家继续处理。").strip()
+        # Routing evidence stays on the card. Repeating the model-produced
+        # reason in the lead-in exposes internal routing prose and makes the
+        # coordinator sound mechanical.
         return AgentScopeExpertRuntime._neutralize_handoff_gendered_wording(
-            f"我建议由{target}继续协助。{reason} 已为你准备转交卡，请确认是否由该专家接管回答。"
+            f"为了给你更专业、细致的解答，我建议由{target}继续协助。"
+            "请确认是否由这位专家接管回答。"
         )
 
     @staticmethod
