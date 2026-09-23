@@ -80,6 +80,19 @@ def test_handoff_fallback_copy_is_gender_neutral():
     assert "这位专家" in reply
 
 
+def test_handoff_fallback_copy_uses_plural_selection_for_multiple_candidates():
+    reply = AgentScopeExpertRuntime._team_handoff_reply({
+        "candidates": [
+            {"mention_name": "升学规划师"},
+            {"mention_name": "选科参谋"},
+        ],
+        "reason": "当前问题涉及多个专项方向。",
+    })
+    assert "升学规划师、选科参谋" in reply
+    assert "请从这些专家中选择一位接管回答" in reply
+    assert "请确认是否由这位专家接管回答" not in reply
+
+
 def test_member_cannot_emit_unstructured_handoff_copy():
     team = SimpleNamespace(
         coordinator_expert_id="coordinator",

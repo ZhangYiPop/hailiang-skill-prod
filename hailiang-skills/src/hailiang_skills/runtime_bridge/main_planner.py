@@ -79,6 +79,13 @@ from hailiang_skills.runtime_bridge.conversation_memory import (  # noqa: E402
     supplement_questionnaire_evidence,
 )
 from hailiang_skills.runtime_bridge.ms_agent_adapter import MSAgentRuntimeAdapter  # noqa: E402
+from hailiang_skills.runtime_bridge.question_progress import (  # noqa: E402
+    detect_answered_question_repetition,
+    question_ledger_projection,
+    record_assistant_questions,
+    reconcile_user_answer,
+    same_user_message_streak,
+)
 from hailiang_skills.runtime_bridge.skill_instruction_index import (  # noqa: E402
     SkillInstructionIndex,
     build_skill_instruction_index,
@@ -179,6 +186,14 @@ def _reply_progress_contract(state: SessionState, *, skill_id: str) -> dict[str,
     """Build a compact, non-business-specific final-reply contract."""
     latest_user = _latest_message_for_role(state, "user")
     previous_assistant = _latest_message_for_role(state, "assistant")
+    # The assistant message immediately before a card-confirmed Skill entry
+    # belongs to the coordinator's handoff, not to the newly activated Skill.
+    # Comparing the new Skill's opening against that handoff can incorrectly
+    # trigger the stale-reply guard and degrade into a generic “补充信息”
+    # fallback before the Skill has had a chance to ask its own questions.
+    skill_entry_turn = bool(state.status_flags.get("skill_entry_turn"))
+    if skill_entry_turn:
+        previous_assistant = ""
     runtime_trace = state.status_flags.get("ms_agent_runtime")
     execution_outputs = (
         runtime_trace.get("execution_outputs", [])
@@ -196,6 +211,29 @@ def _reply_progress_contract(state: SessionState, *, skill_id: str) -> dict[str,
         else {}
     )
     pending = progress.get("pending_topics") if isinstance(progress.get("pending_topics"), list) else []
+    question_projection = question_ledger_projection(state, skill_id)
+    question_ledgers = state.status_flags.get("runtime_question_ledger", {})
+    question_ledger = (
+        question_ledgers.get(skill_id, {})
+        if isinstance(question_ledgers, dict)
+        else {}
+    )
+    last_reconciled = (
+        question_ledger.get("last_reconciled", {})
+        if isinstance(question_ledger, dict)
+        else {}
+    )
+    newly_reconciled = bool(
+        isinstance(question_ledger, dict)
+        and isinstance(last_reconciled, dict)
+        and last_reconciled.get("answered_question_ids")
+    )
+    user_message_streak = same_user_message_streak(state, latest_user)
+    # The first repeated submission is allowed.  It is useful when a user did
+    # not see the previous answer or wants the same question reconsidered with
+    # the preceding context.  A third identical submission is where the
+    # loop-protection policy starts to apply.
+    repeated_user_turn_allowed = 1 < user_message_streak <= 2
     repeat_requested = bool(_REPLY_REPEAT_REQUEST.search(latest_user))
     # Script-backed replies are always buffered: exposing an old "calculating"
     # sentence before the complete response is available is irrecoverable.
@@ -206,7 +244,7 @@ def _reply_progress_contract(state: SessionState, *, skill_id: str) -> dict[str,
         and latest_user.strip()
         and len(latest_user.strip()) <= 48
         and not repeat_requested
-    )
+    ) or newly_reconciled
     expected_action = (
         "present_tool_result" if script_success else
         "continue_collection" if pending else
@@ -223,6 +261,14 @@ def _reply_progress_contract(state: SessionState, *, skill_id: str) -> dict[str,
         "script_success": script_success,
         "script_count": sum(1 for item in execution_outputs if isinstance(item, dict)),
         "pending_topic_count": len(pending),
+        "answered_question_count": len(question_projection["answered"]),
+        "unresolved_question_count": len(question_projection["unresolved"]),
+        "answered_questions": question_projection["answered"],
+        "unresolved_questions": question_projection["unresolved"],
+        "question_reconciliation_active": newly_reconciled,
+        "same_user_message_streak": user_message_streak,
+        "repeated_user_turn_allowed": repeated_user_turn_allowed,
+        "skill_entry_turn": skill_entry_turn,
         "expected_action": expected_action,
     }
 
@@ -238,6 +284,7 @@ def _evaluate_reply_progress(reply: str, contract: dict[str, Any]) -> dict[str, 
         if normalized and normalized_previous else 0.0
     )
     reasons: list[str] = []
+    warnings: list[str] = []
     if not text:
         reasons.append("empty_reply")
     if (
@@ -246,15 +293,26 @@ def _evaluate_reply_progress(reply: str, contract: dict[str, Any]) -> dict[str, 
         and len(normalized_previous) >= 20
         and similarity >= 0.94
     ):
-        reasons.append("repeats_previous_reply")
+        if bool(contract.get("repeated_user_turn_allowed")):
+            # Keep this as an audit warning, but do not replace the response
+            # with the generic degraded fallback on the user's one allowed
+            # repeated submission.
+            warnings.append("repeats_previous_reply_allowed")
+        else:
+            reasons.append("repeats_previous_reply")
     if bool(contract.get("script_success")) and _REPLY_PRE_EXECUTION_LANGUAGE.search(text):
         reasons.append("script_result_not_presented")
+    repeated_questions = list(contract.get("repeated_question_ids") or [])
+    if repeated_questions:
+        reasons.append("asks_answered_question")
     return {
         "accepted": not reasons,
         "reasons": reasons,
+        "warnings": warnings,
         "similarity": round(similarity, 4),
         "expected_action": str(contract.get("expected_action") or ""),
         "script_success": bool(contract.get("script_success")),
+        "repeated_question_ids": repeated_questions,
     }
 
 
@@ -264,9 +322,27 @@ def _reply_progress_retry_instruction(contract: dict[str, Any], reasons: list[st
         f"最新用户请求：{str(contract.get('latest_user') or '')!r}\n"
         f"本轮预期动作：{str(contract.get('expected_action') or '')}\n"
         f"拦截原因：{', '.join(reasons)}。\n"
+        f"已回答问题（不可重复提问）：{json.dumps(contract.get('answered_questions') or [], ensure_ascii=False)}\n"
+        f"仍未解决问题：{json.dumps(contract.get('unresolved_questions') or [], ensure_ascii=False)}\n"
+        f"相同用户消息连续次数：{int(contract.get('same_user_message_streak') or 0)}（最多允许两轮重复提交）。\n"
         "不要复述上一条助手回复，不要使用‘马上计算/正在处理/请稍候’等已经过期的话术。"
         "若信息不足，只问一个完成当前任务真正必要的问题；若本轮已有工具结果，直接依据该结果给出自然语言结论。"
+        "已回答问题不能再次提问；只保留问题账本中的未解决问题，除非当前信息出现冲突。"
         "不要输出 JSON、内部工具、脚本、文件名或执行过程。"
+    )
+
+
+def _annotate_answered_question_repetition(
+    contract: dict[str, Any],
+    *,
+    state: SessionState,
+    skill_id: str,
+    reply: str,
+) -> None:
+    contract["repeated_question_ids"] = detect_answered_question_repetition(
+        reply,
+        state,
+        skill_id,
     )
 
 
@@ -2584,6 +2660,7 @@ class MainPlannerOrchestrator:
                 state.stage_facts.get(skill_name, {}).get(state.stage, {}) or {}
             ),
         }
+        same_user_message_count = same_user_message_streak(state, latest_user_message)
         planner_memory["status"] = {
             **(
                 planner_memory.get("status")
@@ -2597,6 +2674,9 @@ class MainPlannerOrchestrator:
                 if isinstance(state.status_flags.get("runtime_skill_progress"), dict)
                 else {}
             ),
+            "question_progress": question_ledger_projection(state, skill_name),
+            "same_user_message_streak": same_user_message_count,
+            "repeated_user_turn_allowed": 1 < same_user_message_count <= 2,
         }
         try:
             planner_messages = self._conversation_messages_for_model(state)
@@ -2761,6 +2841,25 @@ class MainPlannerOrchestrator:
                     )
                 ],
             )
+        repeated_questions = detect_answered_question_repetition(
+            str(getattr(loaded_context, "combined_response", "") or planner_llm.last_combined_response or ""),
+            state,
+            skill_name,
+        )
+        if repeated_questions:
+            # A combined planner response can otherwise bypass the normal
+            # final-response guard. Force it through the prompt that contains
+            # the reconciled question ledger instead.
+            loaded_context.combined_response = ""
+            planner_llm.last_combined_response = ""
+            self._record_events(context, [make_event(
+                "duplicate_question_blocked",
+                {
+                    "skill_id": skill_name,
+                    "question_ids": repeated_questions,
+                    "reason": "combined_planner_reasked_answered_question",
+                },
+            )])
 
         planner_routing_decision = parse_ms_agent_tool_routing(
             planner_llm.last_tool_routing_payload
@@ -4177,12 +4276,19 @@ class MainPlannerOrchestrator:
                 block = None
             progress_accepted = not bool(progress_result.get("degraded"))
         else:
+            _annotate_answered_question_repetition(
+                progress_contract,
+                state=state,
+                skill_id=bundle.contract.skill_id or bundle.root_name,
+                reply=reply,
+            )
             evaluation = _evaluate_reply_progress(reply, progress_contract)
             self._record_events(context, [make_event("reply_progress_evaluated", {
                 "skill_id": bundle.contract.skill_id or bundle.root_name,
                 "accepted": evaluation["accepted"],
                 "reasons": evaluation["reasons"],
                 "similarity": evaluation["similarity"],
+                "repeated_question_ids": evaluation.get("repeated_question_ids", []),
                 "expected_action": evaluation["expected_action"],
                 "script_success": evaluation["script_success"],
                 "buffered": False,
@@ -4247,15 +4353,24 @@ class MainPlannerOrchestrator:
     ) -> tuple[str, dict[str, Any]]:
         """Reject stale final prose once and regenerate it with turn evidence."""
         contract = _reply_progress_contract(state, skill_id=skill_name)
+        _annotate_answered_question_repetition(
+            contract,
+            state=state,
+            skill_id=skill_name,
+            reply=reply,
+        )
         evaluation = _evaluate_reply_progress(reply, contract)
         self._record_events(context, [make_event("reply_progress_evaluated", {
             "skill_id": skill_name,
             "accepted": evaluation["accepted"],
             "reasons": evaluation["reasons"],
+            "warnings": evaluation.get("warnings", []),
             "similarity": evaluation["similarity"],
             "expected_action": evaluation["expected_action"],
             "script_success": evaluation["script_success"],
             "buffered": bool(contract["requires_buffer"]),
+            "same_user_message_streak": contract.get("same_user_message_streak", 0),
+            "repeated_user_turn_allowed": bool(contract.get("repeated_user_turn_allowed")),
         })])
         if evaluation["accepted"]:
             self._mark_script_result_presented(context, state, skill_name, contract)
@@ -4265,9 +4380,18 @@ class MainPlannerOrchestrator:
         self._record_events(context, [make_event("reply_progress_blocked", {
             "skill_id": skill_name,
             "reasons": evaluation["reasons"],
+            "warnings": evaluation.get("warnings", []),
             "similarity": evaluation["similarity"],
             "expected_action": evaluation["expected_action"],
+            "repeated_question_ids": evaluation.get("repeated_question_ids", []),
+            "same_user_message_streak": contract.get("same_user_message_streak", 0),
         })])
+        if evaluation.get("repeated_question_ids"):
+            self._record_events(context, [make_event("duplicate_question_blocked", {
+                "skill_id": skill_name,
+                "question_ids": evaluation["repeated_question_ids"],
+                "reason": "assistant_draft_reasked_answered_question",
+            })])
         started = time.perf_counter()
         retried_reply = ""
         retry_evaluation: dict[str, Any] | None = None
@@ -4286,6 +4410,12 @@ class MainPlannerOrchestrator:
                 logger=logger,
             )
             retried_reply = normalize(str(retry_result.final_text or ""))
+            _annotate_answered_question_repetition(
+                contract,
+                state=state,
+                skill_id=skill_name,
+                reply=retried_reply,
+            )
             retry_evaluation = _evaluate_reply_progress(retried_reply, contract)
         except Exception as exc:  # noqa: BLE001 - preserve a safe user result
             logger.log("reply_progress.retry_failed", skill_id=skill_name, error=f"{type(exc).__name__}: {exc}")
@@ -4294,6 +4424,9 @@ class MainPlannerOrchestrator:
             "duration_ms": int((time.perf_counter() - started) * 1000),
             "accepted": bool(retry_evaluation and retry_evaluation["accepted"]),
             "reasons": retry_evaluation["reasons"] if retry_evaluation else ["retry_unavailable"],
+            "warnings": retry_evaluation.get("warnings", []) if retry_evaluation else [],
+            "repeated_question_ids": retry_evaluation.get("repeated_question_ids", []) if retry_evaluation else [],
+            "same_user_message_streak": contract.get("same_user_message_streak", 0),
         }
         self._record_events(context, [make_event("reply_progress_retry", retry_payload)])
         if retry_evaluation and retry_evaluation["accepted"]:
@@ -4594,15 +4727,25 @@ class MainPlannerOrchestrator:
             # Non-risk streamed turns retain their first-token behaviour, but
             # still leave an audit record for later comparison with guarded
             # turns.
+            _annotate_answered_question_repetition(
+                progress_contract,
+                state=state,
+                skill_id=skill_name,
+                reply=reply,
+            )
             evaluation = _evaluate_reply_progress(reply, progress_contract)
             self._record_events(context, [make_event("reply_progress_evaluated", {
                 "skill_id": skill_name,
                 "accepted": evaluation["accepted"],
                 "reasons": evaluation["reasons"],
+                "warnings": evaluation.get("warnings", []),
                 "similarity": evaluation["similarity"],
                 "expected_action": evaluation["expected_action"],
+                "repeated_question_ids": evaluation.get("repeated_question_ids", []),
                 "script_success": evaluation["script_success"],
                 "buffered": False,
+                "same_user_message_streak": progress_contract.get("same_user_message_streak", 0),
+                "repeated_user_turn_allowed": bool(progress_contract.get("repeated_user_turn_allowed")),
             })])
             self._finalize_skill_progress(
                 context, state, skill_name,
@@ -5164,12 +5307,38 @@ class MainPlannerOrchestrator:
                 else GENERAL_CHAT_ID
             )
             runtime_state.active_skill_id = active_skill_id
+        question_reconciliation = reconcile_user_answer(
+            runtime_state,
+            active_skill_id,
+            user_message,
+        )
+        if question_reconciliation.get("changed"):
+            self._record_events(
+                context,
+                [
+                    make_event(
+                        "question_answer_reconciled",
+                        {
+                            "skill_id": active_skill_id,
+                            "answered_question_ids": [
+                                item.get("question_id")
+                                for item in question_reconciliation.get("answered", [])
+                            ],
+                            "unresolved_question_count": len(
+                                question_reconciliation.get("unresolved", [])
+                            ),
+                            "source": "user_message_option_match",
+                        },
+                    )
+                ],
+            )
         self._prepare_turn_long_context(context, runtime_state, active_skill_id)
         is_explicit_skill_entry = (
             canonical_skill_id(runtime_state.status_flags.get("entry_skill_id"))
             == canonical_skill_id(active_skill_id)
             and active_skill_id != GENERAL_CHAT_ID
         )
+        runtime_state.status_flags["skill_entry_turn"] = bool(is_explicit_skill_entry)
         if not is_explicit_skill_entry:
             self._emit_runtime_status(context, "planner", "推理规划")
         self._emit_skill_intro_if_needed(context, runtime_state, active_skill_id)
@@ -5633,8 +5802,15 @@ class MainPlannerOrchestrator:
         expert_id = str(expert_state.get("expert_id") or DEFAULT_EXPERT_ID)
         authorized = self._expert_authorizes_skill(context, expert_id, expert_selected)
         if authorized and self.runtime_registry.is_enabled(expert_selected):
+            previous_skill_id = state.active_skill_id or GENERAL_CHAT_ID
             state.active_skill_id = expert_selected
             state.status_flags["expert_selected_skill_id"] = expert_selected
+            if previous_skill_id != expert_selected and expert_selected not in {MAIN_PLANNER_ID, GENERAL_CHAT_ID}:
+                # A card-confirmed AgentScope selection is a true Skill entry.
+                # Mark it explicitly so the new Skill's opening is not
+                # compared with the coordinator's handoff sentence.
+                state.status_flags["entry_skill_id"] = expert_selected
+                state.status_flags["entry_from_skill_id"] = previous_skill_id
             context.skill_states.setdefault(MAIN_PLANNER_ID, {})["intent_route"] = {
                 "route_mode": "expert",
                 "target_skill_id": expert_selected,
@@ -6571,6 +6747,49 @@ class MainPlannerOrchestrator:
         return state
 
     def _persist_runtime_state(self, context, state: SessionState) -> None:
+        # Runtime Skills often ask for facts in free prose rather than a
+        # Native Questionnaire. Keep the latest assistant questions in the
+        # same persisted state so the next user answer can close only the
+        # questions it actually answered.
+        if state.active_skill_id and state.active_skill_id != EXPERT_DIRECT_EXECUTION_ID:
+            latest_assistant = next(
+                (
+                    str(item.get("content") or "")
+                    for item in reversed(getattr(context, "messages", []) or [])
+                    if item.get("role") == "assistant"
+                ),
+                "",
+            )
+            if latest_assistant:
+                registered = record_assistant_questions(
+                    state,
+                    state.active_skill_id,
+                    latest_assistant,
+                )
+                if registered.get("questions"):
+                    self._record_events(context, [make_event(
+                        "skill_questions_registered",
+                        {
+                            "skill_id": state.active_skill_id,
+                            "question_ids": [
+                                item.get("question_id")
+                                for item in registered["questions"]
+                            ],
+                            "question_count": len(registered["questions"]),
+                        },
+                    )])
+        ledgers = state.status_flags.get("runtime_question_ledger")
+        if isinstance(ledgers, dict):
+            # The marker is turn-local: it forces buffering/validation for
+            # the current answer, but must not make every later turn pay that
+            # cost forever.
+            for ledger in ledgers.values():
+                if isinstance(ledger, dict):
+                    ledger.pop("last_reconciled", None)
+        # This marker only describes the current turn. Persisting it would
+        # incorrectly exempt the next ordinary turn from duplicate-reply
+        # checks.
+        state.status_flags.pop("skill_entry_turn", None)
         context.skill_states[RUNTIME_STATE_KEY] = runtime_state_payload(state)
         context.skill_states[RUNTIME_STATE_KEY]["soul_context"] = state.soul_context
         context.skill_states[RUNTIME_STATE_KEY]["conversation_memory"] = state.conversation_memory

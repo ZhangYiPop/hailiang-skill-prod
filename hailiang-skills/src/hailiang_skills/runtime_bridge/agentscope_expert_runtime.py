@@ -482,6 +482,28 @@ class AgentScopeExpertRuntime:
         rendered = "\n".join(f"{labels[item['role']]}：{item['content']}" for item in history)
         return rendered[-self.history_max_chars :]
 
+    def _same_user_message_streak(self, context, user_message: str) -> int:
+        """Count trailing identical user turns for the direct Expert path."""
+        history = [
+            item for item in (getattr(context, "messages", []) or [])
+            if isinstance(item, dict)
+            and item.get("role") == "user"
+            and not (
+                isinstance(item.get("metadata"), dict)
+                and item["metadata"].get("message_type") in {"team_handoff_confirmation"}
+            )
+        ]
+        normalize = lambda value: re.sub(r"[\s\W_]+", "", str(value or "").lower(), flags=re.UNICODE)
+        target = normalize(user_message)
+        if len(target) < 2:
+            return 0
+        streak = 0
+        for item in reversed(history):
+            if normalize(item.get("content")) != target:
+                break
+            streak += 1
+        return streak
+
     def _capture_explicit_user_facts(self, context, user_message: str, *, source_turn_id: str) -> None:
         """Persist facts stated explicitly in an Expert turn.
 
@@ -1163,12 +1185,18 @@ class AgentScopeExpertRuntime:
         ]
         names = [name for name in names if name]
         target = "、".join(names) or "合适的团内专家"
+        multiple = len(names) > 1
         # Routing evidence stays on the card. Repeating the model-produced
         # reason in the lead-in exposes internal routing prose and makes the
         # coordinator sound mechanical.
+        confirmation = (
+            "请从这些专家中选择一位接管回答。"
+            if multiple
+            else "请确认是否由这位专家接管回答。"
+        )
         return AgentScopeExpertRuntime._neutralize_handoff_gendered_wording(
             f"为了给你更专业、细致的解答，我建议由{target}继续协助。"
-            "请确认是否由这位专家接管回答。"
+            + confirmation
         )
 
     @staticmethod
@@ -1947,36 +1975,50 @@ class AgentScopeExpertRuntime:
         normalize = lambda value: re.sub(r"[\s\W_]+", "", str(value or "").lower(), flags=re.UNICODE)
         similarity = SequenceMatcher(None, normalize(reply), normalize(previous)).ratio() if previous else 0.0
         repeat_requested = bool(re.search(r"再说(?:一遍)?|重复(?:一下)?|复述|总结(?:一下)?|回顾(?:一下)?", user_message or ""))
+        same_user_streak = self._same_user_message_streak(context, user_message)
+        repeated_user_turn_allowed = 1 < same_user_streak <= 2
         if previous and not repeat_requested and len(normalize(reply)) >= 20 and similarity >= 0.94:
-            self._event(context, "reply_progress_blocked", {
-                "expert_id": definition.agent_id,
-                "reason": "repeats_previous_reply",
-                "similarity": round(similarity, 4),
-                "execution_mode": "expert_direct",
-            })
-            try:
-                reply = str(client.complete([
-                    *messages,
-                    ChatMessage(role="assistant", content=reply),
-                    ChatMessage(
-                        role="user",
-                        content=(
-                            "不要复述上一条助手回复。请直接回应我最新的问题；如确实缺信息，"
-                            "只问一个必要的澄清问题。不要提及内部路由或系统。"
-                        ),
-                    ),
-                ], request_purpose="expert_direct_reply_retry") or "").strip()
-                self._event(context, "reply_progress_retry", {
+            if repeated_user_turn_allowed:
+                self._event(context, "reply_progress_evaluated", {
                     "expert_id": definition.agent_id,
-                    "accepted": bool(reply and SequenceMatcher(None, normalize(reply), normalize(previous)).ratio() < 0.94),
+                    "accepted": True,
+                    "warnings": ["repeats_previous_reply_allowed"],
+                    "same_user_message_streak": same_user_streak,
+                    "repeated_user_turn_allowed": True,
+                    "similarity": round(similarity, 4),
                     "execution_mode": "expert_direct",
                 })
-            except Exception as exc:
-                self._event(context, "reply_progress_degraded", {
+            else:
+                self._event(context, "reply_progress_blocked", {
                     "expert_id": definition.agent_id,
-                    "reason": f"expert_direct_retry_failed:{type(exc).__name__}",
+                    "reason": "repeats_previous_reply",
+                    "similarity": round(similarity, 4),
+                    "same_user_message_streak": same_user_streak,
+                    "execution_mode": "expert_direct",
                 })
-                reply = "我需要先确认你这次最希望我分析的具体方面，才能继续给出有用建议。"
+                try:
+                    reply = str(client.complete([
+                        *messages,
+                        ChatMessage(role="assistant", content=reply),
+                        ChatMessage(
+                            role="user",
+                            content=(
+                                "不要复述上一条助手回复。请直接回应我最新的问题；如确实缺信息，"
+                                "只问一个必要的澄清问题。不要提及内部路由或系统。"
+                            ),
+                        ),
+                    ], request_purpose="expert_direct_reply_retry") or "").strip()
+                    self._event(context, "reply_progress_retry", {
+                        "expert_id": definition.agent_id,
+                        "accepted": bool(reply and SequenceMatcher(None, normalize(reply), normalize(previous)).ratio() < 0.94),
+                        "execution_mode": "expert_direct",
+                    })
+                except Exception as exc:
+                    self._event(context, "reply_progress_degraded", {
+                        "expert_id": definition.agent_id,
+                        "reason": f"expert_direct_retry_failed:{type(exc).__name__}",
+                    })
+                    reply = "我需要先确认你这次最希望我分析的具体方面，才能继续给出有用建议。"
         direct_ledger, _projection = build_effective_fact_ledger(
             global_facts=self._read_effective_facts(context),
             current_skill_facts={},

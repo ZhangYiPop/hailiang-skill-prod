@@ -2539,11 +2539,14 @@ class WorkbenchService:
                     "event_type": event_type,
                     "accepted": payload.get("accepted"),
                     "reasons": list(payload.get("reasons") or []),
+                    "warnings": list(payload.get("warnings") or []),
                     "expected_action": str(payload.get("expected_action") or ""),
                     "script_success": payload.get("script_success"),
                     "buffered": payload.get("buffered"),
                     "duration_ms": payload.get("duration_ms"),
                     "reason": str(payload.get("reason") or ""),
+                    "same_user_message_streak": payload.get("same_user_message_streak"),
+                    "repeated_user_turn_allowed": payload.get("repeated_user_turn_allowed"),
                 })
             if event_type in {
                 "reference_context",

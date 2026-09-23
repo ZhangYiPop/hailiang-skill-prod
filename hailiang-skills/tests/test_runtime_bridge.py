@@ -1913,6 +1913,87 @@ class RuntimeBridgeTest(unittest.TestCase):
         self.assertFalse(evaluation["accepted"])
         self.assertIn("repeats_previous_reply", evaluation["reasons"])
 
+    def test_skill_entry_does_not_compare_against_coordinator_handoff(self) -> None:
+        state = SessionState(
+            session_id="reply-progress-skill-entry",
+            active_skill_id="study_question",
+            messages=[
+                ChatMessage(
+                    role="assistant",
+                    content="这位专家可以帮助你分析孩子遇到难题就放弃的问题，你看要不要让他接手？",
+                ),
+                ChatMessage(role="user", content="@学习指导师"),
+            ],
+            status_flags={"skill_entry_turn": True},
+        )
+
+        contract = _reply_progress_contract(state, skill_id="study_question")
+        evaluation = _evaluate_reply_progress(
+            "先了解一下孩子遇到难题时通常会怎么做？",
+            contract,
+        )
+
+        self.assertEqual(contract["previous_reply_chars"], 0)
+        self.assertFalse(contract["requires_buffer"])
+        self.assertTrue(evaluation["accepted"])
+
+    def test_one_repeated_user_turn_does_not_trigger_stale_reply_fallback(self) -> None:
+        repeated_question = "孩子遇到难题就放弃怎么办？"
+        state = SessionState(
+            session_id="reply-progress-repeat-user-turn",
+            active_skill_id="study_question",
+            messages=[
+                ChatMessage(role="user", content=repeated_question),
+                ChatMessage(
+                    role="assistant",
+                    content="先确认孩子遇到难题时会怎么做，以及他通常会不会先尝试几步再寻求帮助。",
+                ),
+                ChatMessage(role="user", content=repeated_question),
+            ],
+        )
+
+        contract = _reply_progress_contract(state, skill_id="study_question")
+        evaluation = _evaluate_reply_progress(
+            "先确认孩子遇到难题时会怎么做，以及他通常会不会先尝试几步再寻求帮助。",
+            contract,
+        )
+
+        self.assertEqual(contract["same_user_message_streak"], 2)
+        self.assertTrue(contract["repeated_user_turn_allowed"])
+        self.assertTrue(evaluation["accepted"])
+        self.assertIn("repeats_previous_reply_allowed", evaluation["warnings"])
+
+    def test_third_repeated_user_turn_reactivates_stale_reply_guard(self) -> None:
+        repeated_question = "孩子遇到难题就放弃怎么办？"
+        state = SessionState(
+            session_id="reply-progress-repeat-user-turn-limit",
+            active_skill_id="study_question",
+            messages=[
+                ChatMessage(role="user", content=repeated_question),
+                ChatMessage(
+                    role="assistant",
+                    content="先确认孩子遇到难题时会怎么做，以及他通常会不会先尝试几步再寻求帮助。",
+                ),
+                ChatMessage(role="user", content=repeated_question),
+                ChatMessage(
+                    role="assistant",
+                    content="请补充孩子通常怎么处理难题，以及遇到不会的题目时是否会主动寻求帮助。",
+                ),
+                ChatMessage(role="user", content=repeated_question),
+            ],
+        )
+
+        contract = _reply_progress_contract(state, skill_id="study_question")
+        evaluation = _evaluate_reply_progress(
+            "请补充孩子通常怎么处理难题，以及遇到不会的题目时是否会主动寻求帮助。",
+            contract,
+        )
+
+        self.assertEqual(contract["same_user_message_streak"], 3)
+        self.assertFalse(contract["repeated_user_turn_allowed"])
+        self.assertFalse(evaluation["accepted"])
+        self.assertIn("repeats_previous_reply", evaluation["reasons"])
+
     def test_reply_progress_guard_blocks_pre_execution_wording_after_script_success(self) -> None:
         state = SessionState(
             session_id="reply-progress-script",
