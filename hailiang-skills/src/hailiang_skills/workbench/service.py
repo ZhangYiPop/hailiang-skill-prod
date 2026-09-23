@@ -1702,8 +1702,14 @@ class WorkbenchService:
         context.event_trace = list(saved.get("event_trace") or [])
         context.last_fact_changes = list(saved.get("last_fact_changes") or [])
         context.session_meta.update(dict(saved.get("session_meta") or {}))
+        # Candidate transcripts are also read through the v2 compatibility
+        # projection. Existing debug data is retained as-is.
+        context.session_meta["context_contract_version"] = 2
         context.session_meta.setdefault("_candidate_branch_version", 1)
         self._configure_snapshot_context(context, snapshot)
+        runtime_state = context.skill_states.get("skill_runtime")
+        if isinstance(runtime_state, dict):
+            runtime_state.setdefault("status_flags", {})["context_contract_version"] = 2
         return context
 
     @staticmethod
@@ -2463,6 +2469,7 @@ class WorkbenchService:
         script_runs: list[dict[str, Any]] = []
         expert_routing: dict[str, Any] = {}
         execution_error: dict[str, Any] = {}
+        reply_progress: dict[str, Any] = {}
         for event in turn_events:
             if not isinstance(event, dict):
                 continue
@@ -2519,6 +2526,25 @@ class WorkbenchService:
                     "pending_topics": list(payload.get("pending_topics") or []),
                     "next_action": str(payload.get("next_action") or ""),
                 }
+            elif event_type in {
+                "reply_progress_evaluated",
+                "reply_progress_blocked",
+                "reply_progress_retry",
+                "reply_progress_degraded",
+                "script_result_pending_presentation",
+                "script_result_presented",
+                "script_result_reused",
+            }:
+                reply_progress.setdefault("events", []).append({
+                    "event_type": event_type,
+                    "accepted": payload.get("accepted"),
+                    "reasons": list(payload.get("reasons") or []),
+                    "expected_action": str(payload.get("expected_action") or ""),
+                    "script_success": payload.get("script_success"),
+                    "buffered": payload.get("buffered"),
+                    "duration_ms": payload.get("duration_ms"),
+                    "reason": str(payload.get("reason") or ""),
+                })
             if event_type in {
                 "reference_context",
                 "retrieval_context",
@@ -2618,6 +2644,7 @@ class WorkbenchService:
                 ],
             },
             "skill_progress": skill_progress,
+            "reply_progress": reply_progress,
             "expert_routing": expert_routing,
             "execution_error": execution_error,
             "scripts": script_runs,

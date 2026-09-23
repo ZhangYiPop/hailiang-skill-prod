@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from difflib import SequenceMatcher
 from dataclasses import replace
 from typing import Any
 from uuid import uuid4
@@ -754,6 +755,7 @@ class AgentScopeExpertRuntime:
             global_facts=effective_fact_values,
             current_skill_facts=current_skill_facts,
             memory_facts=composed_memory.get("facts", {}),
+            context_contract_version=(runtime_skill_state.get("status_flags") or {}).get("context_contract_version"),
         )
         self._event(context, "fact_prompt_projection", {
             "expert_id": definition.agent_id,
@@ -1932,17 +1934,54 @@ class AgentScopeExpertRuntime:
             f"# 最近对话\n{self._expert_conversation_history(context)}"
         )
         try:
-            reply = str(client.complete([
+            messages = [
                 ChatMessage(role="system", content=prompt), ChatMessage(role="user", content=user_message),
-            ], request_purpose="expert_direct_reply") or "").strip()
+            ]
+            reply = str(client.complete(messages, request_purpose="expert_direct_reply") or "").strip()
         except Exception as exc:
             raise AgentScopeRuntimeUnavailable(f"专家回复生成失败: {exc}") from exc
         if not reply:
             raise AgentScopeRuntimeUnavailable("专家回复生成失败：模型返回为空")
+        history = self._expert_history_messages(context)
+        previous = next((item["content"] for item in reversed(history) if item["role"] == "assistant"), "")
+        normalize = lambda value: re.sub(r"[\s\W_]+", "", str(value or "").lower(), flags=re.UNICODE)
+        similarity = SequenceMatcher(None, normalize(reply), normalize(previous)).ratio() if previous else 0.0
+        repeat_requested = bool(re.search(r"再说(?:一遍)?|重复(?:一下)?|复述|总结(?:一下)?|回顾(?:一下)?", user_message or ""))
+        if previous and not repeat_requested and len(normalize(reply)) >= 20 and similarity >= 0.94:
+            self._event(context, "reply_progress_blocked", {
+                "expert_id": definition.agent_id,
+                "reason": "repeats_previous_reply",
+                "similarity": round(similarity, 4),
+                "execution_mode": "expert_direct",
+            })
+            try:
+                reply = str(client.complete([
+                    *messages,
+                    ChatMessage(role="assistant", content=reply),
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            "不要复述上一条助手回复。请直接回应我最新的问题；如确实缺信息，"
+                            "只问一个必要的澄清问题。不要提及内部路由或系统。"
+                        ),
+                    ),
+                ], request_purpose="expert_direct_reply_retry") or "").strip()
+                self._event(context, "reply_progress_retry", {
+                    "expert_id": definition.agent_id,
+                    "accepted": bool(reply and SequenceMatcher(None, normalize(reply), normalize(previous)).ratio() < 0.94),
+                    "execution_mode": "expert_direct",
+                })
+            except Exception as exc:
+                self._event(context, "reply_progress_degraded", {
+                    "expert_id": definition.agent_id,
+                    "reason": f"expert_direct_retry_failed:{type(exc).__name__}",
+                })
+                reply = "我需要先确认你这次最希望我分析的具体方面，才能继续给出有用建议。"
         direct_ledger, _projection = build_effective_fact_ledger(
             global_facts=self._read_effective_facts(context),
             current_skill_facts={},
             memory_facts={},
+            context_contract_version=(((getattr(context, "skill_states", {}) or {}).get("skill_runtime", {}) or {}).get("status_flags", {}) or {}).get("context_contract_version"),
         )
         self._event(context, "fact_recap_risk", {
             "expert_id": definition.agent_id,

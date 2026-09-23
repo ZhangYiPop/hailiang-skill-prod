@@ -256,6 +256,11 @@ def _build_prompt_assembly(
         if isinstance(skill_progress_by_skill, dict)
         else {}
     )
+    staged_progress = (state.status_flags.get("_pending_skill_progress_transaction") or {}).get(active_skill_id, {})
+    if int(state.status_flags.get("context_contract_version") or 2) >= 2 and isinstance(staged_progress, dict):
+        # The current generation must see its own proposed next step, even
+        # though it has not been durably committed yet.
+        skill_progress = {**dict(skill_progress or {}), **staged_progress}
     # collected_info is a legacy, broad bucket.  It may contain useful
     # workflow-only values, but it often mirrors global/Skill facts.  Feed it
     # through the same projection rather than serializing a second raw copy.
@@ -268,6 +273,7 @@ def _build_prompt_assembly(
         current_skill_facts=state.skill_facts.get(active_skill_id, {}),
         memory_facts=prompt_memory_facts,
         skill_progress=skill_progress,
+        context_contract_version=state.status_flags.get("context_contract_version"),
     )
     # This is diagnostic-only metadata. It deliberately keeps counts and
     # source names, never fact values, so candidate exports can explain why a
@@ -726,6 +732,7 @@ def _build_runtime_facts_text(
             current_skill_facts=state.skill_facts.get(active_skill_id, {}),
             memory_facts=(state.conversation_memory or {}).get("facts", {}),
             skill_progress=progress,
+            context_contract_version=state.status_flags.get("context_contract_version"),
         )
     return (
         f"active_skill_id={active_skill_id}\n"
@@ -745,16 +752,29 @@ def _build_skill_progress_guard(bundle: SkillBundle, state: SessionState) -> str
         if isinstance(progress_by_skill, dict) and isinstance(progress_by_skill.get(active_skill_id), dict)
         else {}
     )
+    staged_progress = (state.status_flags.get("_pending_skill_progress_transaction") or {}).get(active_skill_id, {})
+    if int(state.status_flags.get("context_contract_version") or 2) >= 2 and isinstance(staged_progress, dict):
+        progress = {**dict(progress or {}), **staged_progress}
+    presentation = state.status_flags.get("script_result_presentation")
+    presentation_instruction = ""
+    if isinstance(presentation, dict) and presentation.get("status") == "pending":
+        presentation_instruction = (
+            "\nA server-authorized computation has already completed for this turn. "
+            "Its structured result is available in Runtime Facts. You MUST now present or explain the result "
+            "according to SKILL.md. Do not say you are about to calculate, are waiting, or ask the user to wait."
+        )
     if not progress:
         return (
             "No persisted private progress yet. Follow the current SKILL.md; after this turn, "
             "record any concrete user answer before asking the next question."
+            + presentation_instruction
         )
     return (
         "This is an opaque, Skill-owned progress ledger. Do not reinterpret its stage label using "
         "platform conventions. Confirmed facts and resolved topics are already answered: never ask "
         "for them again or restart an earlier template. Follow the Skill's own next step.\n"
         + json.dumps(progress, ensure_ascii=False)
+        + presentation_instruction
     )
 
 

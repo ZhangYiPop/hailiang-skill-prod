@@ -14,6 +14,7 @@ from unittest.mock import patch
 from starlette.responses import JSONResponse
 
 from hailiang_skills.core.context import SessionContext
+from hailiang_skills.core.fact_prompt_projection import build_effective_fact_ledger
 from hailiang_skills.core.skill_ids import EXPERT_DIRECT_EXECUTION_ID
 from hailiang_skills.core.session_opening_config import (
     build_historical_session_opening_message,
@@ -39,8 +40,14 @@ from hailiang_skills.runtime_bridge.main_planner import (
     _QuestionnaireContinuationExtractor,
     _RuntimePlannerLLM,
     _apply_skill_progress_patch,
+    _stage_skill_progress_patch,
+    _finalize_skill_progress_transaction,
+    _evaluate_reply_progress,
     _normalize_skill_progress_patch,
     _normalize_runtime_planner_response,
+    _reply_progress_contract,
+    _script_result_fingerprint,
+    _is_script_result_followup,
     _authorize_requested_tool_specs,
     _tool_intent_label,
 )
@@ -1864,6 +1871,7 @@ class RuntimeBridgeTest(unittest.TestCase):
 
         reply, reasoning = orchestrator._stream_runtime_final_text(
             bundle,
+            SessionState(session_id=context.session_id, active_skill_id="interest_explore"),
             "interest_explore",
             assembly,
             [ChatMessage(role="user", content="有辩论演讲的特长生吗")],
@@ -1884,6 +1892,112 @@ class RuntimeBridgeTest(unittest.TestCase):
             and event.get("payload", {}).get("step") == "llm_output_empty"
         )
         self.assertEqual(empty_event["payload"]["status"], "warning")
+
+    def test_reply_progress_guard_blocks_repeated_contextual_reply(self) -> None:
+        state = SessionState(
+            session_id="reply-progress-repeat",
+            active_skill_id="multi_path_planning",
+            messages=[
+                ChatMessage(role="assistant", content="可以用高考成绩申请港澳高校，具体以院校招生简章为准。"),
+                ChatMessage(role="user", content="帮我分析一下"),
+            ],
+        )
+
+        contract = _reply_progress_contract(state, skill_id="multi_path_planning")
+        evaluation = _evaluate_reply_progress(
+            "可以用高考成绩申请港澳高校，具体以院校招生简章为准。",
+            contract,
+        )
+
+        self.assertTrue(contract["requires_buffer"])
+        self.assertFalse(evaluation["accepted"])
+        self.assertIn("repeats_previous_reply", evaluation["reasons"])
+
+    def test_reply_progress_guard_blocks_pre_execution_wording_after_script_success(self) -> None:
+        state = SessionState(
+            session_id="reply-progress-script",
+            active_skill_id="study_abroad_cost_calculator",
+            messages=[ChatMessage(role="user", content="预算范围（年）：20万-30万")],
+            status_flags={
+                "ms_agent_runtime": {
+                    "execution_outputs": [{"ok": True, "return_value": {"action": "estimate"}}],
+                }
+            },
+        )
+
+        contract = _reply_progress_contract(state, skill_id="study_abroad_cost_calculator")
+        evaluation = _evaluate_reply_progress("好的，我马上为您计算。", contract)
+
+        self.assertTrue(contract["requires_buffer"])
+        self.assertEqual(contract["expected_action"], "present_tool_result")
+        self.assertFalse(evaluation["accepted"])
+        self.assertIn("script_result_not_presented", evaluation["reasons"])
+
+    def test_script_result_reuse_fingerprint_ignores_status_followup_wording(self) -> None:
+        state = SessionState(
+            session_id="reply-progress-reuse",
+            active_skill_id="study_abroad_cost_calculator",
+            global_facts={"countries": ["美国"], "major": "工科", "budget_range": "20万-30万"},
+            skill_facts={"study_abroad_cost_calculator": {"school_type": "无偏好"}},
+        )
+
+        before = _script_result_fingerprint("study_abroad_cost_calculator", state)
+        state.messages.append(ChatMessage(role="user", content="算好了吗"))
+        after = _script_result_fingerprint("study_abroad_cost_calculator", state)
+
+        self.assertEqual(before, after)
+
+    def test_v2_fact_ledger_excludes_rolling_memory_fact_copy(self) -> None:
+        ledger, diagnostics = build_effective_fact_ledger(
+            global_facts={"grade": "高一", "region": "浙江"},
+            current_skill_facts={"grade": "高一", "form_cursor": 2},
+            memory_facts={"grade": "高一", "old_summary_fact": "艺术方向"},
+            skill_progress={"confirmed_facts": {"grade": "高一"}, "pending_topics": ["选科"]},
+            context_contract_version=2,
+        )
+        self.assertEqual(ledger["effective_facts"], {"grade": "高一", "region": "浙江"})
+        self.assertEqual(ledger["memory_only_facts"], {})
+        self.assertTrue(diagnostics["memory_facts_excluded"])
+        self.assertEqual(diagnostics["context_contract_version"], 2)
+
+    def test_unmarked_legacy_fact_ledger_uses_v2_compatibility_projection(self) -> None:
+        ledger, diagnostics = build_effective_fact_ledger(
+            global_facts={"grade": "高一"},
+            current_skill_facts={"grade": "高一"},
+            memory_facts={"grade": "高一", "old_note": "不再重复"},
+        )
+        self.assertEqual(ledger["memory_only_facts"], {})
+        self.assertEqual(diagnostics["context_contract_version"], 2)
+
+    def test_v2_skill_progress_commits_only_after_reply_acceptance(self) -> None:
+        state = SessionState(
+            session_id="v2-progress",
+            active_skill_id="demo",
+            status_flags={"context_contract_version": 2},
+        )
+        staged = _stage_skill_progress_patch(state, "demo", {
+            "confirmed_facts": {"grade": "高一"},
+            "pending_topics": ["选科"],
+            "next_action": "展示下一题",
+        })
+        self.assertEqual(state.global_facts["grade"], "高一")
+        self.assertEqual(
+            state.status_flags["runtime_skill_progress"]["demo"],
+            {"confirmed_fact_keys": ["grade"]},
+        )
+        self.assertEqual(staged["pending_topics"], ["选科"])
+        rolled_back = _finalize_skill_progress_transaction(state, "demo", commit=False)
+        self.assertTrue(rolled_back["rolled_back"])
+        self.assertEqual(
+            state.status_flags["runtime_skill_progress"]["demo"],
+            {"confirmed_fact_keys": ["grade"]},
+        )
+
+        _stage_skill_progress_patch(state, "demo", {"pending_topics": ["选科"]})
+        committed = _finalize_skill_progress_transaction(state, "demo", commit=True)
+        self.assertEqual(committed["pending_topics"], ["选科"])
+        self.assertTrue(_is_script_result_followup("算好了吗"))
+        self.assertFalse(_is_script_result_followup("预算改成每年50万"))
 
     def test_streaming_runner_prunes_stale_assistant_when_new_stream_supersedes_old(self) -> None:
         context = SessionContext(user_id="u1", session_id="sess_interrupt")

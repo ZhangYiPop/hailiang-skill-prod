@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import copy
+from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import inspect
 from dataclasses import replace
@@ -148,6 +149,160 @@ REFERENCE_PREFLIGHT_MAX_TOKENS = max(
 )
 
 
+# A model may complete successfully while returning the previous turn's
+# generic acknowledgement verbatim.  Provider completion status cannot catch
+# that failure: it is a turn-progression problem, not a truncation problem.
+_REPLY_REPEAT_REQUEST = re.compile(
+    r"(?:再说(?:一遍)?|重复(?:一下)?|复述|总结(?:一下)?|回顾(?:一下)?|重新说明)",
+    re.IGNORECASE,
+)
+_REPLY_PRE_EXECUTION_LANGUAGE = re.compile(
+    r"(?:马上|正在|稍后|接下来|将(?:为您|你)?|继续).*?(?:计算|测算|处理|生成)|"
+    r"(?:请稍候|等待(?:计算|处理))",
+    re.IGNORECASE,
+)
+_SCRIPT_RESULT_FOLLOWUP = re.compile(
+    r"(?:算好了吗|结果(?:呢|出来了吗)?|刚才(?:的)?(?:结果|计算)|(?:查看|给我)报告|继续看结果)",
+    re.IGNORECASE,
+)
+
+
+def _latest_message_for_role(state: SessionState, role: str) -> str:
+    return next((item.content for item in reversed(state.messages) if item.role == role), "")
+
+
+def _normalized_reply_text(value: str) -> str:
+    return re.sub(r"[\s\W_]+", "", str(value or "").lower(), flags=re.UNICODE)
+
+
+def _reply_progress_contract(state: SessionState, *, skill_id: str) -> dict[str, Any]:
+    """Build a compact, non-business-specific final-reply contract."""
+    latest_user = _latest_message_for_role(state, "user")
+    previous_assistant = _latest_message_for_role(state, "assistant")
+    runtime_trace = state.status_flags.get("ms_agent_runtime")
+    execution_outputs = (
+        runtime_trace.get("execution_outputs", [])
+        if isinstance(runtime_trace, dict) and isinstance(runtime_trace.get("execution_outputs"), list)
+        else []
+    )
+    script_success = any(
+        isinstance(item, dict) and item.get("ok") is True
+        for item in execution_outputs
+    )
+    progress_by_skill = state.status_flags.get("runtime_skill_progress")
+    progress = (
+        progress_by_skill.get(skill_id, {})
+        if isinstance(progress_by_skill, dict) and isinstance(progress_by_skill.get(skill_id), dict)
+        else {}
+    )
+    pending = progress.get("pending_topics") if isinstance(progress.get("pending_topics"), list) else []
+    repeat_requested = bool(_REPLY_REPEAT_REQUEST.search(latest_user))
+    # Script-backed replies are always buffered: exposing an old "calculating"
+    # sentence before the complete response is available is irrecoverable.
+    # For ordinary turns, only short contextual follow-ups are high risk, so
+    # first-turn and substantial new-question streaming remains unchanged.
+    requires_buffer = bool(script_success) or bool(
+        previous_assistant.strip()
+        and latest_user.strip()
+        and len(latest_user.strip()) <= 48
+        and not repeat_requested
+    )
+    expected_action = (
+        "present_tool_result" if script_success else
+        "continue_collection" if pending else
+        "answer_or_minimal_clarification"
+    )
+    return {
+        "skill_id": skill_id,
+        "latest_user_chars": len(latest_user),
+        "previous_reply_chars": len(previous_assistant),
+        "latest_user": latest_user,
+        "previous_assistant": previous_assistant,
+        "repeat_requested": repeat_requested,
+        "requires_buffer": requires_buffer,
+        "script_success": script_success,
+        "script_count": sum(1 for item in execution_outputs if isinstance(item, dict)),
+        "pending_topic_count": len(pending),
+        "expected_action": expected_action,
+    }
+
+
+def _evaluate_reply_progress(reply: str, contract: dict[str, Any]) -> dict[str, Any]:
+    """Return an auditable quality decision without storing reply bodies."""
+    text = str(reply or "").strip()
+    previous = str(contract.get("previous_assistant") or "").strip()
+    normalized = _normalized_reply_text(text)
+    normalized_previous = _normalized_reply_text(previous)
+    similarity = (
+        SequenceMatcher(None, normalized, normalized_previous).ratio()
+        if normalized and normalized_previous else 0.0
+    )
+    reasons: list[str] = []
+    if not text:
+        reasons.append("empty_reply")
+    if (
+        not bool(contract.get("repeat_requested"))
+        and len(normalized) >= 20
+        and len(normalized_previous) >= 20
+        and similarity >= 0.94
+    ):
+        reasons.append("repeats_previous_reply")
+    if bool(contract.get("script_success")) and _REPLY_PRE_EXECUTION_LANGUAGE.search(text):
+        reasons.append("script_result_not_presented")
+    return {
+        "accepted": not reasons,
+        "reasons": reasons,
+        "similarity": round(similarity, 4),
+        "expected_action": str(contract.get("expected_action") or ""),
+        "script_success": bool(contract.get("script_success")),
+    }
+
+
+def _reply_progress_retry_instruction(contract: dict[str, Any], reasons: list[str]) -> str:
+    return (
+        "上一版面向用户的回复没有推进当前回合，不能直接沿用。请重新回答最新用户问题。\n"
+        f"最新用户请求：{str(contract.get('latest_user') or '')!r}\n"
+        f"本轮预期动作：{str(contract.get('expected_action') or '')}\n"
+        f"拦截原因：{', '.join(reasons)}。\n"
+        "不要复述上一条助手回复，不要使用‘马上计算/正在处理/请稍候’等已经过期的话术。"
+        "若信息不足，只问一个完成当前任务真正必要的问题；若本轮已有工具结果，直接依据该结果给出自然语言结论。"
+        "不要输出 JSON、内部工具、脚本、文件名或执行过程。"
+    )
+
+
+def _script_result_fingerprint(skill_id: str, state: SessionState) -> str:
+    """Fingerprint business inputs, deliberately excluding conversational wording."""
+    payload = {
+        "skill_id": skill_id,
+        "global_facts": state.global_facts,
+        "skill_facts": state.skill_facts.get(skill_id, {}),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _is_script_result_followup(message: str) -> bool:
+    return bool(_SCRIPT_RESULT_FOLLOWUP.search(str(message or "")))
+
+
+def _compact_script_result_for_reuse(outputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one safe, structured script result without duplicating raw process I/O."""
+    compact: list[dict[str, Any]] = []
+    for item in outputs:
+        if not isinstance(item, dict) or item.get("ok") is not True:
+            continue
+        compact.append({
+            "script": item.get("script") or item.get("name") or item.get("path", ""),
+            "path": item.get("path") or item.get("script") or item.get("name", ""),
+            "ok": True,
+            "exit_code": item.get("exit_code"),
+            "duration_ms": item.get("duration_ms"),
+            "return_value": copy.deepcopy(item.get("return_value")),
+            "json_output": copy.deepcopy(item.get("json_output")),
+        })
+    return compact
+
+
 def _fact_prompt_projection_event(
     state: SessionState,
     *,
@@ -164,6 +319,7 @@ def _fact_prompt_projection_event(
             "legacy_collected_info": state.collected_info,
         },
         skill_progress=progress,
+        context_contract_version=state.status_flags.get("context_contract_version"),
     )
     return make_event("fact_prompt_projection", {
         "skill_id": skill_id,
@@ -183,6 +339,7 @@ def _fact_recap_risk_event(state: SessionState, *, skill_id: str, reply: str) ->
             "legacy_collected_info": state.collected_info,
         },
         skill_progress=progress,
+        context_contract_version=state.status_flags.get("context_contract_version"),
     )
     return make_event("fact_recap_risk", {"skill_id": skill_id, **visible_fact_recap_risk(reply, ledger)})
 
@@ -319,6 +476,84 @@ def _inject_preflight_references(loaded_context, bundle, required_paths: list[st
             *loaded,
         ]))
     return loaded, unavailable
+
+
+def _reference_plan_constraints(loaded_context: Any) -> list[dict[str, str]]:
+    """Extract explicit entity-to-mode constraints from loaded references.
+
+    This is intentionally a narrow consistency check, not a business router.
+    It only uses statements that explicitly say an entity (for example a
+    province, region, or product) *is* a known mode.  No Skill ID, entity, or
+    domain is hard-coded here; other references can use the same convention.
+    """
+    constraints: list[dict[str, str]] = []
+    references = getattr(loaded_context, "references", None) or []
+    pattern = re.compile(
+        r"(?P<entity>[\u4e00-\u9fff]{2,16}?)(?:省|市|自治区|地区)?\s*"
+        r"(?:为|属于|采用)\s*(?P<mode>3\+3|3\+1\+2|文理(?:（老高考）)?|传统高考)"
+    )
+    for item in references:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "")
+        source_path = str(item.get("path") or item.get("name") or "")
+        for match in pattern.finditer(content):
+            constraints.append({
+                "entity": match.group("entity").strip(),
+                "mode": match.group("mode").strip(),
+                "source_path": source_path,
+            })
+    return constraints
+
+
+def _apply_reference_plan_consistency_guard(loaded_context: Any) -> list[dict[str, str]]:
+    """Correct only explicit planner/reference contradictions.
+
+    The planner remains responsible for intent and task selection. Once a
+    local reference has been loaded, however, an explicit parameter such as
+    ``mode`` must not contradict that source. The original value is retained
+    for diagnostics and the source-backed value is used for final generation.
+    """
+    plan = getattr(loaded_context, "plan", None)
+    if not isinstance(plan, dict):
+        return []
+    parameters = plan.get("parameters")
+    if not isinstance(parameters, dict):
+        return []
+    province = str(parameters.get("province") or parameters.get("region") or "").strip()
+    supplied_mode = str(parameters.get("mode") or "").strip()
+    if not province or not supplied_mode:
+        return []
+    normalized_province = re.sub(r"(?:省|市|自治区|地区)$", "", province)
+    conflicts: list[dict[str, str]] = []
+    for constraint in _reference_plan_constraints(loaded_context):
+        entity = constraint["entity"]
+        if entity not in normalized_province and normalized_province not in entity:
+            continue
+        expected_mode = constraint["mode"]
+        if supplied_mode == expected_mode:
+            continue
+        conflict = {
+            "parameter": "mode",
+            "entity": entity,
+            "provided": supplied_mode,
+            "expected": expected_mode,
+            "source_path": constraint["source_path"],
+        }
+        conflicts.append(conflict)
+        parameters.setdefault("_original_mode", supplied_mode)
+        parameters["mode"] = expected_mode
+        parameters["_mode_source"] = "loaded_reference_constraint"
+        break
+    if conflicts:
+        plan["reference_consistency"] = {
+            "status": "corrected",
+            "conflicts": conflicts,
+        }
+        raw_trace = getattr(loaded_context, "raw_trace", None)
+        if isinstance(raw_trace, dict):
+            raw_trace["plan"] = plan
+    return conflicts
 
 
 def _reference_response_evidence_event(state: SessionState, *, skill_id: str, reply: str) -> dict[str, Any] | None:
@@ -852,14 +1087,21 @@ def _apply_skill_progress_patch(state: SessionState, skill_id: str, patch: dict[
         state.status_flags["runtime_skill_progress"] = progress_by_skill
     previous = progress_by_skill.get(skill_id)
     progress = dict(previous) if isinstance(previous, dict) else {}
+    v2 = int(state.status_flags.get("context_contract_version") or 2) >= 2
     previous_confirmed = progress.get("confirmed_facts")
     confirmed = dict(previous_confirmed) if isinstance(previous_confirmed, dict) else {}
     confirmed.update(dict(patch.get("confirmed_facts") or {}))
     if confirmed:
-        progress["confirmed_facts"] = confirmed
-        # Keep the facts in the current Skill's normal fact projection as
-        # well, so every prompt path receives them as authoritative context.
-        state.skill_facts.setdefault(skill_id, {}).update(confirmed)
+        if v2:
+            # In the v2 contract the runtime ledger is the only durable value
+            # source. Skill progress retains keys for audit/progress only.
+            state.global_facts.update(confirmed)
+            progress["confirmed_fact_keys"] = sorted(str(key) for key in confirmed)
+            progress.pop("confirmed_facts", None)
+        else:
+            progress["confirmed_facts"] = confirmed
+            # Legacy sessions retain their historical dual projection.
+            state.skill_facts.setdefault(skill_id, {}).update(confirmed)
     for key in ("stage_label", "next_action"):
         if patch.get(key):
             progress[key] = patch[key]
@@ -875,6 +1117,68 @@ def _apply_skill_progress_patch(state: SessionState, skill_id: str, patch: dict[
         progress["pending_topics"] = [item for item in pending if item not in resolved_set]
     progress_by_skill[skill_id] = progress
     return progress
+
+
+def _stage_skill_progress_patch(state: SessionState, skill_id: str, patch: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Stage v2 workflow progress until a user-visible result made progress.
+
+    Confirmed facts are safe to promote immediately after normalization. Stage,
+    pending/resolved topics and next_action are not: a stale final response
+    must not silently advance a Skill.
+    """
+    if int(state.status_flags.get("context_contract_version") or 2) < 2:
+        return _apply_skill_progress_patch(state, skill_id, patch)
+    patch = _normalize_skill_progress_patch(patch)
+    if not patch:
+        return None
+    immediate = {"confirmed_facts": patch.get("confirmed_facts") or {}}
+    if immediate["confirmed_facts"]:
+        _apply_skill_progress_patch(state, skill_id, immediate)
+    deferred = {key: value for key, value in patch.items() if key != "confirmed_facts"}
+    if not deferred:
+        return _current_skill_progress(state, skill_id)
+    pending = state.status_flags.setdefault("_pending_skill_progress_transaction", {})
+    if not isinstance(pending, dict):
+        pending = {}
+        state.status_flags["_pending_skill_progress_transaction"] = pending
+    pending[skill_id] = deferred
+    return _merged_skill_progress(_current_skill_progress(state, skill_id), deferred)
+
+
+def _current_skill_progress(state: SessionState, skill_id: str) -> dict[str, Any]:
+    values = state.status_flags.get("runtime_skill_progress", {})
+    value = values.get(skill_id, {}) if isinstance(values, dict) else {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _merged_skill_progress(previous: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(previous)
+    for key in ("stage_label", "next_action", "pending_topics"):
+        if key in patch:
+            merged[key] = copy.deepcopy(patch[key])
+    if "resolved_topics" in patch:
+        merged["resolved_topics"] = list(dict.fromkeys([
+            *list(merged.get("resolved_topics") or []), *list(patch.get("resolved_topics") or []),
+        ]))[:24]
+    if isinstance(merged.get("pending_topics"), list):
+        resolved = set(merged.get("resolved_topics") or [])
+        merged["pending_topics"] = [item for item in merged["pending_topics"] if item not in resolved]
+    return merged
+
+
+def _finalize_skill_progress_transaction(state: SessionState, skill_id: str, *, commit: bool) -> dict[str, Any] | None:
+    """Commit or discard staged v2 workflow state after reply validation."""
+    pending_by_skill = state.status_flags.get("_pending_skill_progress_transaction")
+    if not isinstance(pending_by_skill, dict):
+        return None
+    patch = pending_by_skill.pop(skill_id, None)
+    if not isinstance(patch, dict):
+        return None
+    if not pending_by_skill:
+        state.status_flags.pop("_pending_skill_progress_transaction", None)
+    if not commit:
+        return {"rolled_back": True, "patch_keys": sorted(patch)}
+    return _apply_skill_progress_patch(state, skill_id, patch)
 
 
 def _extract_partial_planner_dependencies(value: str) -> dict[str, list[str]]:
@@ -2376,6 +2680,21 @@ class MainPlannerOrchestrator:
             )
             return reply
 
+        reference_plan_conflicts = _apply_reference_plan_consistency_guard(loaded_context)
+        if reference_plan_conflicts:
+            # A combined planner draft was produced before the source-backed
+            # parameter check. Force the normal final-generation path so the
+            # corrected plan and loaded evidence are both visible to the
+            # response model; never publish the contradictory draft.
+            loaded_context.combined_response = ""
+            planner_llm.last_combined_response = ""
+            self._record_events(context, [make_event("reference_plan_consistency_guard", {
+                "skill_id": skill_name,
+                "status": "corrected",
+                "conflicts": reference_plan_conflicts,
+                "final_generation_required": True,
+            })])
+
         # The planner adapter has already supplied a valid local lazy-load plan
         # when its auxiliary LLM call fails. Keep that diagnostic in the runtime
         # trace, but do not emit a client-facing model error after recovery.
@@ -2398,7 +2717,7 @@ class MainPlannerOrchestrator:
             if raw_skill_progress
             else set()
         )
-        skill_progress = _apply_skill_progress_patch(
+        skill_progress = _stage_skill_progress_patch(
             state,
             skill_name,
             raw_skill_progress,
@@ -2408,7 +2727,7 @@ class MainPlannerOrchestrator:
                 context,
                 [
                     make_event(
-                        "runtime_skill_progress_updated",
+                        "skill_progress_staged" if int(state.status_flags.get("context_contract_version") or 2) >= 2 else "runtime_skill_progress_updated",
                         {
                             "skill_id": skill_name,
                             "stage_label": skill_progress.get("stage_label", ""),
@@ -2459,23 +2778,68 @@ class MainPlannerOrchestrator:
                 for step in steps
                 if not (step.name == "script_execution" and step.status == "skipped")
             ]
-            execution_outputs, script_steps = self.ms_agent_runtime.execute_scripts_in_sandbox(
-                skill_id=skill_name,
-                skill_dir=bundle.root_dir,
-                loaded_scripts=list(loaded_context.scripts or []),
-                execute_scripts=True,
-                script_inputs=self._ms_agent_script_inputs(
-                    skill_name=skill_name,
-                    bundle=bundle,
-                    state=state,
-                    context=context,
-                    latest_user_message=latest_user_message,
-                    plan=loaded_context.plan,
-                ),
+            input_fingerprint = _script_result_fingerprint(skill_name, state)
+            cached_result = state.status_flags.get("last_successful_script_result")
+            reuse_cached_result = bool(
+                isinstance(cached_result, dict)
+                and str(cached_result.get("skill_id") or "") == skill_name
+                and str(cached_result.get("input_fingerprint") or "") == input_fingerprint
+                and _is_script_result_followup(latest_user_message)
+                and isinstance(cached_result.get("outputs"), list)
             )
+            if reuse_cached_result:
+                execution_outputs = copy.deepcopy(cached_result["outputs"])
+                script_steps = []
+                self._record_events(context, [make_event("script_result_reused", {
+                    "skill_id": skill_name,
+                    "reason": "unchanged_business_inputs_result_followup",
+                    "script_count": len(execution_outputs),
+                })])
+            else:
+                execution_outputs, script_steps = self.ms_agent_runtime.execute_scripts_in_sandbox(
+                    skill_id=skill_name,
+                    skill_dir=bundle.root_dir,
+                    loaded_scripts=list(loaded_context.scripts or []),
+                    execute_scripts=True,
+                    script_inputs=self._ms_agent_script_inputs(
+                        skill_name=skill_name,
+                        bundle=bundle,
+                        state=state,
+                        context=context,
+                        latest_user_message=latest_user_message,
+                        plan=loaded_context.plan,
+                    ),
+                )
             loaded_context.execution_outputs = execution_outputs
             loaded_context.raw_trace["execution_outputs"] = execution_outputs
             steps.extend(script_steps)
+            successful_scripts = [
+                item for item in execution_outputs
+                if isinstance(item, dict) and item.get("ok") is True
+            ]
+            if successful_scripts:
+                # The execution result is now authoritative evidence for this
+                # turn.  Final generation must present/interpret it instead
+                # of falling back to the pre-execution acknowledgement that
+                # the planner may have drafted before the sandbox completed.
+                state.status_flags["script_result_presentation"] = {
+                    "status": "pending",
+                    "skill_id": skill_name,
+                    "script_count": len(successful_scripts),
+                    "turn_index": len([item for item in state.messages if item.role == "user"]),
+                }
+                state.status_flags["last_successful_script_result"] = {
+                    "skill_id": skill_name,
+                    "input_fingerprint": input_fingerprint,
+                    "outputs": _compact_script_result_for_reuse(successful_scripts),
+                }
+                self._record_events(
+                    context,
+                    [make_event("script_result_pending_presentation", {
+                        "skill_id": skill_name,
+                        "script_count": len(successful_scripts),
+                    })],
+                )
             if any(item.get("ok") is False for item in execution_outputs if isinstance(item, dict)):
                 self._emit_tool_status(
                     context,
@@ -2532,6 +2896,22 @@ class MainPlannerOrchestrator:
                 state.status_flags["ms_agent_loaded_reference_context"] = (
                     _ms_agent_loaded_reference_context(loaded_context)
                 )
+                injected_plan_conflicts = _apply_reference_plan_consistency_guard(loaded_context)
+                if injected_plan_conflicts:
+                    reference_plan_conflicts.extend(injected_plan_conflicts)
+                    combined_response = ""
+                    loaded_context.combined_response = ""
+                    planner_llm.last_combined_response = ""
+                    state.status_flags["ms_agent_runtime"] = _summarize_ms_agent_runtime_trace(
+                        loaded_context.raw_trace
+                    )
+                    plan = state.status_flags["ms_agent_runtime"].get("plan")
+                    self._record_events(context, [make_event("reference_plan_consistency_guard", {
+                        "skill_id": skill_name,
+                        "status": "corrected_after_preflight",
+                        "conflicts": injected_plan_conflicts,
+                        "final_generation_required": True,
+                    })])
                 payload = {
                     "skill_id": skill_name,
                     **preflight,
@@ -2630,6 +3010,7 @@ class MainPlannerOrchestrator:
                             "steps_count": len(plan.get("steps") or []),
                             "required_references": list(plan.get("required_references") or []),
                             "selected_references": list(plan.get("selected_references") or []),
+                            "reference_consistency": plan.get("reference_consistency", {}),
                             "request_purpose": llm_metrics.get("request_purpose"),
                             "prompt_chars": llm_metrics.get("prompt_chars"),
                             "input_tokens": llm_metrics.get("input_tokens"),
@@ -3092,6 +3473,8 @@ class MainPlannerOrchestrator:
         state: SessionState,
         user_message: str,
         continuation: dict[str, Any],
+        *,
+        recovery_reason: str = "",
     ) -> list[ChatMessage]:
         metadata = bundle.runtime_metadata
         memory = state.conversation_memory if isinstance(state.conversation_memory, dict) else {}
@@ -3147,6 +3530,15 @@ class MainPlannerOrchestrator:
             }
         if decision_table is not None:
             payload["ask_decision_table"] = decision_table
+        if recovery_reason:
+            payload["recovery_request"] = {
+                "reason": recovery_reason,
+                "instruction": (
+                    "上一次问卷决策无效。请重新检查当前事实、Skill 正文和条件规则；"
+                    "如果当前目标已经没有必要字段，必须返回 action=complete 或 answer_directly，"
+                    "不要为了填满表单而选择条件不适用的问题。"
+                ),
+            }
         return [
             ChatMessage(
                 role="system",
@@ -3195,6 +3587,8 @@ class MainPlannerOrchestrator:
                     "question_ids 只能来自 question_catalog，数量不得超过 max_fields_per_form。"
                     "question_ids 不得包含 resolved_answers 中的项目。未答字段并不等于必须收集："
                     "只收集完成当前 goal 的必要字段；action=complete/answer_directly 时可保留未答字段。"
+                    "若收到 recovery_request，必须重新评估条件渲染和 Skill 正文，不得复用上一次空计划；"
+                    "只有当前 Case 仍有必要字段时才返回 action=ask。"
                     "不要输出 Markdown 代码块。"
                 ),
             ),
@@ -3268,6 +3662,24 @@ class MainPlannerOrchestrator:
             raw_reply = ""
 
         reply, block, decision = resolve_questionnaire_continuation(bundle, state, raw_reply)
+        if decision.get("no_progress_reason") == "empty_question_ids_while_collecting":
+            recovery = self._recover_empty_questionnaire_plan(
+                bundle=bundle,
+                state=state,
+                context=context,
+                user_message=user_message,
+                continuation=questionnaire_continuation_context(bundle, state),
+                client=client,
+                logger=logger,
+            )
+            if recovery is not None:
+                recovered_reply, recovered_block, recovered_decision = recovery
+                if recovered_decision.get("no_progress_reason") != "empty_question_ids_while_collecting":
+                    reply, block, decision = recovered_reply, recovered_block, recovered_decision
+                    # The first draft may already have been streamed by the
+                    # legacy questionnaire extractor. Emit the recovered,
+                    # validated result as the authoritative continuation too.
+                    streamed = False
         reply = _sanitize_assistant_reply(
             reply,
             response_policy=bundle.runtime_metadata.response_policy,
@@ -3328,6 +3740,63 @@ class MainPlannerOrchestrator:
         if callable(questionnaire_callback):
             questionnaire_callback(copy.deepcopy(decision.get("questionnaire_plan") or questionnaire_plan_summary(bundle, state)))
         return reply, ""
+
+    def _recover_empty_questionnaire_plan(
+        self,
+        *,
+        bundle,
+        state: SessionState,
+        context,
+        user_message: str,
+        continuation: dict[str, Any] | None,
+        client,
+        logger: RuntimeLogger,
+    ) -> tuple[str, dict[str, Any] | None, dict[str, Any]] | None:
+        """Re-plan an empty collecting result using the current Skill rules.
+
+        A deterministic fallback is still retained in ``resolve_questionnaire_continuation``
+        for unavailable models. When a model is available, however, selecting
+        the first unanswered field can violate a Skill's natural-language
+        conditional rules. The bounded retry lets the same generic planner
+        decide between asking, completing, or answering directly without any
+        Skill-specific branch.
+        """
+        if client is None or continuation is None:
+            return None
+        self._record_events(context, [make_event("questionnaire_recovery_started", {
+            "reason": "empty_question_ids_while_collecting",
+            "skill_id": str(bundle.contract.skill_id or bundle.root_name),
+        })])
+        messages = self._questionnaire_continuation_messages(
+            bundle,
+            state,
+            user_message,
+            continuation,
+            recovery_reason="empty_question_ids_while_collecting",
+        )
+        started = time.perf_counter()
+        try:
+            kwargs: dict[str, Any] = {"logger": logger}
+            if "request_purpose" in inspect.signature(client.complete).parameters:
+                kwargs["request_purpose"] = "questionnaire_recovery"
+            raw = str(client.complete(messages, **kwargs) or "")
+            recovered = resolve_questionnaire_continuation(bundle, state, raw)
+            self._record_events(context, [make_event("questionnaire_recovery_completed", {
+                "skill_id": str(bundle.contract.skill_id or bundle.root_name),
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "fallback_used": bool(recovered[2].get("fallback_used")),
+                "no_progress_reason": recovered[2].get("no_progress_reason", ""),
+                "question_ids": recovered[2].get("selected_question_ids", []),
+            })])
+            return recovered
+        except Exception as exc:  # noqa: BLE001 - deterministic fallback remains available
+            self._record_events(context, [make_event("questionnaire_recovery_degraded", {
+                "skill_id": str(bundle.contract.skill_id or bundle.root_name),
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "reason": f"{type(exc).__name__}: {exc}"[:300],
+                "fallback": "server_authorized_question_catalog",
+            })])
+            return None
 
     def _questionnaire_decision_script_reply(
         self,
@@ -3677,7 +4146,58 @@ class MainPlannerOrchestrator:
             reply = _sanitize_script_execution_reply(reply)
             if not reply:
                 reply = "已完成本轮处理，但没有生成可安全展示的正文。请换一种说法再试一次。"
+        progress_contract = _reply_progress_contract(
+            state,
+            skill_id=bundle.contract.skill_id or bundle.root_name,
+        )
+        progress_accepted = True
+        # A form response with a visible block is already a concrete next
+        # action.  Script-backed/no-form replies, however, must not publish a
+        # stale pre-execution acknowledgement.
+        if progress_contract["requires_buffer"] and block is None:
+            original_reply = reply
+            reply, progress_result = self._guard_final_reply_progress(
+                reply=reply,
+                state=state,
+                skill_name=bundle.contract.skill_id or bundle.root_name,
+                messages=messages,
+                client=client,
+                logger=logger,
+                context=context,
+                normalize=lambda value: _sanitize_script_execution_reply(
+                    _sanitize_assistant_reply(value, response_policy=bundle.runtime_metadata.response_policy)
+                ) if _state_has_script_execution(state) else _sanitize_assistant_reply(
+                    value, response_policy=bundle.runtime_metadata.response_policy
+                ),
+            )
+            if reply != original_reply:
+                # The corrective response is plain user-visible text rather
+                # than the questionnaire envelope. Do not retain a stale
+                # form from the rejected response.
+                block = None
+            progress_accepted = not bool(progress_result.get("degraded"))
+        else:
+            evaluation = _evaluate_reply_progress(reply, progress_contract)
+            self._record_events(context, [make_event("reply_progress_evaluated", {
+                "skill_id": bundle.contract.skill_id or bundle.root_name,
+                "accepted": evaluation["accepted"],
+                "reasons": evaluation["reasons"],
+                "similarity": evaluation["similarity"],
+                "expected_action": evaluation["expected_action"],
+                "script_success": evaluation["script_success"],
+                "buffered": False,
+            })])
         stage_questionnaire_form(state, bundle, block)
+        # A valid visible questionnaire is concrete progress even if the
+        # accompanying prose is short. A degraded/rejected prose response is
+        # not allowed to advance deferred workflow state.
+        self._finalize_skill_progress(
+            context,
+            state,
+            bundle.contract.skill_id or bundle.root_name,
+            accepted=bool(block) or progress_accepted,
+            reason="form_emitted" if block else "final_reply_validated",
+        )
         deferred_promotions = flush_deferred_questionnaire_promotions(state, context, bundle) if block is None else []
         self._emit_reply_delta(context, reply)
         duration_ms = int((time.perf_counter() - started) * 1000)
@@ -3712,6 +4232,124 @@ class MainPlannerOrchestrator:
             ],
         )
         return reply, ""
+
+    def _guard_final_reply_progress(
+        self,
+        *,
+        reply: str,
+        state: SessionState,
+        skill_name: str,
+        messages: list[ChatMessage],
+        client: OpenAICompatibleChatClient,
+        logger: RuntimeLogger,
+        context,
+        normalize: Callable[[str], str],
+    ) -> tuple[str, dict[str, Any]]:
+        """Reject stale final prose once and regenerate it with turn evidence."""
+        contract = _reply_progress_contract(state, skill_id=skill_name)
+        evaluation = _evaluate_reply_progress(reply, contract)
+        self._record_events(context, [make_event("reply_progress_evaluated", {
+            "skill_id": skill_name,
+            "accepted": evaluation["accepted"],
+            "reasons": evaluation["reasons"],
+            "similarity": evaluation["similarity"],
+            "expected_action": evaluation["expected_action"],
+            "script_success": evaluation["script_success"],
+            "buffered": bool(contract["requires_buffer"]),
+        })])
+        if evaluation["accepted"]:
+            self._mark_script_result_presented(context, state, skill_name, contract)
+            state.status_flags["_reply_progress_outcome"] = {"accepted": True, "skill_id": skill_name}
+            return reply, {"contract": contract, "evaluation": evaluation, "retry_count": 0}
+
+        self._record_events(context, [make_event("reply_progress_blocked", {
+            "skill_id": skill_name,
+            "reasons": evaluation["reasons"],
+            "similarity": evaluation["similarity"],
+            "expected_action": evaluation["expected_action"],
+        })])
+        started = time.perf_counter()
+        retried_reply = ""
+        retry_evaluation: dict[str, Any] | None = None
+        try:
+            retry_result = client.complete_with_tools(
+                [
+                    *messages,
+                    ChatMessage(role="assistant", content=reply),
+                    ChatMessage(
+                        role="user",
+                        content=_reply_progress_retry_instruction(contract, evaluation["reasons"]),
+                    ),
+                ],
+                (),
+                preferred_mode="none",
+                logger=logger,
+            )
+            retried_reply = normalize(str(retry_result.final_text or ""))
+            retry_evaluation = _evaluate_reply_progress(retried_reply, contract)
+        except Exception as exc:  # noqa: BLE001 - preserve a safe user result
+            logger.log("reply_progress.retry_failed", skill_id=skill_name, error=f"{type(exc).__name__}: {exc}")
+        retry_payload = {
+            "skill_id": skill_name,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "accepted": bool(retry_evaluation and retry_evaluation["accepted"]),
+            "reasons": retry_evaluation["reasons"] if retry_evaluation else ["retry_unavailable"],
+        }
+        self._record_events(context, [make_event("reply_progress_retry", retry_payload)])
+        if retry_evaluation and retry_evaluation["accepted"]:
+            self._mark_script_result_presented(context, state, skill_name, contract)
+            state.status_flags["_reply_progress_outcome"] = {"accepted": True, "skill_id": skill_name}
+            return retried_reply, {"contract": contract, "evaluation": retry_evaluation, "retry_count": 1}
+
+        # Never re-emit a stale completion after it has been identified. This
+        # wording intentionally avoids exposing raw tool/script output.
+        degraded = (
+            "本轮所需信息已经处理完成，但结果说明没有成功生成。请再发送一次你的问题，我会基于当前信息继续回答。"
+            if contract["script_success"]
+            else "我还需要确认一个与当前问题直接相关的信息，才能继续给出有用结论。请补充你最希望我先分析的具体方面。"
+        )
+        self._record_events(context, [make_event("reply_progress_degraded", {
+            "skill_id": skill_name,
+            "reason": "retry_did_not_make_progress",
+            "expected_action": contract["expected_action"],
+            "script_success": contract["script_success"],
+        })])
+        state.status_flags["_reply_progress_outcome"] = {"accepted": False, "skill_id": skill_name, "reason": "degraded"}
+        return degraded, {"contract": contract, "evaluation": evaluation, "retry_count": 1, "degraded": True}
+
+    def _finalize_skill_progress(self, context, state: SessionState, skill_id: str, *, accepted: bool, reason: str) -> None:
+        """Persist v2 progress only after a usable answer or form was emitted."""
+        outcome = _finalize_skill_progress_transaction(state, skill_id, commit=accepted)
+        if outcome is None:
+            return
+        self._record_events(context, [make_event(
+            "skill_progress_committed" if accepted else "skill_progress_rolled_back",
+            {
+                "skill_id": skill_id,
+                "reason": reason,
+                "context_contract_version": int(state.status_flags.get("context_contract_version") or 2),
+                "progress_keys": sorted(outcome) if isinstance(outcome, dict) else [],
+            },
+        )])
+
+    def _mark_script_result_presented(
+        self,
+        context,
+        state: SessionState,
+        skill_name: str,
+        contract: dict[str, Any],
+    ) -> None:
+        if not contract.get("script_success"):
+            return
+        state.status_flags["script_result_presentation"] = {
+            "status": "presented",
+            "skill_id": skill_name,
+            "script_count": contract.get("script_count", 0),
+        }
+        self._record_events(context, [make_event("script_result_presented", {
+            "skill_id": skill_name,
+            "script_count": contract.get("script_count", 0),
+        })])
 
     def _stream_runtime_final_text(
         self,
@@ -3749,6 +4387,25 @@ class MainPlannerOrchestrator:
                 reply = _sanitize_script_execution_reply(reply)
                 if not reply:
                     reply = "已完成本轮处理，但没有生成可安全展示的正文。请换一种说法再试一次。"
+            reply, _progress = self._guard_final_reply_progress(
+                reply=reply,
+                state=state,
+                skill_name=skill_name,
+                messages=messages,
+                client=client,
+                logger=logger,
+                context=context,
+                normalize=lambda value: _sanitize_script_execution_reply(
+                    _sanitize_assistant_reply(value, response_policy=bundle.runtime_metadata.response_policy)
+                ) if redact_script_execution else _sanitize_assistant_reply(
+                    value, response_policy=bundle.runtime_metadata.response_policy
+                ),
+            )
+            self._finalize_skill_progress(
+                context, state, skill_name,
+                accepted=not bool(_progress.get("degraded")),
+                reason="final_reply_validated",
+            )
             duration_ms = int((time.perf_counter() - started) * 1000)
             self._emit_reply_delta(context, reply)
             logger.log("turn.resolve.final_text.timing", phase=phase, duration_ms=duration_ms)
@@ -3806,6 +4463,8 @@ class MainPlannerOrchestrator:
         questionnaire_extractor = (
             _QuestionnaireContinuationExtractor(set()) if questionnaire_enabled(bundle) else None
         )
+        progress_contract = _reply_progress_contract(state, skill_id=skill_name)
+        buffer_progress_reply = bool(progress_contract["requires_buffer"])
         streamed_visible_reply = False
         active_generation = str((context.session_meta or {}).get("active_stream_generation") or "")
         stream_kwargs = {"logger": logger}
@@ -3841,6 +4500,7 @@ class MainPlannerOrchestrator:
                 callback = (context.session_meta or {}).get("reply_delta_callback")
                 if (
                     not redact_script_execution
+                    and not buffer_progress_reply
                     and (context.session_meta or {}).get("stream_final_reply")
                     and callable(callback)
                 ):
@@ -3901,6 +4561,27 @@ class MainPlannerOrchestrator:
             if not reply.strip():
                 reply = "刚才这轮回复生成不完整，我没有拿到可展示的正文。你可以再发一次，我会基于当前信息继续回答。"
             self._emit_reply_delta(context, reply)
+        elif buffer_progress_reply:
+            reply, _progress = self._guard_final_reply_progress(
+                reply=reply,
+                state=state,
+                skill_name=skill_name,
+                messages=messages,
+                client=client,
+                logger=logger,
+                context=context,
+                normalize=lambda value: _sanitize_script_execution_reply(
+                    _sanitize_assistant_reply(value, response_policy=bundle.runtime_metadata.response_policy)
+                ) if redact_script_execution else _sanitize_assistant_reply(
+                    value, response_policy=bundle.runtime_metadata.response_policy
+                ),
+            )
+            self._finalize_skill_progress(
+                context, state, skill_name,
+                accepted=not bool(_progress.get("degraded")),
+                reason="streamed_final_reply_validated",
+            )
+            self._emit_reply_delta(context, reply)
         elif redact_script_execution:
             # Script-backed replies are buffered so internal narration or raw
             # process output can never escape through an earlier stream chunk.
@@ -3909,6 +4590,25 @@ class MainPlannerOrchestrator:
             # A non-conforming/plain response cannot be safely exposed until
             # the full turn is available. Emit the preserved final text once.
             self._emit_reply_delta(context, reply)
+        else:
+            # Non-risk streamed turns retain their first-token behaviour, but
+            # still leave an audit record for later comparison with guarded
+            # turns.
+            evaluation = _evaluate_reply_progress(reply, progress_contract)
+            self._record_events(context, [make_event("reply_progress_evaluated", {
+                "skill_id": skill_name,
+                "accepted": evaluation["accepted"],
+                "reasons": evaluation["reasons"],
+                "similarity": evaluation["similarity"],
+                "expected_action": evaluation["expected_action"],
+                "script_success": evaluation["script_success"],
+                "buffered": False,
+            })])
+            self._finalize_skill_progress(
+                context, state, skill_name,
+                accepted=not empty_stream_retry and bool(reply.strip()),
+                reason="streamed_reply" if reply.strip() else "empty_reply",
+            )
         logger.log(
             "turn.resolve.final_text.stream",
             final_text_preview=reply[:240],
@@ -4059,6 +4759,18 @@ class MainPlannerOrchestrator:
             memory_result.context,
             list(getattr(context, "messages", []) or []),
         )
+        v2_context = int((getattr(context, "session_meta", {}) or {}).get("context_contract_version") or 2) >= 2
+        if v2_context:
+            # Facts may still exist in a persisted checkpoint for recovery,
+            # but v2 never injects them as a second prompt ledger.
+            excluded_count = len(memory_context.get("facts") or {}) if isinstance(memory_context.get("facts"), dict) else 0
+            memory_context["facts"] = {}
+            self._record_events(context, [make_event("context_contract_applied", {
+                "context_contract_version": 2,
+                "active_skill_id": active_skill_id,
+                "memory_fact_source_excluded": bool(excluded_count),
+                "memory_fact_source_count": excluded_count,
+            })])
         # Candidates are intentionally not merged into effective Facts. They
         # are evidence for the model to confirm naturally when relevant.
         from hailiang_skills.core.profile_candidate_archive import candidate_archive
@@ -4179,6 +4891,23 @@ class MainPlannerOrchestrator:
             # sentence durable context; retain the turn shape and the fact
             # that the filtered form was emitted.
             memory_assistant_message = "已展示当前目标所需的下一批表单字段，等待用户补充。"
+        v2_context = int((getattr(context, "session_meta", {}) or {}).get("context_contract_version") or 2) >= 2
+        outcome = state.status_flags.get("_reply_progress_outcome", {})
+        rejected_reply = (
+            v2_context
+            and isinstance(outcome, dict)
+            and str(outcome.get("skill_id") or "") == active_skill_id
+            and outcome.get("accepted") is False
+        )
+        if rejected_reply:
+            # Do not turn a rejected/repeated answer into durable memory. The
+            # canonical fact ledger has already retained safe user facts.
+            self._record_events(context, [make_event("conversation_memory_filtered", {
+                "skill_id": active_skill_id,
+                "reason": "reply_progress_not_accepted",
+                "context_contract_version": 2,
+            })])
+            return
         memory = self.memory_store.append_turn(
             user_id=str(getattr(context, "user_id", "") or "anonymous"),
             session_id=self._profile_memory_scope_id(context, fallback=state.session_id),
@@ -4334,6 +5063,8 @@ class MainPlannerOrchestrator:
         runtime_state = self._load_runtime_state(context)
         runtime_state.messages = self._runtime_messages_from_context(context)
         sync_context_to_runtime_state(context, runtime_state)
+        context.session_meta["context_contract_version"] = 2
+        runtime_state.status_flags["context_contract_version"] = 2
         expert_direct = context.session_meta.pop("expert_direct_reply", None)
         if isinstance(expert_direct, dict) and str(expert_direct.get("reply") or "").strip():
             # AgentScope already produced the role-bounded final answer.  Do
