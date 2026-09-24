@@ -81,6 +81,8 @@ from hailiang_skills.runtime_bridge.conversation_memory import (  # noqa: E402
 from hailiang_skills.runtime_bridge.ms_agent_adapter import MSAgentRuntimeAdapter  # noqa: E402
 from hailiang_skills.runtime_bridge.question_progress import (  # noqa: E402
     detect_answered_question_repetition,
+    apply_textual_option_mappings,
+    pending_textual_option_questions,
     question_ledger_projection,
     record_assistant_questions,
     reconcile_user_answer,
@@ -2675,6 +2677,12 @@ class MainPlannerOrchestrator:
                 else {}
             ),
             "question_progress": question_ledger_projection(state, skill_name),
+            "textual_option_mapping": (
+                state.status_flags.get("textual_option_mapping_notice")
+                if isinstance(state.status_flags.get("textual_option_mapping_notice"), dict)
+                and state.status_flags["textual_option_mapping_notice"].get("skill_id") == skill_name
+                else {}
+            ),
             "same_user_message_streak": same_user_message_count,
             "repeated_user_turn_allowed": 1 < same_user_message_count <= 2,
         }
@@ -2914,7 +2922,7 @@ class MainPlannerOrchestrator:
             steps.extend(script_steps)
             successful_scripts = [
                 item for item in execution_outputs
-                if isinstance(item, dict) and item.get("ok") is True
+                if self._script_output_business_result(item).get("ok") is True
             ]
             if successful_scripts:
                 # The execution result is now authoritative evidence for this
@@ -2939,13 +2947,37 @@ class MainPlannerOrchestrator:
                         "script_count": len(successful_scripts),
                     })],
                 )
-            if any(item.get("ok") is False for item in execution_outputs if isinstance(item, dict)):
+            if any(
+                self._script_output_business_result(item).get("ok") is False
+                for item in execution_outputs if isinstance(item, dict)
+            ):
+                failure = self._script_business_failure(execution_outputs)
+                state.status_flags["script_business_failure"] = {
+                    "skill_id": skill_name,
+                    **(failure or {"error": "script_business_failure", "missing": []}),
+                }
+                state.status_flags.pop("script_result_presentation", None)
+                state.status_flags.pop("last_successful_script_result", None)
+                loaded_context.combined_response = ""
+                planner_llm.last_combined_response = ""
                 self._emit_tool_status(
                     context,
                     name="script",
                     label="规划计算未完成",
-                    detail="Skill 脚本执行失败，后续将使用安全兜底",
+                    detail="关键信息未满足，暂不生成结论",
                 )
+                self._record_events(context, [make_event("script_business_failure_blocked", {
+                    "skill_id": skill_name,
+                    **(failure or {"error": "script_business_failure", "missing": []}),
+                    "combined_response_blocked": True,
+                })])
+                # The early return is intentional, but candidate exports and
+                # diagnostics must still retain the complete raw execution
+                # evidence that led to the blocked conclusion.
+                state.status_flags["ms_agent_runtime"] = _summarize_ms_agent_runtime_trace(loaded_context.raw_trace)
+                reply = self._script_business_failure_reply(failure or {})
+                self._emit_reply_delta(context, reply)
+                return reply
 
         state.status_flags["ms_agent_last_lazy_load"] = current_lazy_load
         state.status_flags["ms_agent_last_lazy_load_skill_id"] = skill_name
@@ -3148,6 +3180,132 @@ class MainPlannerOrchestrator:
         self._record_ms_agent_reference_context_event(context, skill_name=skill_name, loaded_context=loaded_context)
         return None
 
+    def _reconcile_textual_option_answer(
+        self,
+        *,
+        state: SessionState,
+        skill_id: str,
+        user_message: str,
+        context,
+    ) -> dict[str, Any]:
+        """Use a bounded semantic read only while textual options are pending."""
+        state.status_flags.pop("textual_option_mapping_notice", None)
+        correction_requested = bool(re.search(r"(?:不是|不对|纠正|改成|其实|更像是)", str(user_message or "")))
+        questions = pending_textual_option_questions(
+            state,
+            skill_id,
+            include_answered=correction_requested,
+        )
+        if not questions:
+            return {"status": "not_applicable", "accepted": []}
+        client = self._runtime_client_for_context(context)
+        if client is None:
+            return {"status": "unavailable", "accepted": []}
+        catalog = [
+            {
+                "question_id": item["question_id"],
+                "question_key": item.get("question_key", ""),
+                "question": item.get("text", ""),
+                "options": item.get("options", []),
+            }
+            for item in questions
+        ]
+        messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    "你是受控的问卷答案理解器。仅根据当前待答题和用户本轮消息判断是否能唯一映射到已声明选项。"
+                    "用户也可能是在问新问题、拒答或给出多个同样合理的选项；这些情况必须返回 action=clarify 或 unrelated，"
+                    "不得猜测。严格只返回一个 JSON 对象："
+                    '{"action":"map|clarify|unrelated","mappings":[{"question_id":"...","option_value":"A","confidence":0.0,"source":"explicit|semantic"}],"reason":"..."}。'
+                    "只有高置信度且唯一映射时使用 map；不得生成用户可见正文。"
+                ),
+            ),
+            ChatMessage(role="user", content=json.dumps({
+                "pending_questions": catalog,
+                "user_message": user_message,
+            }, ensure_ascii=False)),
+        ]
+        try:
+            result = client.complete_with_tools(messages, (), preferred_mode="none")
+            payload = _extract_json_object(str(result.final_text or "")) or {}
+        except Exception as exc:  # semantic help must never block normal chat
+            self._record_events(context, [make_event("textual_option_mapping_degraded", {
+                "skill_id": skill_id,
+                "reason": f"{type(exc).__name__}: {exc}"[:400],
+            })])
+            return {"status": "degraded", "accepted": []}
+        action = str(payload.get("action") or "clarify").strip().lower()
+        mappings = payload.get("mappings") if isinstance(payload.get("mappings"), list) else []
+        if action != "map":
+            self._record_events(context, [make_event("textual_option_mapping", {
+                "skill_id": skill_id,
+                "status": action if action in {"clarify", "unrelated"} else "invalid",
+                "pending_question_ids": [item["question_id"] for item in questions],
+                "reason": str(payload.get("reason") or "")[:300],
+            })])
+            return {"status": action, "accepted": []}
+        reconciled = apply_textual_option_mappings(
+            state,
+            skill_id,
+            mappings,
+            allow_correction=correction_requested,
+        )
+        accepted = reconciled["accepted"]
+        if accepted:
+            labels = [
+                f"{item.get('question_key') or '该题'} 的 {item.get('option_value') or item.get('answer')} 选项"
+                for item in accepted
+            ]
+            state.status_flags["textual_option_mapping_notice"] = {
+                "skill_id": skill_id,
+                "items": labels,
+                "instruction": "本轮已将用户的自然语言描述对应为上述选项。对用户自然说明对应结果，并提示如理解不准确可直接纠正；不要说用户未按规定作答。",
+            }
+        self._record_events(context, [make_event("textual_option_mapping", {
+            "skill_id": skill_id,
+            "status": "accepted" if accepted else "rejected",
+            "accepted": [
+                {"question_id": item.get("question_id"), "question_key": item.get("question_key"), "answer": item.get("answer"), "source": item.get("mapping_source")}
+                for item in accepted
+            ],
+            "rejected": reconciled["rejected"],
+            "unresolved_question_ids": [item.get("question_id") for item in reconciled["unresolved"]],
+        })])
+        return {"status": "accepted" if accepted else "rejected", **reconciled}
+
+    @staticmethod
+    def _script_output_business_result(output: dict[str, Any]) -> dict[str, Any]:
+        """Read a script's JSON contract, not merely its process exit code."""
+        if isinstance(output.get("return_value"), dict):
+            return output["return_value"]
+        if isinstance(output.get("json_output"), dict):
+            return output["json_output"]
+        return output
+
+    @staticmethod
+    def _script_business_failure(execution_outputs: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for output in execution_outputs:
+            if not isinstance(output, dict):
+                continue
+            result = MainPlannerOrchestrator._script_output_business_result(output)
+            if result.get("ok") is not False:
+                continue
+            return {
+                "script": str(output.get("script") or output.get("path") or ""),
+                "error": str(result.get("error") or result.get("reason") or "script_business_failure"),
+                "missing": [str(item) for item in result.get("missing", []) if str(item).strip()][:8],
+                "hint": str(result.get("hint") or "")[:400],
+            }
+        return None
+
+    def _script_business_failure_reply(self, failure: dict[str, Any]) -> str:
+        missing = list(failure.get("missing") or [])
+        if missing:
+            labels = "、".join(item.replace("Q", "第 ") + " 题" for item in missing)
+            return f"我还缺少{labels}的作答，补充这些题后才能继续计算，避免按不完整信息给出结论。"
+        return "这一步所需的信息还不完整，我暂不生成结论。请补充当前问题中缺少的关键信息后，我再继续处理。"
+
     def _ms_agent_script_inputs(
         self,
         *,
@@ -3158,7 +3316,21 @@ class MainPlannerOrchestrator:
         latest_user_message: str,
         plan: dict[str, Any] | None,
     ) -> dict[str, dict[str, Any]]:
+        # Textual SKILL.md questionnaires are reconciled before planning. Give
+        # every script the canonical answer map as an authoritative input,
+        # while retaining the Skill's legacy planner fields for compatibility.
+        textual_answers = state.skill_facts.get(skill_name, {}).get("_textual_option_answers", {})
         parameters = dict(plan.get("parameters") or {}) if isinstance(plan, dict) else {}
+        if isinstance(textual_answers, dict) and textual_answers:
+            canonical_answers = {
+                str(key).upper(): str(value).upper()
+                for key, value in textual_answers.items()
+                if re.fullmatch(r"Q\d+", str(key).upper()) and str(value).upper() in {"A", "B", "C", "D"}
+            }
+            if canonical_answers:
+                parameters["answers"] = canonical_answers
+                parameters["canonical_option_answers"] = canonical_answers
+                parameters.update(canonical_answers)
         query = str(latest_user_message or parameters.get("query") or "")
         user_id = str(getattr(context, "user_id", "") or state.session_id or "")
         turn_index = len([item for item in state.messages if item.role == "user"])
@@ -5307,6 +5479,12 @@ class MainPlannerOrchestrator:
                 else GENERAL_CHAT_ID
             )
             runtime_state.active_skill_id = active_skill_id
+        textual_option_reconciliation = self._reconcile_textual_option_answer(
+            state=runtime_state,
+            skill_id=active_skill_id,
+            user_message=user_message,
+            context=context,
+        )
         question_reconciliation = reconcile_user_answer(
             runtime_state,
             active_skill_id,
@@ -5332,6 +5510,12 @@ class MainPlannerOrchestrator:
                     )
                 ],
             )
+        if textual_option_reconciliation.get("accepted"):
+            self._record_events(context, [make_event("textual_option_answer_reconciled", {
+                "skill_id": active_skill_id,
+                "answer_count": len(textual_option_reconciliation["accepted"]),
+                "unresolved_question_count": len(textual_option_reconciliation.get("unresolved") or []),
+            })])
         self._prepare_turn_long_context(context, runtime_state, active_skill_id)
         is_explicit_skill_entry = (
             canonical_skill_id(runtime_state.status_flags.get("entry_skill_id"))

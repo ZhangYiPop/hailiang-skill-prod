@@ -15,6 +15,12 @@ from starlette.responses import JSONResponse
 
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.core.fact_prompt_projection import build_effective_fact_ledger
+from hailiang_skills.runtime_bridge.question_progress import (
+    apply_textual_option_mappings,
+    extract_questions,
+    pending_textual_option_questions,
+    record_assistant_questions,
+)
 from hailiang_skills.core.skill_ids import EXPERT_DIRECT_EXECUTION_ID
 from hailiang_skills.core.session_opening_config import (
     build_historical_session_opening_message,
@@ -2049,6 +2055,52 @@ class RuntimeBridgeTest(unittest.TestCase):
         )
         self.assertEqual(ledger["memory_only_facts"], {})
         self.assertEqual(diagnostics["context_contract_version"], 2)
+
+    def test_textual_choice_answers_are_validated_and_exposed_to_scripts(self) -> None:
+        state = SessionState(session_id="textual-choice", active_skill_id="interest_primary")
+        prompt = """1. 活动偏好：孩子最喜欢什么？
+
+A 跑出去玩
+
+B 画画
+
+C 看科普视频
+
+D 唱歌
+
+2. 社交偏好：在新环境通常？
+
+A 主动加入
+
+B 先观察
+
+C 独自探索
+
+D 粘着熟人"""
+        questions = extract_questions(prompt)
+        self.assertEqual([item.get("question_key") for item in questions if item.get("question_key")], ["Q1", "Q2"])
+        record_assistant_questions(state, "interest_primary", prompt)
+        pending = pending_textual_option_questions(state, "interest_primary")
+        result = apply_textual_option_mappings(state, "interest_primary", [
+            {"question_id": pending[0]["question_id"], "option_value": "C", "confidence": 0.96, "source": "semantic"},
+            {"question_id": pending[1]["question_id"], "option_value": "B", "confidence": 0.96, "source": "semantic"},
+        ])
+        self.assertEqual([item["answer"] for item in result["accepted"]], ["C", "B"])
+        self.assertEqual(state.skill_facts["interest_primary"]["_textual_option_answers"], {"Q1": "C", "Q2": "B"})
+        self.assertFalse(apply_textual_option_mappings(state, "interest_primary", [
+            {"question_id": pending[0]["question_id"], "option_value": "Z", "confidence": 1.0},
+        ])["accepted"])
+
+    def test_script_business_failure_uses_json_contract_not_process_exit(self) -> None:
+        failure = MainPlannerOrchestrator._script_business_failure([
+            {
+                "script": "score.py",
+                "exit_code": "success",
+                "return_value": {"ok": False, "error": "answers_incomplete", "missing": ["Q1", "Q2"]},
+            }
+        ])
+        self.assertEqual(failure["error"], "answers_incomplete")
+        self.assertEqual(failure["missing"], ["Q1", "Q2"])
 
     def test_v2_skill_progress_commits_only_after_reply_acceptance(self) -> None:
         state = SessionState(

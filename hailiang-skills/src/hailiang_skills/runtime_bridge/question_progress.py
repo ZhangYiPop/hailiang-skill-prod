@@ -22,6 +22,8 @@ _OPTION_SPLIT = re.compile(r"\s*(?:还是|或者|或)\s*")
 _QUESTION_HINT = re.compile(r"(?:还是|或者|是否|有无|吗$|哪一个|哪个|哪些|什么|多久|多长|几次|怎么|如何)")
 _YES = {"是", "是的", "对", "对的", "有", "有的", "会", "会的", "都", "全部", "所有", "一样"}
 _NO = {"不是", "不是的", "没有", "没有的", "不会", "不对"}
+_NUMBERED_QUESTION = re.compile(r"(?ms)^\s*(\d{1,2})[.、．]\s*(.+?)(?=^\s*\d{1,2}[.、．]\s|\Z)")
+_LETTER_OPTION = re.compile(r"(?m)^\s*([A-Da-d])[.、:：)）\s]+(.+?)\s*$")
 
 
 def _normalize_text(value: Any) -> str:
@@ -94,7 +96,115 @@ def extract_questions(text: str) -> list[dict[str, Any]]:
             "text": candidate,
             "options": _options(candidate),
         })
-    return result[:8]
+    # Numbered A/B/C/D questions are common in SKILL.md dialogue flows but
+    # do not contain a question mark. Preserve their actual displayed option
+    # order so a later semantic resolver can safely map free-form answers.
+    for match in _NUMBERED_QUESTION.finditer(str(text or "")):
+        ordinal = int(match.group(1))
+        block = match.group(2).strip()
+        options = [
+            {"value": letter.upper(), "label": _display_text(label, 160), "index": index}
+            for index, (letter, label) in enumerate(_LETTER_OPTION.findall(block), start=1)
+        ]
+        if len(options) < 2:
+            continue
+        prompt = _LETTER_OPTION.sub("", block).strip()
+        question_id = f"choice_{ordinal}_" + hashlib.sha256(_normalize_text(prompt).encode("utf-8")).hexdigest()[:12]
+        if any(item["question_id"] == question_id for item in result):
+            continue
+        result.append({
+            "question_id": question_id,
+            "question_key": f"Q{ordinal}",
+            "text": _display_text(prompt, 320),
+            "options": options,
+            "source": "numbered_choice",
+        })
+    return result[:16]
+
+
+def pending_textual_option_questions(state: Any, skill_id: str, *, include_answered: bool = False) -> list[dict[str, Any]]:
+    """Return unresolved A/B/C/D questions, scoped to the active Skill."""
+    ledger = _ledger_for_skill(state, skill_id)
+    answered_ids = {
+        str(item.get("question_id")) for item in ledger.get("answered") or []
+        if isinstance(item, dict)
+    }
+    return [
+        dict(item)
+        for item in ledger.get("asked") or []
+        if isinstance(item, dict)
+        and (include_answered or str(item.get("question_id") or "") not in answered_ids)
+        and isinstance(item.get("options"), list)
+        and len(item["options"]) >= 2
+        and all(isinstance(option, dict) and option.get("value") for option in item["options"])
+    ][:8]
+
+
+def apply_textual_option_mappings(
+    state: Any,
+    skill_id: str,
+    mappings: list[dict[str, Any]],
+    *,
+    allow_correction: bool = False,
+) -> dict[str, Any]:
+    """Validate model mappings and promote only declared option values.
+
+    The model may understand free prose, but it cannot invent an answer key or
+    option. This is the authoritative boundary before facts/scripts consume a
+    textual questionnaire answer.
+    """
+    ledger = _ledger_for_skill(state, skill_id)
+    questions = {
+        str(item.get("question_id")): item
+        for item in pending_textual_option_questions(state, skill_id, include_answered=allow_correction)
+    }
+    answered = ledger.get("answered") if isinstance(ledger.get("answered"), list) else []
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, str]] = []
+    skill_facts = state.skill_facts.setdefault(skill_id, {})
+    canonical = skill_facts.setdefault("_textual_option_answers", {})
+    if not isinstance(canonical, dict):
+        canonical = {}
+        skill_facts["_textual_option_answers"] = canonical
+    for mapping in mappings[:8]:
+        if not isinstance(mapping, dict):
+            continue
+        question_id = str(mapping.get("question_id") or "").strip()
+        option_value = str(mapping.get("option_value") or "").strip().upper()
+        question = questions.get(question_id)
+        if question is None:
+            rejected.append({"question_id": question_id, "reason": "question_not_pending"})
+            continue
+        declared = {
+            str(option.get("value") or "").upper(): option
+            for option in question.get("options") or [] if isinstance(option, dict)
+        }
+        if option_value not in declared:
+            rejected.append({"question_id": question_id, "reason": "option_not_declared"})
+            continue
+        answer_key = str(question.get("question_key") or question_id)
+        record = {
+            "question_id": question_id,
+            "question_key": answer_key,
+            "question": _display_text(question.get("text")),
+            "answer": option_value,
+            "option_label": _display_text(declared[option_value].get("label")),
+            "mapping_source": str(mapping.get("source") or "semantic"),
+            "confidence": min(1.0, max(0.0, float(mapping.get("confidence") or 0.0))),
+        }
+        answered[:] = [item for item in answered if not (
+            isinstance(item, dict) and str(item.get("question_id") or "") == question_id
+        )]
+        answered.append(record)
+        canonical[answer_key] = option_value
+        accepted.append(record)
+    ledger["answered"] = answered[-24:]
+    answered_ids = {str(item.get("question_id")) for item in answered if isinstance(item, dict)}
+    ledger["unresolved"] = [
+        item for item in ledger.get("asked") or []
+        if isinstance(item, dict) and str(item.get("question_id") or "") not in answered_ids
+    ][-16:]
+    return {"accepted": accepted, "rejected": rejected, "unresolved": list(ledger["unresolved"])}
 
 
 def _answer_matches_question(message: str, question: dict[str, Any]) -> bool:
@@ -103,7 +213,10 @@ def _answer_matches_question(message: str, question: dict[str, Any]) -> bool:
     normalized_message = _normalize_text(message)
     if not normalized_message:
         return False
-    options = [str(item) for item in question.get("options") or []]
+    options = [
+        str(item.get("label") or item.get("value") or "") if isinstance(item, dict) else str(item)
+        for item in question.get("options") or []
+    ]
     normalized_options = [_normalize_text(item) for item in options]
     if any(option and option in normalized_message for option in normalized_options):
         return True
@@ -267,8 +380,14 @@ def detect_answered_question_repetition(reply: str, state: Any, skill_id: str) -
             if original_norm and (original_norm in draft_norm or draft_norm in original_norm):
                 repeated.append(qid)
                 continue
-            original_options = {_normalize_text(item) for item in original.get("options") or []}
-            draft_options = {_normalize_text(item) for item in draft_question.get("options") or []}
+            original_options = {
+                _normalize_text(item.get("label") or item.get("value") or "") if isinstance(item, dict) else _normalize_text(item)
+                for item in original.get("options") or []
+            }
+            draft_options = {
+                _normalize_text(item.get("label") or item.get("value") or "") if isinstance(item, dict) else _normalize_text(item)
+                for item in draft_question.get("options") or []
+            }
             if len(original_options.intersection(draft_options)) >= 2:
                 repeated.append(qid)
     return list(dict.fromkeys(repeated))
