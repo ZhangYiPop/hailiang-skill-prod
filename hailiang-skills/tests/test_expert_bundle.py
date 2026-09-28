@@ -191,6 +191,17 @@ def test_team_handoff_replaces_agentscope_iteration_error_with_user_message():
     assert any(event["event_type"] == "expert_agent_reply_discarded" for event in context.event_trace)
 
 
+def test_team_handoff_lead_in_does_not_repeat_card_reason():
+    reply = AgentScopeExpertRuntime._team_handoff_reply({
+        "reason": "用户正在询问选科决策，涉及学科优势和组合匹配。",
+        "candidates": [{"mention_name": "升学指导专家"}],
+    })
+
+    assert "为了给你更专业、细致的解答" in reply
+    assert "用户正在询问选科决策" not in reply
+    assert "升学指导专家" in reply
+
+
 def test_expert_direct_display_uses_active_expert_instead_of_legacy_fallback():
     context = SessionContext()
     context.skill_states["agent_runtime"] = {

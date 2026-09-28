@@ -16,6 +16,7 @@ from typing import Any
 
 _PRIVATE_SKILL_FACT_PREFIX = "_"
 _PROGRESS_FACT_KEYS = {"confirmed_facts"}
+CONTEXT_CONTRACT_V2 = 2
 _RECAPPING_PREFIX = re.compile(
     r"(?:^\s*(?:好的[，,。！!\s]*)?(?:已(?:经)?了解|我(?:已)?了解|收到|确认(?:了)?|"
     r"根据您(?:刚才)?(?:说|提供|描述)|您(?:刚才)?提到|孩子(?:目前)?是)|"
@@ -29,6 +30,7 @@ def build_effective_fact_ledger(
     current_skill_facts: dict[str, Any] | None,
     memory_facts: dict[str, Any] | None,
     skill_progress: dict[str, Any] | None = None,
+    context_contract_version: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return a canonical prompt ledger plus compact, safe diagnostics."""
     global_values = _public_mapping(global_facts)
@@ -39,9 +41,18 @@ def build_effective_fact_ledger(
         _public_mapping(current_skill_facts),
         _flatten_leaf_values(global_values),
     )
+    # Callers that have not persisted a marker yet are legacy records being
+    # read after the v2 rollout, not a request to retain duplicate prompts.
+    is_v2 = int(context_contract_version or CONTEXT_CONTRACT_V2) >= CONTEXT_CONTRACT_V2
     progress = _public_mapping(skill_progress, excluded_keys=_PROGRESS_FACT_KEYS)
     canonical = _flatten_leaf_values({"global": global_values, "current_skill": current_values})
-    memory_only, pruned = _prune_duplicates(_public_mapping(memory_facts), canonical)
+    # v2 deliberately never treats rolling-memory facts as an independent
+    # prompt source. Canonical facts live in the runtime ledger; memory is for
+    # summaries, unfinished work and recent language only.  This prevents a
+    # fact extracted from an old turn from reappearing beside its confirmed
+    # value on every later prompt.
+    memory_source = {} if is_v2 else _public_mapping(memory_facts)
+    memory_only, pruned = _prune_duplicates(memory_source, canonical)
     ledger = {
         "effective_facts": global_values,
         "current_skill_facts": current_values,
@@ -59,6 +70,8 @@ def build_effective_fact_ledger(
         "deduplicated_current_skill_fact_count": pruned_current,
         "deduplicated_memory_fact_count": pruned,
         "dedupe_sources": dedupe_sources,
+        "context_contract_version": CONTEXT_CONTRACT_V2 if is_v2 else 1,
+        "memory_facts_excluded": is_v2 and bool(_public_mapping(memory_facts)),
     }
     return ledger, diagnostics
 

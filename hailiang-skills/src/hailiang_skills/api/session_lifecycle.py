@@ -172,6 +172,10 @@ def open_or_resume_session(
         context.session_meta["_session_created"] = False
         context.session_meta["_profile_switched"] = False
         context.session_meta["_profile_branch_created"] = False
+        # Existing sessions are read through the v2 compatibility projection.
+        # No historical facts/progress are rewritten here; the marker only
+        # changes future prompt assembly and future progress commits.
+        context.session_meta["context_contract_version"] = 2
         previous_profile_id = str(context.profile_id or "")
         previous_profile_name = context.profile_name
         profile_name = None
@@ -212,8 +216,12 @@ def open_or_resume_session(
             _initialize_general_chat_state(context)
             get_conversation_state(context)
         context.session_meta["_profile_branch_created"] = branch_created
-        if branch_created or previous_profile_id != target_profile_id or _normalize_legacy_default_skill(context):
-            repository.save(context)
+        runtime_state = context.skill_states.get(RUNTIME_STATE_KEY)
+        if isinstance(runtime_state, dict):
+            runtime_state.setdefault("status_flags", {})["context_contract_version"] = 2
+        # Persist the v2 marker lazily on the first request after rollout.
+        _normalize_legacy_default_skill(context)
+        repository.save(context)
         return context, False
 
     profile_name = None
@@ -237,6 +245,11 @@ def open_or_resume_session(
     get_conversation_state(context)
     context.session_meta["_session_created"] = True
     context.session_meta["_profile_branch_created"] = True
+    # All sessions use the same compatible v2 prompt/progress contract.
+    context.session_meta["context_contract_version"] = 2
+    runtime_state = context.skill_states.get(RUNTIME_STATE_KEY)
+    if isinstance(runtime_state, dict):
+        runtime_state.setdefault("status_flags", {})["context_contract_version"] = 2
     repository.create(context)
     return context, True
 
