@@ -613,6 +613,142 @@ def test_expert_explicit_grade_is_saved_to_session_scope_without_overwriting_pro
     assert any(event["event_type"] == "expert_explicit_fact_captured" for event in context.event_trace)
 
 
+def test_explicit_child_interest_is_saved_to_session_scope():
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
+    context = SessionContext(profile_id="profile_001")
+
+    runtime._capture_explicit_user_facts(context, "孩子喜欢画画，可以培养什么特长？", source_turn_id="turn_001")
+
+    assert context.session_facts.get_value("interests") == ["画画"]
+    assert context.profile_facts.get_value("interests") is None
+    captured = [event["payload"] for event in context.event_trace if event["event_type"] == "expert_explicit_fact_captured"]
+    assert any(item["fact_key"] == "interests" and item["scope"] == "session" for item in captured)
+
+
+def test_recent_user_turns_restore_identity_and_interest_for_expert_handoff():
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
+    context = SessionContext()
+    context.add_message("user", "孩子喜欢画画可以培养什么特长？")
+    context.add_message("assistant", "孩子现在几年级？")
+    context.add_message("user", "孩子现在初二")
+
+    runtime._capture_recent_user_context(context, "孩子现在初二", source_turn_id="turn_002")
+
+    assert context.session_meta["conversation_identity"]["role"] == "parent"
+    assert context.session_facts.get_value("interests") == ["画画"]
+    assert context.session_facts.get_value("grade") == "初二"
+
+
+def test_conversation_identity_is_branch_scoped_captured_and_correctable():
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
+    context = SessionContext(profile_id="profile_001")
+
+    runtime._capture_conversation_identity(context, "孩子喜欢画画", source_turn_id="turn_000")
+    assert context.session_meta["conversation_identity"]["role"] == "parent"
+    assert context.session_meta["conversation_identity"]["source"] == "child_reference_inference"
+
+    runtime._capture_conversation_identity(context, "我是家长，孩子现在初二", source_turn_id="turn_001")
+    assert context.session_meta["conversation_identity"]["role"] == "parent"
+    assert context.profile_facts.get_value("conversation_identity") is None
+
+    runtime._capture_conversation_identity(context, "我是学生本人", source_turn_id="turn_002")
+    assert context.session_meta["conversation_identity"]["role"] == "student"
+    runtime._capture_conversation_identity(context, "孩子喜欢画画", source_turn_id="turn_003")
+    assert context.session_meta["conversation_identity"]["role"] == "student"
+
+    context.sync_active_branch()
+    assert context.profile_branches["profile_001"]["session_meta"]["conversation_identity"]["role"] == "student"
+
+
+def test_confirmed_handoff_includes_identity_facts_and_recent_context():
+    skill_registry = _runtime_registry()
+    experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
+    teams = load_local_expert_team_registry(ROOT / "runtime_agent_teams", experts)
+    runtime = AgentScopeExpertRuntime(experts, skill_registry, team_registry=teams)
+    context = SessionContext()
+    context.add_message("user", "孩子喜欢画画")
+    context.add_message("assistant", "孩子现在几年级？")
+    context.add_message("user", "我是家长，孩子现在初二")
+    runtime._capture_conversation_identity(context, "我是家长，孩子现在初二", source_turn_id="turn_001")
+    context.update_fact("grade", "初二", source_skill="test", scope="session")
+    context.update_fact("interest_domains", ["画画"], source_skill="test", scope="session")
+    team = teams.require("student_growth_expert_team")
+    target = team.members[0]
+    context.session_meta.update({
+        "expert_team_id": team.team_id,
+        "team_member_switch": {
+            "source": "team_handoff",
+            "target_expert_id": target.expert_id,
+            "source_user_message": "孩子喜欢画画可以培养什么特长？",
+            "coordinator_reason": "适合专项指导",
+        },
+    })
+
+    content = runtime._apply_structured_team_switch(context, team, "@专家")
+
+    assert "当前发言者身份：家长" in content
+    assert '"grade": "初二"' in content
+    assert "孩子喜欢画画" in content
+    switched = next(event for event in context.event_trace if event["event_type"] == "team_member_switched")
+    assert switched["payload"]["handoff_identity_present"] is True
+    assert set(switched["payload"]["handoff_fact_keys"]) >= {"grade", "interest_domains"}
+    grade_source = next(item for item in switched["payload"]["handoff_fact_sources"] if item["fact_key"] == "grade")
+    assert grade_source["scope"] == "session"
+    assert grade_source["source_skill"] == "test"
+
+
+def test_cross_profile_handoff_does_not_import_source_identity_or_excerpt():
+    skill_registry = _runtime_registry()
+    experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
+    teams = load_local_expert_team_registry(ROOT / "runtime_agent_teams", experts)
+    runtime = AgentScopeExpertRuntime(experts, skill_registry, team_registry=teams)
+    context = SessionContext(profile_id="target_profile")
+    context.add_message("user", "目标孩子自己的问题")
+    team = teams.require("student_growth_expert_team")
+    context.session_meta["team_member_switch"] = {
+        "source": "team_handoff",
+        "target_expert_id": team.members[0].expert_id,
+        "source_user_message": "另一个孩子的问题",
+        "conversation_excerpt": "来源孩子的隐私信息",
+        "cross_profile": True,
+    }
+
+    content = runtime._apply_structured_team_switch(context, team, "@专家")
+
+    assert "当前发言者身份：未确认" in content
+    assert "来源孩子的隐私信息" not in content
+    assert "目标孩子自己的问题" not in content
+
+
+def test_handoff_without_prebuilt_excerpt_uses_active_branch_history():
+    skill_registry = _runtime_registry()
+    experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
+    teams = load_local_expert_team_registry(ROOT / "runtime_agent_teams", experts)
+    runtime = AgentScopeExpertRuntime(experts, skill_registry, team_registry=teams)
+    context = SessionContext()
+    context.add_message("user", "孩子喜欢画画")
+    context.add_message("assistant", "孩子现在几年级？")
+    context.add_message("user", "我是家长，孩子现在初二")
+    runtime._capture_conversation_identity(context, "我是家长，孩子现在初二", source_turn_id="turn_001")
+    context.update_fact("grade", "初二", source_skill="test", scope="session")
+    team = teams.require("student_growth_expert_team")
+    context.session_meta.update({
+        "expert_team_id": team.team_id,
+        "team_member_switch": {
+            "source": "team_handoff",
+            "target_expert_id": team.members[0].expert_id,
+            "source_user_message": "孩子喜欢画画可以培养什么特长？",
+        },
+    })
+
+    content = runtime._apply_structured_team_switch(context, team, "@专家")
+
+    assert "当前发言者身份：家长" in content
+    assert "孩子喜欢画画" in content
+    assert "孩子现在几年级？" in content
+    assert '"grade": "初二"' in content
+
+
 def test_high_relevance_direct_reply_without_agent_quote_is_scope_checked_not_forced():
     class RouteClient:
         def __init__(self):

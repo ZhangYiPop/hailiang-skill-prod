@@ -1922,6 +1922,28 @@ def test_revision_test_supports_experts_and_teams_and_formal_chat_requires_publi
         )
 
 
+def test_revision_test_context_restores_conversation_identity_without_formal_profile():
+    preview_service = _preview_service()
+    context = SessionContext(
+        session_id="revision_test_dbg_identity",
+        user_id="workbench-candidate-dbg_identity",
+        profile_id=None,
+    )
+    context.session_meta["conversation_identity"] = {
+        "role": "parent",
+        "source": "explicit_self_identification",
+        "source_turn_id": "turn_001",
+    }
+    saved = preview_service._revision_test_context_payload(context)
+    row = SimpleNamespace(debug_session_id="dbg_identity", runtime_context=saved)
+
+    restored = preview_service._restore_revision_test_context(row, {"root": {}, "entries": []})
+
+    assert restored.profile_id is None
+    assert restored.session_meta["conversation_identity"]["role"] == "parent"
+    assert restored.session_meta["conversation_identity"]["source_turn_id"] == "turn_001"
+
+
 def test_debug_and_evaluation_history_filter_by_exact_object_and_revision(service: WorkbenchService):
     actor_id = _actor(service)
     obj = service.create_object(object_type="skill", object_key="history_target", name="历史目标", actor_id=actor_id)

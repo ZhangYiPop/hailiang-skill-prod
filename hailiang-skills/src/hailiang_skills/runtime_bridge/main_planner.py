@@ -5861,6 +5861,12 @@ class MainPlannerOrchestrator:
         expert_id = str(expert_state.get("expert_id") or DEFAULT_EXPERT_ID)
         authorized = self._expert_authorizes_skill(context, expert_id, expert_selected)
         if authorized and self.runtime_registry.is_enabled(expert_selected):
+            # Expert-selected Skills take this fast path rather than the
+            # ordinary route-transition helper. Preserve the expert's
+            # branch-local identity/facts context in the Skill prompt too.
+            handoff_context = (context.session_meta or {}).pop("handoff_context", {}) or {}
+            if isinstance(handoff_context, dict):
+                state.status_flags["last_handoff_context"] = handoff_context
             previous_skill_id = state.active_skill_id or GENERAL_CHAT_ID
             state.active_skill_id = expert_selected
             state.status_flags["expert_selected_skill_id"] = expert_selected
