@@ -384,9 +384,25 @@ def _sanitize_assistant_reply(reply: str, *, response_policy: ResponsePolicyConf
         re.sub(r"^(?:(?:user|assistant)\>\s*)+", "", line, flags=re.IGNORECASE)
         for line in cleaned.splitlines()
     ).strip()
+    # A planner may accidentally place a Python-like internal tool invocation
+    # in its assistant_message.  It is execution metadata, not user-facing
+    # prose, and must never be rendered as if it were an answer.  Keep this
+    # deliberately narrow: only remove a whole line that consists of a
+    # namespaced/function call whose argument is a JSON object, so ordinary
+    # prose containing parentheses remains untouched.
+    cleaned = "\n".join(
+        line for line in cleaned.splitlines()
+        if not re.fullmatch(
+            r"\s*(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*\s*\(\s*\{.*\}\s*\)\s*",
+            line,
+        )
+    ).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     if response_policy and response_policy.sanitize_output:
         cleaned = _sanitize_citation_mentions(cleaned, response_policy=response_policy)
-    return cleaned or reply.strip()
+    # Do not restore the raw response when it was only an internal tool call;
+    # callers can then use their normal empty-response fallback.
+    return cleaned
 
 
 def _sanitize_citation_mentions(reply: str, *, response_policy: ResponsePolicyConfig) -> str:

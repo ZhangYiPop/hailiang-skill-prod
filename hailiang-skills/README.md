@@ -183,6 +183,10 @@ routing:
 
 为了更接近成熟 Agent/RAG 产品的行为，runtime 现在把“用户可见回复”和“调试审计来源”拆成了两层：skill 可通过 `response_policy` 覆盖引用可见性，但大多数场景不需要在每个 `SKILL.md` 里重复书写，因为框架默认就会对模型上下文匿名化检索来源，不把具体 `reference` 文件名和编号直接暴露给最终用户；但 `prompt_assembly.retrieved_sources`、会话事件和调试面板仍保留真实来源路径，方便前后端排查命中情况。只有少数确实要放开引用展示的 skill，才需要显式声明 `response_policy` 覆盖默认值。
 
+运行时对用户可见回复还增加了一层更严格的兜底清洗：如果规划器误把内部工具调用串写进 `assistant_message`，例如整行 `skill_tools.xxx({...})` 这类仅供执行的 JSON 调用元数据，输出层会在渲染前剔除，避免把内部执行细节直接暴露给用户；对应调试链路和事件审计仍保留原始上下文，便于排查模型为什么产生了这类内容。
+
+`career_plan_entity` / `main_planner` 的语义答题补充解析也进一步放宽了触发条件：当用户在问卷开启或答案对齐后继续补充自然语言信息时，运行时不再因为问卷开关或 `question_reconciliation.changed` 而直接跳过后续语义解析，避免已补充的新线索没有进入后续回答和 facts 处理链路。
+
 其中多元路径已按学段拆分：
 
 - 初中用户命中多元路径语义时，优先进入 `junior_multi_path_planning`

@@ -259,6 +259,21 @@ class PromptProgressiveLoadingTest(unittest.TestCase):
         self.assertNotIn("06_用户画像&规划策略&可探索场景.md", sanitized)
         self.assertIn("平台内", sanitized)
 
+    def test_response_sanitizer_removes_internal_json_tool_invocation(self) -> None:
+        reply = (
+            "我先整理一下结果。\n\n"
+            'skill_tools.full_packages({"tags":[],"grade":"初二"})\n\n'
+            "美术方向可以作为优先考虑。"
+        )
+
+        sanitized = _sanitize_assistant_reply(reply)
+
+        self.assertEqual(sanitized, "我先整理一下结果。\n\n美术方向可以作为优先考虑。")
+        self.assertEqual(
+            _sanitize_assistant_reply('skill_tools.full_packages({"grade":"初二"})'),
+            "",
+        )
+
     def test_script_process_io_is_not_exposed_to_runtime_prompt(self) -> None:
         sanitized = _sanitize_ms_agent_runtime_for_prompt(
             {
