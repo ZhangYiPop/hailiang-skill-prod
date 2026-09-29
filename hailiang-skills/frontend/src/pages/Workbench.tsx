@@ -230,6 +230,31 @@ type CandidateTurnDebug = {
   elapsed_ms?: number;
 };
 
+/** The Debug Zone only needs this small view of an SSE state while streaming. */
+type CandidateConversationSummary = Pick<SseV2State, "session_id" | "run_id" | "status"> & {
+  expert: SseV2State["expert"];
+  session: SseV2State["session"];
+};
+
+type CandidatePendingUiUpdate = {
+  debugSessionId: string;
+  optimisticAssistantId: string;
+  state?: SseV2State;
+  delta: string;
+};
+
+const CANDIDATE_STREAM_RENDER_INTERVAL_MS = 80;
+
+function candidateConversationSummary(state: SseV2State): CandidateConversationSummary {
+  return {
+    session_id: state.session_id,
+    run_id: state.run_id,
+    status: state.status,
+    expert: state.expert,
+    session: state.session,
+  };
+}
+
 function debugValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   const rendered = typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -480,6 +505,8 @@ export default function Workbench() {
   const debugTargetInitialized = useRef(false);
   const candidateStreamAbortRef = useRef<AbortController | null>(null);
   const candidateLastSeqRef = useRef<Record<string, number>>({});
+  const candidateUiTimerRef = useRef<number | null>(null);
+  const candidatePendingUiRef = useRef<CandidatePendingUiUpdate | null>(null);
   const [debugZoneWidth, setDebugZoneWidth] = useState(() => {
     try {
       const saved = Number(window.localStorage.getItem("hailiang.workbench.debug-zone-width"));
@@ -494,7 +521,7 @@ export default function Workbench() {
   const [candidateInputPrefillKey, setCandidateInputPrefillKey] = useState(0);
   const [candidateInputResetKey, setCandidateInputResetKey] = useState(0);
   const [candidateTargetExpertId, setCandidateTargetExpertId] = useState("");
-  const [candidateConversationState, setCandidateConversationState] = useState<SseV2State | null>(null);
+  const [candidateConversationState, setCandidateConversationState] = useState<CandidateConversationSummary | null>(null);
   const candidateTeamName = candidateConversationState?.expert.team.name || "未选择";
   const candidateExpertName = candidateConversationState?.expert.active.name || "未选择";
   const candidateActiveSkill = candidateConversationState?.session.active_skill;
@@ -511,6 +538,72 @@ export default function Workbench() {
     null,
   );
   const [pendingAssets, setPendingAssets] = useState<EditableSkillFile[]>([]);
+
+  const flushCandidateStreamUi = useCallback(() => {
+    if (candidateUiTimerRef.current !== null) {
+      window.clearTimeout(candidateUiTimerRef.current);
+      candidateUiTimerRef.current = null;
+    }
+    const pending = candidatePendingUiRef.current;
+    candidatePendingUiRef.current = null;
+    if (!pending) return;
+    if (pending.state) {
+      setCandidateConversationState(candidateConversationSummary(pending.state));
+    }
+    setRevisionTestSession((current) => {
+      if (!current || current.debug_session_id !== pending.debugSessionId) return current;
+      return {
+        ...current,
+        transcript: current.transcript.map((item) => {
+          if (item.message_id !== pending.optimisticAssistantId) return item;
+          // SSE state contains the full authoritative reply. Delta-only
+          // servers remain supported without forcing a render per token.
+          const streamed = pending.state?.assistant.content;
+          const content = typeof streamed === "string" && streamed.length >= item.content.length
+            ? streamed
+            : pending.delta
+              ? `${item.content}${pending.delta}`
+              : item.content;
+          return {
+            ...item,
+            // Keep the browser-local id until the terminal `message` event.
+            // Replacing it mid-stream would make later deltas miss the
+            // optimistic transcript item altogether.
+            message_id: item.message_id,
+            content,
+            presentation: pending.state ? presentationFromSseState(pending.state) : item.presentation,
+            team_handoff:
+              pending.state && "candidates" in pending.state.team_handoff && Array.isArray(pending.state.team_handoff.candidates)
+                ? pending.state.team_handoff as TeamHandoff
+                : item.team_handoff,
+          };
+        }),
+      };
+    });
+  }, []);
+
+  const queueCandidateStreamUi = useCallback((update: Omit<CandidatePendingUiUpdate, "delta"> & { delta?: string }) => {
+    const previous = candidatePendingUiRef.current;
+    const sameAssistant = previous
+      && previous.debugSessionId === update.debugSessionId
+      && previous.optimisticAssistantId === update.optimisticAssistantId;
+    candidatePendingUiRef.current = {
+      debugSessionId: update.debugSessionId,
+      optimisticAssistantId: update.optimisticAssistantId,
+      state: update.state ?? (sameAssistant ? previous.state : undefined),
+      delta: `${sameAssistant ? previous.delta : ""}${update.delta ?? ""}`,
+    };
+    if (candidateUiTimerRef.current === null) {
+      candidateUiTimerRef.current = window.setTimeout(
+        flushCandidateStreamUi,
+        CANDIDATE_STREAM_RENDER_INTERVAL_MS,
+      );
+    }
+  }, [flushCandidateStreamUi]);
+
+  useEffect(() => () => {
+    if (candidateUiTimerRef.current !== null) window.clearTimeout(candidateUiTimerRef.current);
+  }, []);
 
   useEffect(() => {
     try {
@@ -790,6 +883,11 @@ export default function Workbench() {
     setCandidateTargetExpertId("");
     setCandidateConversationState(null);
     candidateLastSeqRef.current = {};
+    candidatePendingUiRef.current = null;
+    if (candidateUiTimerRef.current !== null) {
+      window.clearTimeout(candidateUiTimerRef.current);
+      candidateUiTimerRef.current = null;
+    }
     setEvaluationRun(null);
     setDebugEvidenceId("");
     setDebugComplete(false);
@@ -1405,6 +1503,11 @@ export default function Workbench() {
       const optimisticAssistantId = makeCandidateStreamId();
       streamAbortController = new AbortController();
       candidateStreamAbortRef.current = streamAbortController;
+      if (candidateUiTimerRef.current !== null) {
+        window.clearTimeout(candidateUiTimerRef.current);
+        candidateUiTimerRef.current = null;
+      }
+      candidatePendingUiRef.current = null;
       let streamError = "";
       setRevisionTestSession({
         ...session,
@@ -1430,38 +1533,27 @@ export default function Workbench() {
             const lastSeq = candidateLastSeqRef.current[state.run_id] ?? -1;
             if (state.seq <= lastSeq) return;
             candidateLastSeqRef.current[state.run_id] = state.seq;
-            setCandidateConversationState(state);
-            setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
-              ...current,
-              transcript: current.transcript.map((item) => item.message_id === optimisticAssistantId
-                ? {
-                    ...item,
-                    message_id: state.message_id ?? item.message_id,
-                    content: state.assistant.content,
-                    presentation: presentationFromSseState(state),
-                    team_handoff:
-                      "candidates" in state.team_handoff && Array.isArray(state.team_handoff.candidates)
-                        ? state.team_handoff as TeamHandoff
-                        : item.team_handoff,
-                  }
-                : item),
-            } : current);
+            queueCandidateStreamUi({
+              debugSessionId: session.debug_session_id,
+              optimisticAssistantId,
+              state,
+            });
             return;
           }
           if (event === "reply_delta") {
             const delta = String(payload.delta ?? "");
             if (!delta) return;
-            setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
-              ...current,
-              transcript: current.transcript.map((item) => item.message_id === optimisticAssistantId
-                ? { ...item, content: `${item.content}${delta}` }
-                : item),
-            } : current);
+            queueCandidateStreamUi({
+              debugSessionId: session.debug_session_id,
+              optimisticAssistantId,
+              delta,
+            });
             return;
           }
           if (event === "message") {
             const record = payload.assistant_message as RevisionTestSession["transcript"][number] | undefined;
             if (!record) return;
+            flushCandidateStreamUi();
             setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
               ...current,
               transcript: current.transcript.map((item) => item.message_id === optimisticAssistantId ? record : item),
@@ -1470,12 +1562,22 @@ export default function Workbench() {
           }
           if (event === "done") {
             const result = payload as unknown as { debug_session?: RevisionTestSession };
+            flushCandidateStreamUi();
             if (result.debug_session) setRevisionTestSession(result.debug_session);
             return;
           }
           if (event === "error") {
             const errorMessage = String(payload.message ?? "候选修订测试失败");
             streamError = errorMessage;
+            flushCandidateStreamUi();
+            const persistedDebugSession = payload.debug_session as Pick<RevisionTestSession, "debug_session_id" | "trace" | "status"> | undefined;
+            if (persistedDebugSession?.debug_session_id === session.debug_session_id) {
+              setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
+                ...current,
+                trace: persistedDebugSession.trace,
+                status: persistedDebugSession.status,
+              } : current);
+            }
             setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
               ...current,
               transcript: current.transcript.map((item) => item.message_id === optimisticAssistantId
@@ -1524,7 +1626,12 @@ export default function Workbench() {
         actor.actor_id,
       );
       if (stopped.state?.protocol === "hailiang.sse.v2") {
-        setCandidateConversationState(stopped.state as unknown as SseV2State);
+        setCandidateConversationState(candidateConversationSummary(stopped.state as unknown as SseV2State));
+      }
+      candidatePendingUiRef.current = null;
+      if (candidateUiTimerRef.current !== null) {
+        window.clearTimeout(candidateUiTimerRef.current);
+        candidateUiTimerRef.current = null;
       }
       // The server has recorded the cancellation marker. Release the editor
       // immediately instead of waiting for a slow upstream model connection
