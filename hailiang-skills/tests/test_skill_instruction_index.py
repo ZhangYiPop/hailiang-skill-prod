@@ -37,3 +37,19 @@ def test_index_only_marks_evidence_sensitive_output_for_relevant_turns() -> None
         next_action="",
         user_message="请给推荐",
     )
+
+
+def test_index_retains_explicit_methodology_rules_by_section() -> None:
+    index = build_skill_instruction_index(
+        """
+        ## 尝试盘点阶段
+        必须完成尝试盘点后，才能给出方向推荐。
+        ## 输出限制
+        不得在脚本取数前输出赛事和优势结论。
+        """,
+        available_reference_paths=set(),
+    )
+
+    assert index.has_methodology_gates
+    assert any("尝试盘点阶段" in rule for rule in index.methodology_rules)
+    assert any("脚本取数" in rule for rule in index.methodology_rules)

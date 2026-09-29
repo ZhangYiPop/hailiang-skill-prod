@@ -14,6 +14,7 @@ _REFERENCE = re.compile(
 )
 _DIRECTIVE = re.compile(r"(?:\bMUST\b|必须|禁止|仅(?:在|允许)|只(?:在|能)|不得|严禁|强制)", re.IGNORECASE)
 _SENSITIVE = re.compile(r"(?:结论|推荐|清单|详情|方案|结果|校准|分析|规则|报告|列表|优势|赛事|政策|条件)")
+_METHODOLOGY = re.compile(r"(?:流程|阶段|前置|采集|提问|补问|标签|门禁|顺序|结论|推荐|输出|脚本|取数)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,10 +30,16 @@ class SkillInstructionIndex:
 
     references: tuple[ReferenceInstruction, ...]
     prohibitions: tuple[str, ...]
+    methodology_rules: tuple[str, ...] = ()
 
     @property
     def has_explicit_evidence_rules(self) -> bool:
         return bool(self.references or self.prohibitions)
+
+    @property
+    def has_methodology_gates(self) -> bool:
+        """Whether the author explicitly defined a process that can be gated."""
+        return bool(self.methodology_rules)
 
     def is_sensitive_turn(self, *, draft: str, stage: str, next_action: str, user_message: str) -> bool:
         if not self.has_explicit_evidence_rules:
@@ -54,6 +61,7 @@ def build_skill_instruction_index(markdown: str, *, available_reference_paths: s
     section = "SKILL.md"
     references: list[ReferenceInstruction] = []
     prohibitions: list[str] = []
+    methodology_rules: list[str] = []
     seen: set[tuple[str, str, str]] = set()
     for raw_line in str(markdown or "").splitlines():
         line = raw_line.strip()
@@ -64,7 +72,10 @@ def build_skill_instruction_index(markdown: str, *, available_reference_paths: s
         if not line:
             continue
         if _DIRECTIVE.search(line):
-            prohibitions.append(f"[{section}] {line}"[:1200])
+            directive = f"[{section}] {line}"[:1200]
+            prohibitions.append(directive)
+            if _METHODOLOGY.search(section) or _METHODOLOGY.search(line):
+                methodology_rules.append(directive)
         for match in _REFERENCE.finditer(line):
             raw_path = match.group(1).replace("\\", "/")
             path = raw_path if raw_path.startswith("references/") else f"references/{PurePosixPath(raw_path).name}"
@@ -78,4 +89,8 @@ def build_skill_instruction_index(markdown: str, *, available_reference_paths: s
             if key not in seen:
                 seen.add(key)
                 references.append(ReferenceInstruction(path, section, directive))
-    return SkillInstructionIndex(tuple(references), tuple(dict.fromkeys(prohibitions)))
+    return SkillInstructionIndex(
+        tuple(references),
+        tuple(dict.fromkeys(prohibitions)),
+        tuple(dict.fromkeys(methodology_rules))[:48],
+    )

@@ -187,6 +187,10 @@ routing:
 
 `career_plan_entity` / `main_planner` 的语义答题补充解析也进一步放宽了触发条件：当用户在问卷开启或答案对齐后继续补充自然语言信息时，运行时不再因为问卷开关或 `question_reconciliation.changed` 而直接跳过后续语义解析，避免已补充的新线索没有进入后续回答和 facts 处理链路。
 
+对于在 `SKILL.md` 中明确写出“前置采集 / 阶段门禁 / 提问顺序 / 脚本取数后才能输出结论”等方法论约束的 Skill，运行时现在会额外建立 `methodology_rules` 索引，并在规划结果看起来即将直接给推荐、结论、赛事、优势或方案时触发一次方法论门禁校验。门禁只依据作者写在 `SKILL.md` 中的规则做 `allow / replan_current_stage / clarify_current_unit` 判定，不会自行发明业务字段、固定问卷或阶段定义。
+
+同一类方法论 Skill 的追问也不再沿用旧的通用问题 ledger 去拆平台字段，而是按 assistant 原始提问注册一个完整的 `question_unit`。用户回复后，运行时会判断这个业务提问单元是已经回答完整、只回答了一部分、明确不适用，还是和当前单元无关；如果当前 Skill 被切走，未完成的 `question_unit` 也会立即失效，避免把上一个 Skill 的追问残留到新的方法论链路里。
+
 其中多元路径已按学段拆分：
 
 - 初中用户命中多元路径语义时，优先进入 `junior_multi_path_planning`

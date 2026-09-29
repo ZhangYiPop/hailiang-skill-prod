@@ -267,6 +267,105 @@ def question_ledger_projection(state: Any, skill_id: str) -> dict[str, Any]:
     }
 
 
+def _question_units_for_skill(state: Any, skill_id: str) -> dict[str, Any]:
+    all_units = state.status_flags.setdefault("runtime_skill_question_units", {})
+    if not isinstance(all_units, dict):
+        all_units = {}
+        state.status_flags["runtime_skill_question_units"] = all_units
+    unit = all_units.setdefault(skill_id, {})
+    if not isinstance(unit, dict):
+        unit = {}
+        all_units[skill_id] = unit
+    return unit
+
+
+def register_skill_question_unit(
+    state: Any,
+    skill_id: str,
+    assistant_message: str,
+    *,
+    source_message_id: str = "",
+    stage: str = "",
+) -> dict[str, Any] | None:
+    """Persist one authored business question unit without decomposing it.
+
+    The platform only detects that the response contains a question.  The full
+    authored text remains the unit of work; business sub-fields and the
+    meaning of a partial answer stay in SKILL.md and the semantic resolver.
+    """
+    text = _display_text(assistant_message, 1200)
+    if not text or not extract_questions(text):
+        return None
+    unit = _question_units_for_skill(state, str(skill_id or "").strip())
+    unit_id = "u_" + hashlib.sha256(_normalize_text(text).encode("utf-8")).hexdigest()[:16]
+    # Re-registering the same authored unit must not reopen a completed one.
+    if unit.get("unit_id") == unit_id and unit.get("status") in {"complete", "not_applicable"}:
+        return dict(unit)
+    unit.update({
+        "unit_id": unit_id,
+        "text": text,
+        "source_message_id": str(source_message_id or ""),
+        "stage": str(stage or ""),
+        "status": "pending",
+        "answer_evidence": "",
+        "followup": "",
+    })
+    return dict(unit)
+
+
+def skill_question_unit_projection(state: Any, skill_id: str) -> dict[str, Any] | None:
+    units = state.status_flags.get("runtime_skill_question_units", {})
+    value = units.get(skill_id) if isinstance(units, dict) else None
+    return dict(value) if isinstance(value, dict) and value.get("unit_id") else None
+
+
+def invalidate_skill_question_unit(state: Any, skill_id: str, *, reason: str) -> dict[str, Any] | None:
+    """Close a pending authored unit when the active Skill changes.
+
+    Units are intentionally local to their Skill.  We keep compact audit
+    metadata rather than allowing a stale prompt from one methodology to steer
+    another Skill after a route or profile transition.
+    """
+    unit = _question_units_for_skill(state, skill_id)
+    if not unit.get("unit_id") or unit.get("status") not in {"pending", "partial"}:
+        return None
+    unit["status"] = "invalidated"
+    unit["invalidated_reason"] = str(reason or "skill_changed")[:120]
+    return dict(unit)
+
+
+def bootstrap_skill_question_unit(state: Any, skill_id: str) -> dict[str, Any] | None:
+    """Return only a unit already attributed to this Skill.
+
+    Guessing from the latest assistant message would accidentally adopt a
+    question authored by a previous expert or Skill after a handoff. New
+    units are registered at persistence time with their active Skill instead.
+    """
+    existing = skill_question_unit_projection(state, skill_id)
+    if existing and existing.get("status") in {"pending", "partial"}:
+        return existing
+    return None
+
+
+def resolve_skill_question_unit(
+    state: Any,
+    skill_id: str,
+    *,
+    status: str,
+    evidence: str = "",
+    followup: str = "",
+    source_message_id: str = "",
+) -> dict[str, Any] | None:
+    unit = _question_units_for_skill(state, skill_id)
+    if not unit.get("unit_id"):
+        return None
+    unit["status"] = status
+    unit["answer_evidence"] = _display_text(evidence, 240)
+    unit["followup"] = _display_text(followup, 800)
+    unit["answer_source_message_id"] = str(source_message_id or "")
+    return dict(unit)
+
+
 def detect_answered_question_repetition(reply: str, state: Any, skill_id: str) -> list[str]:
     """Return answered question ids that are asked again in a draft reply."""
     projection = question_ledger_projection(state, skill_id)

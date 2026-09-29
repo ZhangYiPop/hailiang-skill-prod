@@ -82,12 +82,17 @@ from hailiang_skills.runtime_bridge.conversation_memory import (  # noqa: E402
 from hailiang_skills.runtime_bridge.ms_agent_adapter import MSAgentRuntimeAdapter  # noqa: E402
 from hailiang_skills.runtime_bridge.question_progress import (  # noqa: E402
     detect_answered_question_repetition,
+    bootstrap_skill_question_unit,
     extract_questions,
+    invalidate_skill_question_unit,
     question_ledger_projection,
     record_assistant_questions,
     record_volunteered_answers,
     reconcile_user_answer,
+    register_skill_question_unit,
+    resolve_skill_question_unit,
     same_user_message_streak,
+    skill_question_unit_projection,
 )
 from hailiang_skills.runtime_bridge.skill_instruction_index import (  # noqa: E402
     SkillInstructionIndex,
@@ -159,6 +164,12 @@ REFERENCE_PREFLIGHT_TIMEOUT_S = max(
 )
 REFERENCE_PREFLIGHT_MAX_TOKENS = max(
     128, int(os.getenv("HAILIANG_REFERENCE_PREFLIGHT_MAX_TOKENS", "512") or 512)
+)
+SKILL_METHODOLOGY_GATE_TIMEOUT_S = max(
+    1, int(os.getenv("HAILIANG_SKILL_METHODOLOGY_GATE_TIMEOUT_S", "8") or 8)
+)
+SKILL_METHODOLOGY_GATE_MAX_TOKENS = max(
+    128, int(os.getenv("HAILIANG_SKILL_METHODOLOGY_GATE_MAX_TOKENS", "512") or 512)
 )
 
 
@@ -567,6 +578,95 @@ def _reference_preflight(
         ][:12],
         "reason": str(payload.get("reason") or "")[:800],
     }
+
+
+def _skill_methodology_gate(
+    client: OpenAICompatibleChatClient,
+    *,
+    index: SkillInstructionIndex,
+    user_message: str,
+    plan: dict[str, Any],
+    draft: str,
+    question_unit: dict[str, Any] | None,
+    logger: RuntimeLogger,
+) -> dict[str, Any]:
+    """Validate a risky stage transition against author-owned SKILL.md rules."""
+    if not index.has_methodology_gates:
+        return {"decision": "allow", "basis": [], "reason": "no_explicit_methodology_gate", "followup": ""}
+    rules = list(index.methodology_rules)
+    prompt = (
+        "你是 Skill 方法论门禁校验器。只能返回 JSON："
+        '{"decision":"allow|replan_current_stage|clarify_current_unit","basis":[],"reason":"","followup":""}。\n'
+        "业务人员写在 SKILL.md 的方法论是权威。不要补造业务字段、阶段或固定问卷。"
+        "如果当前计划在明确前置采集、标签确认、提问单元或脚本取数要求尚未满足时，"
+        "就输出推荐/结论/赛事/优势/条件等结果性内容，必须选择 replan_current_stage。"
+        "如果当前用户仅部分回答了尚未关闭的原始提问单元，选择 clarify_current_unit，"
+        "followup 只能是依据规则生成的一个自然、最小的业务提问单元，不能机械拆字段、"
+        "不能重问用户已经回答或明确不适用的内容。"
+        "选择 replan_current_stage 时必须给出一个 followup：它必须是留在当前业务阶段的一个自然提问单元。"
+        "无法可靠判断时保守地选择 replan_current_stage；不要回答用户，不要暴露内部术语。\n"
+        f"current_user_message={user_message!r}\n"
+        f"planner_plan={json.dumps(plan, ensure_ascii=False)[:8000]}\n"
+        f"planner_draft={draft!r}\n"
+        f"current_question_unit={json.dumps(question_unit or {}, ensure_ascii=False)[:3000]}\n"
+        f"skill_methodology_rules={json.dumps(rules, ensure_ascii=False)}"
+    )
+    messages = [
+        ChatMessage(role="system", content="You are a strict JSON Skill methodology gate checker."),
+        ChatMessage(role="user", content=prompt),
+    ]
+
+    def complete() -> str:
+        kwargs: dict[str, Any] = {"logger": logger}
+        try:
+            if "request_purpose" in inspect.signature(client.complete).parameters:
+                kwargs["request_purpose"] = "skill_methodology_gate"
+            if "max_tokens" in inspect.signature(client.complete).parameters:
+                kwargs["max_tokens"] = SKILL_METHODOLOGY_GATE_MAX_TOKENS
+        except (TypeError, ValueError):
+            pass
+        return str(client.complete(messages, **kwargs) or "")
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hailiang-methodology-gate")
+    future = executor.submit(complete)
+    try:
+        raw = future.result(timeout=SKILL_METHODOLOGY_GATE_TIMEOUT_S)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(f"skill methodology gate timed out after {SKILL_METHODOLOGY_GATE_TIMEOUT_S}s") from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    payload = _try_parse_json(raw) or _extract_json_object(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("skill methodology gate returned invalid JSON")
+    decision = str(payload.get("decision") or "").strip()
+    if decision not in {"allow", "replan_current_stage", "clarify_current_unit"}:
+        raise ValueError("skill methodology gate returned invalid decision")
+    followup = str(payload.get("followup") or "").strip()
+    if decision == "clarify_current_unit" and (not followup or len(followup) > 1000):
+        raise ValueError("skill methodology gate returned invalid followup")
+    if decision == "replan_current_stage" and (not followup or len(followup) > 1000):
+        raise ValueError("skill methodology gate returned invalid replan followup")
+    return {
+        "decision": decision,
+        "basis": [str(item)[:240] for item in _normalize_planner_list(payload.get("basis"))][:8],
+        "reason": str(payload.get("reason") or "")[:800],
+        "followup": followup,
+    }
+
+
+def _methodology_gate_is_risky(plan: dict[str, Any], draft: str) -> bool:
+    """Avoid an extra model call unless a plan appears ready to publish a result.
+
+    This is deliberately a display-level risk signal, not a business router.
+    Whether the result is actually allowed remains entirely with the SKILL.md
+    rules supplied to ``_skill_methodology_gate``.
+    """
+    projection = " ".join(
+        str(plan.get(key) or "")
+        for key in ("plan_summary", "plan_summary_short", "next_action", "response_mode")
+    ) + " " + str(draft or "")
+    return bool(re.search(r"(?:结论|推荐|赛事|优势|方案|报告|结果|清单|条件|起步|匹配)", projection))
 
 
 def _inject_preflight_references(loaded_context, bundle, required_paths: list[str]) -> tuple[list[str], list[str]]:
@@ -3043,6 +3143,9 @@ class MainPlannerOrchestrator:
                 else {}
             ),
             "question_progress": question_ledger_projection(state, skill_name),
+            # This is the authored composite question as a whole. It is not a
+            # schema of platform-invented business fields.
+            "question_unit": skill_question_unit_projection(state, skill_name),
             "same_user_message_streak": same_user_message_count,
             "repeated_user_turn_allowed": 1 < same_user_message_count <= 2,
         }
@@ -3161,6 +3264,7 @@ class MainPlannerOrchestrator:
             context, planner_llm.last_clarification_proposal, collected_keys=collected_keys,
             saved_evidence=(previous_progress.get("input_evidence") or {}) if isinstance(previous_progress, dict) else {},
         )
+        methodology_question_unit = skill_question_unit_projection(state, skill_name)
         if clarification and raw_skill_progress:
             confirmed = raw_skill_progress.get("confirmed_facts")
             if isinstance(confirmed, dict):
@@ -3431,6 +3535,77 @@ class MainPlannerOrchestrator:
             planner_llm.last_combined_response = combined_response
             state.status_flags["ms_agent_clarification_reply"] = combined_response
         plan = state.status_flags["ms_agent_runtime"].get("plan")
+        # A planner can leave its user-visible draft empty and rely on the
+        # normal final-response assembly. The gate therefore inspects the plan
+        # too, before that later assembly can publish an unauthorised result or
+        # commit a phase transition.
+        if (
+            isinstance(plan, dict)
+            and reference_instruction_index.has_methodology_gates
+            and (
+                _methodology_gate_is_risky(plan, combined_response)
+                # An empty pending list is itself a stage-jump signal for a
+                # methodology Skill: it often means the planner is about to
+                # let the later final generator conclude without a visible
+                # combined draft. The gate decides whether that is legitimate.
+                or (raw_skill_progress is not None and not raw_skill_progress.get("pending_topics"))
+            )
+        ):
+            started_gate = time.perf_counter()
+            try:
+                methodology_gate = _skill_methodology_gate(
+                    client,
+                    index=reference_instruction_index,
+                    user_message=latest_user_message,
+                    plan=plan,
+                    draft=combined_response,
+                    question_unit=methodology_question_unit,
+                    logger=logger,
+                )
+                gate_payload = {
+                    "skill_id": skill_name,
+                    "decision": methodology_gate["decision"],
+                    "basis": methodology_gate["basis"],
+                    "reason": methodology_gate["reason"],
+                    "has_question_unit": bool(methodology_question_unit),
+                    "duration_ms": int((time.perf_counter() - started_gate) * 1000),
+                }
+                self._record_events(context, [make_event("skill_methodology_gate_evaluated", gate_payload)])
+                if methodology_gate["decision"] != "allow":
+                    # The draft and deferred patch came from a plan which the
+                    # author-owned methodology rejected. Neither may escape
+                    # through the normal final generation path.
+                    combined_response = ""
+                    loaded_context.combined_response = ""
+                    planner_llm.last_combined_response = ""
+                    followup = str(methodology_gate.get("followup") or "").strip()
+                    if not followup and methodology_question_unit:
+                        followup = str(methodology_question_unit.get("text") or "").strip()
+                    if followup:
+                        state.status_flags["ms_agent_clarification_reply"] = followup
+                    self._record_events(context, [make_event(
+                        "skill_methodology_gate_blocked",
+                        {
+                            **gate_payload,
+                            "fallback": "current_stage_followup" if followup else "final_prompt_current_stage",
+                        },
+                    )])
+                    self._record_events(context, [make_event(
+                        "skill_methodology_gate_replanned",
+                        {
+                            "skill_id": skill_name,
+                            "decision": methodology_gate["decision"],
+                            "has_followup": bool(followup),
+                        },
+                    )])
+            except Exception as exc:  # noqa: BLE001 - preserve existing fast path on gate degradation
+                self._record_events(context, [make_event("skill_methodology_gate_evaluated", {
+                    "skill_id": skill_name,
+                    "decision": "degraded",
+                    "reason": f"{type(exc).__name__}: {exc}"[:800],
+                    "duration_ms": int((time.perf_counter() - started_gate) * 1000),
+                    "fallback": "continue_existing_plan",
+                })])
         if (
             combined_response
             and has_possible_reference_preflight
@@ -4965,6 +5140,113 @@ class MainPlannerOrchestrator:
             return {"status": "ambiguous", "clarification": ambiguous["clarification_question"], "decisions": decisions}
         return {"status": "resolved", "decisions": decisions}
 
+    def _resolve_skill_question_unit(
+        self,
+        *,
+        state: SessionState,
+        skill_name: str,
+        user_message: str,
+        client: OpenAICompatibleChatClient,
+        logger: RuntimeLogger,
+        context,
+        index: SkillInstructionIndex,
+    ) -> dict[str, Any]:
+        """Interpret one authored question unit without inventing sub-fields."""
+        if not index.has_methodology_gates:
+            return {"status": "skipped", "reason": "no_explicit_skill_methodology"}
+        unit = bootstrap_skill_question_unit(state, skill_name)
+        if not unit:
+            # A deployment can begin while a conversation already has an
+            # active Skill but predates persisted question units. Recover only
+            # a message explicitly attributed to this same Skill; never scan
+            # arbitrary assistant history across an expert/Skill handoff.
+            for message in reversed(getattr(context, "messages", []) or []):
+                if message.get("role") != "assistant":
+                    continue
+                metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+                message_skill_id = canonical_skill_id(metadata.get("skill_id") or "")
+                if message_skill_id != canonical_skill_id(skill_name):
+                    continue
+                unit = register_skill_question_unit(
+                    state,
+                    skill_name,
+                    str(message.get("content") or ""),
+                    source_message_id=str(message.get("message_id") or ""),
+                    stage=str(state.stage or ""),
+                )
+                if unit:
+                    self._record_events(context, [make_event("skill_question_unit_registered", {
+                        "skill_id": skill_name,
+                        "unit_id": unit.get("unit_id"),
+                        "stage": unit.get("stage"),
+                        "source": "same_skill_legacy_recovery",
+                    })])
+                break
+        if not unit or unit.get("status") not in {"pending", "partial"}:
+            return {"status": "skipped", "reason": "no_pending_question_unit"}
+        source = next((
+            item for item in reversed(getattr(context, "messages", []) or [])
+            if item.get("role") == "user"
+            and not (isinstance(item.get("metadata"), dict) and item["metadata"].get("hidden"))
+        ), None)
+        source_id = str(source.get("message_id") or "") if isinstance(source, dict) else ""
+        if not source_id:
+            return {"status": "skipped", "reason": "current_user_message_unavailable"}
+        prompt = json.dumps({
+            "task": "判断用户本轮是否已经回应当前 Skill 自己定义的一个完整业务提问单元。只输出 JSON。",
+            "rules": [
+                "不得把原问题私自拆成平台字段；只能根据 SKILL.md 的方法论整体判断。",
+                "complete 表示该提问单元已经足以结束；not_applicable 表示用户明确使其中部分前提不适用。",
+                "partial 表示仍需同一业务单元内的最小补问；followup 必须遵循 SKILL.md，不得重问已有答案或不适用内容。",
+                "unrelated 表示用户没有回答该单元；不得把无关内容写入事实。",
+                "evidence 必须是本轮用户原话中的连续片段；followup 不能使用‘您之前说’等回放式前缀。",
+            ],
+            "user_message": str(user_message)[:1000],
+            "question_unit": unit,
+            "skill_methodology_rules": list(index.methodology_rules)[:32],
+            "format": {"status": "complete|partial|unrelated|not_applicable", "evidence": "", "followup": ""},
+        }, ensure_ascii=False)
+        try:
+            kwargs: dict[str, Any] = {"logger": logger}
+            if "request_purpose" in inspect.signature(client.complete).parameters:
+                kwargs["request_purpose"] = "skill_question_unit_resolution"
+            raw = str(client.complete([
+                ChatMessage(role="system", content="You are a strict JSON Skill question-unit resolver."),
+                ChatMessage(role="user", content=prompt),
+            ], **kwargs) or "")
+            payload = _try_parse_json(raw) or _extract_json_object(raw)
+        except Exception as exc:  # noqa: BLE001 - preserve authored stage on degradation
+            self._record_events(context, [make_event("skill_question_unit_degraded", {
+                "skill_id": skill_name, "reason": type(exc).__name__, "fallback": "preserve_current_unit",
+            })])
+            return {"status": "degraded"}
+        if not isinstance(payload, dict):
+            self._record_events(context, [make_event("skill_question_unit_degraded", {
+                "skill_id": skill_name, "reason": "invalid_json", "fallback": "preserve_current_unit",
+            })])
+            return {"status": "degraded"}
+        status = str(payload.get("status") or "")
+        evidence = str(payload.get("evidence") or "").strip()
+        followup = str(payload.get("followup") or "").strip()
+        source_text = str(source.get("content") or "")
+        if status not in {"complete", "partial", "unrelated", "not_applicable"} or (
+            status != "unrelated" and (len(evidence) < 2 or evidence not in source_text)
+        ) or (status == "partial" and (not followup or len(followup) > 1000)):
+            self._record_events(context, [make_event("skill_question_unit_degraded", {
+                "skill_id": skill_name, "reason": "invalid_decision", "fallback": "preserve_current_unit",
+            })])
+            return {"status": "degraded"}
+        resolved = resolve_skill_question_unit(
+            state, skill_name, status=status, evidence=evidence, followup=followup, source_message_id=source_id,
+        )
+        event_type = "skill_question_unit_partial" if status == "partial" else "skill_question_unit_resolved"
+        self._record_events(context, [make_event(event_type, {
+            "skill_id": skill_name, "unit_id": str(unit.get("unit_id") or ""),
+            "status": status, "source_message_id": source_id,
+            "has_followup": bool(followup),
+        })])
+        return {"status": status, "followup": followup, "unit": resolved}
+
     def _guard_volunteered_answer_reask(
         self,
         *,
@@ -6065,6 +6347,7 @@ class MainPlannerOrchestrator:
         has_expert_skill_selection = bool(
             str(context.session_meta.get("expert_requested_skill_id") or "").strip()
         )
+        previous_active_skill_id = runtime_state.active_skill_id
         if has_expert_skill_selection or self.runtime_registry.is_enabled(MAIN_PLANNER_ID):
             active_skill_id = self._route_with_main_planner(runtime_state, context)
         else:
@@ -6078,10 +6361,42 @@ class MainPlannerOrchestrator:
                 else GENERAL_CHAT_ID
             )
             runtime_state.active_skill_id = active_skill_id
-        question_reconciliation = reconcile_user_answer(
-            runtime_state,
-            active_skill_id,
-            user_message,
+        if (
+            previous_active_skill_id
+            and canonical_skill_id(previous_active_skill_id) != canonical_skill_id(active_skill_id)
+        ):
+            invalidated_unit = invalidate_skill_question_unit(
+                runtime_state,
+                previous_active_skill_id,
+                reason="active_skill_changed",
+            )
+            if invalidated_unit:
+                self._record_events(context, [make_event(
+                    "skill_question_unit_resolved",
+                    {
+                        "skill_id": previous_active_skill_id,
+                        "unit_id": invalidated_unit.get("unit_id"),
+                        "status": "invalidated",
+                        "reason": "active_skill_changed",
+                    },
+                )])
+        active_skill_bundle = self.runtime_registry.get(active_skill_id) or self.main_bundle
+        active_skill_index = build_skill_instruction_index(
+            active_skill_bundle.skill_markdown,
+            available_reference_paths=set((getattr(active_skill_bundle, "references", {}) or {}).keys()),
+        )
+        # Do not revive an old generic per-question ledger for a Skill that
+        # explicitly owns composite collection in its methodology. That ledger
+        # is intentionally retained for non-methodology Skills and historical
+        # sessions which have no such authored contract.
+        question_reconciliation = (
+            {"changed": False, "answered": [], "unresolved": []}
+            if active_skill_index.has_methodology_gates
+            else reconcile_user_answer(
+                runtime_state,
+                active_skill_id,
+                user_message,
+            )
         )
         if question_reconciliation.get("changed"):
             self._record_events(
@@ -6192,22 +6507,45 @@ class MainPlannerOrchestrator:
         runtime_client = self._runtime_client_for_context(context)
         semantic_resolution: dict[str, Any] = {"status": "skipped"}
         semantic_clarification_reply = ""
+        question_unit_resolution: dict[str, Any] = {"status": "skipped"}
+        question_unit_reply = ""
         if (
             questionnaire_result is None
             and entry_result is None
             and runtime_client is not None
             and runtime_state.active_skill_id not in {GENERAL_CHAT_ID, EXPERT_DIRECT_EXECUTION_ID}
         ):
-            semantic_resolution = self._resolve_semantic_question_answers(
+            unit_index = build_skill_instruction_index(
+                current_bundle.skill_markdown,
+                available_reference_paths=set((getattr(current_bundle, "references", {}) or {}).keys()),
+            )
+            question_unit_resolution = self._resolve_skill_question_unit(
                 state=runtime_state,
                 skill_name=runtime_state.active_skill_id,
                 user_message=user_message,
                 client=runtime_client,
                 logger=logger,
                 context=context,
+                index=unit_index,
             )
-            if semantic_resolution.get("status") == "ambiguous":
-                semantic_clarification_reply = str(semantic_resolution.get("clarification") or "").strip()
+            if question_unit_resolution.get("status") == "partial":
+                question_unit_reply = str(question_unit_resolution.get("followup") or "").strip()
+            elif question_unit_resolution.get("status") == "degraded":
+                pending_unit = skill_question_unit_projection(runtime_state, runtime_state.active_skill_id) or {}
+                original_unit = str(pending_unit.get("text") or "").strip()
+                if original_unit:
+                    question_unit_reply = f"为了继续判断，还需要补充这一点：{original_unit}"
+            if question_unit_resolution.get("status") in {"skipped", "unrelated"}:
+                semantic_resolution = self._resolve_semantic_question_answers(
+                    state=runtime_state,
+                    skill_name=runtime_state.active_skill_id,
+                    user_message=user_message,
+                    client=runtime_client,
+                    logger=logger,
+                    context=context,
+                )
+                if semantic_resolution.get("status") == "ambiguous":
+                    semantic_clarification_reply = str(semantic_resolution.get("clarification") or "").strip()
         if questionnaire_result is None and entry_result is None and runtime_client is None:
             if current_bundle.runtime_metadata.skill_type == "native":
                 active_skill_name = current_bundle.contract.skill_id or current_bundle.root_name
@@ -6266,6 +6604,8 @@ class MainPlannerOrchestrator:
             reply, reasoning = questionnaire_result
         elif entry_result is not None:
             reply, reasoning = entry_result
+        elif question_unit_reply:
+            reply, reasoning = question_unit_reply, "skill_question_unit_clarification"
         elif semantic_clarification_reply:
             reply, reasoning = semantic_clarification_reply, "semantic_question_clarification"
         else:
@@ -7549,23 +7889,59 @@ class MainPlannerOrchestrator:
                 "",
             )
             if latest_assistant:
-                registered = record_assistant_questions(
-                    state,
-                    state.active_skill_id,
-                    latest_assistant,
+                current_bundle = self.runtime_registry.get(state.active_skill_id) or self.main_bundle
+                instruction_index = build_skill_instruction_index(
+                    current_bundle.skill_markdown,
+                    available_reference_paths=set((getattr(current_bundle, "references", {}) or {}).keys()),
                 )
-                if registered.get("questions"):
-                    self._record_events(context, [make_event(
-                        "skill_questions_registered",
-                        {
-                            "skill_id": state.active_skill_id,
-                            "question_ids": [
-                                item.get("question_id")
-                                for item in registered["questions"]
-                            ],
-                            "question_count": len(registered["questions"]),
-                        },
-                    )])
+                # A Skill with an explicit methodology owns the meaning of a
+                # composite question. The old generic ledger remains useful
+                # for unstructured Skills, but must not split that authored
+                # unit into independent pseudo-fields.
+                if not instruction_index.has_methodology_gates:
+                    registered = record_assistant_questions(
+                        state,
+                        state.active_skill_id,
+                        latest_assistant,
+                    )
+                    if registered.get("questions"):
+                        self._record_events(context, [make_event(
+                            "skill_questions_registered",
+                            {
+                                "skill_id": state.active_skill_id,
+                                "question_ids": [
+                                    item.get("question_id")
+                                    for item in registered["questions"]
+                                ],
+                                "question_count": len(registered["questions"]),
+                            },
+                        )])
+                if instruction_index.has_methodology_gates:
+                    source_message_id = next(
+                        (
+                            str(item.get("message_id") or "")
+                            for item in reversed(getattr(context, "messages", []) or [])
+                            if item.get("role") == "assistant"
+                        ),
+                        "",
+                    )
+                    question_unit = register_skill_question_unit(
+                        state,
+                        state.active_skill_id,
+                        latest_assistant,
+                        source_message_id=source_message_id,
+                        stage=str(state.stage or ""),
+                    )
+                    if question_unit:
+                        self._record_events(context, [make_event(
+                            "skill_question_unit_registered",
+                            {
+                                "skill_id": state.active_skill_id,
+                                "unit_id": question_unit.get("unit_id"),
+                                "stage": question_unit.get("stage"),
+                                "source_message_id": source_message_id,
+                            },
+                        )])
         ledgers = state.status_flags.get("runtime_question_ledger")
         if isinstance(ledgers, dict):
             # The marker is turn-local: it forces buffering/validation for

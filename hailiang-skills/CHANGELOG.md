@@ -8,6 +8,16 @@
 
 ### 2026-09-29
 
+#### 引入基于 SKILL.md 的方法论门禁与 question unit 追问单元
+
+- `skill_instruction_index.py` 新增 `methodology_rules` 提取逻辑，会从 `SKILL.md` 中带有“阶段 / 前置 / 提问 / 门禁 / 脚本取数 / 结论 / 推荐 / 输出”等方法论约束的指令行建立索引
+- `main_planner` 在规划结果看起来即将直接给推荐、结论、赛事、优势、方案等结果性内容时，会额外触发 `skill_methodology_gate` 校验，严格依据作者写在 `SKILL.md` 的规则决定 `allow / replan_current_stage / clarify_current_unit`
+- 当门禁判断当前还不应进入结果输出阶段时，会清空本轮待发布的组合草稿，改为留在当前业务阶段追问最小必要问题，避免未经授权的阶段跳转沿既有最终回复链路漏出
+- 新增 `runtime_skill_question_units` 持久化结构，用 `question_unit` 保留 assistant 原始的完整业务提问单元，而不是继续拆成平台自造字段
+- 用户回复后，运行时会把当前单元判定为 `complete / partial / unrelated / not_applicable`，并在 partial 时优先追问同一业务单元内的最小补问
+- 当 active skill 发生切换时，挂起中的 `question_unit` 会被立即标记为 `invalidated`，避免上一个 Skill 的追问残留到新的方法论链路
+- 新增 `tests/test_question_progress.py` 与 `tests/test_skill_instruction_index.py` 回归测试，覆盖 authored composite question、skill 切换失效以及方法论规则索引提取
+
 #### 放宽主规划器语义答题补充的触发条件
 
 - `main_planner` 移除了对 `questionnaire_enabled(current_bundle)` 和 `question_reconciliation.changed` 的前置拦截
