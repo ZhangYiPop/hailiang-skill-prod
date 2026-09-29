@@ -8,6 +8,13 @@
 
 ### 2026-09-29
 
+#### 优化 Workbench 候选修订测试区的流式渲染节流
+
+- `frontend/src/pages/Workbench.tsx` 为候选修订测试区新增浏览器端 UI 合并刷新队列，按短间隔批量消费高频 `reply_delta` 和 `state` 事件，减少长回复流式阶段的逐 token 重渲染
+- `candidateConversationState` 改为仅保留调试区真正需要的轻量摘要字段，避免在 React state 中持续持有整份 SSE state 带来的额外渲染与比较开销
+- 当服务端返回完整 `state.assistant.content` 时，前端优先使用服务端权威正文覆盖本地增量拼接；仅在 delta-only 场景下继续沿用本地拼接，兼容不同出流形态
+- `message`、`done`、`error` 和手动停止时会立即冲刷待渲染缓冲并清理定时器，避免 optimistic transcript 项残留旧内容，保证候选测试记录、调试摘要和最终服务端落库状态一致
+
 #### 引入基于 SKILL.md 的方法论门禁与 question unit 追问单元
 
 - `skill_instruction_index.py` 新增 `methodology_rules` 提取逻辑，会从 `SKILL.md` 中带有“阶段 / 前置 / 提问 / 门禁 / 脚本取数 / 结论 / 推荐 / 输出”等方法论约束的指令行建立索引
