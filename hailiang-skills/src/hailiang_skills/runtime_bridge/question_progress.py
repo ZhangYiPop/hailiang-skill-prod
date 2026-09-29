@@ -224,6 +224,30 @@ def record_assistant_questions(state: Any, skill_id: str, assistant_message: str
     return {"skill_id": skill_id, "questions": new_questions}
 
 
+def record_volunteered_answers(state: Any, skill_id: str, decisions: list[dict[str, str]]) -> None:
+    """Close draft questions answered by earlier user messages, before publication."""
+    ledger = _ledger_for_skill(state, skill_id)
+    asked = {str(item.get("question_id")): item for item in ledger["asked"] if isinstance(item, dict)}
+    answered = {str(item.get("question_id")): item for item in ledger["answered"] if isinstance(item, dict)}
+    for decision in decisions:
+        if decision.get("verdict") != "answered":
+            continue
+        qid = str(decision.get("question_id") or "")
+        if not qid:
+            continue
+        asked[qid] = {"question_id": qid, "text": str(decision.get("question") or ""), "options": []}
+        answered[qid] = {
+            "question_id": qid,
+            "question": str(decision.get("question") or ""),
+            "answer": str(decision.get("evidence") or ""),
+            "source_message_id": str(decision.get("source_message_id") or ""),
+        }
+    ledger["asked"] = list(asked.values())[-24:]
+    ledger["answered"] = list(answered.values())[-24:]
+    answered_ids = set(answered)
+    ledger["unresolved"] = [item for item in ledger["asked"] if item["question_id"] not in answered_ids][-16:]
+
+
 def question_ledger_projection(state: Any, skill_id: str) -> dict[str, Any]:
     ledgers = state.status_flags.get("runtime_question_ledger", {})
     ledger = ledgers.get(skill_id, {}) if isinstance(ledgers, dict) else {}

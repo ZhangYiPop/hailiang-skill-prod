@@ -22,6 +22,8 @@ from hailiang_skills.core.fact_prompt_projection import (
     response_style_instruction,
     visible_fact_recap_risk,
 )
+from hailiang_skills.core.conversation_facts import apply_model_context_updates
+from hailiang_skills.core.facts_config import get_fact_schema
 
 
 AGENT_RUNTIME_STATE_KEY = "agent_runtime"
@@ -605,16 +607,21 @@ class AgentScopeExpertRuntime:
                 continue
             content = str(item.get("content") or "").strip()
             if content:
-                history.append({"role": str(item["role"]), "content": content[:self.history_message_chars]})
+                history.append({
+                    "role": str(item["role"]),
+                    "message_id": str(item.get("message_id") or metadata.get("message_id") or ""),
+                    "turn_id": str(metadata.get("turn_id") or ""),
+                    "content": content[:self.history_message_chars],
+                })
         return history[-self.history_messages :]
 
     def _expert_conversation_history(self, context) -> str:
         history = self._expert_history_messages(context)
         if not history:
             return "（暂无历史对话）"
-        labels = {"user": "用户", "assistant": "助手"}
-        rendered = "\n".join(f"{labels[item['role']]}：{item['content']}" for item in history)
-        return rendered[-self.history_max_chars :]
+        while history and len(json.dumps(history, ensure_ascii=False)) > self.history_max_chars:
+            history.pop(0)
+        return json.dumps(history, ensure_ascii=False)
 
     def _same_user_message_streak(self, context, user_message: str) -> int:
         """Count trailing identical user turns for the direct Expert path."""
@@ -639,97 +646,14 @@ class AgentScopeExpertRuntime:
         return streak
 
     def _capture_explicit_user_facts(self, context, user_message: str, *, source_turn_id: str) -> None:
-        """Persist facts stated explicitly in an Expert turn.
-
-        The direct Expert path does not invoke MainPlanner's facts extractor.
-        Without this small boundary capture, a user correction such as
-        “孩子五年级了” remains only in the prompt text while a stale profile
-        value (for example “高一”) is rehydrated on the next request.  Store
-        the explicit value in the current session branch so it overrides the
-        profile value for this conversation without mutating the child profile.
-        """
-        text = str(user_message or "").strip()
-        if not text:
-            return
-        matches = re.findall(
-            r"(?:小学|初中|高中|初[一二三]|高[一二三]|[一二三四五六七八九]年级)",
-            text,
-        )
-        if matches:
-            value = str(matches[-1]).strip()
-            current = context.known_facts.get_value("grade") if hasattr(context, "known_facts") else None
-            if value and str(current or "").strip() != value:
-                context.update_fact(
-                    "grade",
-                    value,
-                    source_skill="expert_runtime",
-                    confidence=0.95,
-                    source_type="user_input",
-                    source_id=source_turn_id,
-                    source_turn_id=source_turn_id,
-                    scope="session",
-                    evidence_summary="用户在对话中明确提供或修正孩子年级",
-                )
-                self._event(context, "expert_explicit_fact_captured", {
-                    "fact_key": "grade",
-                    "value": value,
-                    "scope": "session",
-                    "source_turn_id": source_turn_id,
-                    "message": "已将用户明确提供的年级保存到当前会话分支",
-                })
-
-        # Explicit child-interest statements are useful across expert handoffs.
-        # Keep them session-scoped: this lightweight capture is not a profile
-        # write and does not replace a Skill's richer interest assessment.
-        interest_match = re.search(
-            r"(?:孩子|小孩|娃)(?:目前|现在|平时)?(?:最)?(?:喜欢|爱好是|爱|擅长)([^，。！？；\n]{1,24})",
-            text,
-        )
-        if interest_match:
-            value = interest_match.group(1).strip()
-            value = re.sub(r"(?:可以培养什么特长|可以学什么|是什么)$", "", value).strip()
-            if value:
-                current = context.known_facts.get_value("interests") if hasattr(context, "known_facts") else None
-                values = [str(item).strip() for item in current] if isinstance(current, list) else []
-                if value not in values:
-                    values.append(value)
-                    context.update_fact(
-                        "interests",
-                        values,
-                        source_skill="expert_runtime",
-                        confidence=0.92,
-                        source_type="user_input",
-                        source_id=source_turn_id,
-                        source_turn_id=source_turn_id,
-                        scope="session",
-                        evidence_summary="用户明确提到孩子的兴趣；仅作为本会话已知线索",
-                    )
-                    self._event(context, "expert_explicit_fact_captured", {
-                        "fact_key": "interests",
-                        "value": value,
-                        "scope": "session",
-                        "source_turn_id": source_turn_id,
-                        "message": "已将用户明确提到的孩子兴趣保存到当前会话分支",
-                    })
+        # Kept as an internal compatibility hook; facts are accepted only
+        # through validated model context_updates after routing.
+        return None
 
     def _capture_recent_user_context(self, context, current_message: str, *, source_turn_id: str) -> None:
-        """Rebuild branch-local identity and explicit facts from recent user turns."""
-        candidates = []
-        for message in getattr(context, "messages", []) or []:
-            if not isinstance(message, dict) or message.get("role") != "user":
-                continue
-            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
-            if metadata.get("message_type") == "team_handoff_confirmation":
-                continue
-            content = str(message.get("content") or "").strip()
-            if content:
-                candidates.append((content, str(metadata.get("turn_id") or metadata.get("message_id") or source_turn_id)))
-        current = str(current_message or "").strip()
-        if current and not any(text == current for text, _ in candidates):
-            candidates.append((current, source_turn_id))
-        for text, turn_id in candidates[-12:]:
-            self._capture_explicit_user_facts(context, text, source_turn_id=turn_id)
-            self._capture_conversation_identity(context, text, source_turn_id=turn_id)
+        # Context is now extracted from the existing route completion; this
+        # hook intentionally performs no semantic inference.
+        return None
 
     def _configured_expert(self, context, definition: ExpertDefinition) -> ExpertDefinition:
         entry = self._snapshot_entry(context, "expert", definition.agent_id)
@@ -1871,51 +1795,9 @@ class AgentScopeExpertRuntime:
 
     @staticmethod
     def _capture_conversation_identity(context, user_message: str, *, source_turn_id: str) -> None:
-        """Persist a clearly stated speaker role in the active session branch."""
-        text = str(user_message or "").strip()
-        if not text:
-            return
-        parent_patterns = (
-            r"(?:我|本人)(?:现在|其实|就是)?(?:是|作为)(?:孩子的)?(?:家长|父母|爸爸|妈妈|父亲|母亲)",
-            r"(?:我|本人)(?:现在|其实)?(?:是|作为)(?:一名|一个)?(?:家长|爸爸|妈妈|父亲|母亲)",
-            r"我(?:家|的)孩子",
-        )
-        student_patterns = (
-            r"(?:我|本人)(?:现在|其实|就是)?(?:是|作为)(?:一名|一个)?(?:学生|中学生|小学生|初中生|高中生|初[一二三]学生|高[一二三]学生)",
-            r"我是孩子本人",
-            r"我不是(?:家长|父母|爸爸|妈妈|父亲|母亲).{0,8}(?:而是|其实是|是)(?:一名|一个)?(?:学生|中学生|小学生|初中生|高中生)",
-        )
-        role = ""
-        evidence_source = "explicit_self_identification"
-        role_mentions = []
-        for candidate, patterns in (("parent", parent_patterns), ("student", student_patterns)):
-            for index, pattern in enumerate(patterns):
-                for match in re.finditer(pattern, text):
-                    source = (
-                        "explicit_parent_relationship"
-                        if candidate == "parent" and index == 2
-                        else "explicit_self_identification"
-                    )
-                    role_mentions.append((match.end(), candidate, source))
-        if role_mentions:
-            _end, role, evidence_source = max(role_mentions, key=lambda item: item[0])
-        elif re.search(r"(?:孩子|小孩|娃)(?:现在|目前|喜欢|爱好|想学|擅长|是|有)", text):
-            role = "parent"
-            evidence_source = "child_reference_inference"
-        if not role:
-            return
-        previous = context.session_meta.get("conversation_identity")
-        if (
-            evidence_source == "child_reference_inference"
-            and isinstance(previous, dict)
-            and previous.get("source") != "child_reference_inference"
-        ):
-            return
-        context.session_meta["conversation_identity"] = {
-            "role": role,
-            "source": evidence_source,
-            "source_turn_id": source_turn_id,
-        }
+        # Identity classification is model-driven; this legacy hook no longer
+        # infers roles from lexical patterns.
+        return None
 
     def _format_handoff_context(self, context, switch: dict[str, Any]) -> str:
         identity = context.session_meta.get("conversation_identity")
@@ -2179,6 +2061,15 @@ class AgentScopeExpertRuntime:
             if (actual := self._resolve_authorized_skill_id(definition, requested))
         )
         inspection = self._full_skill_instructions(inspected) if inspected else ""
+        facts_schema = {
+            key: {
+                "label": meta.get("label", key),
+                "value_type": meta.get("value_type", "string"),
+                "allowed_values": meta.get("allowed_values") or [],
+            }
+            for key, meta in get_fact_schema().items()
+            if meta.get("enabled", True)
+        }
         retry_note = (
             "这是一次 Skill 范围复核：必须阅读下方完整 SKILL.md，判断当前问题是否真的属于其能力范围。"
             "如果属于范围，scope_decision 填 in_scope 并给出 Skill 原文依据；如果不属于或无法确认，保留 direct_reply。\n"
@@ -2194,10 +2085,18 @@ class AgentScopeExpertRuntime:
             "仅当明确属于 Skill 能力范围时才选择 execute_skill；只因为提到一个学校、国家、专业或产品名称，不足以证明属于该 Skill。"
             "execute_skill 决定必须给出 SKILL.md 中支持当前用户意图的原文短引，并将 scope_decision 填为 in_scope；"
             "若只能证明实体相同、不能证明任务相同，填 out_of_scope 或 uncertain。\n"
+            "同时从最近对话抽取身份与事实；没有可靠证据就不要输出对应更新。每项必须引用最近对话中真实的 user message_id，"
+            "evidence 必须是该条用户消息里的连续原文。仅抽取对当前会话有用的身份、年级、兴趣及明确业务事实；"
+            "任何在 mode、skill_id、scope_decision 或 reason 中实际采用的用户身份/事实，只要可由事实 Schema 表达，"
+            "都必须同步写入 context_updates 并提供对应原文证据；不得让路由推理使用了事实、接手 Skill 却拿不到该事实。"
+            "本轮明确提供的字段应优先从当前 user message 提取，不要只从摘要或此前 assistant 回复转述。"
+            "若没有可确认的新内容，输出 context_updates: {\"identity\":null,\"facts\":[]}。"
             "JSON 格式：{\"mode\":\"execute_skill|direct_reply|inspect_skills\",\"skill_id\":\"授权 skill id 或空\","
             "\"candidate_skill_ids\":[\"...\"],\"confidence\":0.0,\"agent_policy_basis\":\"AGENT.md 原文短引或空\","
             "\"direct_reply_reason\":\"仅 direct_reply 时填写\",\"skill_scope_basis\":\"Skill.md 原文短引或空\","
-            "\"scope_decision\":\"in_scope|out_of_scope|uncertain\",\"reason\":\"简短内部依据\"}。\n"
+            "\"scope_decision\":\"in_scope|out_of_scope|uncertain\",\"reason\":\"简短内部依据\","
+            "\"context_updates\":{\"identity\":{\"role\":\"parent|student|unknown\",\"source_message_id\":\"...\",\"evidence\":\"原文\",\"confidence\":0.0},"
+            "\"facts\":[{\"key\":\"facts_schema 中的 key\",\"value\":\"...\",\"source_message_id\":\"...\",\"evidence\":\"原文\",\"confidence\":0.0}]}}。\n"
             "多项匹配时选择最匹配的一项；只有目录不足以判断时用 inspect_skills，并在 candidate_skill_ids 中给出最多两个授权 ID。"
             "direct_reply 时 agent_policy_basis 必须是 AGENT.md 中可核验的原文短引；不要编造。\n"
             f"# AGENT.md 正文\n{agent_rules}\n"
@@ -2205,6 +2104,7 @@ class AgentScopeExpertRuntime:
             + f"\n# 授权 Skill 能力目录\n{json.dumps(cards, ensure_ascii=False)}\n"
             f"# 当前活动 Skill\n{active_skill_id or '无'}\n{retry_note}"
             f"# 当前可恢复的挂起表单\n{json.dumps(self._pending_native_questionnaire_summary(context), ensure_ascii=False)}\n"
+            f"# 可抽取事实 Schema\n{json.dumps(facts_schema, ensure_ascii=False)}\n"
             f"{inspection}\n# 最近对话\n{self._expert_conversation_history(context)}"
         )
         try:
@@ -2213,7 +2113,28 @@ class AgentScopeExpertRuntime:
                 ChatMessage(role="user", content=user_message),
             ], request_purpose="expert_authorized_skill_route") or "")
         except Exception as exc:
-            raise AgentScopeRuntimeUnavailable(f"专家路由模型调用失败: {exc}") from exc
+            metrics = client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {}
+            metrics = metrics if isinstance(metrics, dict) else {}
+            status_code = getattr(exc, "status_code", None) or metrics.get("status_code")
+            if status_code is None:
+                status_match = re.search(r"\bHTTP\s+(\d{3})\b", str(exc), re.IGNORECASE)
+                status_code = int(status_match.group(1)) if status_match else None
+            self._event(context, "conversation_fact_extraction", {
+                "source": "expert_route",
+                "status": "model_call_failed",
+                "accepted_fact_keys": [],
+                "identity_status": "unchanged",
+                "rejected": [{"kind": "result", "reason": "route_model_call_failed"}],
+            })
+            self._event(context, "expert_decision_unavailable", {
+                "expert_id": definition.agent_id,
+                "reason": "route_model_call_failed",
+                "exception_type": type(exc).__name__,
+                "http_status": status_code,
+            })
+            raise AgentScopeRuntimeUnavailable(
+                f"专家路由模型调用失败 ({type(exc).__name__})"
+            ) from exc
         self._record_model_completion(
             context, result=None,
             metrics=client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {},
@@ -2221,6 +2142,29 @@ class AgentScopeExpertRuntime:
         )
         decision = self._parse_route_decision(raw)
         if decision is None:
+            # A valid completion can still contain malformed JSON. Give the
+            # same bounded router one chance to repair its own output while
+            # retaining the complete authorization and scope instructions.
+            try:
+                repaired = str(client.complete([
+                    ChatMessage(role="system", content=prompt),
+                    ChatMessage(role="user", content=user_message),
+                    ChatMessage(role="assistant", content=raw),
+                    ChatMessage(role="user", content="上条路由结果不是可解析的单个 JSON 对象。请重新输出一个合法 JSON 对象，保留原判断；不要输出解释或代码围栏。"),
+                ], request_purpose="expert_authorized_skill_route") or "")
+                decision = self._parse_route_decision(repaired)
+            except Exception:  # noqa: BLE001
+                decision = None
+            if decision is not None:
+                self._event(context, "expert_route_json_recovered", {
+                    "expert_id": definition.agent_id, "original_chars": len(raw),
+                })
+        if decision is None:
+            self._event(context, "conversation_fact_extraction", {
+                "source": "expert_route", "status": "invalid_model_result",
+                "accepted_fact_keys": [], "identity_status": "unchanged",
+                "rejected": [{"kind": "result", "reason": "route_json_invalid"}],
+            })
             self._event(context, "expert_decision_unavailable", {
                 "expert_id": definition.agent_id, "reason": "route_json_invalid",
             })
@@ -2349,6 +2293,9 @@ class AgentScopeExpertRuntime:
                     "expert_id": definition.agent_id,
                     "policy_basis": str(decision.get("agent_policy_basis") or "")[:240],
                 })
+        apply_model_context_updates(
+            context, decision.get("context_updates"), source="expert_route",
+        )
         self._event(context, "expert_skill_route_selected", {
             "expert_id": definition.agent_id,
             "mode": decision["mode"], "skill_id": decision.get("skill_id") or None,
@@ -2376,18 +2323,23 @@ class AgentScopeExpertRuntime:
     @staticmethod
     def _parse_route_decision(raw: str) -> dict[str, Any] | None:
         text = str(raw or "").strip()
-        match = re.search(r"\{[\s\S]*\}", text)
-        if not match:
+        decoder = json.JSONDecoder()
+        value = None
+        # The model may wrap the object in a fence or append prose. Decode
+        # individual objects rather than greedily spanning multiple braces.
+        for match in re.finditer(r"\{", text):
+            try:
+                candidate, _ = decoder.raw_decode(text, match.start())
+            except (TypeError, ValueError):
+                continue
+            if isinstance(candidate, dict) and str(candidate.get("mode") or "").strip() in {
+                "execute_skill", "direct_reply", "inspect_skills",
+            }:
+                value = candidate
+                break
+        if value is None:
             return None
-        try:
-            value = json.loads(match.group(0))
-        except (TypeError, ValueError):
-            return None
-        if not isinstance(value, dict):
-            return None
-        mode = str(value.get("mode") or "").strip()
-        if mode not in {"execute_skill", "direct_reply", "inspect_skills"}:
-            return None
+        mode = str(value["mode"]).strip()
         candidates = value.get("candidate_skill_ids")
         if not isinstance(candidates, list):
             candidates = []
@@ -2404,6 +2356,7 @@ class AgentScopeExpertRuntime:
             "skill_scope_basis": str(value.get("skill_scope_basis") or "").strip(),
             "scope_decision": str(value.get("scope_decision") or "uncertain").strip(),
             "reason": str(value.get("reason") or "").strip(),
+            "context_updates": value.get("context_updates") if isinstance(value.get("context_updates"), dict) else {},
         }
 
     def _generate_expert_direct_reply(self, definition: ExpertDefinition, user_message: str, context, client, decision: dict[str, Any]) -> str:

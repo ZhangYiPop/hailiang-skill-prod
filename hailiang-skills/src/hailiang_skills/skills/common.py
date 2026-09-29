@@ -131,6 +131,7 @@ def extract_score_payload(text: str) -> dict[str, Any]:
 
 
 def extract_grade(text: str) -> str | None:
+    digits = {"1": "一", "2": "二", "3": "三", "4": "四", "5": "五", "6": "六"}
     grade_patterns = (
         ("小学", "小学"),
         ("初一", "初一"),
@@ -148,8 +149,15 @@ def extract_grade(text: str) -> str | None:
     normalized = text.strip()
     if not normalized:
         return None
+    compact = re.sub(r"\s+", "", normalized)
+    school_grade = re.search(r"(?<!\d)([1-6])年级", compact)
+    if school_grade:
+        return f"{digits[school_grade.group(1)]}年级"
+    chinese_grade = re.search(r"([一二三四五六])年级", compact)
+    if chinese_grade:
+        return f"{chinese_grade.group(1)}年级"
     for keyword, normalized_grade in grade_patterns:
-        if keyword in normalized:
+        if keyword in compact:
             return normalized_grade
     return None
 

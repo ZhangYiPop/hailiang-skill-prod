@@ -320,7 +320,18 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
                     emit("done", service.run_revision_test_turn(debug_session_id, **body.model_dump(), on_event=emit))
                 except WorkbenchError as exc:
                     emit_failure_state(exc.code, str(exc), exc.details)
-                    emit("error", {"code": exc.code, "message": str(exc), "details": exc.details})
+                    payload = {"code": exc.code, "message": str(exc), "details": exc.details}
+                    if exc.code in {"EXPERT_DECISION_UNAVAILABLE", "MODEL_TIMEOUT", "REVISION_TEST_TIMEOUT"}:
+                        try:
+                            persisted = service.get_revision_test_session(debug_session_id)
+                            payload["debug_session"] = {
+                                "debug_session_id": debug_session_id,
+                                "trace": persisted.get("trace", []),
+                                "status": persisted.get("status", "active"),
+                            }
+                        except Exception:
+                            pass
+                    emit("error", payload)
                 except Exception as exc:
                     emit_failure_state("REVISION_TEST_FAILED", str(exc))
                     emit("error", {"code": "REVISION_TEST_FAILED", "message": str(exc)})

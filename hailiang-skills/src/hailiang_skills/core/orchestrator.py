@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from hailiang_skills.core.loop_defense import LoopDefense
 from hailiang_skills.core.logging import make_event
+from hailiang_skills.core.conversation_facts import apply_model_context_updates
 from hailiang_skills.core.registry import SkillRegistry
 from hailiang_skills.core.scenario_engine import ScenarioEngine
 from hailiang_skills.core.session_logging import append_session_events
@@ -124,15 +125,10 @@ class Orchestrator:
             context.skill_states.setdefault("facts_extractor", {}).update(
                 facts_result.state_patch
             )
-            for key, value in facts_result.state_patch.get("fact_updates", {}).items():
-                if value not in (None, "", [], {}):
-                    context.update_fact(
-                        key,
-                        value,
-                        source_skill="facts_extractor",
-                        confidence=facts_result.state_patch.get("confidence", 0.8),
-                        source_turn_id=turn_id,
-                    )
+            apply_model_context_updates(
+                context, facts_result.state_patch.get("context_updates"),
+                source="facts_extractor",
+            )
 
         self._emit_runtime_status(context, "planner", "推理规划")
         planner = self.registry.get("planner")

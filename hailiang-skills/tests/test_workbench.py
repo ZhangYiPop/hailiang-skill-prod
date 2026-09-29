@@ -33,6 +33,7 @@ from hailiang_skills.api.routes import workbench as workbench_routes
 from hailiang_skills.api.routes.workbench import build_deployment_router, build_workbench_router
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.runtime_bridge.main_planner import MainPlannerOrchestrator
+from hailiang_skills.runtime_bridge.agentscope_expert_runtime import AgentScopeRuntimeUnavailable
 from hailiang_skills.skill_runtime.models import ChatMessage, SessionState, ToolCapability, ToolRegistry
 from hailiang_skills.skill_runtime.tools import run_local_rag
 
@@ -1480,6 +1481,41 @@ def test_candidate_stream_has_an_end_to_end_deadline(monkeypatch):
     assert "event: error" in response.text
     assert "REVISION_TEST_TIMEOUT" in response.text
     assert "\"status\": \"failed\"" in response.text
+
+
+def test_candidate_stream_error_returns_persisted_failure_trace(monkeypatch):
+    preview_service = _preview_service()
+    actor_id = _actor(preview_service)
+    obj = preview_service.create_object(
+        object_type="skill", object_key="failed_candidate", name="失败候选 Skill", actor_id=actor_id,
+    )
+    revision = preview_service.save_revision(
+        obj["object_id"], base_revision_id=None,
+        payload={"prompt_markdown": "候选规则", "runtime_contract": {}, "capability_ids": []},
+        dependency_locks=[], assets=[], actor_id=actor_id,
+    )
+    session = preview_service.create_revision_test_session(revision["revision_id"], actor_id=actor_id)
+
+    def fail(*_args):
+        raise AgentScopeRuntimeUnavailable("专家路由模型调用失败 (HTTPStatusError)")
+
+    monkeypatch.setattr(preview_service, "_execute_snapshot_message", fail)
+    app = FastAPI()
+    app.include_router(build_workbench_router(preview_service), prefix="/workbench/v1")
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/workbench/v1/revision-tests/{session['debug_session_id']}/turns/stream",
+            json={"user_message": "杭州，预算一到两万", "actor_id": actor_id},
+        )
+
+    assert response.status_code == 200
+    error_line = next(line[6:] for line in response.text.splitlines() if line.startswith("data: ") and '"debug_session"' in line)
+    error_payload = json.loads(error_line)
+    assert error_payload["code"] == "EXPERT_DECISION_UNAVAILABLE"
+    trace = error_payload["debug_session"]["trace"]
+    assert trace[-1]["debug"]["execution_error"]["event_type"] == "candidate_turn_failed"
+    assert trace[-1]["debug"]["execution_error"]["exception_type"] == "AgentScopeRuntimeUnavailable"
 
 
 def test_stopped_candidate_worker_cannot_overwrite_a_newer_turn(monkeypatch):

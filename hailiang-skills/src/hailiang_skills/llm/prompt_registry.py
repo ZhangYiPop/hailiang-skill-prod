@@ -97,47 +97,30 @@ PROMPT_REGISTRY: dict[str, PromptSpec] = {
             "适用于每一轮消息，把新出现的省份、分数、关注路径、预算、终止偏好等信息沉淀到 context。"
         ),
         called_by="FactsExtractorSkill.run()",
-        output_contract="输出严格 JSON，字段包含 fact_updates、reason、confidence。",
+        output_contract="输出严格 JSON，包含 context_updates（带用户消息 ID 和证据原文）、reason、confidence。",
         content="""你是升学规划系统中的 Facts Extraction 节点。
 
-你的任务是从用户本轮输入、最近对话和已有 facts 中，抽取应该写回全局 context 的结构化事实。
+你的任务是从用户本轮输入、最近对话和已有 facts 中，抽取对当前会话连续性有用的身份与结构化事实。
 
 输出要求：
 1. 必须只返回 JSON，不要输出 Markdown。
 2. JSON 结构必须如下：
 {
-  "fact_updates": {
-    "student_province": null,
-    "student_region": null,
-    "subject_group": null,
-    "score_total": null,
-    "score_recent_avg": null,
-    "score_source": null,
-    "score_band_tag": null,
-    "budget_level": null,
-    "family_type": null,
-    "ethnicity": null,
-      "hukou_years": null,
-      "guardian_hukou_match": null,
-      "school_status_years": null,
-      "exam_qualification_status": null,
-    "interest_domains": [],
-    "career_orientation": [],
-    "special_identity_tags": [],
-    "risk_tolerance": null,
-    "focus_path_ids": [],
-    "focus_primary_categories": [],
-    "excluded_path_ids": [],
-    "excluded_primary_categories": [],
-      "focus_school_names": [],
-    "termination_preference": null
+  "context_updates": {
+    "identity": {"role":"parent|student|unknown", "source_message_id":"真实用户消息 ID", "evidence":"该用户消息中的连续原文", "confidence":0.0},
+    "facts": [{"key":"facts_schema 中启用的 key", "value":"抽取值", "source_message_id":"真实用户消息 ID", "evidence":"该用户消息中的连续原文", "confidence":0.0}]
   },
   "reason": "简短中文解释",
   "confidence": 0.0
 }
 
 抽取原则：
-- 只提取用户明确表达或高置信可推断的信息
+- 只提取用户明确表达或高置信可推断的信息；每项身份/事实必须提供所属用户消息的真实 message_id 和连续证据原文
+- source_message_id 必须来自 context.recent_messages 中 role=user 的消息；证据不在该消息正文中时不要输出该项
+- fact key 与 value 类型必须遵循输入中的 facts_schema；年级使用“一年级”至“六年级”、初一至初三或高一至高三等规范值
+- 若本轮及近期对话没有可确认的新身份或事实，仍输出 `context_updates: {"identity": null, "facts": []}`
+- 用户谈论“孩子”可结合语境推断当前发言者是家长，但仅在语义确实支持时；不确定时省略身份更新，不要猜
+- 新值优先来自本轮或更近期用户消息；不要把助手建议、确认卡或工具消息当用户事实
 - 不要凭空编造
 - `focus_path_ids` 和 `focus_primary_categories` 用来表示用户当前明确关注的路径或一级升学大类，不等于系统曾经推荐过的路径
 - 如果用户表达的是“除了某条/某类路径，还想看别的路径”，应把被排除对象写入 `excluded_path_ids` 或 `excluded_primary_categories`，不要把它们写成关注目标

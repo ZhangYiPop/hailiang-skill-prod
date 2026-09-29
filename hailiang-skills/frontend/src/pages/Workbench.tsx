@@ -773,6 +773,14 @@ export default function Workbench() {
             "reference_evidence_unavailable",
             "reference_compliance_degraded",
             "tool_result",
+            "volunteered_answer_audit",
+            "volunteered_answer_rewrite_failed",
+            "reply_progress_evaluated",
+            "reply_progress_blocked",
+            "reply_progress_retry",
+            "reply_progress_degraded",
+            "skill_progress_committed",
+            "skill_progress_rolled_back",
           ].includes(String((event as Record<string, unknown>).event_type ?? ""));
         }),
       };
@@ -1364,6 +1372,14 @@ export default function Workbench() {
           if (event === "error") {
             const errorMessage = String(payload.message ?? "候选修订测试失败");
             streamError = errorMessage;
+            const persistedDebugSession = payload.debug_session as Pick<RevisionTestSession, "debug_session_id" | "trace" | "status"> | undefined;
+            if (persistedDebugSession?.debug_session_id === session.debug_session_id) {
+              setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
+                ...current,
+                trace: persistedDebugSession.trace,
+                status: persistedDebugSession.status,
+              } : current);
+            }
             setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
               ...current,
               transcript: current.transcript.map((item) => item.message_id === optimisticAssistantId

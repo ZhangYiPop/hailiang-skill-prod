@@ -7,7 +7,7 @@ facts:
     placeholder: "请选择孩子当前年级"
     example: "例如：初二"
     submit_mode: "auto"
-    allowed_values: ["小学", "初一", "初二", "初三", "高一", "高二", "高三"]
+    allowed_values: ["小学", "一年级", "二年级", "三年级", "四年级", "五年级", "六年级", "初一", "初二", "初三", "高一", "高二", "高三"]
     scope_policy: "profile"
     scenario: "admission_simulation"
     scenario_group: ["admission_simulation", "multi_path_planning"]
@@ -146,6 +146,13 @@ facts:
     scope_policy: "profile"
     scenario: "admission_simulation"
     scenario_group: ["admission_simulation", "multi_path_planning"]
+    enabled: true
+  interest_domains:
+    label: "兴趣方向"
+    value_type: "string_list"
+    extractor: "model_context_extraction"
+    scope_policy: "session"
+    scenario: "interest_plan"
     enabled: true
   hukou_years:
     label: "户籍年限"

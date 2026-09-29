@@ -107,6 +107,16 @@ def normalize_fact_value(key: str, value: Any) -> Any:
     meta = get_fact_meta(key)
     value_type = meta.get("value_type")
 
+    if key == "grade" and isinstance(value, str):
+        compact = "".join(value.split())
+        grade_digits = dict(zip("123456", "一二三四五六"))
+        for digit, chinese in grade_digits.items():
+            if compact in {f"{digit}年级", f"小学{digit}年级"}:
+                return f"{chinese}年级"
+            if compact == f"小学{chinese}年级":
+                return f"{chinese}年级"
+        return compact
+
     if key == "student_province" and isinstance(value, str):
         return _normalize_province(value)
     if key == "subject_group":

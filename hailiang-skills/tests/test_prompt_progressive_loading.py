@@ -78,7 +78,29 @@ class PromptProgressiveLoadingTest(unittest.TestCase):
         self.assertIn("当前发言者是家长", assembly.core_prompt)
         self.assertIn("不要问家长‘你平时喜欢/擅长什么’", assembly.core_prompt)
 
-    def test_prompt_projects_duplicate_memory_facts_once(self) -> None:
+    def test_collected_skill_inputs_are_protected_from_reasking(self) -> None:
+        registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
+        bundle = registry.get("career_plan_entity")
+        assert bundle is not None
+        state = SessionState(
+            session_id="sess_collected_inputs",
+            active_skill_id="career_plan_entity",
+            status_flags={
+                "runtime_skill_progress": {
+                    "career_plan_entity": {
+                        "collected_inputs": {"previous_classes": "无", "city": "杭州"},
+                    }
+                }
+            },
+        )
+
+        assembly = build_prompt_assembly(bundle, state)
+
+        self.assertIn("runtime_skill_progress.collected_inputs", assembly.core_prompt)
+        self.assertIn("必须复用，不能再次询问", assembly.core_prompt)
+        self.assertIn('"previous_classes": "无"', assembly.core_prompt)
+
+    def test_prompt_excludes_rolling_memory_facts_in_v2_projection(self) -> None:
         registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
         bundle = registry.get("career_plan_entity")
         assert bundle is not None
@@ -92,10 +114,10 @@ class PromptProgressiveLoadingTest(unittest.TestCase):
 
         assembly = build_prompt_assembly(bundle, state)
 
-        self.assertIn('"memory_only": {', assembly.core_prompt)
-        self.assertIn('"goal": "选科"', assembly.core_prompt)
+        self.assertNotIn('"memory_only": {', assembly.core_prompt)
+        self.assertNotIn('"goal": "选科"', assembly.core_prompt)
         self.assertNotIn('"global": {\n    "grade": "高一"\n  }', assembly.core_prompt)
-        self.assertEqual(state.status_flags["_fact_prompt_projection"]["deduplicated_memory_fact_count"], 1)
+        self.assertTrue(state.status_flags["_fact_prompt_projection"]["memory_facts_excluded"])
 
     def test_specialist_prompt_does_not_include_general_chat_catalog(self) -> None:
         registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
@@ -262,6 +284,40 @@ class PromptProgressiveLoadingTest(unittest.TestCase):
         self.assertNotIn("stdin_payload", serialized)
         self.assertNotIn("secret", serialized)
         self.assertEqual(sanitized["execution_outputs"], [{"ok": True, "result": {"score": 88}, "error_code": ""}])
+
+    def test_script_failure_guidance_is_preserved_without_raw_process_io(self) -> None:
+        sanitized = _sanitize_ms_agent_runtime_for_prompt(
+            {
+                "execution_outputs": [
+                    {
+                        "ok": False,
+                        "script": "scripts/private_lookup.py",
+                        "stdout": '{"ok":false,"reason":"missing_input","hint":"请补充目标城市"}',
+                        "stderr": "internal traceback",
+                        "json_output": {
+                            "ok": False,
+                            "reason": "missing_input",
+                            "hint": "请补充目标城市",
+                            "debug": "must not leak",
+                        },
+                    },
+                ],
+            }
+        )
+
+        serialized = str(sanitized)
+        self.assertEqual(
+            sanitized["execution_outputs"],
+            [{
+                "ok": False,
+                "result": None,
+                "error_code": "missing_input",
+                "failure": {"reason": "missing_input", "hint": "请补充目标城市"},
+            }],
+        )
+        self.assertNotIn("private_lookup.py", serialized)
+        self.assertNotIn("internal traceback", serialized)
+        self.assertNotIn("must not leak", serialized)
 
 
 if __name__ == "__main__":

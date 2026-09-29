@@ -600,7 +600,45 @@ def test_missing_requested_skill_falls_back_to_expert_and_records_event():
     assert payload["runtime_skill_found"] is False
 
 
-def test_expert_explicit_grade_is_saved_to_session_scope_without_overwriting_profile():
+def test_expert_route_applies_model_context_updates_from_verified_user_message():
+    class RouteClient:
+        def __init__(self, source_message_id):
+            self.source_message_id = source_message_id
+
+        def complete(self, _messages, **_kwargs):
+            return json.dumps({
+                "mode": "direct_reply", "confidence": 0.9,
+                "reason": "no skill applies", "context_updates": {
+                    "identity": {"role": "parent", "source_message_id": self.source_message_id,
+                                 "evidence": "孩子", "confidence": 0.9},
+                    "facts": [{"key": "grade", "value": "四年级",
+                               "source_message_id": self.source_message_id,
+                               "evidence": "4 年级", "confidence": 0.95}],
+                },
+            })
+
+        def last_request_metrics(self):
+            return {}
+
+    definition = ExpertDefinition(
+        agent_id="route_context_expert", name="专家", rules_markdown="直接回答适用问题。", skills=(),
+    )
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={definition.agent_id: definition}), _runtime_registry())
+    context = SessionContext(profile_id="profile_001")
+    context.add_message("user", "孩子现在4 年级")
+    source_message_id = context.messages[-1]["message_id"]
+
+    decision = runtime._decide_authorized_skill(
+        definition, "孩子现在4 年级", context, RouteClient(source_message_id),
+    )
+
+    assert decision["mode"] == "direct_reply"
+    assert context.session_meta["conversation_identity"]["role"] == "parent"
+    assert context.session_facts.get_value("grade") == "四年级"
+    assert context.profile_facts.get_value("grade") is None
+
+
+def test_expert_legacy_fact_capture_hooks_do_not_guess_without_model_result():
     runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
     context = SessionContext(profile_id="profile_001")
     context.update_fact("grade", "高一", source_skill="profile", scope="profile")
@@ -608,24 +646,26 @@ def test_expert_explicit_grade_is_saved_to_session_scope_without_overwriting_pro
     runtime._capture_explicit_user_facts(context, "孩子现在五年级了", source_turn_id="turn_001")
 
     assert context.profile_facts.get_value("grade") == "高一"
-    assert context.session_facts.get_value("grade") == "五年级"
-    assert context.known_facts.get_value("grade") == "五年级"
-    assert any(event["event_type"] == "expert_explicit_fact_captured" for event in context.event_trace)
+    assert context.session_facts.get_value("grade") is None
+    assert context.known_facts.get_value("grade") == "高一"
+
+    runtime._capture_explicit_user_facts(context, "现在4 年级", source_turn_id="turn_002")
+    assert context.profile_facts.get_value("grade") == "高一"
+    assert context.session_facts.get_value("grade") is None
 
 
-def test_explicit_child_interest_is_saved_to_session_scope():
+def test_expert_does_not_regex_capture_child_interest():
     runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
     context = SessionContext(profile_id="profile_001")
 
     runtime._capture_explicit_user_facts(context, "孩子喜欢画画，可以培养什么特长？", source_turn_id="turn_001")
 
-    assert context.session_facts.get_value("interests") == ["画画"]
+    assert context.session_facts.get_value("interest_domains") is None
     assert context.profile_facts.get_value("interests") is None
-    captured = [event["payload"] for event in context.event_trace if event["event_type"] == "expert_explicit_fact_captured"]
-    assert any(item["fact_key"] == "interests" and item["scope"] == "session" for item in captured)
+    assert context.profile_facts.get_value("interest_domains") is None
 
 
-def test_recent_user_turns_restore_identity_and_interest_for_expert_handoff():
+def test_recent_user_context_hook_does_not_infer_identity_or_facts():
     runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
     context = SessionContext()
     context.add_message("user", "孩子喜欢画画可以培养什么特长？")
@@ -634,30 +674,29 @@ def test_recent_user_turns_restore_identity_and_interest_for_expert_handoff():
 
     runtime._capture_recent_user_context(context, "孩子现在初二", source_turn_id="turn_002")
 
-    assert context.session_meta["conversation_identity"]["role"] == "parent"
-    assert context.session_facts.get_value("interests") == ["画画"]
-    assert context.session_facts.get_value("grade") == "初二"
+    assert "conversation_identity" not in context.session_meta
+    assert context.session_facts.get_value("interest_domains") is None
+    assert context.session_facts.get_value("grade") is None
 
 
-def test_conversation_identity_is_branch_scoped_captured_and_correctable():
+def test_legacy_identity_hook_does_not_infer_speaker_from_keywords():
     runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
     context = SessionContext(profile_id="profile_001")
 
     runtime._capture_conversation_identity(context, "孩子喜欢画画", source_turn_id="turn_000")
-    assert context.session_meta["conversation_identity"]["role"] == "parent"
-    assert context.session_meta["conversation_identity"]["source"] == "child_reference_inference"
+    assert "conversation_identity" not in context.session_meta
 
     runtime._capture_conversation_identity(context, "我是家长，孩子现在初二", source_turn_id="turn_001")
-    assert context.session_meta["conversation_identity"]["role"] == "parent"
+    assert "conversation_identity" not in context.session_meta
     assert context.profile_facts.get_value("conversation_identity") is None
 
     runtime._capture_conversation_identity(context, "我是学生本人", source_turn_id="turn_002")
-    assert context.session_meta["conversation_identity"]["role"] == "student"
+    assert "conversation_identity" not in context.session_meta
     runtime._capture_conversation_identity(context, "孩子喜欢画画", source_turn_id="turn_003")
-    assert context.session_meta["conversation_identity"]["role"] == "student"
+    assert "conversation_identity" not in context.session_meta
 
     context.sync_active_branch()
-    assert context.profile_branches["profile_001"]["session_meta"]["conversation_identity"]["role"] == "student"
+    assert "conversation_identity" not in context.profile_branches["profile_001"]["session_meta"]
 
 
 def test_confirmed_handoff_includes_identity_facts_and_recent_context():
@@ -669,7 +708,12 @@ def test_confirmed_handoff_includes_identity_facts_and_recent_context():
     context.add_message("user", "孩子喜欢画画")
     context.add_message("assistant", "孩子现在几年级？")
     context.add_message("user", "我是家长，孩子现在初二")
-    runtime._capture_conversation_identity(context, "我是家长，孩子现在初二", source_turn_id="turn_001")
+    from hailiang_skills.core.conversation_facts import apply_model_context_updates
+    source_message_id = context.messages[-1]["message_id"]
+    apply_model_context_updates(context, {"identity": {
+        "role": "parent", "source_message_id": source_message_id,
+        "evidence": "我是家长", "confidence": 0.98,
+    }}, source="test")
     context.update_fact("grade", "初二", source_skill="test", scope="session")
     context.update_fact("interest_domains", ["画画"], source_skill="test", scope="session")
     team = teams.require("student_growth_expert_team")
@@ -729,7 +773,12 @@ def test_handoff_without_prebuilt_excerpt_uses_active_branch_history():
     context.add_message("user", "孩子喜欢画画")
     context.add_message("assistant", "孩子现在几年级？")
     context.add_message("user", "我是家长，孩子现在初二")
-    runtime._capture_conversation_identity(context, "我是家长，孩子现在初二", source_turn_id="turn_001")
+    from hailiang_skills.core.conversation_facts import apply_model_context_updates
+    source_message_id = context.messages[-1]["message_id"]
+    apply_model_context_updates(context, {"identity": {
+        "role": "parent", "source_message_id": source_message_id,
+        "evidence": "我是家长", "confidence": 0.98,
+    }}, source="test")
     context.update_fact("grade", "初二", source_skill="test", scope="session")
     team = teams.require("student_growth_expert_team")
     context.session_meta.update({
@@ -850,6 +899,121 @@ def test_expert_does_not_bypass_agent_when_decision_client_is_unavailable():
     assert not any(event["event_type"] == "expert_skill_executed" for event in context.event_trace)
 
 
+def test_expert_route_model_failure_records_safe_diagnostics():
+    class FailingRouteClient:
+        def complete(self, _messages, **_kwargs):
+            raise RuntimeError("upstream returned HTTP 503 with private response details")
+
+        def last_request_metrics(self):
+            return {}
+
+    skill_registry = _runtime_registry()
+    definition = ExpertDefinition(
+        agent_id="single_skill_expert",
+        name="单技能专家",
+        rules_markdown="仅在必要时调用技能。",
+        skills=(LockedSkill("score_improve", "v1"),),
+    )
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={definition.agent_id: definition}), skill_registry)
+    context = SessionContext()
+
+    with pytest.raises(AgentScopeRuntimeUnavailable):
+        runtime._decide_authorized_skill(definition, "我想提分", context, FailingRouteClient(), active_skill_id=None)
+
+    extraction = [e["payload"] for e in context.event_trace if e["event_type"] == "conversation_fact_extraction"][-1]
+    unavailable = [e["payload"] for e in context.event_trace if e["event_type"] == "expert_decision_unavailable"][-1]
+    assert extraction["status"] == "model_call_failed"
+    assert unavailable["reason"] == "route_model_call_failed"
+    assert unavailable["exception_type"] == "RuntimeError"
+    assert unavailable["http_status"] == 503
+    assert "private response details" not in json.dumps(context.event_trace, ensure_ascii=False)
+
+
+def test_expert_route_parser_accepts_fenced_object_with_trailing_prose():
+    raw = '```json\n{"mode":"execute_skill","skill_id":"score_improve"}\n```\n说明：{"ok":true}'
+    decision = AgentScopeExpertRuntime._parse_route_decision(raw)
+    assert decision is not None
+    assert decision["mode"] == "execute_skill"
+    assert decision["skill_id"] == "score_improve"
+
+
+def test_expert_route_recovers_malformed_model_json_once():
+    class RouteClient:
+        calls = 0
+
+        def complete(self, _messages, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return '{"mode": "direct_reply", invalid}'
+            return json.dumps({
+                "mode": "direct_reply", "skill_id": "", "candidate_skill_ids": [],
+                "scope_decision": "out_of_scope", "reason": "当前无专项任务",
+            }, ensure_ascii=False)
+
+        def last_request_metrics(self):
+            return {}
+
+    definition = ExpertDefinition(
+        agent_id="repair_expert", name="测试专家", rules_markdown="仅在必要时调用技能。",
+        skills=(LockedSkill("score_improve", "v1"),),
+    )
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={definition.agent_id: definition}), _runtime_registry())
+    context = SessionContext()
+    client = RouteClient()
+    runtime._decide_authorized_skill(definition, "你好", context, client)
+    assert client.calls == 2
+    assert any(event["event_type"] == "expert_route_json_recovered" for event in context.event_trace)
+
+
+def test_expert_route_requires_structured_facts_used_by_its_reasoning():
+    user_text = "现在是小学 4 年级"
+    context = SessionContext()
+    context.add_message("user", user_text)
+    message_id = context.messages[-1]["message_id"]
+
+    class RouteClient:
+        prompt = ""
+
+        def complete(self, messages, **_kwargs):
+            self.prompt = messages[0].content
+            return json.dumps({
+                "mode": "direct_reply",
+                "skill_id": "",
+                "candidate_skill_ids": [],
+                "confidence": 0.9,
+                "scope_decision": "out_of_scope",
+                "reason": "No Skill-specific request is established.",
+                "direct_reply_reason": "Need no route for this test.",
+                "context_updates": {
+                    "identity": None,
+                    "facts": [{
+                        "key": "grade",
+                        "value": "四年级",
+                        "source_message_id": message_id,
+                        "evidence": "小学 4 年级",
+                        "confidence": 0.98,
+                    }],
+                },
+            }, ensure_ascii=False)
+
+        def last_request_metrics(self):
+            return {}
+
+    client = RouteClient()
+    definition = ExpertDefinition(
+        agent_id="grade_capture_expert",
+        name="年级测试专家",
+        rules_markdown="仅在必要时调用技能。",
+        skills=(LockedSkill("score_improve", "v1"),),
+    )
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={definition.agent_id: definition}), _runtime_registry())
+
+    runtime._decide_authorized_skill(definition, user_text, context, client, active_skill_id=None)
+
+    assert "任何在 mode、skill_id、scope_decision 或 reason 中实际采用的用户身份/事实" in client.prompt
+    assert context.session_facts.get_value("grade") == "四年级"
+
+
 def test_expert_history_and_reply_bounds_are_configurable():
     runtime = AgentScopeExpertRuntime(
         ExpertRegistry(definitions={}),
@@ -869,8 +1033,8 @@ def test_expert_history_and_reply_bounds_are_configurable():
     history = runtime._expert_history_messages(context)
 
     assert history == [
-        {"role": "assistant", "content": "第一轮专"},
-        {"role": "user", "content": "第二轮用"},
+        {"role": "assistant", "message_id": "", "turn_id": "", "content": "第一轮专"},
+        {"role": "user", "message_id": "", "turn_id": "", "content": "第二轮用"},
     ]
     assert len(runtime._expert_conversation_history(context)) <= 10
     assert len(runtime._limit_reply("x" * 2_001)) == 2_000

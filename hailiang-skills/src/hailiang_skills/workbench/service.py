@@ -982,6 +982,14 @@ class WorkbenchService:
             db.commit()
             return self._debug_dict(row)
 
+    def get_revision_test_session(self, debug_session_id: str) -> dict[str, Any]:
+        """Return the latest persisted candidate transcript and execution trace."""
+        with self.session_factory() as db:
+            row = db.get(WorkbenchDebugSessionRow, debug_session_id)
+            if row is None:
+                raise WorkbenchError("修订测试会话不存在", code="DEBUG_SESSION_NOT_FOUND")
+            return self._debug_dict(row)
+
     def run_revision_test_turn(
         self,
         debug_session_id: str,

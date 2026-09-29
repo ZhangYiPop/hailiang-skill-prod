@@ -339,6 +339,8 @@ def _build_prompt_assembly(
         "【强制规则】Runtime Facts 中非空的事实已经由可信上游确认，必须直接使用，绝不可再次向用户索取。"
         "这条规则优先于 Skill Instructions 中的首次开场、示例问句或固定问诊话术：例如 Runtime Facts 已有 grade 时，绝不能再问孩子几年级。"
         "只能追问当前回答确实需要、且 Runtime Facts 中为空的事实。\n"
+        "当前 Skill 的 runtime_skill_progress.collected_inputs 是该工作流已从用户对话中收集的输入；继续流程时必须复用，不能再次询问。"
+        "若用户后来明确更正，以最新用户消息为准并更新该输入。\n"
         f"{response_style_instruction()}\n"
         "If a concrete path, school, province policy, or detailed planning request is not supported by matched local assets, do not guess. "
         f"Use this fallback style instead: {FALLBACK_MESSAGE}\n\n",
@@ -1043,10 +1045,26 @@ def _script_execution_results_for_prompt(value: object) -> list[dict[str, object
         result = item.get("return_value")
         if result is None:
             result = item.get("json_output")
+        succeeded = item.get("ok") is True
+        if succeeded:
+            results.append({"ok": True, "result": result, "error_code": ""})
+            continue
+
+        failure: dict[str, str] = {}
+        if isinstance(result, dict):
+            for key in ("reason", "hint", "message", "required_input"):
+                value_text = result.get(key)
+                if isinstance(value_text, str) and value_text.strip():
+                    failure[key] = value_text.strip()[:500]
+            for key in ("missing", "missing_fields"):
+                missing = result.get(key)
+                if isinstance(missing, list):
+                    failure[key] = ", ".join(str(entry)[:80] for entry in missing[:12])[:500]
         results.append({
-            "ok": bool(item.get("ok")),
-            "result": result if item.get("ok") is not False else None,
-            "error_code": "script_execution_failed" if item.get("ok") is False else "",
+            "ok": False,
+            "result": None,
+            "error_code": str(failure.get("reason") or item.get("error_code") or "script_execution_failed")[:120],
+            "failure": failure,
         })
     return results
 
