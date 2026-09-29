@@ -4,8 +4,10 @@ Native Questionnaire already has stable question ids.  Runtime Skills that
 collect information in ordinary prose do not, so they need a conservative
 platform-level guard as well.  This module deliberately does not try to
 understand business stages: it only remembers questions asked by the active
-Skill and marks one answered when the user's message contains one of the
-question's explicit alternatives (or a high-confidence yes/no answer).
+Skill and marks one answered either from explicit alternatives (or a
+high-confidence yes/no answer), or from the runtime's separately validated
+semantic current-turn resolver.  It deliberately does not infer business
+facts: it retains the user's evidence as Skill-local question state.
 """
 
 from __future__ import annotations
@@ -241,6 +243,12 @@ def record_volunteered_answers(state: Any, skill_id: str, decisions: list[dict[s
             "question": str(decision.get("question") or ""),
             "answer": str(decision.get("evidence") or ""),
             "source_message_id": str(decision.get("source_message_id") or ""),
+            "answer_source": "semantic" if decision.get("confidence") is not None else "historical_audit",
+            **(
+                {"confidence": float(decision["confidence"])}
+                if decision.get("confidence") is not None
+                else {}
+            ),
         }
     ledger["asked"] = list(asked.values())[-24:]
     ledger["answered"] = list(answered.values())[-24:]

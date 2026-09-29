@@ -49,6 +49,8 @@ from hailiang_skills.runtime_bridge.main_planner import (
     _validated_skill_input_evidence,
     _validated_volunteered_answer_audit,
     _normalize_runtime_planner_response,
+    _normalize_planner_script_inputs,
+    _merge_planned_script_input,
     _reply_progress_contract,
     _script_result_fingerprint,
     _is_script_result_followup,
@@ -59,7 +61,11 @@ from hailiang_skills.runtime_bridge.facts import (
     sync_context_to_runtime_state,
     sync_runtime_state_to_context,
 )
-from hailiang_skills.runtime_bridge.question_progress import extract_questions, question_ledger_projection
+from hailiang_skills.runtime_bridge.question_progress import (
+    extract_questions,
+    question_ledger_projection,
+    record_assistant_questions,
+)
 from hailiang_skills.skills.admission import AdmissionSkill
 from hailiang_skills.skills.base import SkillResult
 from hailiang_skills.skills.chat import ChatSkill
@@ -545,6 +551,62 @@ class RuntimeBridgeTest(unittest.TestCase):
             saved_evidence=evidence,
         )["evidence"], "现在也没有报班")
 
+    def test_semantic_current_turn_answer_is_recorded_before_skill_planning(self) -> None:
+        context = SessionContext(session_id="semantic-current-turn")
+        context.add_message("assistant", "孩子以前学过什么特长吗？")
+        context.add_message("user", "孩子之前没有学过任何特长")
+        state = SessionState(session_id=context.session_id, active_skill_id="specialty_middle")
+        record_assistant_questions(state, "specialty_middle", context.messages[0]["content"])
+
+        class SemanticClient:
+            def complete(self, messages, *, logger=None, request_purpose=""):
+                del logger
+                assert request_purpose == "semantic_question_answer_resolution"
+                question_id = json.loads(messages[-1].content)["unresolved_questions"][0]["question_id"]
+                return json.dumps({"decisions": [{
+                    "question_id": question_id, "verdict": "answered", "confidence": 0.96,
+                    "evidence": "孩子之前没有学过任何特长", "clarification_question": "",
+                }]}, ensure_ascii=False)
+
+        orchestrator = object.__new__(MainPlannerOrchestrator)
+        logger = RuntimeLogger(Path(tempfile.gettempdir()) / "hailiang_semantic_answer.jsonl", context.session_id)
+        result = orchestrator._resolve_semantic_question_answers(
+            state=state, skill_name="specialty_middle", user_message="孩子之前没有学过任何特长",
+            client=SemanticClient(), logger=logger, context=context,
+        )
+
+        self.assertEqual(result["status"], "resolved")
+        projection = question_ledger_projection(state, "specialty_middle")
+        self.assertEqual(len(projection["answered"]), 1)
+        self.assertEqual(projection["answered"][0]["answer"], "孩子之前没有学过任何特长")
+
+    def test_semantic_ambiguous_answer_returns_only_minimal_clarification(self) -> None:
+        context = SessionContext(session_id="semantic-ambiguous")
+        context.add_message("assistant", "孩子以前学过兴趣班吗？")
+        context.add_message("user", "现在没有报班")
+        state = SessionState(session_id=context.session_id, active_skill_id="interest_primary")
+        record_assistant_questions(state, "interest_primary", context.messages[0]["content"])
+
+        class SemanticClient:
+            def complete(self, messages, *, logger=None, request_purpose=""):
+                del logger, request_purpose
+                question_id = json.loads(messages[-1].content)["unresolved_questions"][0]["question_id"]
+                return json.dumps({"decisions": [{
+                    "question_id": question_id, "verdict": "ambiguous", "confidence": 0.8,
+                    "evidence": "现在没有报班", "clarification_question": "是一直没报过，还是以前报过、现在没上？",
+                }]}, ensure_ascii=False)
+
+        orchestrator = object.__new__(MainPlannerOrchestrator)
+        logger = RuntimeLogger(Path(tempfile.gettempdir()) / "hailiang_semantic_ambiguous.jsonl", context.session_id)
+        result = orchestrator._resolve_semantic_question_answers(
+            state=state, skill_name="interest_primary", user_message="现在没有报班",
+            client=SemanticClient(), logger=logger, context=context,
+        )
+
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(result["clarification"], "是一直没报过，还是以前报过、现在没上？")
+        self.assertFalse(question_ledger_projection(state, "interest_primary")["answered"])
+
     def test_volunteered_pre_expert_answer_blocks_later_experience_questions(self) -> None:
         context = SessionContext(session_id="pre_expert_experience")
         context.add_message("user", "孩子比较文静，也没有上过辅导班兴趣班之类的")
@@ -640,10 +702,9 @@ class RuntimeBridgeTest(unittest.TestCase):
         self.assertEqual(result, draft)
         self.assertNotIn(current_id, client.audited_ids)
 
-    def test_failed_volunteered_answer_rewrite_retries_and_keeps_staged_progress(self) -> None:
+    def test_final_reply_guard_retries_from_semantically_resolved_question_ledger(self) -> None:
         context = SessionContext(session_id="volunteered-rewrite-recovery")
         context.add_message("user", "孩子从没上过兴趣班")
-        source_id = context.messages[-1]["message_id"]
         context.add_message("assistant", "请先回答测评题")
         context.add_message("user", "ABBCBBBC")
         draft = "为了给您建议，孩子以前学过哪些兴趣班？"
@@ -651,18 +712,12 @@ class RuntimeBridgeTest(unittest.TestCase):
         class AuditClient:
             rewrite_calls = 0
 
-            def complete(self, messages, *, logger=None, request_purpose=""):
-                del logger, request_purpose
-                question_id = json.loads(messages[-1].content)["draft_questions"][0]["question_id"]
-                return json.dumps({"decisions": [{
-                    "question_id": question_id, "verdict": "answered",
-                    "source_message_id": source_id, "evidence": "从没上过兴趣班",
-                }]}, ensure_ascii=False)
-
             def complete_with_tools(self, *_args, **_kwargs):
                 self.rewrite_calls += 1
-                response = draft if self.rewrite_calls == 1 else "测评和经历信息已经收齐，建议先体验围棋入门课，再观察孩子是否愿意持续学习。"
-                return AssistantTurnResult(final_text=response, tool_mode="none")
+                return AssistantTurnResult(
+                    final_text="测评和经历信息已经收齐，建议先体验围棋入门课，再观察孩子是否愿意持续学习。",
+                    tool_mode="none",
+                )
 
         state = SessionState(
             session_id=context.session_id, active_skill_id="interest_primary",
@@ -673,6 +728,14 @@ class RuntimeBridgeTest(unittest.TestCase):
             "stage_label": "结论输出", "next_action": "输出兴趣班建议",
             "pending_topics": [], "resolved_topics": ["兴趣班经历"],
         })
+        record_assistant_questions(state, "interest_primary", draft)
+        question_id = question_ledger_projection(state, "interest_primary")["unresolved"][0]["question_id"]
+        state.status_flags["runtime_question_ledger"]["interest_primary"]["answered"] = [{
+            "question_id": question_id,
+            "question": "孩子以前学过哪些兴趣班",
+            "answer": "孩子从没上过兴趣班",
+        }]
+        state.status_flags["runtime_question_ledger"]["interest_primary"]["unresolved"] = []
         client = AuditClient()
         orchestrator = object.__new__(MainPlannerOrchestrator)
         logger = RuntimeLogger(Path(tempfile.gettempdir()) / "hailiang_test_rewrite_recovery.jsonl", context.session_id)
@@ -685,11 +748,10 @@ class RuntimeBridgeTest(unittest.TestCase):
         )
 
         self.assertIn("建议先体验围棋入门课", reply)
-        self.assertEqual(client.rewrite_calls, 2)
+        self.assertEqual(client.rewrite_calls, 1)
         self.assertEqual(outcome["retry_count"], 1)
-        self.assertEqual(outcome["contract"]["expected_action"], "complete_current_stage")
+        self.assertEqual(outcome["contract"]["expected_action"], "answer_or_minimal_clarification")
         self.assertIn("_pending_skill_progress_transaction", state.status_flags)
-        self.assertNotIn("_volunteered_answer_audit_failed", state.status_flags)
         orchestrator._finalize_skill_progress(
             context, state, "interest_primary", accepted=True, reason="test_reply_validated",
         )
@@ -1051,7 +1113,7 @@ class RuntimeBridgeTest(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(
             state.status_flags["ms_agent_clarification_reply"],
-            "您之前说‘现在也没有报班’。是一直没报过班，还是以前报过、目前没在上？",
+            "为了避免理解偏差，想确认一下：是一直没报过班，还是以前报过、目前没在上？",
         )
         self.assertEqual(
             state.status_flags["runtime_skill_progress"][bundle.contract.skill_id]["input_evidence"]["existing_classes"]["source_message_id"],
@@ -1287,6 +1349,25 @@ class RuntimeBridgeTest(unittest.TestCase):
         self.assertEqual(payload["required_scripts"], ["pick_profession.py"])
         self.assertEqual(payload["required_references"], ["copywriting.md"])
         self.assertEqual(payload["plan_summary"], "recovered partial lazy load plan")
+
+    def test_planner_script_inputs_preserve_action_without_replacing_server_context(self) -> None:
+        inputs = _normalize_planner_script_inputs({
+            "scripts/skill_tools.py": {"action": "starting_steps", "parameters": {"direction": "素描"}},
+            "../escape.py": {"action": "ignored"},
+        })
+        self.assertEqual(set(inputs), {"scripts/skill_tools.py"})
+        payload = _merge_planned_script_input(
+            {
+                "session_id": "server-session",
+                "facts": {"grade": "初二"},
+                "parameters": {"grade": "初二"},
+            },
+            inputs["scripts/skill_tools.py"],
+        )
+        self.assertEqual(payload["action"], "starting_steps")
+        self.assertEqual(payload["parameters"]["direction"], "素描")
+        self.assertEqual(payload["session_id"], "server-session")
+        self.assertEqual(payload["facts"], {"grade": "初二"})
 
     def test_incremental_assistant_message_extractor_handles_fragmented_json_escapes(self) -> None:
         extractor = _IncrementalAssistantMessageExtractor()
