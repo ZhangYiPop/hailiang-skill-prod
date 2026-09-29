@@ -6198,7 +6198,6 @@ class MainPlannerOrchestrator:
             and runtime_client is not None
             and not questionnaire_enabled(current_bundle)
             and runtime_state.active_skill_id not in {GENERAL_CHAT_ID, EXPERT_DIRECT_EXECUTION_ID}
-            and not question_reconciliation.get("changed")
         ):
             semantic_resolution = self._resolve_semantic_question_answers(
                 state=runtime_state,
