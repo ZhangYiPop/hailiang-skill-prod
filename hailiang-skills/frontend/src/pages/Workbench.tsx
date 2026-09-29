@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Activity,
   Archive,
@@ -472,6 +480,14 @@ export default function Workbench() {
   const debugTargetInitialized = useRef(false);
   const candidateStreamAbortRef = useRef<AbortController | null>(null);
   const candidateLastSeqRef = useRef<Record<string, number>>({});
+  const [debugZoneWidth, setDebugZoneWidth] = useState(() => {
+    try {
+      const saved = Number(window.localStorage.getItem("hailiang.workbench.debug-zone-width"));
+      return Number.isFinite(saved) && saved >= 360 && saved <= 900 ? saved : 420;
+    } catch {
+      return 420;
+    }
+  });
   const [revisionTestSession, setRevisionTestSession] =
     useState<RevisionTestSession | null>(null);
   const [candidateInputPrefill, setCandidateInputPrefill] = useState("");
@@ -495,6 +511,36 @@ export default function Workbench() {
     null,
   );
   const [pendingAssets, setPendingAssets] = useState<EditableSkillFile[]>([]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("hailiang.workbench.debug-zone-width", String(debugZoneWidth));
+    } catch {
+      // A privacy-restricted browser can reject local storage. Resizing still
+      // works for the current page lifetime.
+    }
+  }, [debugZoneWidth]);
+
+  function clampDebugZoneWidth(width: number) {
+    const maximum = Math.max(360, Math.min(900, window.innerWidth - 420));
+    return Math.round(Math.max(360, Math.min(maximum, width)));
+  }
+
+  function startDebugZoneResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (window.innerWidth < 1280) return;
+    event.preventDefault();
+    const move = (pointerEvent: PointerEvent) => {
+      setDebugZoneWidth(clampDebugZoneWidth(window.innerWidth - pointerEvent.clientX));
+    };
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  }
 
   const loadAll = useCallback(async () => {
     try {
@@ -1935,7 +1981,10 @@ export default function Workbench() {
   }
 
   return (
-    <main className="workbench-shell min-h-screen bg-[#07101d] text-slate-100">
+    <main
+      className="workbench-shell min-h-screen bg-[#07101d] text-slate-100"
+      style={{ "--debug-zone-width": `${debugZoneWidth}px` } as CSSProperties}
+    >
       <div className="flex min-h-screen">
         <aside className="workbench-sidebar hidden w-[248px] shrink-0 border-r border-white/10 bg-[#091422] p-5 lg:flex lg:flex-col">
           <div className="flex items-center gap-3 px-2">
@@ -2050,7 +2099,7 @@ export default function Workbench() {
 
           {notice ? (
             <div
-              className={`mx-5 mt-5 flex items-center justify-between rounded-2xl border px-4 py-3 text-sm lg:mx-8 ${notice.tone === "ok" ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100" : "border-rose-400/20 bg-rose-400/10 text-rose-100"}`}
+              className={`mx-5 mt-5 flex items-center justify-between rounded-2xl border px-4 py-3 text-sm lg:mx-8 ${section === "evaluation" ? "xl:mr-[calc(var(--debug-zone-width)+24px)]" : ""} ${notice.tone === "ok" ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100" : "border-rose-400/20 bg-rose-400/10 text-rose-100"}`}
             >
               <span>{notice.text}</span>
               <button type="button" onClick={() => setNotice(null)}>
@@ -2696,7 +2745,7 @@ export default function Workbench() {
           ) : null}
 
           {section === "evaluation" ? (
-            <section className="p-5 lg:p-8 xl:pr-[26vw]">
+            <section className="p-5 lg:p-8 xl:pr-[calc(var(--debug-zone-width)+24px)]">
               <div className="mx-auto max-w-7xl">
                 <div className="grid gap-5 md:grid-cols-3">
                   <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-5">
@@ -2785,7 +2834,25 @@ export default function Workbench() {
                   </div>
                 </div>
                 <div className="mt-6 grid gap-6">
-                  <div className="order-1 rounded-3xl border border-white/10 bg-white/[0.025] p-6 xl:fixed xl:bottom-0 xl:right-0 xl:top-[82px] xl:z-30 xl:flex xl:w-[25vw] xl:flex-col xl:rounded-none xl:border-y-0 xl:border-r-0 xl:border-l xl:border-white/10 xl:bg-[#091422] xl:p-5 xl:shadow-2xl">
+                  <div className="order-1 rounded-3xl border border-white/10 bg-white/[0.025] p-6 xl:fixed xl:bottom-0 xl:right-0 xl:top-[82px] xl:z-30 xl:flex xl:w-[var(--debug-zone-width)] xl:flex-col xl:rounded-none xl:border-y-0 xl:border-r-0 xl:border-l xl:border-white/10 xl:bg-[#091422] xl:p-5 xl:shadow-2xl">
+                    <button
+                      type="button"
+                      aria-label="拖动调整候选修订手动测试区域宽度"
+                      title="拖动调整宽度；键盘左右方向键也可调整"
+                      onPointerDown={startDebugZoneResize}
+                      onKeyDown={(event) => {
+                        if (event.key === "ArrowLeft") {
+                          event.preventDefault();
+                          setDebugZoneWidth((current) => clampDebugZoneWidth(current + 24));
+                        } else if (event.key === "ArrowRight") {
+                          event.preventDefault();
+                          setDebugZoneWidth((current) => clampDebugZoneWidth(current - 24));
+                        }
+                      }}
+                      className="absolute -left-3 top-1/2 hidden h-24 w-3 -translate-y-1/2 cursor-col-resize touch-none rounded-l border border-r-0 border-sky-300/20 bg-[#0c1d30] text-sky-200 shadow-lg outline-none hover:bg-sky-400/15 focus-visible:ring-2 focus-visible:ring-sky-300 xl:flex xl:items-center xl:justify-center"
+                    >
+                      <span aria-hidden="true" className="text-sm leading-none">⋮</span>
+                    </button>
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="text-xs uppercase tracking-[0.18em] text-sky-300">Debug Zone</p>
