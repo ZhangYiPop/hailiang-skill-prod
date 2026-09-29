@@ -21,7 +21,7 @@ type SkillFileKind = "reference" | "asset" | "script";
 type Props = {
   files: EditableSkillFile[];
   onChange: (files: EditableSkillFile[]) => void;
-  onUpload: (files: FileList | null, kind: "reference" | "asset") => Promise<void>;
+  onUpload: (files: FileList | null, kind: SkillFileKind) => Promise<void>;
 };
 
 function decodeText(value: string): string {
@@ -160,13 +160,17 @@ export function SkillFilesEditor({ files, onChange, onUpload }: Props) {
         </div>
         <label className="cursor-pointer rounded-xl border border-white/10 px-3 py-2 text-xs text-slate-300 hover:text-white">
           <Upload className="mr-1.5 inline" size={14} />
-          {newKind === "asset" ? "上传本地 asset" : "上传引用文档"}
+          {newKind === "script"
+            ? "上传 Python 脚本"
+            : newKind === "asset"
+              ? "上传本地 asset"
+              : "上传引用文档"}
           <input
             type="file"
             multiple
             className="hidden"
             onChange={(event) => {
-              void onUpload(event.target.files, newKind === "asset" ? "asset" : "reference");
+              void onUpload(event.target.files, newKind);
               event.currentTarget.value = "";
             }}
           />

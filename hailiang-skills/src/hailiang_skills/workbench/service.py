@@ -313,6 +313,22 @@ class WorkbenchService:
         leaf = PurePosixPath(source_path).name
         object_type = "expert_team" if leaf == "TEAM.md" else "expert" if leaf == "AGENT.md" else "skill"
         descriptor: dict[str, Any] = {}
+        # A recursively exported workbench package is also a useful input for
+        # this preview.  Once its single object root is normalized, object.json
+        # sits beside SKILL.md/AGENT.md/TEAM.md.  Reuse only its stable display
+        # identity; release IDs and payload are deliberately not imported as
+        # authoritative configuration.
+        native_object: dict[str, Any] = {}
+        if "object.json" in files:
+            try:
+                parsed_native_object = json.loads(files["object.json"])
+                if (
+                    isinstance(parsed_native_object, dict)
+                    and str(parsed_native_object.get("object_type") or "") == object_type
+                ):
+                    native_object = parsed_native_object
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
         if object_type in {"expert", "expert_team"}:
             descriptor_name = "agent.yaml" if object_type == "expert" else "team.yaml"
             descriptor_path = PurePosixPath(source_path).with_name(descriptor_name).as_posix()
@@ -332,11 +348,12 @@ class WorkbenchService:
             or descriptor.get("expert_team_id")
             or descriptor.get("team_id")
             or descriptor.get("id")
+            or native_object.get("object_key")
             or PurePosixPath(source_path).parent.name
             or "imported_skill"
         )
         object_key = "".join(char if char.isalnum() or char in "_-" else "_" for char in raw_key).strip("_") or "imported_skill"
-        name = str(metadata.get("name") or descriptor.get("name") or object_key)
+        name = str(metadata.get("name") or descriptor.get("name") or native_object.get("name") or object_key)
         runtime_contract = self._standard_runtime_contract(files)
         assets = []
         blocked: list[str] = []
@@ -403,12 +420,13 @@ class WorkbenchService:
             name = str(ai_hint["name"])[:256]
         if ai_hint.get("description"):
             metadata["description"] = str(ai_hint["description"])[:2000]
+        elif native_object.get("description"):
+            metadata["description"] = str(native_object["description"])[:2000]
         warnings = [*blocked, *script_errors]
         warnings.extend(str(item) for item in ai_hint.get("review_items", []) if str(item))
         if questionnaire and not any(key in questionnaire for key in ("fields", "config_path", "config_json")):
             warnings.append("问卷定义无法映射为平台表单字段，请人工补充。")
         return {
-            "root": self._entry_debug(root),
             "source": {"entry_path": source_path, "files": sorted(files), "metadata": metadata},
             "draft": {"object_type": object_type, "object_key": object_key, "name": name, "description": str(metadata.get("description") or ""), "payload": payload, "assets": assets, "dependency_locks": []},
             "form_preview": questionnaire.get("fields", []) if isinstance(questionnaire.get("fields"), list) else [],

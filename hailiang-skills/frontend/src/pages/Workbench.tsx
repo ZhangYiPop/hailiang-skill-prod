@@ -319,6 +319,72 @@ function StatusBadge({
   );
 }
 
+/**
+ * Keep keystrokes local to the composer.  Workbench renders object lists,
+ * revision details and the full candidate transcript; keeping the draft in
+ * its page-level state makes every key press redraw all of those sections.
+ */
+function CandidateTestComposer({
+  disabled,
+  placeholder,
+  prefill,
+  prefillKey,
+  resetKey,
+  onSubmit,
+}: {
+  disabled: boolean;
+  placeholder: string;
+  prefill: string;
+  prefillKey: number;
+  resetKey: number;
+  onSubmit: (message: string) => Promise<boolean>;
+}) {
+  const [value, setValue] = useState("");
+  const lastPrefill = useRef("");
+
+  useEffect(() => {
+    setValue("");
+  }, [resetKey]);
+
+  useEffect(() => {
+    if (prefill && prefill !== lastPrefill.current) {
+      setValue(prefill);
+      lastPrefill.current = prefill;
+    }
+  }, [prefill, prefillKey]);
+
+  function submit() {
+    const message = value.trim();
+    if (!message || disabled) return;
+    setValue("");
+    void onSubmit(message).then((accepted) => {
+      if (!accepted) setValue(message);
+    }).catch(() => setValue(message));
+  }
+
+  return (
+    <>
+      <textarea
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        placeholder={placeholder}
+        rows={3}
+        disabled={disabled}
+        className="mt-4 w-full rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 outline-none focus:border-sky-400/40 disabled:opacity-40"
+      />
+      <button
+        type="button"
+        disabled={disabled || !value.trim()}
+        onClick={submit}
+        className="mt-4 inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-40"
+      >
+        <FlaskConical size={16} />
+        发送测试问题
+      </button>
+    </>
+  );
+}
+
 export default function Workbench() {
   const apiBaseUrl = getRuntimeWorkbenchApiBaseUrl();
   const { themeMode, setThemeMode } = useChatStore();
@@ -408,7 +474,9 @@ export default function Workbench() {
   const candidateLastSeqRef = useRef<Record<string, number>>({});
   const [revisionTestSession, setRevisionTestSession] =
     useState<RevisionTestSession | null>(null);
-  const [revisionTestInput, setRevisionTestInput] = useState("");
+  const [candidateInputPrefill, setCandidateInputPrefill] = useState("");
+  const [candidateInputPrefillKey, setCandidateInputPrefillKey] = useState(0);
+  const [candidateInputResetKey, setCandidateInputResetKey] = useState(0);
   const [candidateTargetExpertId, setCandidateTargetExpertId] = useState("");
   const [candidateConversationState, setCandidateConversationState] = useState<SseV2State | null>(null);
   const candidateTeamName = candidateConversationState?.expert.team.name || "未选择";
@@ -671,7 +739,8 @@ export default function Workbench() {
   function chooseTestRevision(revisionId: string) {
     setTestRevisionId(revisionId);
     setRevisionTestSession(null);
-    setRevisionTestInput("");
+    setCandidateInputPrefill("");
+    setCandidateInputResetKey((current) => current + 1);
     setCandidateTargetExpertId("");
     setCandidateConversationState(null);
     candidateLastSeqRef.current = {};
@@ -880,7 +949,8 @@ export default function Workbench() {
     setTestRevisionId(revision?.revision_id ?? "");
     setDebugReleaseId(release?.release_id ?? "");
     setRevisionTestSession(null);
-    setRevisionTestInput("");
+    setCandidateInputPrefill("");
+    setCandidateInputResetKey((current) => current + 1);
     setEvaluationRun(null);
     setDebugEvidenceId("");
     setDebugComplete(false);
@@ -1229,7 +1299,7 @@ export default function Workbench() {
     reader.readAsText(file);
   }
 
-  async function addAssets(files: FileList | null, kind: "reference" | "asset") {
+  async function addAssets(files: FileList | null, kind: "reference" | "asset" | "script") {
     if (!files) return;
     const next = await Promise.all(
       Array.from(files).map(async (file) => {
@@ -1242,8 +1312,8 @@ export default function Workbench() {
           );
         }
         return {
-          relative_path: `${kind === "asset" ? "assets" : "references"}/${file.name}`,
-          media_type: file.type || "application/octet-stream",
+          relative_path: `${kind === "script" ? "scripts" : kind === "asset" ? "assets" : "references"}/${file.name}`,
+          media_type: kind === "script" ? "text/x-python" : file.type || "application/octet-stream",
           content_base64: btoa(binary),
           size: file.size,
         };
@@ -1264,12 +1334,8 @@ export default function Workbench() {
     teamHandoffSelection?: { source_message_id: string; handoff_id: string; target_expert_id: string; team_id?: string; mention_name?: string },
     expertSelection?: { target_expert_id: string },
   ) {
-    const message = (submittedInput ?? revisionTestInput).trim();
-    if (!actor || !selectedTestRevision || (!message && !formSubmission && !teamHandoffSelection && !expertSelection)) return;
-    // Clear at submission time so a slow SSE response cannot make the sent
-    // question appear duplicated in the editor.
-    const editorValueBeforeSubmit = revisionTestInput;
-    setRevisionTestInput("");
+    const message = (submittedInput ?? "").trim();
+    if (!actor || !selectedTestRevision || (!message && !formSubmission && !teamHandoffSelection && !expertSelection)) return false;
     setBusy(true);
     let streamAbortController: AbortController | null = null;
     try {
@@ -1381,22 +1447,18 @@ export default function Workbench() {
         tone: "ok",
         text: `已按 r${selectedTestRevision.revision_no} 的候选快照完成测试。`,
       });
+      return true;
     } catch (error) {
       // Stopping a candidate turn intentionally aborts this browser-side SSE
       // reader. It is not a user-visible request failure.
       if (streamAbortController?.signal.aborted) {
-        if (!formSubmission && !teamHandoffSelection && !expertSelection && !revisionTestInput) {
-          setRevisionTestInput(editorValueBeforeSubmit);
-        }
-        return;
-      }
-      if (!formSubmission && !teamHandoffSelection && !expertSelection && !revisionTestInput) {
-        setRevisionTestInput(editorValueBeforeSubmit);
+        return false;
       }
       setNotice({
         tone: "error",
         text: error instanceof Error ? error.message : "候选修订测试失败",
       });
+      return false;
     } finally {
       const ownsStream = candidateStreamAbortRef.current === streamAbortController;
       if (ownsStream) {
@@ -2792,7 +2854,10 @@ export default function Workbench() {
                                       <MessageBlocksRenderer
                                         messageId={item.message_id || `${revisionTestSession.debug_session_id}-${index}`}
                                         blocks={blocks.filter((block) => block.type !== "team_handoff") as MessageBlock[]}
-                                        onPathAction={(pathName, description) => setRevisionTestInput(description || pathName)}
+                                        onPathAction={(pathName, description) => {
+                                          setCandidateInputPrefill(description || pathName);
+                                          setCandidateInputPrefillKey((current) => current + 1);
+                                        }}
                                         onSubmitFactForm={submitCandidateFactForm}
                                         interactionStates={interactionStates as Record<string, MessageInteractionState>}
                                       />
@@ -2862,23 +2927,19 @@ export default function Workbench() {
                         专家转交卡片仍待确认。你可以继续输入问题；文字只会由当前主协调专家处理，不会因此切换专家。需要切换时请点击卡片。
                       </p>
                     ) : null}
-                    <textarea
-                      value={revisionTestInput}
-                      onChange={(event) => setRevisionTestInput(event.target.value)}
-                      placeholder={selectedTestRevision ? `向 r${selectedTestRevision.revision_no} 输入测试问题…` : "请先选择要测试的修订"}
-                      rows={3}
+                    <CandidateTestComposer
                       disabled={!selectedTestRevision || busy}
-                      className="mt-4 w-full rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 outline-none focus:border-sky-400/40 disabled:opacity-40"
+                      placeholder={selectedTestRevision ? `向 r${selectedTestRevision.revision_no} 输入测试问题…` : "请先选择要测试的修订"}
+                      prefill={candidateInputPrefill}
+                      prefillKey={candidateInputPrefillKey}
+                      resetKey={candidateInputResetKey}
+                      onSubmit={(message) => runRevisionTestTurn(
+                        message,
+                        undefined,
+                        undefined,
+                        candidateTargetExpert ? { target_expert_id: candidateTargetExpert.expert_id } : undefined,
+                      )}
                     />
-                    <button
-                      type="button"
-                      disabled={!selectedTestRevision || !revisionTestInput.trim() || busy}
-                      onClick={() => void runRevisionTestTurn(undefined, undefined, undefined, candidateTargetExpert ? { target_expert_id: candidateTargetExpert.expert_id } : undefined)}
-                      className="mt-4 inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-40"
-                    >
-                      <FlaskConical size={16} />
-                      发送测试问题
-                    </button>
                   </div>
                   <div className="order-2 rounded-3xl border border-white/10 bg-white/[0.025] p-6">
                     <div className="flex flex-wrap items-center justify-between gap-4">
