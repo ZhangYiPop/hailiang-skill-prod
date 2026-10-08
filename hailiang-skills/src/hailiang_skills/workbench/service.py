@@ -1702,6 +1702,11 @@ class WorkbenchService:
         # Candidate transcripts are also read through the v2 compatibility
         # projection. Existing debug data is retained as-is.
         context.session_meta["context_contract_version"] = 2
+        # Candidate revision tests are explicit diagnostics. Keep prompt
+        # assembly events in plaintext for this isolated workbench session so
+        # exported evidence can explain exactly what was sent to each model
+        # phase. Formal chat/session telemetry keeps its normal redaction.
+        context.session_meta["workbench_candidate_test"] = True
         context.session_meta.setdefault("_candidate_branch_version", 1)
         self._configure_snapshot_context(context, snapshot)
         runtime_state = context.skill_states.get("skill_runtime")
@@ -2463,6 +2468,8 @@ class WorkbenchService:
         required_references: set[str] = set()
         selected_references: set[str] = set()
         skill_progress: dict[str, Any] = {}
+        fact_collection: dict[str, Any] = {}
+        question_units: list[dict[str, Any]] = []
         script_runs: list[dict[str, Any]] = []
         expert_routing: dict[str, Any] = {}
         execution_error: dict[str, Any] = {}
@@ -2480,11 +2487,27 @@ class WorkbenchService:
             "first_token_ms": None,
         }
         reply_progress: dict[str, Any] = {}
+        prompt_trace: list[dict[str, Any]] = []
         for event in turn_events:
             if not isinstance(event, dict):
                 continue
             event_type = str(event.get("event_type") or "")
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            if event_type == "prompt_assembly":
+                prompt_trace.append({
+                    "phase": str(payload.get("phase") or ""),
+                    "layer": str(payload.get("layer") or ""),
+                    "title": str(payload.get("prompt_title") or ""),
+                    "prompt_key": str(payload.get("prompt_key") or ""),
+                    "prompt": str(payload.get("prompt_content") or ""),
+                    "messages": copy.deepcopy(
+                        ((payload.get("variables") or {}).get("messages") or [])
+                        if isinstance(payload.get("variables"), dict) else []
+                    ),
+                    "response": copy.deepcopy(payload.get("llm_response")),
+                    "reasoning": str(payload.get("llm_reasoning") or ""),
+                    "timestamp": str(payload.get("timestamp") or ""),
+                })
             if event_type == "expert_skill_route_selected":
                 expert_routing = {
                     "mode": str(payload.get("mode") or ""),
@@ -2528,7 +2551,7 @@ class WorkbenchService:
                     "reason": str(payload.get("reason") or "")[:800],
                     "exception_type": str(payload.get("exception_type") or ""),
                 }
-            if event_type == "runtime_skill_progress_updated":
+            if event_type in {"runtime_skill_progress_updated", "skill_progress_staged"}:
                 skill_progress = {
                     "stage_label": str(payload.get("stage_label") or ""),
                     "confirmed_fact_keys": list(payload.get("confirmed_fact_keys") or []),
@@ -2536,6 +2559,43 @@ class WorkbenchService:
                     "pending_topics": list(payload.get("pending_topics") or []),
                     "next_action": str(payload.get("next_action") or ""),
                 }
+            if event_type == "skill_confirmed_facts_collected":
+                fact_collection = {
+                    # Candidate diagnostics keep the exact facts extracted
+                    # from the current user message; formal telemetry still
+                    # receives the normal redacted event payload.
+                    "confirmed_facts": copy.deepcopy(payload.get("confirmed_facts") or {}),
+                    "confirmed_fact_keys": list(payload.get("confirmed_fact_keys") or []),
+                    "new_confirmed_fact_keys": list(payload.get("new_confirmed_fact_keys") or []),
+                    "cumulative_confirmed_fact_keys": list(payload.get("cumulative_confirmed_fact_keys") or []),
+                    "rejected_fact_keys": list(payload.get("rejected_fact_keys") or []),
+                    "rejection_reasons": dict(payload.get("rejection_reasons") or {}),
+                    "deferred_ambiguous_fact_keys": list(payload.get("deferred_ambiguous_fact_keys") or []),
+                    "source_type": str(payload.get("source_type") or ""),
+                }
+            if event_type == "skill_collected_inputs_classified":
+                fact_collection["working_input_keys"] = list(payload.get("working_input_keys") or [])
+                fact_collection["promoted_fact_keys"] = list(payload.get("promoted_fact_keys") or [])
+                fact_collection["skill_local_input_keys"] = list(payload.get("skill_local_input_keys") or [])
+            if event_type in {
+                "skill_question_unit_registered",
+                "skill_question_unit_partial",
+                "skill_question_unit_resolved",
+                "skill_question_unit_degraded",
+            }:
+                question_units.append({
+                    "event_type": event_type,
+                    "timestamp": event.get("timestamp") or event.get("created_at"),
+                    "skill_id": str(payload.get("skill_id") or skill_id),
+                    "unit_id": str(payload.get("unit_id") or ""),
+                    "stage": str(payload.get("stage") or ""),
+                    "status": str(payload.get("status") or ""),
+                    "text": str(payload.get("text") or payload.get("question") or ""),
+                    "answer": str(payload.get("answer") or ""),
+                    "followup": str(payload.get("followup") or ""),
+                    "classification": str(payload.get("classification") or ""),
+                    "reason": str(payload.get("reason") or ""),
+                })
             if event_type == "runtime_llm_timing":
                 phase = str(payload.get("phase") or "")
                 duration = payload.get("duration_ms")
@@ -2554,6 +2614,14 @@ class WorkbenchService:
                 "script_result_pending_presentation",
                 "script_result_presented",
                 "script_result_reused",
+                "turn_context_snapshot_composed",
+                "fact_question_target_resolved",
+                "confirmed_fact_reask_blocked",
+                "skill_methodology_projection_used",
+                "reply_context_guard_evaluated",
+                "reply_context_guard_blocked",
+                "reply_context_guard_retried",
+                "reply_context_guard_degraded",
             }:
                 reply_progress.setdefault("events", []).append({
                     "event_type": event_type,
@@ -2567,6 +2635,16 @@ class WorkbenchService:
                     "reason": str(payload.get("reason") or ""),
                     "same_user_message_streak": payload.get("same_user_message_streak"),
                     "repeated_user_turn_allowed": payload.get("repeated_user_turn_allowed"),
+                    "matched_fact_keys": list(payload.get("matched_fact_keys") or payload.get("fact_keys") or []),
+                    "question_count": payload.get("question_count"),
+                    "status": str(payload.get("status") or ""),
+                    "fallback": str(payload.get("fallback") or ""),
+                    "contract_hash": str(payload.get("contract_hash") or payload.get("methodology_contract_hash") or ""),
+                    "stage_id": str(payload.get("stage_id") or ""),
+                    "rule_count": payload.get("rule_count") or payload.get("methodology_rule_count"),
+                    "effective_fact_count": payload.get("effective_fact_count"),
+                    "confirmed_fact_key_count": payload.get("confirmed_fact_key_count"),
+                    "fact_source_counts": dict(payload.get("fact_source_counts") or {}),
                 })
             if event_type in {
                 "reference_context",
@@ -2695,7 +2773,10 @@ class WorkbenchService:
                 ],
             },
             "skill_progress": skill_progress,
+            "fact_collection": fact_collection,
+            "question_units": question_units,
             "reply_progress": reply_progress,
+            "prompts": prompt_trace,
             "expert_routing": expert_routing,
             "execution_error": execution_error,
             "scripts": script_runs,

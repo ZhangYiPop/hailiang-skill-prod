@@ -54,6 +54,28 @@ def test_answered_question_is_detected_in_a_later_draft():
     assert repeated
 
 
+def test_paraphrased_option_answer_closes_question():
+    state = SessionState(
+        session_id="question-progress-paraphrase",
+        messages=[
+            ChatMessage(
+                role="assistant",
+                content="孩子目前是单纯享受画画的过程，还是已经想往专业方向走？",
+            )
+        ],
+    )
+    record_assistant_questions(state, "specialty_middle", state.messages[0].content)
+
+    result = reconcile_user_answer(
+        state,
+        "specialty_middle",
+        "孩子是享受画画这个过程",
+    )
+
+    assert result["changed"] is True
+    assert len(question_ledger_projection(state, "specialty_middle")["answered"]) == 1
+
+
 def test_unrelated_answer_does_not_close_question():
     state = _state_with_question()
 

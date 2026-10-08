@@ -1434,10 +1434,10 @@ class AgentScopeExpertRuntime:
             f"# 最近对话\n{self._expert_conversation_history(context)}"
         )
         try:
-            raw = str(client.complete([
+            raw = self._complete_and_record(context, client, [
                 ChatMessage(role="system", content=prompt),
                 ChatMessage(role="user", content=str(user_message or "")),
-            ], request_purpose="team_handoff_semantic_fallback", max_tokens=400) or "")
+            ], request_purpose="team_handoff_semantic_fallback", max_tokens=400)
         except Exception as exc:
             self._event(context, "team_handoff_semantic_fallback_degraded", {
                 "team_id": team.team_id,
@@ -1593,7 +1593,9 @@ class AgentScopeExpertRuntime:
             messages.append(ChatMessage(role=item["role"], content=item["content"]))
         messages.append(ChatMessage(role="user", content=str(user_message or "")))
         try:
-            reply = str(client.complete(messages, request_purpose="team_coordinator_clarification") or "").strip()
+            reply = self._complete_and_record(
+                context, client, messages, request_purpose="team_coordinator_clarification",
+            ).strip()
         except Exception as exc:
             raise AgentScopeRuntimeUnavailable(f"主协调专家生成兜底回复失败: {exc}") from exc
         if not reply:
@@ -1629,7 +1631,9 @@ class AgentScopeExpertRuntime:
             messages.append(ChatMessage(role=item["role"], content=item["content"]))
         messages.append(ChatMessage(role="user", content=str(user_message or "")))
         try:
-            reply = str(client.complete(messages, request_purpose="team_member_direct_reply") or "").strip()
+            reply = self._complete_and_record(
+                context, client, messages, request_purpose="team_member_direct_reply",
+            ).strip()
         except Exception as exc:
             raise AgentScopeRuntimeUnavailable(f"团内专家生成纠正回复失败: {exc}") from exc
         if not reply:
@@ -2208,10 +2212,10 @@ class AgentScopeExpertRuntime:
             f"{inspection}\n# 最近对话\n{self._expert_conversation_history(context)}"
         )
         try:
-            raw = str(client.complete([
+            raw = self._complete_and_record(context, client, [
                 ChatMessage(role="system", content=prompt),
                 ChatMessage(role="user", content=user_message),
-            ], request_purpose="expert_authorized_skill_route") or "")
+            ], request_purpose="expert_authorized_skill_route")
         except Exception as exc:
             raise AgentScopeRuntimeUnavailable(f"专家路由模型调用失败: {exc}") from exc
         self._record_model_completion(
@@ -2426,7 +2430,9 @@ class AgentScopeExpertRuntime:
             messages = [
                 ChatMessage(role="system", content=prompt), ChatMessage(role="user", content=user_message),
             ]
-            reply = str(client.complete(messages, request_purpose="expert_direct_reply") or "").strip()
+            reply = self._complete_and_record(
+                context, client, messages, request_purpose="expert_direct_reply",
+            ).strip()
         except Exception as exc:
             raise AgentScopeRuntimeUnavailable(f"专家回复生成失败: {exc}") from exc
         if not reply:
@@ -2458,7 +2464,7 @@ class AgentScopeExpertRuntime:
                     "execution_mode": "expert_direct",
                 })
                 try:
-                    reply = str(client.complete([
+                    reply = self._complete_and_record(context, client, [
                         *messages,
                         ChatMessage(role="assistant", content=reply),
                         ChatMessage(
@@ -2468,7 +2474,7 @@ class AgentScopeExpertRuntime:
                                 "只问一个必要的澄清问题。不要提及内部路由或系统。"
                             ),
                         ),
-                    ], request_purpose="expert_direct_reply_retry") or "").strip()
+                    ], request_purpose="expert_direct_reply_retry").strip()
                     self._event(context, "reply_progress_retry", {
                         "expert_id": definition.agent_id,
                         "accepted": bool(reply and SequenceMatcher(None, normalize(reply), normalize(previous)).ratio() < 0.94),
@@ -2669,6 +2675,47 @@ class AgentScopeExpertRuntime:
         trace = getattr(context, "event_trace", None)
         if isinstance(trace, list):
             trace.append(event)
+
+    def _complete_and_record(self, context, client, messages, *, request_purpose: str, **kwargs) -> str:
+        """Record the exact Expert model exchange for isolated candidate tests."""
+        raw = str(client.complete(messages, request_purpose=request_purpose, **kwargs) or "")
+        if not (getattr(context, "session_meta", {}) or {}).get("workbench_candidate_test"):
+            return raw
+        from hailiang_skills.core.logging import make_event
+
+        serialized_messages = [
+            {
+                "role": str(getattr(item, "role", "") or ""),
+                "content": str(getattr(item, "content", "") or ""),
+                "name": getattr(item, "name", None),
+                "tool_call_id": getattr(item, "tool_call_id", None),
+            }
+            for item in messages
+        ]
+        system_prompt = next(
+            (item["content"] for item in serialized_messages if item["role"] == "system"),
+            "",
+        )
+        event = make_event(
+            "prompt_assembly",
+            {
+                "phase": request_purpose,
+                "layer": "final",
+                "prompt_key": "expert_runtime",
+                "prompt_title": "Expert Runtime Final Prompt",
+                "prompt_content": system_prompt,
+                "variables": {"messages": serialized_messages},
+                "llm_response": raw,
+            },
+            redact=False,
+        )
+        if callable(self.event_recorder):
+            self.event_recorder(context, [event])
+        else:
+            trace = getattr(context, "event_trace", None)
+            if isinstance(trace, list):
+                trace.append(event)
+        return raw
 
 
 class _HailiangChatModel:

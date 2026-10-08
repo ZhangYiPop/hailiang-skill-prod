@@ -1,6 +1,7 @@
 import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -255,9 +256,23 @@ function candidateConversationSummary(state: SseV2State): CandidateConversationS
   };
 }
 
+function compactDebugValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") return value.length > 6000 ? `${value.slice(0, 6000)}\n... (truncated)` : value;
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= 5) return "... (nested value omitted)";
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 50).map((item) => compactDebugValue(item, depth + 1));
+    return value.length > 50 ? [...items, `... (${value.length - 50} more items omitted)`] : items;
+  }
+  const entries = Object.entries(value).slice(0, 50).map(([key, item]) => [key, compactDebugValue(item, depth + 1)]);
+  const compacted = Object.fromEntries(entries);
+  if (Object.keys(value).length > 50) compacted.__truncated__ = `... (${Object.keys(value).length - 50} more fields omitted)`;
+  return compacted;
+}
+
 function debugValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
-  const rendered = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const rendered = typeof value === "string" ? compactDebugValue(value) as string : JSON.stringify(compactDebugValue(value), null, 2);
   return rendered.length > 6000 ? `${rendered.slice(0, 6000)}\n…（已截断）` : rendered;
 }
 
@@ -267,7 +282,7 @@ function traceEntityLabel(entity: CandidateTraceEntity | null | undefined, empty
   return `${entity.name || entity.object_key} (${entity.object_key})${revision}`;
 }
 
-function CandidateTurnTrace({ turn }: { turn: Record<string, unknown> }) {
+const CandidateTurnTrace = memo(function CandidateTurnTrace({ turn }: { turn: Record<string, unknown> }) {
   const debug = (turn.debug && typeof turn.debug === "object" ? turn.debug : {}) as CandidateTurnDebug;
   const events = Array.isArray(turn.events) ? turn.events as Array<Record<string, unknown>> : [];
   const references = debug.references?.used ?? [];
@@ -328,7 +343,7 @@ function CandidateTurnTrace({ turn }: { turn: Record<string, unknown> }) {
       </details>
     </div>
   );
-}
+});
 
 function StatusBadge({
   children,
@@ -425,6 +440,7 @@ export default function Workbench() {
     readWorkbenchActor(),
   );
   const [actorName, setActorName] = useState("");
+  const [candidateTraceOpen, setCandidateTraceOpen] = useState(false);
   const [section, setSection] = useState<Section>("objects");
   const [objects, setObjects] = useState<WorkbenchObject[]>([]);
   const [releases, setReleases] = useState<ObjectRelease[]>([]);
@@ -971,6 +987,107 @@ export default function Workbench() {
           ...(event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {}),
         }));
     });
+    const promptTrace = trace.flatMap((turn) => {
+      const debug = turn.debug && typeof turn.debug === "object"
+        ? turn.debug as Record<string, unknown>
+        : {};
+      const prompts = Array.isArray(debug.prompts) ? debug.prompts : [];
+      if (prompts.length > 0) {
+        return prompts.map((prompt) => {
+          const promptRecord = prompt && typeof prompt === "object"
+            ? prompt as Record<string, unknown>
+            : {};
+          const { prompt: _prompt, prompt_content: _promptContent, ...compactPrompt } = promptRecord;
+          return {
+            turn: turn.turn ?? null,
+            ...compactPrompt,
+          };
+        });
+      }
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return events
+        .filter((event) => event && typeof event === "object")
+        .map((event) => event as Record<string, unknown>)
+        .filter((event) => String(event.event_type ?? "") === "prompt_assembly")
+        .map((event) => {
+          const payload = event.payload && typeof event.payload === "object"
+            ? event.payload as Record<string, unknown>
+            : {};
+          const { prompt: _prompt, prompt_content: _promptContent, ...compactPayload } = payload;
+          return {
+            turn: turn.turn ?? null,
+            timestamp: event.timestamp ?? event.created_at ?? null,
+            ...compactPayload,
+          };
+        });
+    });
+    const factCollection = trace.map((turn) => {
+      const debug = turn.debug && typeof turn.debug === "object"
+        ? turn.debug as Record<string, unknown>
+        : {};
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return {
+        turn: turn.turn ?? null,
+        summary: debug.fact_collection && typeof debug.fact_collection === "object" ? debug.fact_collection : {},
+        events: events
+          .filter((event) => event && typeof event === "object")
+          .map((event) => event as Record<string, unknown>)
+          .filter((event) => [
+            "fact_prompt_projection",
+            "skill_confirmed_facts_collected",
+            "skill_collected_inputs_classified",
+            "skill_progress_staged",
+            "skill_progress_committed",
+            "skill_progress_rolled_back",
+          ].includes(String(event.event_type ?? ""))),
+      };
+    });
+    const replyGuardDiagnostics = trace.map((turn) => {
+      const debug = turn.debug && typeof turn.debug === "object"
+        ? turn.debug as Record<string, unknown>
+        : {};
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return {
+        turn: turn.turn ?? null,
+        summary: debug.reply_progress && typeof debug.reply_progress === "object" ? debug.reply_progress : {},
+        events: events
+          .filter((event) => event && typeof event === "object")
+          .map((event) => event as Record<string, unknown>)
+          .filter((event) => [
+            "reply_progress_evaluated",
+            "reply_progress_blocked",
+            "reply_progress_retry",
+            "reply_progress_degraded",
+            "turn_context_snapshot_composed",
+            "fact_question_target_resolved",
+            "confirmed_fact_reask_blocked",
+            "skill_methodology_projection_used",
+            "reply_context_guard_evaluated",
+            "reply_context_guard_blocked",
+            "reply_context_guard_retried",
+            "reply_context_guard_degraded",
+          ].includes(String(event.event_type ?? ""))),
+      };
+    });
+    const questionUnitEvidence = trace.map((turn) => {
+      const debug = turn.debug && typeof turn.debug === "object"
+        ? turn.debug as Record<string, unknown>
+        : {};
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return {
+        turn: turn.turn ?? null,
+        summary: Array.isArray(debug.question_units) ? debug.question_units : [],
+        events: events
+          .filter((event) => event && typeof event === "object")
+          .map((event) => event as Record<string, unknown>)
+          .filter((event) => [
+            "skill_question_unit_registered",
+            "skill_question_unit_partial",
+            "skill_question_unit_resolved",
+            "skill_question_unit_degraded",
+          ].includes(String(event.event_type ?? ""))),
+      };
+    });
     const executionTrace = trace.map((turn) => {
       const events = Array.isArray(turn.events) ? turn.events : [];
       return {
@@ -986,6 +1103,29 @@ export default function Workbench() {
             "reference_evidence_unavailable",
             "reference_compliance_degraded",
             "tool_result",
+            "prompt_assembly",
+            "fact_prompt_projection",
+            "skill_confirmed_facts_collected",
+            "skill_collected_inputs_classified",
+            "skill_progress_staged",
+            "skill_progress_committed",
+            "skill_progress_rolled_back",
+            "reply_progress_evaluated",
+            "reply_progress_blocked",
+            "reply_progress_retry",
+            "reply_progress_degraded",
+            "turn_context_snapshot_composed",
+            "fact_question_target_resolved",
+            "confirmed_fact_reask_blocked",
+            "skill_methodology_projection_used",
+            "reply_context_guard_evaluated",
+            "reply_context_guard_blocked",
+            "reply_context_guard_retried",
+            "reply_context_guard_degraded",
+            "skill_question_unit_registered",
+            "skill_question_unit_partial",
+            "skill_question_unit_resolved",
+            "skill_question_unit_degraded",
           ].includes(String((event as Record<string, unknown>).event_type ?? ""));
         }),
       };
@@ -1005,9 +1145,13 @@ export default function Workbench() {
       // Per-turn execution evidence deliberately includes full candidate
       // script input/output so it can be correlated with diagnostics.
       execution_trace: executionTrace,
-      // Route decisions and failures are metadata only: they make an
-      // uncalled Skill or a generic retryable failure diagnosable without
-      // exporting AGENT.md, SKILL.md, or model prompt bodies.
+      // Candidate test exports are explicit diagnostics. Keep prompt, fact
+      // and guard details in plaintext so the exact test behavior is
+      // reproducible from this artifact.
+      prompt_trace: promptTrace,
+      fact_collection: factCollection,
+      reply_guard_diagnostics: replyGuardDiagnostics,
+      question_unit_evidence: questionUnitEvidence,
       expert_routing_events: expertRoutingEvents,
     }, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
@@ -3057,10 +3201,13 @@ export default function Workbench() {
                       )}
                     </div>
                     {revisionTestSession?.trace?.length ? (
-                      <details className="mt-4 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
+                      <details
+                        className="mt-4 rounded-2xl border border-white/10 bg-slate-950/40 p-4"
+                        onToggle={(event) => setCandidateTraceOpen(event.currentTarget.open)}
+                      >
                         <summary className="cursor-pointer text-sm font-medium text-slate-200">本轮调用轨迹与调试信息</summary>
                         <p className="mt-2 text-xs leading-5 text-slate-500">展开后可查看本轮的专家团、专家、实际 Skill、引用资料和脚本输入/输出；这些内容会一并保存到候选修订测试证据。</p>
-                        <CandidateTurnTrace turn={revisionTestSession.trace.at(-1) ?? {}} />
+                        {candidateTraceOpen ? <CandidateTurnTrace turn={revisionTestSession.trace.at(-1) ?? {}} /> : null}
                       </details>
                     ) : null}
                     {candidateTeamMembers.length ? (

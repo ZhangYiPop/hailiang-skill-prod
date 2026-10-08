@@ -194,6 +194,15 @@ def _reply_progress_contract(state: SessionState, *, skill_id: str) -> dict[str,
     skill_entry_turn = bool(state.status_flags.get("skill_entry_turn"))
     if skill_entry_turn:
         previous_assistant = ""
+    recent_assistant_replies = (
+        []
+        if skill_entry_turn
+        else [
+            item.content
+            for item in state.messages
+            if item.role == "assistant" and str(item.content or "").strip()
+        ][-6:]
+    )
     runtime_trace = state.status_flags.get("ms_agent_runtime")
     execution_outputs = (
         runtime_trace.get("execution_outputs", [])
@@ -256,6 +265,7 @@ def _reply_progress_contract(state: SessionState, *, skill_id: str) -> dict[str,
         "previous_reply_chars": len(previous_assistant),
         "latest_user": latest_user,
         "previous_assistant": previous_assistant,
+        "recent_assistant_replies": recent_assistant_replies,
         "repeat_requested": repeat_requested,
         "requires_buffer": requires_buffer,
         "script_success": script_success,
@@ -300,6 +310,15 @@ def _evaluate_reply_progress(reply: str, contract: dict[str, Any]) -> dict[str, 
             warnings.append("repeats_previous_reply_allowed")
         else:
             reasons.append("repeats_previous_reply")
+    if not bool(contract.get("repeat_requested")) and len(normalized) >= 20:
+        for earlier_reply in contract.get("recent_assistant_replies") or []:
+            normalized_earlier = _normalized_reply_text(earlier_reply)
+            if not normalized_earlier or normalized_earlier == normalized_previous:
+                continue
+            earlier_similarity = SequenceMatcher(None, normalized, normalized_earlier).ratio()
+            if len(normalized_earlier) >= 20 and earlier_similarity >= 0.94:
+                reasons.append("repeats_earlier_reply")
+                break
     if bool(contract.get("script_success")) and _REPLY_PRE_EXECUTION_LANGUAGE.search(text):
         reasons.append("script_result_not_presented")
     repeated_questions = list(contract.get("repeated_question_ids") or [])
@@ -1169,11 +1188,13 @@ def _apply_skill_progress_patch(state: SessionState, skill_id: str, patch: dict[
     confirmed.update(dict(patch.get("confirmed_facts") or {}))
     if confirmed:
         if v2:
-            # In the v2 contract the runtime ledger is the only durable value
-            # source. Skill progress retains keys for audit/progress only.
+            # Keep the canonical value in the runtime ledger and retain the
+            # confirmed values in Skill progress for turn-level evidence. The
+            # prompt projection excludes this field, so it is not injected a
+            # second time into model context.
             state.global_facts.update(confirmed)
+            progress["confirmed_facts"] = confirmed
             progress["confirmed_fact_keys"] = sorted(str(key) for key in confirmed)
-            progress.pop("confirmed_facts", None)
         else:
             progress["confirmed_facts"] = confirmed
             # Legacy sessions retain their historical dual projection.
@@ -2195,7 +2216,13 @@ class MainPlannerOrchestrator:
         if not record:
             return
         record["timestamp"] = datetime.now(timezone.utc).isoformat()
-        self._record_events(context, [make_event("prompt_assembly", record)])
+        self._record_events(context, [
+            make_event(
+                "prompt_assembly",
+                record,
+                redact=not bool((context.session_meta or {}).get("workbench_candidate_test")),
+            )
+        ])
 
     def _emit_runtime_status(self, context, stage: str, label: str, *, detail: str = "") -> None:
         callback = (context.session_meta or {}).get("status_callback")
@@ -2377,7 +2404,14 @@ class MainPlannerOrchestrator:
                 skill_name=skill_name,
                 assembly=assembly,
             )
-        self._record_events(context, [make_event("prompt_assembly", record) for record in records])
+        self._record_events(context, [
+            make_event(
+                "prompt_assembly",
+                record,
+                redact=not bool((context.session_meta or {}).get("workbench_candidate_test")),
+            )
+            for record in records
+        ])
 
     def _record_retrieval_context_event(
         self,
@@ -2854,7 +2888,7 @@ class MainPlannerOrchestrator:
                         {
                             "skill_id": skill_name,
                             "stage_label": skill_progress.get("stage_label", ""),
-                            "confirmed_fact_keys": sorted(
+                            "confirmed_fact_keys": list(skill_progress.get("confirmed_fact_keys") or []) or sorted(
                                 str(key) for key in dict(skill_progress.get("confirmed_facts") or {})
                             ),
                             "resolved_topics": list(skill_progress.get("resolved_topics") or []),
@@ -3102,7 +3136,7 @@ class MainPlannerOrchestrator:
             if skill_progress is not None:
                 plan["skill_progress"] = {
                     "stage_label": skill_progress.get("stage_label", ""),
-                    "confirmed_fact_keys": sorted(
+                    "confirmed_fact_keys": list(skill_progress.get("confirmed_fact_keys") or []) or sorted(
                         str(key) for key in dict(skill_progress.get("confirmed_facts") or {})
                     ),
                     "resolved_topics": list(skill_progress.get("resolved_topics") or []),
@@ -5407,7 +5441,13 @@ class MainPlannerOrchestrator:
             return result
         target = HAILIANG_TARGETS.get(active_skill_id)
         if target and active_skill_id in self.runtime_bridge_config.legacy_bridge_skill_ids:
-            result = self._run_hailiang_target(user_message, context, target, turn_id)
+            result = self._run_hailiang_target(
+                user_message,
+                context,
+                target,
+                turn_id,
+                runtime_state=runtime_state,
+            )
             runtime_state.messages = self._runtime_messages_from_context(context)
             sync_context_to_runtime_state(context, runtime_state)
             self._persist_runtime_state(context, runtime_state)
@@ -5738,6 +5778,7 @@ class MainPlannerOrchestrator:
         context,
         target: dict[str, str],
         turn_id: str,
+        runtime_state: SessionState | None = None,
     ) -> SkillResult:
         self._apply_legacy_llm_options(context)
         self._record_events(
@@ -5764,15 +5805,34 @@ class MainPlannerOrchestrator:
         self._record_events(context, facts_result.events)
         if facts_result.state_patch:
             context.skill_states.setdefault("facts_extractor", {}).update(facts_result.state_patch)
-            for key, value in facts_result.state_patch.get("fact_updates", {}).items():
-                if value not in (None, "", [], {}):
-                    context.update_fact(
-                        key,
-                        value,
-                        source_skill="facts_extractor",
-                        confidence=facts_result.state_patch.get("confidence", 0.8),
-                        source_turn_id=turn_id,
-                    )
+            extracted_facts = {
+                str(key): value
+                for key, value in facts_result.state_patch.get("fact_updates", {}).items()
+                if value not in (None, "", [], {})
+            }
+            for key, value in extracted_facts.items():
+                context.update_fact(
+                    key,
+                    value,
+                    source_skill="facts_extractor",
+                    confidence=facts_result.state_patch.get("confidence", 0.8),
+                    source_turn_id=turn_id,
+                )
+            if runtime_state is not None:
+                # Make this turn's extracted facts available to the runtime
+                # ledger immediately instead of waiting for the next turn.
+                sync_context_to_runtime_state(context, runtime_state)
+            self._record_events(context, [make_event(
+                "skill_confirmed_facts_collected",
+                {
+                    "skill_id": target["skill"],
+                    "confirmed_facts": extracted_facts,
+                    "confirmed_fact_keys": sorted(extracted_facts),
+                    "source_type": "user_message",
+                    "confidence": facts_result.state_patch.get("confidence", 0.8),
+                },
+                redact=not bool((context.session_meta or {}).get("workbench_candidate_test")),
+            )])
 
         planner = self.registry.get("planner")
         planner_result = planner.run(user_message, context)

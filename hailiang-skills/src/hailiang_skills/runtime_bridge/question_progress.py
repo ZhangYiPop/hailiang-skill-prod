@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 
@@ -106,6 +107,17 @@ def _answer_matches_question(message: str, question: dict[str, Any]) -> bool:
     options = [str(item) for item in question.get("options") or []]
     normalized_options = [_normalize_text(item) for item in options]
     if any(option and option in normalized_message for option in normalized_options):
+        return True
+    # Natural Chinese answers often omit harmless qualifiers from an option,
+    # such as answering "享受画画这个过程" to "单纯享受画画的过程". Treat a
+    # close match as an answer while keeping the threshold high enough that
+    # unrelated free text does not close a question.
+    if any(
+        option
+        and len(option) >= 6
+        and SequenceMatcher(None, normalized_message, option).ratio() >= 0.72
+        for option in normalized_options
+    ):
         return True
     # “都这样/全部如此” is a common natural-language answer to a binary
     # scope question even when the model's option text is slightly different.

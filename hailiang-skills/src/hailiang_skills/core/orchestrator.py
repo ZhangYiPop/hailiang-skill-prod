@@ -26,7 +26,11 @@ class Orchestrator:
 
     def _record_prompt_assembly_from_dict(self, context, record: dict) -> None:
         record["timestamp"] = datetime.now(timezone.utc).isoformat()
-        event = make_event("prompt_assembly", record)
+        event = make_event(
+            "prompt_assembly",
+            record,
+            redact=not bool((context.session_meta or {}).get("workbench_candidate_test")),
+        )
         self._record_events(context, [event])
 
     def _emit_runtime_status(self, context, stage: str, label: str) -> None:

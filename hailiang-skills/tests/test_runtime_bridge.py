@@ -1913,6 +1913,25 @@ class RuntimeBridgeTest(unittest.TestCase):
         self.assertFalse(evaluation["accepted"])
         self.assertIn("repeats_previous_reply", evaluation["reasons"])
 
+    def test_reply_progress_guard_blocks_reply_repeated_from_earlier_turn(self) -> None:
+        stale_reply = "可以用高考成绩申请港澳高校，具体以院校招生简章为准。"
+        state = SessionState(
+            session_id="reply-progress-earlier-repeat",
+            active_skill_id="multi_path_planning",
+            messages=[
+                ChatMessage(role="assistant", content=stale_reply),
+                ChatMessage(role="user", content="初二"),
+                ChatMessage(role="assistant", content="孩子更偏兴趣培养还是升学规划？"),
+                ChatMessage(role="user", content="偏兴趣培养"),
+            ],
+        )
+
+        contract = _reply_progress_contract(state, skill_id="multi_path_planning")
+        evaluation = _evaluate_reply_progress(stale_reply, contract)
+
+        self.assertFalse(evaluation["accepted"])
+        self.assertIn("repeats_earlier_reply", evaluation["reasons"])
+
     def test_skill_entry_does_not_compare_against_coordinator_handoff(self) -> None:
         state = SessionState(
             session_id="reply-progress-skill-entry",
