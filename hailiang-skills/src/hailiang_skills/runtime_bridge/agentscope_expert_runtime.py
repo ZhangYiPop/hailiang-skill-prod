@@ -16,6 +16,7 @@ from hailiang_skills.runtime_bridge.expert_bundle import ExpertDefinition, Exper
 from hailiang_skills.runtime_bridge.expert_team_bundle import ExpertTeamDefinition, ExpertTeamMember, ExpertTeamRegistry
 from hailiang_skills.runtime_bridge.expert_models import ExpertMember, SkillObservation
 from hailiang_skills.runtime_bridge.native_skill_executor import NativeSkillExecutor
+from hailiang_skills.runtime_bridge.context_contract import context_contract_version, GENERATION_FAILURE_REPLY
 from hailiang_skills.runtime_bridge.agent_frontmatter import AgentFrontMatter, AgentRoutingRule, parse_agent_frontmatter
 from hailiang_skills.core.fact_prompt_projection import (
     build_effective_fact_ledger,
@@ -194,6 +195,25 @@ class AgentScopeExpertRuntime:
             )
         state = self._state(context, definition, team=team)
         state["turn_id"] = f"expert_turn_{uuid4().hex[:12]}"
+        for key in ("agent_reply", "agent_reply_error", "selected_skill_id", "skill_route_decision", "execution_mode"):
+            state.pop(key, None)
+        context.session_meta.pop("expert_direct_reply", None)
+        context.session_meta["active_expert_turn_id"] = state["turn_id"]
+        if context_contract_version() >= 3:
+            from types import SimpleNamespace
+            from hailiang_skills.runtime_bridge.question_progress import reconcile_user_answer
+            from hailiang_skills.skill_runtime.models import ChatMessage
+
+            persisted = context.skill_states.get("skill_runtime", {})
+            flags = persisted.setdefault("status_flags", {})
+            flags["active_turn_id"] = state["turn_id"]
+            conversation = SimpleNamespace(status_flags=flags, messages=[
+                ChatMessage(role=item["role"], content=str(item.get("content") or ""))
+                for item in context.messages if item.get("role") in {"user", "assistant"}
+            ])
+            context.session_meta["question_answer_context"] = reconcile_user_answer(
+                conversation, str(persisted.get("active_skill_id") or "expert_direct"), user_message,
+            )
         state["budget"] = {
             "max_iters": definition.max_iters,
             "max_skill_calls": definition.max_skill_calls,
@@ -421,6 +441,7 @@ class AgentScopeExpertRuntime:
             context.session_meta["expert_direct_reply"] = {
                 "expert_id": definition.agent_id,
                 "reply": agent_reply,
+                "expert_turn_id": state["turn_id"],
             }
         result = legacy_handler(user_message, context)
         if handoff is None and (agent_reply or has_native_handoff):
@@ -1695,7 +1716,7 @@ class AgentScopeExpertRuntime:
             "input_tokens": metrics.get("input_tokens"),
             "output_tokens": metrics.get("output_tokens"),
             "returned_chars": len(final_text) if returned_chars is None else returned_chars,
-            "truncated": truncated,
+            "truncated": truncated if finish_reason is not None else None,
             "truncation_status": truncation_status,
             "diagnostic_reason": (
                 "上游模型未提供 finish_reason，无法仅凭正文确认是否截断"
@@ -2109,6 +2130,8 @@ class AgentScopeExpertRuntime:
         merely because the model started answering early.
         """
         active_skill_id = self._active_skill_id(context)
+        state.pop("agent_reply", None)
+        state.pop("agent_reply_error", None)
         # This marker is a one-turn bridge into MainPlannerOrchestrator. Clear
         # any value left by an earlier failed turn so an unavailable target
         # cannot accidentally re-run the previous Skill during fallback.
@@ -2209,7 +2232,8 @@ class AgentScopeExpertRuntime:
             + f"\n# 授权 Skill 能力目录\n{json.dumps(cards, ensure_ascii=False)}\n"
             f"# 当前活动 Skill\n{active_skill_id or '无'}\n{retry_note}"
             f"# 当前可恢复的挂起表单\n{json.dumps(self._pending_native_questionnaire_summary(context), ensure_ascii=False)}\n"
-            f"{inspection}\n# 最近对话\n{self._expert_conversation_history(context)}"
+            f"{inspection}\n# 最近对话\n{self._expert_conversation_history(context)}\n"
+            f"# 本轮已答问题证据\n{json.dumps(context.session_meta.get('question_answer_context') or {}, ensure_ascii=False)}"
         )
         try:
             raw = self._complete_and_record(context, client, [
@@ -2255,7 +2279,7 @@ class AgentScopeExpertRuntime:
                 # important while a questionnaire is pending, but applies to
                 # every Skill handoff so the same boundary bug cannot recur in
                 # another expert.
-                if resolved_skill_id not in inspected:
+                if resolved_skill_id not in inspected and context_contract_version() < 3:
                     self._event(context, "expert_skill_scope_inspection_requested", {
                         "expert_id": definition.agent_id,
                         "candidate_skill_id": resolved_skill_id,
@@ -2313,7 +2337,7 @@ class AgentScopeExpertRuntime:
             scope_decision = str(decision.get("scope_decision") or "uncertain").strip()
             candidate_source = "semantic_catalog" if model_candidate else ("lexical_hint" if high_match else "")
             full_skill_inspected = bool(high_match and high_match in inspected)
-            if high_match and not policy_ok and not full_skill_inspected:
+            if high_match and not policy_ok and not full_skill_inspected and context_contract_version() < 3:
                 self._event(context, "expert_skill_scope_inspection_requested", {
                     "expert_id": definition.agent_id,
                     "candidate_skill_id": high_match,
@@ -2434,9 +2458,20 @@ class AgentScopeExpertRuntime:
                 context, client, messages, request_purpose="expert_direct_reply",
             ).strip()
         except Exception as exc:
-            raise AgentScopeRuntimeUnavailable(f"专家回复生成失败: {exc}") from exc
+            if context_contract_version() < 3:
+                raise AgentScopeRuntimeUnavailable(f"专家回复生成失败: {exc}") from exc
+            reply = ""
+        empty_retry = not reply
         if not reply:
-            raise AgentScopeRuntimeUnavailable("专家回复生成失败：模型返回为空")
+            if context_contract_version() < 3:
+                raise AgentScopeRuntimeUnavailable("专家回复生成失败：模型返回为空")
+            try:
+                reply = self._complete_and_record(context, client, messages, request_purpose="expert_direct_reply_retry").strip()
+            except Exception:
+                reply = ""
+            if not reply:
+                context.session_meta["reply_generation_status"] = "failed"
+                return GENERATION_FAILURE_REPLY
         history = self._expert_history_messages(context)
         previous = next((item["content"] for item in reversed(history) if item["role"] == "assistant"), "")
         normalize = lambda value: re.sub(r"[\s\W_]+", "", str(value or "").lower(), flags=re.UNICODE)
@@ -2444,7 +2479,13 @@ class AgentScopeExpertRuntime:
         repeat_requested = bool(re.search(r"再说(?:一遍)?|重复(?:一下)?|复述|总结(?:一下)?|回顾(?:一下)?", user_message or ""))
         same_user_streak = self._same_user_message_streak(context, user_message)
         repeated_user_turn_allowed = 1 < same_user_streak <= 2
-        if previous and not repeat_requested and len(normalize(reply)) >= 20 and similarity >= 0.94:
+        duplicate = similarity >= 0.94 if context_contract_version() < 3 else any(
+            normalize(reply) == normalize(item["content"]) for item in history if item["role"] == "assistant"
+        )
+        if previous and not repeat_requested and (context_contract_version() >= 3 or len(normalize(reply)) >= 20) and duplicate:
+            if empty_retry and context_contract_version() >= 3 and not repeated_user_turn_allowed:
+                context.session_meta["reply_generation_status"] = "failed"
+                return GENERATION_FAILURE_REPLY
             if repeated_user_turn_allowed:
                 self._event(context, "reply_progress_evaluated", {
                     "expert_id": definition.agent_id,
@@ -2480,12 +2521,16 @@ class AgentScopeExpertRuntime:
                         "accepted": bool(reply and SequenceMatcher(None, normalize(reply), normalize(previous)).ratio() < 0.94),
                         "execution_mode": "expert_direct",
                     })
+                    if context_contract_version() >= 3 and (not reply or any(
+                        normalize(reply) == normalize(item["content"]) for item in history if item["role"] == "assistant"
+                    )):
+                        reply = GENERATION_FAILURE_REPLY
                 except Exception as exc:
                     self._event(context, "reply_progress_degraded", {
                         "expert_id": definition.agent_id,
                         "reason": f"expert_direct_retry_failed:{type(exc).__name__}",
                     })
-                    reply = "我需要先确认你这次最希望我分析的具体方面，才能继续给出有用建议。"
+                    reply = GENERATION_FAILURE_REPLY
         direct_ledger, _projection = build_effective_fact_ledger(
             global_facts=self._read_effective_facts(context),
             current_skill_facts={},

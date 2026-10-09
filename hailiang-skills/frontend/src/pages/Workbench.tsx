@@ -276,6 +276,19 @@ function debugValue(value: unknown): string {
   return rendered.length > 6000 ? `${rendered.slice(0, 6000)}\n…（已截断）` : rendered;
 }
 
+const CandidateMarkdown = memo(MarkdownContent);
+
+export const HistoryEvidence = memo(function HistoryEvidence({ value }: { value: unknown }) {
+  const [open, setOpen] = useState(false);
+  const preview = useMemo(() => open ? debugValue(value) : "", [open, value]);
+  return (
+    <details className="mt-2 text-xs text-slate-400" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary className="cursor-pointer">查看证据预览</summary>
+      {open ? <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-2">{preview}</pre> : null}
+    </details>
+  );
+});
+
 function traceEntityLabel(entity: CandidateTraceEntity | null | undefined, empty = "本轮未经过") {
   if (!entity?.object_key) return empty;
   const revision = entity.revision_no ? ` · r${entity.revision_no}` : "";
@@ -435,7 +448,8 @@ function CandidateTestComposer({
 
 export default function Workbench() {
   const apiBaseUrl = getRuntimeWorkbenchApiBaseUrl();
-  const { themeMode, setThemeMode } = useChatStore();
+  const themeMode = useChatStore((state) => state.themeMode);
+  const setThemeMode = useChatStore((state) => state.setThemeMode);
   const [actor, setActor] = useState<WorkbenchActor | null>(() =>
     readWorkbenchActor(),
   );
@@ -987,13 +1001,13 @@ export default function Workbench() {
           ...(event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {}),
         }));
     });
-    const promptTrace = trace.flatMap((turn) => {
+    const promptRecords = trace.flatMap((turn) => {
       const debug = turn.debug && typeof turn.debug === "object"
         ? turn.debug as Record<string, unknown>
         : {};
       const prompts = Array.isArray(debug.prompts) ? debug.prompts : [];
       if (prompts.length > 0) {
-        return prompts.map((prompt) => {
+        return prompts.filter((prompt) => prompt && typeof prompt === "object" && (prompt as Record<string, unknown>).layer === "final").map((prompt) => {
           const promptRecord = prompt && typeof prompt === "object"
             ? prompt as Record<string, unknown>
             : {};
@@ -1021,6 +1035,11 @@ export default function Workbench() {
           };
         });
     });
+    const promptTrace = [...new Map(promptRecords.map((prompt) => {
+      const record = prompt as Record<string, unknown>;
+      const key = JSON.stringify([record.turn, record.phase, record.prompt_key, record.messages ?? (record.variables as Record<string, unknown> | undefined)?.messages]);
+      return [key, prompt] as const;
+    })).values()];
     const factCollection = trace.map((turn) => {
       const debug = turn.debug && typeof turn.debug === "object"
         ? turn.debug as Record<string, unknown>
@@ -1058,6 +1077,9 @@ export default function Workbench() {
             "reply_progress_blocked",
             "reply_progress_retry",
             "reply_progress_degraded",
+            "reply_generation_candidate",
+            "reply_generation_final",
+            "reply_generation_failed",
             "turn_context_snapshot_composed",
             "fact_question_target_resolved",
             "confirmed_fact_reask_blocked",
@@ -1090,9 +1112,11 @@ export default function Workbench() {
     });
     const executionTrace = trace.map((turn) => {
       const events = Array.isArray(turn.events) ? turn.events : [];
+      const debug = turn.debug && typeof turn.debug === "object" ? turn.debug as Record<string, unknown> : {};
+      const { prompts: _prompts, ...executionDebug } = debug;
       return {
         turn: turn.turn ?? null,
-        debug: turn.debug ?? {},
+        debug: executionDebug,
         events: events.filter((event) => {
           if (!event || typeof event !== "object") return false;
           return [
@@ -1103,7 +1127,6 @@ export default function Workbench() {
             "reference_evidence_unavailable",
             "reference_compliance_degraded",
             "tool_result",
-            "prompt_assembly",
             "fact_prompt_projection",
             "skill_confirmed_facts_collected",
             "skill_collected_inputs_classified",
@@ -1114,6 +1137,9 @@ export default function Workbench() {
             "reply_progress_blocked",
             "reply_progress_retry",
             "reply_progress_degraded",
+            "reply_generation_candidate",
+            "reply_generation_final",
+            "reply_generation_failed",
             "turn_context_snapshot_composed",
             "fact_question_target_resolved",
             "confirmed_fact_reask_blocked",
@@ -3166,7 +3192,7 @@ export default function Workbench() {
                                 </div>
                               ) : (
                                 <div className={`inline-block max-w-[90%] rounded-2xl px-3 py-2 text-sm leading-6 ${item.role === "user" ? "bg-sky-400 text-slate-950" : "bg-white/10 text-slate-200"}`}>
-                                  {isAssistant ? <MarkdownContent content={item.content} className="text-slate-200" /> : item.content}
+                                  {isAssistant ? <CandidateMarkdown content={item.content} className="text-slate-200" /> : item.content}
                                   {isAssistant ? (
                                     <div className="mt-3 text-left">
                                       <MessageBlocksRenderer
@@ -3380,8 +3406,8 @@ export default function Workbench() {
                     <div className="flex gap-2"><select value={historyStatus} onChange={(event) => { const status = event.target.value as "all" | "active" | "completed"; setHistoryStatus(status); if (debugObject && selectedTestRevision) void loadDebugHistory(debugObject.object_id, selectedTestRevision.revision_id, status); }} className="rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-xs"><option value="all">全部状态</option><option value="active">进行中</option><option value="completed">已完成</option></select><button type="button" disabled={!debugObject || !selectedTestRevision || busy} onClick={() => debugObject && selectedTestRevision && void loadDebugHistory(debugObject.object_id, selectedTestRevision.revision_id)} className="rounded-xl border border-white/10 px-3 py-2 text-xs text-slate-300 disabled:opacity-40">刷新历史</button></div>
                   </div>
                   <div className="mt-5 grid gap-4 lg:grid-cols-2">
-                    <div className="space-y-3"><p className="text-xs font-medium text-sky-200">手动调试会话</p>{debugHistory.length ? debugHistory.map((item) => <div key={item.debug_session_id} className="rounded-2xl border border-white/10 bg-slate-950/45 p-4"><div className="flex items-center justify-between gap-2"><span>r{item.revision_no} · {item.status === "completed" ? "已完成" : "进行中"}</span><span className="text-xs text-slate-500">{formatTime(item.created_at)}</span></div><p className="mt-2 text-xs text-slate-400">{item.conclusion || "尚未填写结论"}</p><details className="mt-2 text-xs text-slate-400"><summary className="cursor-pointer">查看完整证据</summary><pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-2">{JSON.stringify(item, null, 2)}</pre></details><div className="mt-3 flex gap-3">{item.status === "completed" ? <button type="button" onClick={() => chooseHistoryEvidence(item.debug_session_id)} className="text-xs text-emerald-300">选为发布证据</button> : null}<button type="button" onClick={() => downloadEvidence("debug", item)} className="text-xs text-sky-300">下载 JSON</button></div></div>) : <p className="text-sm text-slate-600">暂无手动调试记录</p>}</div>
-                    <div className="space-y-3"><p className="text-xs font-medium text-violet-200">批量评测运行</p>{evaluationHistory.length ? evaluationHistory.map((item) => <div key={item.run_id} className="rounded-2xl border border-white/10 bg-slate-950/45 p-4"><div className="flex items-center justify-between gap-2"><span>{item.suite_name} · r{item.revision_no}</span><span className="text-xs text-slate-500">{formatTime(item.created_at)}</span></div><p className="mt-2 text-xs text-slate-400">{item.manual_result === "accepted" ? "人工通过" : item.manual_result === "rejected" ? "人工拒绝" : item.status}</p><details className="mt-2 text-xs text-slate-400"><summary className="cursor-pointer">查看完整证据</summary><pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-2">{JSON.stringify(item, null, 2)}</pre></details><div className="mt-3 flex gap-3">{item.manual_result === "accepted" ? <button type="button" onClick={() => chooseHistoryEvidence(item.run_id)} className="text-xs text-emerald-300">选为发布证据</button> : null}<button type="button" onClick={() => downloadEvidence("evaluation", item)} className="text-xs text-sky-300">下载 JSON</button></div></div>) : <p className="text-sm text-slate-600">暂无批量评测记录</p>}</div>
+                    <div className="space-y-3"><p className="text-xs font-medium text-sky-200">手动调试会话</p>{debugHistory.length ? debugHistory.map((item) => <div key={item.debug_session_id} className="rounded-2xl border border-white/10 bg-slate-950/45 p-4"><div className="flex items-center justify-between gap-2"><span>r{item.revision_no} · {item.status === "completed" ? "已完成" : "进行中"}</span><span className="text-xs text-slate-500">{formatTime(item.created_at)}</span></div><p className="mt-2 text-xs text-slate-400">{item.conclusion || "尚未填写结论"}</p><HistoryEvidence value={item} /><div className="mt-3 flex gap-3">{item.status === "completed" ? <button type="button" onClick={() => chooseHistoryEvidence(item.debug_session_id)} className="text-xs text-emerald-300">选为发布证据</button> : null}<button type="button" onClick={() => downloadEvidence("debug", item)} className="text-xs text-sky-300">下载 JSON</button></div></div>) : <p className="text-sm text-slate-600">暂无手动调试记录</p>}</div>
+                    <div className="space-y-3"><p className="text-xs font-medium text-violet-200">批量评测运行</p>{evaluationHistory.length ? evaluationHistory.map((item) => <div key={item.run_id} className="rounded-2xl border border-white/10 bg-slate-950/45 p-4"><div className="flex items-center justify-between gap-2"><span>{item.suite_name} · r{item.revision_no}</span><span className="text-xs text-slate-500">{formatTime(item.created_at)}</span></div><p className="mt-2 text-xs text-slate-400">{item.manual_result === "accepted" ? "人工通过" : item.manual_result === "rejected" ? "人工拒绝" : item.status}</p><HistoryEvidence value={item} /><div className="mt-3 flex gap-3">{item.manual_result === "accepted" ? <button type="button" onClick={() => chooseHistoryEvidence(item.run_id)} className="text-xs text-emerald-300">选为发布证据</button> : null}<button type="button" onClick={() => downloadEvidence("evaluation", item)} className="text-xs text-sky-300">下载 JSON</button></div></div>) : <p className="text-sm text-slate-600">暂无批量评测记录</p>}</div>
                   </div>
                 </section>
               </div>

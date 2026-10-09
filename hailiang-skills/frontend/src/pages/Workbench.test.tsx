@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 
-import { groupReleasesByObject } from "@/pages/Workbench";
+import { groupReleasesByObject, HistoryEvidence } from "@/pages/Workbench";
 import type { ObjectRelease } from "@/utils/workbenchApi";
 
 function release(overrides: Partial<ObjectRelease>): ObjectRelease {
@@ -22,6 +23,27 @@ function release(overrides: Partial<ObjectRelease>): ObjectRelease {
     ...overrides,
   };
 }
+
+describe("HistoryEvidence", () => {
+  it("does not inspect closed evidence and bounds the expanded preview", async () => {
+    const read = vi.fn(() => "x".repeat(1000000));
+    const value = Object.defineProperty({}, "prompt", { enumerable: true, get: read });
+    const { container, rerender } = render(<HistoryEvidence value={value} />);
+    expect(read).not.toHaveBeenCalled();
+    expect(container.querySelector("pre")).toBeNull();
+    const details = container.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    await waitFor(() => expect(container.querySelector("pre")).not.toBeNull());
+    expect(container.querySelector("pre")!.textContent!.length).toBeLessThan(6100);
+    const calls = read.mock.calls.length;
+    rerender(<HistoryEvidence value={value} />);
+    expect(read.mock.calls.length).toBe(calls);
+    details.open = false;
+    fireEvent(details, new Event("toggle"));
+    await waitFor(() => expect(container.querySelector("pre")).toBeNull());
+  });
+});
 
 describe("groupReleasesByObject", () => {
   it("groups versions by object ID and puts the current version first", () => {

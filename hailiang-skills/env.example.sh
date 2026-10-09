@@ -2,6 +2,8 @@
 # 私有环境变量模板：复制为 env.local.sh 后填写，切勿提交真实密钥。
 
 # 必填：模型服务密钥。
+# Shared context v3 for deployed and Workbench conversations; false restores v2.
+export HAILIANG_UNIFIED_CONTEXT_ENABLED="true"
 export DASHSCOPE_API_KEY=""
 export HAILIANG_EXTERNAL_API_KEY=""
 

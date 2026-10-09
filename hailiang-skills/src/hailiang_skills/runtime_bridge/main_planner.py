@@ -18,6 +18,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from hailiang_skills.core.loop_defense import LoopDefense
+from hailiang_skills.runtime_bridge.context_contract import context_contract_version, GENERATION_FAILURE_REPLY
 from hailiang_skills.core.logging import make_event
 from hailiang_skills.core.context_composer import ContextComposer
 from hailiang_skills.core.scenario_engine import ScenarioEngine
@@ -42,6 +43,7 @@ from hailiang_skills.runtime_bridge.facts import (
     runtime_state_payload,
     sync_context_to_runtime_state,
     sync_runtime_state_to_context,
+    user_fact_evidence,
 )
 from hailiang_skills.runtime_bridge.native_questionnaire import (
     attach_staged_questionnaire_form,
@@ -85,6 +87,7 @@ from hailiang_skills.runtime_bridge.question_progress import (  # noqa: E402
     record_assistant_questions,
     reconcile_user_answer,
     same_user_message_streak,
+    apply_semantic_answers,
 )
 from hailiang_skills.runtime_bridge.skill_instruction_index import (  # noqa: E402
     SkillInstructionIndex,
@@ -219,7 +222,8 @@ def _reply_progress_contract(state: SessionState, *, skill_id: str) -> dict[str,
         if isinstance(progress_by_skill, dict) and isinstance(progress_by_skill.get(skill_id), dict)
         else {}
     )
-    pending = progress.get("pending_topics") if isinstance(progress.get("pending_topics"), list) else []
+    unified = int(state.status_flags.get("context_contract_version") or 2) >= 3
+    pending = [] if unified else progress.get("pending_topics") if isinstance(progress.get("pending_topics"), list) else []
     question_projection = question_ledger_projection(state, skill_id)
     question_ledgers = state.status_flags.get("runtime_question_ledger", {})
     question_ledger = (
@@ -238,17 +242,15 @@ def _reply_progress_contract(state: SessionState, *, skill_id: str) -> dict[str,
         and last_reconciled.get("answered_question_ids")
     )
     user_message_streak = same_user_message_streak(state, latest_user)
-    # The first repeated submission is allowed.  It is useful when a user did
-    # not see the previous answer or wants the same question reconsidered with
-    # the preceding context.  A third identical submission is where the
-    # loop-protection policy starts to apply.
-    repeated_user_turn_allowed = 1 < user_message_streak <= 2
+    # Legacy sessions allow a second identical submission. New sessions only
+    # allow duplicate prose when the user explicitly requests repetition.
+    repeated_user_turn_allowed = not unified and 1 < user_message_streak <= 2
     repeat_requested = bool(_REPLY_REPEAT_REQUEST.search(latest_user))
     # Script-backed replies are always buffered: exposing an old "calculating"
     # sentence before the complete response is available is irrecoverable.
     # For ordinary turns, only short contextual follow-ups are high risk, so
     # first-turn and substantial new-question streaming remains unchanged.
-    requires_buffer = bool(script_success) or bool(
+    requires_buffer = unified or bool(script_success) or bool(
         previous_assistant.strip()
         and latest_user.strip()
         and len(latest_user.strip()) <= 48
@@ -262,6 +264,7 @@ def _reply_progress_contract(state: SessionState, *, skill_id: str) -> dict[str,
     return {
         "skill_id": skill_id,
         "latest_user_chars": len(latest_user),
+        "context_contract_version": int(state.status_flags.get("context_contract_version") or 2),
         "previous_reply_chars": len(previous_assistant),
         "latest_user": latest_user,
         "previous_assistant": previous_assistant,
@@ -324,6 +327,15 @@ def _evaluate_reply_progress(reply: str, contract: dict[str, Any]) -> dict[str, 
     repeated_questions = list(contract.get("repeated_question_ids") or [])
     if repeated_questions:
         reasons.append("asks_answered_question")
+    if int(contract.get("context_contract_version") or 2) >= 3:
+        warnings.extend(reason for reason in reasons if reason != "empty_reply")
+        reasons = [reason for reason in reasons if reason == "empty_reply" or (
+            reason == "asks_answered_question" and not contract.get("repeat_requested")
+        )]
+        history = [previous, *list(contract.get("recent_assistant_replies") or [])]
+        if normalized and not contract.get("repeat_requested") and not contract.get("repeated_user_turn_allowed"):
+            if any(normalized == _normalized_reply_text(item) for item in history if str(item or "").strip()):
+                reasons.append("exact_duplicate_reply")
     return {
         "accepted": not reasons,
         "reasons": reasons,
@@ -343,10 +355,13 @@ def _reply_progress_retry_instruction(contract: dict[str, Any], reasons: list[st
         f"拦截原因：{', '.join(reasons)}。\n"
         f"已回答问题（不可重复提问）：{json.dumps(contract.get('answered_questions') or [], ensure_ascii=False)}\n"
         f"仍未解决问题：{json.dumps(contract.get('unresolved_questions') or [], ensure_ascii=False)}\n"
-        f"相同用户消息连续次数：{int(contract.get('same_user_message_streak') or 0)}（最多允许两轮重复提交）。\n"
+        f"相同用户消息连续次数：{int(contract.get('same_user_message_streak') or 0)}；重复提交不代表要求重复回答。\n"
         "不要复述上一条助手回复，不要使用‘马上计算/正在处理/请稍候’等已经过期的话术。"
         "若信息不足，只问一个完成当前任务真正必要的问题；若本轮已有工具结果，直接依据该结果给出自然语言结论。"
-        "已回答问题不能再次提问；只保留问题账本中的未解决问题，除非当前信息出现冲突。"
+        "根据用户原话、上下文和已有事实判断还缺什么；问题账本仅为历史诊断，未关闭不代表用户未回答。"
+        "部分回答可以继续给出有用结论，只追问下一步确实必要的缺失项，不重问整道题。"
+        "继续遵循 SKILL.md 声明的执行顺序、必要采集和脚本条件；避免重复提问不等于跳过流程。"
+        "必要前置条件未满足时只能推进到下一步必要采集或有限解释，不得输出最终推荐或把未知条件当作满足。"
         "不要输出 JSON、内部工具、脚本、文件名或执行过程。"
     )
 
@@ -871,6 +886,7 @@ class _RuntimePlannerLLM:
         self.skill_dir = Path(skill_dir) if skill_dir else None
         self.last_error: str | None = None
         self.last_raw_response: str | None = None
+        self.request_records: list[dict[str, Any]] = []
         self.last_combined_response: str = ""
         self.stream_reply_callback = stream_reply_callback
         self.cancel_check = cancel_check
@@ -917,11 +933,22 @@ class _RuntimePlannerLLM:
             f"{response_style_instruction()}\n"
             "如果当前 Skill 启用了 Native Questionnaire Protocol，额外返回 questionnaire_response 对象，"
             "其内容必须严格遵循该协议；普通回答时 questionnaire_response 返回 null。\n\n"
-            "skill_progress 必须始终是对象，用于保存当前 Skill 私有的对话进度，格式为"
+            "skill_progress 是内部诊断对象，格式为"
             '{"stage_label":"...","confirmed_facts":{},"resolved_topics":[],"pending_topics":[],"next_action":"..."}。'
-            "它不是面向用户的内容，也不是平台预定义状态机：stage_label、事实键和 topic 名称必须沿用当前 SKILL.md"
-            "自己的定义；Skill 没有显式阶段名时可使用简短、稳定的内部标签。"
+            "它不是面向用户的内容：事实键和 topic 名称必须沿用当前 SKILL.md。"
+            "Skill 没有显式阶段时 stage_label 为空，不得发明阶段。用户原话与已答问题证据优先于这些诊断标签。"
             "必须把用户本轮明确回答的、上一轮待补的信息写入 confirmed_facts，并从 pending_topics 移除对应 topic。"
+            f"{'需要将用户口语归一化时，事实值使用 {value:归一化值,evidence:用户原话短引}；不得把推测写为事实。' if context_contract_version() >= 3 else ''}"
+            "先根据用户原话、上下文和已有事实理解本轮回答，再决定后续动作；普通对话不以问题ID匹配或账本关闭作为推进条件。"
+            "question_progress 仅为可能过时的历史证据，不是待完成任务清单；若与用户原话冲突，以用户原话为准。"
+            "skill_progress 可增加 question_answers 数组用于诊断留证，不要求填写才能推进。"
+            "每项为 {question_id:待答账本中的ID,status:answered|partial|unanswered|conflict,evidence:本轮用户原话连续短引,missing:仍缺少的信息}。"
+            "不要因同义改写或否定表达而忽略已回答内容，不得发明问题ID或用户证据。"
+            "部分回答可以推进：使用已有信息给出有用结论，只有下一步确实必要的缺失项才具体追问，不重问整道题。"
+            "原生问卷及结构化表单仍按声明契约校验，不能用语义判断绕过必填项。"
+            "SKILL.md 中自由文本声明的执行顺序、必要采集、脚本 ask/ask_union 和结论输出条件同样必须遵循。"
+            "账本降权仅取消问题ID匹配门槛，不取消业务前置条件；部分回答允许继续必要采集或有限解释，"
+            "不代表可以提前给最终推荐。不得根据偏好推断能力，也不得把未知条件视为满足。"
             "已确认事实绝不可重新列为待补，也不得因为 Skill 使用不同阶段命名而重启先前模板。"
             "当 Skill 规定补采完成后应给结论时，next_action 必须反映推进到结论而不是再次收集。\n\n"
             "# MS-Agent 原始规划 prompt\n"
@@ -951,6 +978,11 @@ class _RuntimePlannerLLM:
                 '"required_packages":[],"parameters":{},"reasoning":"planner LLM unavailable; fallback used"}'
             )
         self.last_raw_response = content
+        self.request_records.append({
+            "messages": [{"role": item.role, "content": item.content} for item in request_messages],
+            "response": content,
+            "metrics": self.client.last_request_metrics() if callable(getattr(self.client, "last_request_metrics", None)) else {},
+        })
         self.last_combined_response = self._extract_combined_response(content)
         payload = _try_parse_json(content) or _extract_json_object(content)
         self.last_skill_progress_patch = (
@@ -1144,6 +1176,8 @@ def _normalize_skill_progress_patch(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     patch: dict[str, Any] = {}
+    if isinstance(value.get("question_answers"), list):
+        patch["question_answers"] = [dict(item) for item in value["question_answers"][:16] if isinstance(item, dict)]
     stage_label = str(value.get("stage_label") or value.get("stage") or "").strip()
     if stage_label:
         patch["stage_label"] = stage_label[:120]
@@ -1176,6 +1210,31 @@ def _apply_skill_progress_patch(state: SessionState, skill_id: str, patch: dict[
     patch = _normalize_skill_progress_patch(patch)
     if not patch:
         return None
+    if int(state.status_flags.get("context_contract_version") or 2) >= 3:
+        progress_by_skill = state.status_flags.setdefault("runtime_skill_progress", {})
+        progress = progress_by_skill.setdefault(skill_id, {})
+        # Free-text planner labels are diagnostics, not a second workflow.
+        progress["diagnostics"] = {key: value for key, value in patch.items() if key != "confirmed_facts"}
+        for key, value in dict(patch.get("confirmed_facts") or {}).items():
+            evidence = str(value.get("evidence") or "") if isinstance(value, dict) and "value" in value else ""
+            fact_value = value["value"] if isinstance(value, dict) and "value" in value else value
+            if user_fact_evidence(fact_value, [{"role": item.role, "content": item.content} for item in state.messages], evidence):
+                state.global_facts[key] = fact_value
+                if evidence:
+                    state.status_flags.setdefault("_user_fact_evidence", {})[key] = evidence
+        projection = question_ledger_projection(state, skill_id)
+        progress.update({
+            "confirmed_facts": dict(state.global_facts),
+            "confirmed_fact_keys": sorted(state.global_facts),
+            "stage_label": state.stage,
+            "pending_topics": [item.get("text", "") for item in projection["unresolved"]],
+            "resolved_topics": [item.get("question", "") for item in projection["answered"]],
+            "next_action": "",
+        })
+        progress["diagnostics"]["question_ledger"] = projection
+        progress["pending_topics"] = []
+        progress["resolved_topics"] = []
+        return progress
     progress_by_skill = state.status_flags.setdefault("runtime_skill_progress", {})
     if not isinstance(progress_by_skill, dict):
         progress_by_skill = {}
@@ -1228,6 +1287,8 @@ def _stage_skill_progress_patch(state: SessionState, skill_id: str, patch: dict[
     patch = _normalize_skill_progress_patch(patch)
     if not patch:
         return None
+    if int(state.status_flags.get("context_contract_version") or 2) >= 3:
+        return _apply_skill_progress_patch(state, skill_id, patch)
     immediate = {"confirmed_facts": patch.get("confirmed_facts") or {}}
     if immediate["confirmed_facts"]:
         _apply_skill_progress_patch(state, skill_id, immediate)
@@ -2288,6 +2349,11 @@ class MainPlannerOrchestrator:
         turn_id = str((context.session_meta or {}).get("active_turn_id") or "")
         if turn_id:
             metadata["turn_id"] = turn_id
+        if context_contract_version() >= 3:
+            metadata["reply_source"] = "expert" if active_skill == EXPERT_DIRECT_EXECUTION_ID else "skill_runtime"
+            metadata["generation_status"] = str(context.session_meta.get("reply_generation_status") or "completed")
+            latest_user = next((item for item in reversed(context.messages) if item.get("role") == "user"), {})
+            metadata["source_user_message_id"] = str(latest_user.get("message_id") or "")
         return metadata
 
     def _is_current_stream_generation(self, context) -> bool:
@@ -2686,6 +2752,7 @@ class MainPlannerOrchestrator:
         has_possible_reference_preflight = reference_instruction_index.has_explicit_evidence_rules
         if (
             stream_combined_response
+            and int(state.status_flags.get("context_contract_version") or 2) < 3
             and not questionnaire_enabled(bundle)
             and not has_declared_scripts
             and not has_possible_reference_preflight
@@ -2727,6 +2794,8 @@ class MainPlannerOrchestrator:
             if isinstance(memory_facts.get("global"), dict)
             else {}
         )
+        if int(state.status_flags.get("context_contract_version") or 2) >= 3:
+            memory_global_facts = {}
         planner_memory["facts"] = {
             **memory_facts,
             # Runtime facts are newer when both sources contain the same key,
@@ -2753,7 +2822,7 @@ class MainPlannerOrchestrator:
             ),
             "question_progress": question_ledger_projection(state, skill_name),
             "same_user_message_streak": same_user_message_count,
-            "repeated_user_turn_allowed": 1 < same_user_message_count <= 2,
+            "repeated_user_turn_allowed": int(state.status_flags.get("context_contract_version") or 2) < 3 and 1 < same_user_message_count <= 2,
         }
         try:
             planner_messages = self._conversation_messages_for_model(state)
@@ -2857,6 +2926,24 @@ class MainPlannerOrchestrator:
         # trace, but do not emit a client-facing model error after recovery.
 
         raw_skill_progress = _normalize_skill_progress_patch(planner_llm.last_skill_progress_patch)
+        if int(state.status_flags.get("context_contract_version") or 2) >= 3 and raw_skill_progress:
+            semantic = apply_semantic_answers(state, skill_name, raw_skill_progress.get("question_answers"))
+            self._record_events(context, [make_event("question_answers_reconciled", {
+                "skill_id": skill_name, **semantic,
+            }, redact=not bool(context.session_meta.get("workbench_candidate_test")))])
+        for request_index, record in enumerate(planner_llm.request_records):
+            self._record_events(context, [make_event("prompt_assembly", {
+                "skill_id": skill_name, "phase": "main_combined_response", "layer": "final",
+                "prompt_key": f"main_combined_response_{request_index}", "prompt_title": "Skill Combined Planner Prompt",
+                "skill_type": bundle.runtime_metadata.skill_type,
+                "reference_strategy": "planner_context", "retrieved_count": None,
+                "variables": {"messages": record["messages"]}, "llm_response": record["response"],
+            }, redact=not bool(context.session_meta.get("workbench_candidate_test")))])
+            self.expert_runtime._record_model_completion(
+                context, result=None, metrics=record["metrics"], source="main_combined_response",
+                expert_id=str(context.session_meta.get("active_expert_id") or ""),
+                returned_chars=len(record["response"]),
+            )
         prior_progress_by_skill = state.status_flags.get("runtime_skill_progress")
         prior_progress = (
             prior_progress_by_skill.get(skill_name)
@@ -2879,6 +2966,9 @@ class MainPlannerOrchestrator:
             skill_name,
             raw_skill_progress,
         )
+        if int(state.status_flags.get("context_contract_version") or 2) >= 3:
+            sync_runtime_state_to_context(context, state, source_skill=skill_name)
+            sync_context_to_runtime_state(context, state)
         if skill_progress is not None:
             self._record_events(
                 context,
@@ -2923,7 +3013,7 @@ class MainPlannerOrchestrator:
             state,
             skill_name,
         )
-        if repeated_questions:
+        if repeated_questions and int(state.status_flags.get("context_contract_version") or 2) < 3:
             # A combined planner response can otherwise bypass the normal
             # final-response guard. Force it through the prompt that contains
             # the reconciled question ledger instead.
@@ -3440,6 +3530,18 @@ class MainPlannerOrchestrator:
                     combined_response,
                     response_policy=current_bundle.runtime_metadata.response_policy,
                 )
+                if int(state.status_flags.get("context_contract_version") or 2) >= 3:
+                    assembly = build_prompt_assembly(
+                        current_bundle, state, tool_mode="none", available_tool_specs=(),
+                        max_tool_calls=0, routing_decision=routing_decision, skill_catalog=skill_catalog,
+                    )
+                    reply, _progress = self._guard_final_reply_progress(
+                        reply=reply, state=state,
+                        skill_name=current_bundle.contract.skill_id or current_bundle.root_name,
+                        messages=self._messages_from_assembly(state, assembly, ()),
+                        client=client, logger=logger, context=context,
+                        normalize=lambda value: _sanitize_assistant_reply(value, response_policy=current_bundle.runtime_metadata.response_policy),
+                    )
                 self._emit_runtime_status(context, "response", "正在生成回复")
                 if not combined_response_streamed:
                     self._emit_reply_delta(context, reply)
@@ -4443,6 +4545,13 @@ class MainPlannerOrchestrator:
             reply=reply,
         )
         evaluation = _evaluate_reply_progress(reply, contract)
+        original_reply = reply
+        self._record_events(context, [make_event("reply_generation_candidate", {
+            "skill_id": skill_name,
+            "turn_id": str(context.session_meta.get("active_turn_id") or ""),
+            "response": reply,
+            "source": "skill_runtime",
+        }, redact=not bool(context.session_meta.get("workbench_candidate_test")))])
         self._record_events(context, [make_event("reply_progress_evaluated", {
             "skill_id": skill_name,
             "accepted": evaluation["accepted"],
@@ -4479,20 +4588,30 @@ class MainPlannerOrchestrator:
         retried_reply = ""
         retry_evaluation: dict[str, Any] | None = None
         try:
+            retry_messages = [
+                *messages, ChatMessage(role="assistant", content=reply),
+                ChatMessage(role="user", content=_reply_progress_retry_instruction(contract, evaluation["reasons"])),
+            ]
             retry_result = client.complete_with_tools(
-                [
-                    *messages,
-                    ChatMessage(role="assistant", content=reply),
-                    ChatMessage(
-                        role="user",
-                        content=_reply_progress_retry_instruction(contract, evaluation["reasons"]),
-                    ),
-                ],
+                retry_messages,
                 (),
                 preferred_mode="none",
                 logger=logger,
             )
             retried_reply = normalize(str(retry_result.final_text or ""))
+            self._record_events(context, [make_event("prompt_assembly", {
+                "skill_id": skill_name, "phase": "reply_progress_retry", "layer": "final",
+                "prompt_key": "reply_progress_retry", "prompt_title": "Skill Reply Retry Prompt",
+                "skill_type": "runtime", "reference_strategy": "retry_context", "retrieved_count": None,
+                "variables": {"messages": [{"role": item.role, "content": item.content} for item in retry_messages]},
+                "llm_response": str(retry_result.final_text or ""),
+            }, redact=not bool(context.session_meta.get("workbench_candidate_test")))])
+            self._record_events(context, [make_event("reply_generation_candidate", {
+                "skill_id": skill_name,
+                "response": retried_reply,
+                "source": "skill_runtime_retry",
+                "turn_id": str(context.session_meta.get("active_turn_id") or ""),
+            }, redact=not bool(context.session_meta.get("workbench_candidate_test")))])
             _annotate_answered_question_repetition(
                 contract,
                 state=state,
@@ -4519,7 +4638,7 @@ class MainPlannerOrchestrator:
 
         # Never re-emit a stale completion after it has been identified. This
         # wording intentionally avoids exposing raw tool/script output.
-        degraded = (
+        degraded = GENERATION_FAILURE_REPLY if int(state.status_flags.get("context_contract_version") or 2) >= 3 else (
             "本轮所需信息已经处理完成，但结果说明没有成功生成。请再发送一次你的问题，我会基于当前信息继续回答。"
             if contract["script_success"]
             else "我还需要确认一个与当前问题直接相关的信息，才能继续给出有用结论。请补充你最希望我先分析的具体方面。"
@@ -4531,6 +4650,11 @@ class MainPlannerOrchestrator:
             "script_success": contract["script_success"],
         })])
         state.status_flags["_reply_progress_outcome"] = {"accepted": False, "skill_id": skill_name, "reason": "degraded"}
+        context.session_meta["reply_generation_status"] = "failed"
+        self._record_events(context, [make_event("reply_generation_failed", {
+            "skill_id": skill_name, "original_response": original_reply,
+            "final_response": degraded, "replacement_reason": evaluation["reasons"],
+        }, redact=not bool(context.session_meta.get("workbench_candidate_test")))])
         return degraded, {"contract": contract, "evaluation": evaluation, "retry_count": 1, "degraded": True}
 
     def _finalize_skill_progress(self, context, state: SessionState, skill_id: str, *, accepted: bool, reason: str) -> None:
@@ -4592,9 +4716,14 @@ class MainPlannerOrchestrator:
         )
         started = time.perf_counter()
         if not hasattr(client, "stream_complete"):
-            turn_result = client.complete_with_tools(messages, (), preferred_mode="none", logger=logger)
+            try:
+                turn_result = client.complete_with_tools(messages, (), preferred_mode="none", logger=logger)
+            except Exception:
+                if int(state.status_flags.get("context_contract_version") or 2) < 3:
+                    raise
+                turn_result = None
             reply = _sanitize_assistant_reply(
-                turn_result.final_text,
+                str(getattr(turn_result, "final_text", "") or ""),
                 response_policy=bundle.runtime_metadata.response_policy,
             )
             if questionnaire_enabled(bundle):
@@ -4711,29 +4840,40 @@ class MainPlannerOrchestrator:
             stream_kwargs["cancel_check"] = cancel_check
         if "request_purpose" in inspect.signature(client.stream_complete).parameters:
             stream_kwargs["request_purpose"] = "runtime_final_response"
-        for chunk in client.stream_complete(messages, **stream_kwargs):
-            if chunk.reasoning_delta:
-                reasoning_parts.append(chunk.reasoning_delta)
-                self._emit_reasoning_delta(context, chunk.reasoning_delta)
-            if chunk.content_delta:
-                if first_token_ms is None:
-                    first_token_ms = int((time.perf_counter() - started) * 1000)
-                reply_parts.append(chunk.content_delta)
-                callback = (context.session_meta or {}).get("reply_delta_callback")
-                if (
-                    not redact_script_execution
-                    and not buffer_progress_reply
-                    and (context.session_meta or {}).get("stream_final_reply")
-                    and callable(callback)
-                ):
-                    visible_delta = (
-                        questionnaire_extractor.feed(chunk.content_delta)
-                        if questionnaire_extractor is not None
-                        else chunk.content_delta
-                    )
-                    if visible_delta:
-                        callback(visible_delta)
-                        streamed_visible_reply = True
+        try:
+            for chunk in client.stream_complete(messages, **stream_kwargs):
+                if chunk.reasoning_delta:
+                    reasoning_parts.append(chunk.reasoning_delta)
+                    self._emit_reasoning_delta(context, chunk.reasoning_delta)
+                if chunk.content_delta:
+                    if first_token_ms is None:
+                        first_token_ms = int((time.perf_counter() - started) * 1000)
+                    reply_parts.append(chunk.content_delta)
+                    callback = (context.session_meta or {}).get("reply_delta_callback")
+                    if (not redact_script_execution and not buffer_progress_reply
+                            and (context.session_meta or {}).get("stream_final_reply") and callable(callback)):
+                        visible_delta = questionnaire_extractor.feed(chunk.content_delta) if questionnaire_extractor else chunk.content_delta
+                        if visible_delta:
+                            callback(visible_delta)
+                            streamed_visible_reply = True
+        except Exception as exc:
+            cancelled = stream_kwargs.get("cancel_check")
+            if int(state.status_flags.get("context_contract_version") or 2) < 3 or (callable(cancelled) and cancelled()):
+                raise
+            self._record_events(context, [make_event("reply_stream_interrupted", {
+                "skill_id": skill_name, "error_type": type(exc).__name__,
+                "partial_response": "".join(reply_parts),
+            }, redact=not bool(context.session_meta.get("workbench_candidate_test")))])
+            reply_parts.clear()
+            questionnaire_extractor = None
+        completion_recorder = getattr(getattr(self, "expert_runtime", None), "_record_model_completion", None)
+        if callable(completion_recorder):
+            metrics_reader = getattr(client, "last_request_metrics", None)
+            completion_recorder(
+                context, result=None, metrics=metrics_reader() if callable(metrics_reader) else {},
+                source="runtime_final_response", expert_id=str(context.session_meta.get("active_expert_id") or ""),
+                returned_chars=len("".join(reply_parts)),
+            )
         reply = _sanitize_assistant_reply(
             "".join(reply_parts),
             response_policy=bundle.runtime_metadata.response_policy,
@@ -4783,7 +4923,13 @@ class MainPlannerOrchestrator:
             except Exception as exc:  # pragma: no cover - defensive fallback
                 logger.log("turn.resolve.final_text.empty_retry_failed", phase=phase, error=str(exc))
             if not reply.strip():
-                reply = "刚才这轮回复生成不完整，我没有拿到可展示的正文。你可以再发一次，我会基于当前信息继续回答。"
+                reply = GENERATION_FAILURE_REPLY
+            if int(state.status_flags.get("context_contract_version") or 2) >= 3:
+                retry_evaluation = _evaluate_reply_progress(reply, progress_contract)
+                if not retry_evaluation["accepted"]:
+                    reply = GENERATION_FAILURE_REPLY
+                if reply == GENERATION_FAILURE_REPLY:
+                    context.session_meta["reply_generation_status"] = "failed"
             self._emit_reply_delta(context, reply)
         elif buffer_progress_reply:
             reply, _progress = self._guard_final_reply_progress(
@@ -4918,8 +5064,31 @@ class MainPlannerOrchestrator:
         transient_messages: tuple[ChatMessage, ...],
     ) -> list[ChatMessage]:
         prompt_messages = self._conversation_messages_for_model(state)
+        final_prompt = assembly.final_prompt
+        if int(state.status_flags.get("context_contract_version") or 2) >= 3:
+            runtime_trace = state.status_flags.get("ms_agent_runtime") or {}
+            outputs = runtime_trace.get("execution_outputs", []) if isinstance(runtime_trace, dict) else []
+            if outputs:
+                final_prompt += "\n# Executed Script Results For This Turn\n" + json.dumps([
+                    {"ok": item.get("ok"), "result": item.get("json_output")
+                        if item.get("json_output") is not None else item.get("return_value"),
+                     "error": item.get("error", "")}
+                    for item in outputs if isinstance(item, dict)
+                ], ensure_ascii=False, default=str)
+            final_prompt += (
+                "\n本轮生成边界：下方会话按时间顺序排列，最后一条用户消息是当前请求。"
+                "历史助手正文只是已展示的历史，不是本轮草稿，不得直接沿用。"
+                "结合当前已知事实、已答问题及本轮有效工具结果继续回答；"
+                "用户重复提交补充信息不代表要求重复回答，也不代表之前信息失效。\n"
+                "普通自然对话的问题账本只用于历史证据与诊断，不是必答清单。"
+                "按用户原话、上下文和已有事实判断是否已回答；不要求问题ID匹配或账本清空才继续。"
+                "已提供的信息直接使用，部分回答可先给有用结论，仅追问确实必要的缺失项。"
+                "原生问卷、结构化表单和授权仍须遵循声明契约。\n"
+                "SKILL.md 声明的业务流程、必要采集及脚本缺失项同样是契约，不因账本降权而取消。"
+                "区分本轮可解释内容与最终结论：前置条件未满足时继续必要步骤，不提前输出最终推荐。\n"
+            )
         return [
-            ChatMessage(role="system", content=assembly.final_prompt),
+            ChatMessage(role="system", content=final_prompt),
             *prompt_messages,
             *transient_messages,
         ]
@@ -4937,6 +5106,10 @@ class MainPlannerOrchestrator:
             if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
         ]
         runtime_messages = [item for item in state.messages if item.role != "system"]
+        if int(state.status_flags.get("context_contract_version") or 2) >= 3 and runtime_messages:
+            # Context messages are chronological; recent memory is a derived
+            # window, not another conversation to prepend to that source.
+            return runtime_messages[-self.runtime_bridge_config.active_window_messages :]
         if uncovered:
             uncovered_keys = [(item.role, item.content) for item in uncovered]
             runtime_keys = [(item.role, item.content) for item in runtime_messages]
@@ -5227,6 +5400,7 @@ class MainPlannerOrchestrator:
         self.context_composer.assert_current_message_fits(user_message)
         turn_id = f"turn_{uuid4().hex[:12]}"
         context.session_meta["active_turn_id"] = turn_id
+        context.session_meta.pop("reply_generation_status", None)
         context.session_meta.pop("skill_intro", None)
         if self.moderation_service is not None:
             try:
@@ -5299,14 +5473,26 @@ class MainPlannerOrchestrator:
         runtime_state = self._load_runtime_state(context)
         runtime_state.messages = self._runtime_messages_from_context(context)
         sync_context_to_runtime_state(context, runtime_state)
-        context.session_meta["context_contract_version"] = 2
-        runtime_state.status_flags["context_contract_version"] = 2
+        context.session_meta["context_contract_version"] = context_contract_version()
+        runtime_state.status_flags["context_contract_version"] = context_contract_version()
+        sync_context_to_runtime_state(context, runtime_state)
+        runtime_state.status_flags["active_turn_id"] = turn_id
+        if context_contract_version() >= 3:
+            runtime_state.status_flags.pop("_pending_skill_progress_transaction", None)
+            runtime_state.status_flags.pop("_reply_progress_outcome", None)
+        previous_skill_id = runtime_state.active_skill_id
+        if previous_skill_id:
+            reconcile_user_answer(runtime_state, previous_skill_id, user_message)
         expert_direct = context.session_meta.pop("expert_direct_reply", None)
         if isinstance(expert_direct, dict) and str(expert_direct.get("reply") or "").strip():
             # AgentScope already produced the role-bounded final answer.  Do
             # not send the same turn through general_chat, whose legacy soul
             # prompt is intentionally broad and may contradict this expert.
             reply = str(expert_direct["reply"]).strip()
+            if (context_contract_version() >= 3 and (not expert_direct.get("expert_turn_id") or expert_direct.get("expert_turn_id")
+                    != context.session_meta.get("active_expert_turn_id"))):
+                reply = GENERATION_FAILURE_REPLY
+                context.session_meta["reply_generation_status"] = "failed"
             expert_id = str(expert_direct.get("expert_id") or "")
             # This response was generated by the selected Expert Agent, not
             # by the legacy general_chat Skill. Preserve that distinction in
@@ -5929,6 +6115,15 @@ class MainPlannerOrchestrator:
                 state.status_flags["last_handoff_context"] = handoff_context
             previous_skill_id = state.active_skill_id or GENERAL_CHAT_ID
             state.active_skill_id = expert_selected
+            if int(state.status_flags.get("context_contract_version") or 2) >= 3 and previous_skill_id != expert_selected:
+                ledgers = state.status_flags.setdefault("runtime_question_ledger", {})
+                source = ledgers.get(previous_skill_id, {})
+                target = ledgers.setdefault(expert_selected, {})
+                for key in ("asked", "answered", "unresolved"):
+                    records = {str(item.get("question_id")): item for item in [
+                        *list(target.get(key) or []), *list(source.get(key) or []),
+                    ] if isinstance(item, dict)}
+                    target[key] = list(records.values())[-24:]
             state.status_flags["expert_selected_skill_id"] = expert_selected
             if previous_skill_id != expert_selected and expert_selected not in {MAIN_PLANNER_ID, GENERAL_CHAT_ID}:
                 # A card-confirmed AgentScope selection is a true Skill entry.
@@ -6876,16 +7071,17 @@ class MainPlannerOrchestrator:
         # Native Questionnaire. Keep the latest assistant questions in the
         # same persisted state so the next user answer can close only the
         # questions it actually answered.
-        if state.active_skill_id and state.active_skill_id != EXPERT_DIRECT_EXECUTION_ID:
+        if state.active_skill_id:
             latest_assistant = next(
                 (
                     str(item.get("content") or "")
                     for item in reversed(getattr(context, "messages", []) or [])
                     if item.get("role") == "assistant"
+                    and (item.get("metadata") or {}).get("turn_id") == context.session_meta.get("active_turn_id")
                 ),
                 "",
             )
-            if latest_assistant:
+            if latest_assistant and latest_assistant != GENERATION_FAILURE_REPLY:
                 registered = record_assistant_questions(
                     state,
                     state.active_skill_id,
@@ -6903,6 +7099,21 @@ class MainPlannerOrchestrator:
                             "question_count": len(registered["questions"]),
                         },
                     )])
+            if latest_assistant:
+                if latest_assistant == GENERATION_FAILURE_REPLY:
+                    context.session_meta["reply_generation_status"] = "failed"
+                    for item in reversed(context.messages):
+                        if item.get("role") == "assistant":
+                            item.setdefault("metadata", {})["generation_status"] = "failed"
+                            break
+                self._record_events(context, [make_event("reply_generation_final", {
+                    "turn_id": str(context.session_meta.get("active_turn_id") or ""),
+                    "skill_id": state.active_skill_id,
+                    "source": "expert" if state.active_skill_id == EXPERT_DIRECT_EXECUTION_ID else "skill_runtime",
+                    "status": "failed" if latest_assistant == GENERATION_FAILURE_REPLY else "completed",
+                    "response": latest_assistant,
+                    "message_id": next((item.get("message_id") for item in reversed(context.messages) if item.get("role") == "assistant"), None),
+                }, redact=not bool(context.session_meta.get("workbench_candidate_test")))])
         ledgers = state.status_flags.get("runtime_question_ledger")
         if isinstance(ledgers, dict):
             # The marker is turn-local: it forces buffering/validation for
@@ -6915,6 +7126,9 @@ class MainPlannerOrchestrator:
         # incorrectly exempt the next ordinary turn from duplicate-reply
         # checks.
         state.status_flags.pop("skill_entry_turn", None)
+        sync_runtime_state_to_context(context, state)
+        if int(state.status_flags.get("context_contract_version") or 2) >= 3:
+            sync_context_to_runtime_state(context, state)
         context.skill_states[RUNTIME_STATE_KEY] = runtime_state_payload(state)
         context.skill_states[RUNTIME_STATE_KEY]["soul_context"] = state.soul_context
         context.skill_states[RUNTIME_STATE_KEY]["conversation_memory"] = state.conversation_memory

@@ -533,7 +533,9 @@ class RuntimeBridgeTest(unittest.TestCase):
         context.session_meta["expert_direct_reply"] = {
             "expert_id": "family_education_expert",
             "reply": "建议先约定一个双方都能接受的沟通时间。",
+            "expert_turn_id": "expert-current-turn",
         }
+        context.session_meta["active_expert_turn_id"] = "expert-current-turn"
 
         result = orchestrator._handle_message_legacy("孩子不愿意沟通", context)
 

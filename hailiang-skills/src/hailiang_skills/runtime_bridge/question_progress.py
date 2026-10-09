@@ -70,6 +70,9 @@ def _question_id(text: str) -> str:
 
 
 def _options(question: str) -> list[str]:
+    listed = re.findall(r"(?:^|\n)\s*(?:-\s+|\d+[.、]\s*)([^\n]+)", question)
+    if len(listed) >= 2:
+        return [_display_text(item, 120) for item in listed[:8]]
     parts = _OPTION_SPLIT.split(question)
     if len(parts) < 2:
         return []
@@ -83,7 +86,13 @@ def _options(question: str) -> list[str]:
 def extract_questions(text: str) -> list[dict[str, Any]]:
     """Extract question-shaped prose without imposing a Skill vocabulary."""
     result: list[dict[str, Any]] = []
-    for raw in _QUESTION_SPLIT.split(str(text or "")):
+    # Only terminated questions are questions; explanatory prose containing
+    # an "or" is not a pending choice. Keep listed options with their question.
+    for raw in _QUESTION_SPLIT.split(str(text or ""))[:-1]:
+        if re.search(r"请确认是否由.*专家.*接管", raw):
+            continue
+        if not re.search(r"(?:^|\n)\s*(?:-\s+|\d+[.、]\s*)", raw):
+            raw = re.split(r"[。！!\n]", raw)[-1]
         candidate = _display_text(raw)
         if len(_normalize_text(candidate)) < 4 or not _QUESTION_HINT.search(candidate):
             continue
@@ -93,7 +102,7 @@ def extract_questions(text: str) -> list[dict[str, Any]]:
         result.append({
             "question_id": question_id,
             "text": candidate,
-            "options": _options(candidate),
+            "options": _options(raw),
         })
     return result[:8]
 
@@ -106,8 +115,20 @@ def _answer_matches_question(message: str, question: dict[str, Any]) -> bool:
         return False
     options = [str(item) for item in question.get("options") or []]
     normalized_options = [_normalize_text(item) for item in options]
+    ordinal = re.match(r"^(?:选|选择|就选)?第([一二三四五六七八12345678])(?:个|项|条|种)?", normalized_message)
+    if ordinal and options:
+        index = "一二三四五六七八".find(ordinal[1]) if not ordinal[1].isdigit() else int(ordinal[1]) - 1
+        return 0 <= index < len(options)
     if any(option and option in normalized_message for option in normalized_options):
         return True
+    # Match an explicit predicate even when the answer negates it or omits
+    # modifiers. The predicate must still occur in the user's own words.
+    for option in normalized_options:
+        predicate = re.sub(r"^(?:已经|曾经)?(?:有过)?(?:比较)?", "", option)
+        predicate = re.sub(r"(?:比较|系统性|系统)", "", predicate)
+        answer = re.sub(r"(?:比较|系统性|系统)", "", normalized_message)
+        if len(predicate) >= 4 and predicate in answer:
+            return True
     # Natural Chinese answers often omit harmless qualifiers from an option,
     # such as answering "享受画画这个过程" to "单纯享受画画的过程". Treat a
     # close match as an answer while keeping the threshold high enough that
@@ -172,7 +193,12 @@ def reconcile_user_answer(state: Any, skill_id: str, user_message: str) -> dict[
     answered = ledger.get("answered") if isinstance(ledger.get("answered"), list) else []
     answered_ids = {str(item.get("question_id")) for item in answered if isinstance(item, dict)}
     newly_answered: list[dict[str, Any]] = []
-    for question in ledger.get("asked") or []:
+    questions = ledger.get("asked") or []
+    if re.match(r"^(?:选|选择|就选)?第[一二三四五六七八12345678]", _normalize_text(user_message)):
+        questions = next(([question] for question in reversed(questions)
+            if isinstance(question, dict) and question.get("options")
+            and str(question.get("question_id")) not in answered_ids), [])
+    for question in questions:
         if not isinstance(question, dict):
             continue
         qid = str(question.get("question_id") or "")
@@ -182,7 +208,14 @@ def reconcile_user_answer(state: Any, skill_id: str, user_message: str) -> dict[
             "question_id": qid,
             "question": _display_text(question.get("text")),
             "answer": _display_text(user_message, 240),
+            "source_turn_id": state.status_flags.get("active_turn_id", ""),
         }
+        ordinal = re.match(r"^(?:选|选择|就选)?第([一二三四五六七八12345678])", _normalize_text(user_message))
+        options = question.get("options") or []
+        if ordinal and options:
+            index = "一二三四五六七八".find(ordinal[1]) if not ordinal[1].isdigit() else int(ordinal[1]) - 1
+            if 0 <= index < len(options):
+                record["selected_option"] = options[index]
         answered.append(record)
         newly_answered.append(record)
         answered_ids.add(qid)
@@ -245,6 +278,38 @@ def question_ledger_projection(state: Any, skill_id: str) -> dict[str, Any]:
         "answered": list(ledger.get("answered") or [])[-12:],
         "unresolved": list(ledger.get("unresolved") or [])[-8:],
     }
+
+
+def apply_semantic_answers(state: Any, skill_id: str, decisions: Any) -> dict[str, Any]:
+    """Accept planner judgments only for known questions with current user evidence."""
+    ledger = _ledger_for_skill(state, skill_id)
+    latest = next((str(item.content) for item in reversed(state.messages) if item.role == "user"), "")
+    asked = {str(item.get("question_id")): item for item in ledger["asked"] if isinstance(item, dict)}
+    accepted, rejected = [], []
+    for decision in decisions if isinstance(decisions, list) else []:
+        if not isinstance(decision, dict):
+            continue
+        qid = str(decision.get("question_id") or "")
+        status = str(decision.get("status") or "")
+        evidence = str(decision.get("evidence") or "").strip()
+        if qid not in asked or status not in {"answered", "partial", "unanswered", "conflict"} or not evidence or evidence not in latest:
+            rejected.append(qid)
+            continue
+        record = {"question_id": qid, "question": asked[qid]["text"], "status": status,
+                  "answer": latest, "evidence": evidence,
+                  "source_turn_id": state.status_flags.get("active_turn_id", ""),
+                  "missing": str(decision.get("missing") or "")[:240]}
+        accepted.append(record)
+        if status == "answered":
+            ledger["answered"] = [item for item in ledger["answered"] if item.get("question_id") != qid] + [record]
+        elif status in {"partial", "conflict"}:
+            ledger["answered"] = [item for item in ledger["answered"] if item.get("question_id") != qid]
+        asked[qid]["answer_status"] = status
+        asked[qid]["answer_evidence"] = record
+    answered_ids = {item.get("question_id") for item in ledger["answered"]}
+    ledger["unresolved"] = [item for item in ledger["asked"] if item.get("question_id") not in answered_ids][-16:]
+    ledger["semantic_answer_diagnostics"] = {"accepted": accepted, "rejected_question_ids": rejected}
+    return ledger["semantic_answer_diagnostics"]
 
 
 def detect_answered_question_repetition(reply: str, state: Any, skill_id: str) -> list[str]:

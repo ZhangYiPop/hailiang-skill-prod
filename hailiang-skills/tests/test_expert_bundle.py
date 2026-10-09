@@ -451,7 +451,10 @@ def test_single_skill_expert_still_uses_agent_rules_for_a_direct_reply():
 
 def test_structured_route_selects_authorized_skill_before_any_expert_reply():
     class RouteClient:
+        calls = 0
+
         def complete(self, _messages, **_kwargs):
+            self.calls += 1
             return json.dumps({
                 "mode": "execute_skill",
                 "skill_id": "score_improve",
@@ -474,15 +477,19 @@ def test_structured_route_selects_authorized_skill_before_any_expert_reply():
     state = runtime._state(context, definition)
     state["budget"] = {"max_iters": 4, "max_skill_calls": 3, "skill_calls": 0}
 
-    runtime._route_answering_expert_turn(definition, "怎么提高数学成绩", context, RouteClient(), state)
+    client = RouteClient()
+    state["agent_reply"] = "上一轮的旧回复"
+    runtime._route_answering_expert_turn(definition, "怎么提高数学成绩", context, client, state)
 
     assert context.session_meta["expert_requested_skill_id"] == "score_improve"
+    assert client.calls == 1
     assert "agent_reply" not in state
     assert any(event["event_type"] == "expert_skill_route_selected" for event in context.event_trace)
     assert any(event["event_type"] == "expert_skill_executed" for event in context.event_trace)
 
 
-def test_pending_questionnaire_does_not_lock_unrelated_expert_question_to_skill():
+def test_pending_questionnaire_does_not_lock_unrelated_expert_question_to_skill(monkeypatch):
+    monkeypatch.setenv("HAILIANG_UNIFIED_CONTEXT_ENABLED", "false")
     class RouteClient:
         def __init__(self):
             self.calls = 0
@@ -749,7 +756,8 @@ def test_handoff_without_prebuilt_excerpt_uses_active_branch_history():
     assert '"grade": "初二"' in content
 
 
-def test_high_relevance_direct_reply_without_agent_quote_is_scope_checked_not_forced():
+def test_high_relevance_direct_reply_without_agent_quote_is_scope_checked_not_forced(monkeypatch):
+    monkeypatch.setenv("HAILIANG_UNIFIED_CONTEXT_ENABLED", "false")
     class RouteClient:
         def __init__(self):
             self.calls = 0
@@ -788,7 +796,8 @@ def test_high_relevance_direct_reply_without_agent_quote_is_scope_checked_not_fo
     assert any(event["event_type"] == "expert_direct_reply_preserved" for event in context.event_trace)
 
 
-def test_scope_check_allows_skill_only_when_full_skill_confirms_in_scope():
+def test_scope_check_allows_skill_only_when_full_skill_confirms_in_scope(monkeypatch):
+    monkeypatch.setenv("HAILIANG_UNIFIED_CONTEXT_ENABLED", "false")
     class RouteClient:
         def __init__(self):
             self.calls = 0
