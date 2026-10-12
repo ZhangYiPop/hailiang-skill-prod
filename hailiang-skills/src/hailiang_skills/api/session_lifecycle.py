@@ -244,6 +244,8 @@ def open_or_resume_session(
     _initialize_general_chat_state(context)
     get_conversation_state(context)
     context.session_meta["_session_created"] = True
+    from hailiang_skills.api.routes.harness import harness_enabled
+    context.session_meta["runtime_mode"] = "harness_v1" if harness_enabled() else "legacy"
     context.session_meta["_profile_branch_created"] = True
     # All sessions use the same compatible v2 prompt/progress contract.
     context.session_meta["context_contract_version"] = 2

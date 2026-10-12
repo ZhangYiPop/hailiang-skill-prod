@@ -7,6 +7,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from hailiang_skills.storage.database import Base
+from hailiang_skills.harness import models as harness_models  # noqa: F401 - register tables for autogeneration
 
 config = context.config
 if config.config_file_name is not None:
@@ -33,4 +34,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-

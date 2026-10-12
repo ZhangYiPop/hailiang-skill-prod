@@ -215,6 +215,31 @@ def build_external_chat_router(
                 llm_rate_limiter.reserve_for_request(request_id)
             except LLMRateLimitError as exc:
                 raise HTTPException(status_code=429, detail="LLM_RATE_LIMITED", headers={"Retry-After": "1"}) from exc
+        if context.session_meta.get("runtime_mode") == "harness_v1":
+            # This endpoint creates a fresh session every time. A durable task
+            # must be returned to the caller instead of silently executing the
+            # legacy chain or tying its lifetime to this request's SSE stream.
+            from hailiang_skills.harness.contracts import HarnessError
+            from hailiang_skills.harness.policy import capture_policy
+            runtime = getattr(http_request.app.state, "harness", None)
+            if runtime is None:
+                raise HTTPException(status_code=503, detail="HARNESS_RUNTIME_UNAVAILABLE")
+            if runtime.moderation:
+                runtime.moderation.check(request.dialogue[-1].content, stage="input", session_id=session_id)
+            try:
+                harness_id = runtime.create(session_id, user_id, profile_id,
+                    request.dialogue[-1].content, capture_policy(orchestrator, context),
+                    history=[{"role": "user" if message.role == "user" else "assistant", "content": message.content}
+                             for message in request.dialogue[:-1]])
+            except HarnessError as exc:
+                raise HTTPException(exc.status, detail=exc.code) from exc
+            return JSONResponse(status_code=202, content={
+                "runtime_mode": "harness_v1", "status": "running", "content": "", "choices": [],
+                "session_id": session_id, "run_id": harness_id, "user_id": user_id, "profile_id": profile_id,
+                "request_id": str(getattr(http_request.state, "hailiang_request_id", "") or ""),
+                "snapshot_url": f"/api/v2/sessions/{session_id}/harness/runs/{harness_id}",
+                "events_url": f"/api/v2/sessions/{session_id}/harness/events",
+            })
         try:
             lease = runner.reserve_turn(session_id, user_id, run_id=run_id)
         except CapacityExceededError as exc:

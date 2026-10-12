@@ -1,5 +1,11 @@
 # Unified conversation context
 
+New session conversations now use the durable harness composer and fact/question
+ledger described in [Harness runtime](architecture/conversation_harness_runtime.md).
+The remainder of this document describes the retained legacy v3 chain and its
+candidate comparison debugger. `runtime_mode` is fixed per session; the new-session
+feature flag never switches an existing conversation between runtimes.
+
 Candidate tests and deployed conversations share context contract version 3.
 `HAILIANG_UNIFIED_CONTEXT_ENABLED=false` restores version 2 behavior without
 changing the conversation API. Version 3 is enabled by default.

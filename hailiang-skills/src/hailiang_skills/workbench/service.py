@@ -3034,6 +3034,21 @@ class WorkbenchService:
         with self.session_factory() as db:
             revision = self._require_revision(db, revision_id)
             obj = self._require_object(db, revision.object_id)
+            if obj.object_type == "expert":
+                current_validation = self._validate_payload(obj.object_type, revision.payload, revision.dependency_locks)
+                if not current_validation["valid"]:
+                    raise WorkbenchError("专家权限配置校验未通过，不能发布", code="REVISION_VALIDATION_FAILED", details=current_validation)
+            if obj.object_type == "expert_team":
+                for lock in revision.dependency_locks or []:
+                    for _release, member, member_revision in self._release_closure(db, self._require_release(db, str(lock["release_id"]))):
+                        if member.object_type != "expert":
+                            continue
+                        from hailiang_skills.harness.policy import validate_skill_boundary, load_settings
+                        from hailiang_skills.harness.contracts import HarnessError
+                        try:
+                            validate_skill_boundary(load_settings().get("independent_skill_ids", []), {member.object_key: {"skills": [item.get("object_key", "") for item in member_revision.dependency_locks or []]}})
+                        except HarnessError as exc:
+                            raise WorkbenchError("专家团成员 Skill 与独立 Skill 授权重叠，不能发布", code="REVISION_VALIDATION_FAILED") from exc
             existing = db.scalar(select(WorkbenchReleaseRow).where(WorkbenchReleaseRow.revision_id == revision_id))
             if existing is not None:
                 return self._release_dict(existing, obj, self._actor_display_names(db, [existing.published_by]))
@@ -4339,6 +4354,14 @@ class WorkbenchService:
             if unknown:
                 errors.append(f"存在未知底层能力: {', '.join(unknown)}")
         elif object_type == "expert":
+            from hailiang_skills.harness.policy import load_settings, validate_skill_boundary
+            from hailiang_skills.harness.contracts import HarnessError
+            try:
+                validate_skill_boundary(load_settings().get("independent_skill_ids", []), {
+                    "publishing_expert": {"skills": [item.get("object_key", "") for item in locks]}
+                })
+            except HarnessError:
+                errors.append("专家内部 Skill 与主 agent 独立 Skill 授权重叠")
             brief = _normalize_brief(payload.get("brief"))
             if not brief:
                 (warnings if allow_legacy_brief else errors).append("专家 Brief 不能为空" if not allow_legacy_brief else "历史专家包缺少 Brief，请补齐后再发布")

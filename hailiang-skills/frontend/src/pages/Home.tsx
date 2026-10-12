@@ -23,8 +23,11 @@ import { StatusPill } from "@/components/StatusPill";
 import { SummaryPanel } from "@/components/SummaryPanel";
 import { useChatActions } from "@/hooks/useChatActions";
 import { useChatStore } from "@/store/useChatStore";
+import { useHarnessConversation, useHarnessState } from "@/hooks/useHarnessConversation";
 
 export default function Home() {
+  useHarnessConversation();
+  const harnessActive = useHarnessState((s) => Boolean(s.activeRunId));
   const hasBootstrappedRef = useRef(false);
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
   const autoScrollEnabledRef = useRef(true);
@@ -316,7 +319,7 @@ export default function Home() {
           <ChatMessageList messages={messages} activeSkill={activeSkill} activeProfileId={activeProfileId} showCitations={!isChatMode} />
         </div>
         <Composer
-          disabled={!sessionId}
+          disabled={!sessionId || harnessActive}
           showQuickPrompts={showQuickPrompts}
           onSubmit={handleSendMessage}
           expertCatalog={expertCatalog}
@@ -350,7 +353,7 @@ export default function Home() {
     <ProfileSwitcher
       profiles={profiles}
       activeProfileId={selectedProfileId || activeProfileId}
-      loading={isLoadingProfiles}
+      loading={isLoadingProfiles || harnessActive}
       onSelect={(profileId) => {
         void selectProfile(profileId);
       }}

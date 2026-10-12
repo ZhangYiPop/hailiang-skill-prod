@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Literal
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+TERMINAL = {"completed", "failed", "cancelled"}
+TOOL_TERMINAL = TERMINAL | {"skipped"}
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def identifier(prefix: str) -> str:
+    return f"{prefix}_{uuid4().hex}"
+
+
+class HarnessError(ValueError):
+    def __init__(self, code: str, status: int = 422):
+        self.code, self.status = code, status
+        super().__init__(code)
+
+
+class InputField(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=160)
+    label: str = Field(min_length=1, max_length=240)
+    input_type: Literal["text", "single_select", "multi_select", "integer", "number"] = "text"
+    required: bool = True
+    options: list[dict[str, str]] = Field(default_factory=list, max_length=40)
+    scope: Literal["task", "session", "profile", "user"] = "task"
+    fact_key: str | None = None
+    min: float | None = None
+    max: float | None = None
+
+    @model_validator(mode="after")
+    def valid_options(self):
+        if self.input_type in {"single_select", "multi_select"}:
+            if not self.options or any(set(o) != {"label", "value"} for o in self.options):
+                raise ValueError("options require label and value")
+            if len({o["value"] for o in self.options}) != len(self.options):
+                raise ValueError("duplicate option values")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("invalid numeric bounds")
+        return self
+
+
+class InputArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=240)
+    fields: list[InputField] = Field(min_length=1, max_length=12)
+    clarification_reason: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def unique_keys(self):
+        if len({field.key for field in self.fields}) != len(self.fields):
+            raise ValueError("duplicate question keys")
+        return self
+
+
+class AnswerSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(min_length=1)
+    profile_id: str | None = None
+    submission_id: str = Field(min_length=1, max_length=100)
+    expected_version: int = Field(ge=1)
+    answers: dict[str, Any] = Field(default_factory=dict)
+    text: str | None = Field(default=None, max_length=120000)
+    skipped: bool = False
+
+
+def validate_answers(fields: list[dict], submission: AnswerSubmission) -> dict:
+    if submission.skipped:
+        if submission.answers or submission.text:
+            raise HarnessError("SKIP_WITH_ANSWERS")
+        return {"skipped": True, "answers": {}}
+    values = dict(submission.answers)
+    if submission.text is not None:
+        if len(fields) != 1 or fields[0]["input_type"] != "text" or values:
+            raise HarnessError("TEXT_REQUIRES_SINGLE_FIELD")
+        values[fields[0]["key"]] = submission.text
+    if set(values) - {f["key"] for f in fields}:
+        raise HarnessError("UNKNOWN_ANSWER_FIELD")
+    for f in fields:
+        value = values.get(f["key"])
+        if value is None or value == "" or value == [] or isinstance(value, str) and not value.strip():
+            if f["required"]:
+                raise HarnessError("REQUIRED_ANSWER_MISSING")
+            values.pop(f["key"], None)
+            continue
+        kind = f["input_type"]
+        choices = {item["value"] for item in f["options"]}
+        if kind == "text" and (not isinstance(value, str) or len(value) > 120000):
+            raise HarnessError("INVALID_TEXT_ANSWER")
+        if kind == "single_select" and (not isinstance(value, str) or value not in choices):
+            raise HarnessError("INVALID_OPTION")
+        if kind == "multi_select" and (not isinstance(value, list) or not all(isinstance(v, str) and v in choices for v in value) or len(value) != len(set(value))):
+            raise HarnessError("INVALID_OPTIONS")
+        if kind in {"integer", "number"}:
+            import math
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise HarnessError("INVALID_NUMBER")
+            if kind == "integer" and int(value) != value:
+                raise HarnessError("INVALID_INTEGER")
+            if f["min"] is not None and value < f["min"] or f["max"] is not None and value > f["max"]:
+                raise HarnessError("NUMBER_OUT_OF_RANGE")
+    return {"skipped": False, "answers": values}

@@ -9,6 +9,7 @@ dependencies = [
   "starlette>=0.40.0,<0.46.0",
   "uvicorn>=0.30.0",
   "pydantic>=2.8.0",
+  "jsonschema>=4.23.0",
   "sqlalchemy>=2.0.0",
   "PyYAML>=6.0",
   "ms-agent>=1.6.0",

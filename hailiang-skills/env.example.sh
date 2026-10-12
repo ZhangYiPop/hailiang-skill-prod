@@ -4,6 +4,9 @@
 # 必填：模型服务密钥。
 # Shared context v3 for deployed and Workbench conversations; false restores v2.
 export HAILIANG_UNIFIED_CONTEXT_ENABLED="true"
+export HAILIANG_HARNESS_NEW_SESSIONS="true"
+# Local development embeds a worker; production uses the separate systemd worker.
+export HAILIANG_HARNESS_EMBEDDED_WORKER="true"
 export DASHSCOPE_API_KEY=""
 export HAILIANG_EXTERNAL_API_KEY=""
 

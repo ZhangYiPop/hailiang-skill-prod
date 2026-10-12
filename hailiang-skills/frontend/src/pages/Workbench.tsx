@@ -1,3 +1,4 @@
+import { HarnessDebugPanel } from "@/components/workbench/HarnessDebugPanel";
 import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
@@ -3136,6 +3137,7 @@ export default function Workbench() {
                         </StatusBadge>
                       </div>
                     </div>
+                    {selectedTestRevision && <HarnessDebugPanel baseUrl={apiBaseUrl} revisionId={selectedTestRevision.revision_id} actorId={actor.actor_id} soulRevisionId={soulRevisionId} />}
                     <p className="mt-2 text-sm text-slate-500">
                       直接测试所选 Skill、专家或专家团的不可变候选快照；不会跳转或写入现有长对话测试台。
                     </p>

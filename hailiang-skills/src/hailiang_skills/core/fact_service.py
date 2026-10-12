@@ -55,6 +55,30 @@ class FactService:
     ) -> None:
         self.user_fact_repo = user_fact_repo
         self.profile_repo = profile_repo
+        self.harness_store = None
+
+    def _harness_overlay(self, facts, user_id, scope, owner):
+        if self.harness_store is None or not owner:
+            return facts
+        from hailiang_skills.schemas.facts import FactRecord
+        facts = deepcopy(facts)
+        for key, record in self.harness_store.scoped_facts(user_id, scope, owner).items():
+            previous = facts.facts.get(key)
+            saved_at = record.get("updated_at") or record.get("source", {}).get("updated_at") or ""
+            if previous and previous.updated_at > saved_at and (previous.value != record["value"] or previous.status != record["status"]):
+                run = {"user_id": user_id, "profile_id": owner if scope == "profile" else None, "session_id": owner if scope == "session" else "legacy"}
+                identity = self.harness_store.fact_identity(run, {"id": "legacy"}, scope, key)
+                with self.harness_store.transaction() as db:
+                    record = self.harness_store.write_fact(db, identity, {"key": key, "value": previous.value, "status": previous.status, "scope": scope, "source": previous.model_dump()})
+                    db.info["harness_changed"] = True
+            if record["status"] == "expired":
+                facts.facts.pop(key, None)
+            elif record["status"] == "confirmed":
+                source = record.get("source", {})
+                facts.facts[key] = FactRecord(value=record["value"], source_skill="harness", source_type="user_answer",
+                    source_id=source.get("input_request_id"), scope="shared" if scope == "user" else scope,
+                    updated_at=record.get("updated_at") or source.get("updated_at") or facts.facts.get(key, FactRecord(value=None, source_skill="harness")).updated_at)
+        return facts
 
     @staticmethod
     def validate_configured_update(
@@ -104,22 +128,22 @@ class FactService:
                 context.load_effective_facts(
                     shared_facts=KnownFacts(),
                     profile_facts=KnownFacts(),
-                    session_facts=context.session_facts,
+                    session_facts=self._harness_overlay(context.session_facts, context.user_id, "session", context.session_id),
                 )
                 return context
-            shared_facts = self.user_fact_repo.get(context.user_id)
+            shared_facts = self.get_shared_facts(context.user_id)
             profile_facts = KnownFacts()
             if context.profile_id:
-                profile_facts = self.profile_repo.get_profile_facts(context.user_id, context.profile_id)
+                profile_facts = self.get_profile_facts(context.user_id, context.profile_id)
             context.load_effective_facts(
                 shared_facts=deepcopy(shared_facts),
                 profile_facts=deepcopy(profile_facts),
-                session_facts=context.session_facts,
+                session_facts=self._harness_overlay(context.session_facts, context.user_id, "session", context.session_id),
             )
             return context
 
     def get_shared_facts(self, user_id: str) -> KnownFacts:
-        return self.user_fact_repo.get(user_id)
+        return self._harness_overlay(self.user_fact_repo.get(user_id), user_id, "user", user_id)
 
     def get_shared_facts_payload(self, user_id: str) -> dict[str, Any]:
         facts = self.get_shared_facts(user_id)
@@ -129,7 +153,7 @@ class FactService:
         }
 
     def get_profile_facts(self, user_id: str, profile_id: str) -> KnownFacts:
-        return self.profile_repo.get_profile_facts(user_id, profile_id)
+        return self._harness_overlay(self.profile_repo.get_profile_facts(user_id, profile_id), user_id, "profile", profile_id)
 
     def get_profile_facts_payload(self, user_id: str, profile_id: str) -> dict[str, Any]:
         facts = self.get_profile_facts(user_id, profile_id)
@@ -206,6 +230,8 @@ class FactService:
                 }
             )
         self._persist_scope(context, scope)
+        if self.harness_store:
+            self.harness_store.sync_legacy_facts(context, changes, scope)
         context.last_fact_changes = changes
         return changes
 
@@ -233,6 +259,8 @@ class FactService:
                 }
             )
         self._persist_scope(context, scope)
+        if self.harness_store:
+            self.harness_store.sync_legacy_facts(context, changes, scope)
         context.last_fact_changes = changes
         return changes
 
@@ -279,6 +307,8 @@ class FactService:
 
         context.refresh_effective_facts()
         self.user_fact_repo.save(context.user_id, context.shared_facts)
+        if self.harness_store:
+            self.harness_store.sync_legacy_facts(context, changes, FACT_SCOPE_SHARED)
         context.last_fact_changes = changes
         return changes
 

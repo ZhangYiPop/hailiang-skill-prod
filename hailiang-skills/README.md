@@ -2,6 +2,8 @@
 
 面向升学咨询场景的 Skill Runtime 融合版对话引擎。
 
+对话 Harness 的调用边界、恢复机制与验收依据见 [升级计划](docs/architecture/conversation_harness_upgrade.md)，运行配置、接口与本次验证结果见 [Harness 运行说明](docs/architecture/conversation_harness_runtime.md)。新会话使用独立 Harness，旧会话保持 legacy 链路。
+
 ## 管理汇报材料
 
 如果需要向业务管理层或技术管理层介绍这套 Agent 系统，建议优先阅读：
