@@ -170,7 +170,24 @@ def _extract_request_context(request: Request, *, body_payload: dict[str, object
     user_id = str(payload.get("user_id") or "")
     run_id = str(payload.get("run_id") or "")
     context_data = payload.get("context_data")
-    if isinstance(context_data, dict):
+    if getattr(getattr(request, "url", None), "path", "") == "/api/v2/sessions/chat/stream":
+        # Match the route's whole-object precedence, including invalid outer
+        # objects: logging must not silently fall back or merge identities.
+        if context_data is None:
+            raw_input = payload.get("input")
+            try:
+                input_payload = json.loads(raw_input) if isinstance(raw_input, str) else None
+            except (ValueError, RecursionError):
+                input_payload = None
+            if isinstance(input_payload, dict):
+                context_data = input_payload.get("context_data")
+        user_id = ""
+        profile_id = ""
+        if isinstance(context_data, dict):
+            # Do not stringify malformed objects into identity log fields.
+            user_id = context_data.get("user_id") if isinstance(context_data.get("user_id"), str) else ""
+            profile_id = context_data.get("profile_id") if isinstance(context_data.get("profile_id"), str) else ""
+    elif isinstance(context_data, dict):
         user_id = user_id or str(context_data.get("user_id") or "")
         profile_id = profile_id or str(context_data.get("profile_id") or "")
     return {
@@ -232,6 +249,90 @@ async def _read_json_body(request: Request) -> dict[str, object] | None:
     except json.JSONDecodeError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+async def request_observability(request: Request, call_next):
+    """Attach correlation metadata to every HTTP/SSE request and response."""
+    started = perf_counter()
+    request_id = request.headers.get("X-Request-Id") or f"req_{__import__('uuid').uuid4().hex[:16]}"
+    request.state.hailiang_request_id = request_id
+    traceparent = request.headers.get("traceparent", "")
+    trace_parts = traceparent.split("-")
+    incoming_trace_id = trace_parts[1] if len(trace_parts) == 4 and len(trace_parts[1]) == 32 else ""
+    body_payload = await _read_json_body(request)
+    request_context = _extract_request_context(request, body_payload=body_payload)
+    session_id = request_context["session_id"]
+    profile_id = request_context["profile_id"]
+    run_id = request_context["run_id"]
+    if request.method == "OPTIONS":
+        response = await call_next(request)
+        response.headers.setdefault("X-Request-Id", request_id)
+        # Chrome may send a Private Network Access preflight when a page
+        # on localhost calls a loopback API with a different hostname.
+        # The local development server is intentionally loopback-only.
+        if request.headers.get("Access-Control-Request-Private-Network") == "true":
+            response.headers.setdefault("Access-Control-Allow-Private-Network", "true")
+        return response
+    # The project BFF is the trust boundary. It authenticates users before
+    # calling this private algorithm service, so no browser/JWT auth runs here.
+    route_template = request.url.path
+    context, token = bind_telemetry(
+        request_id=request_id,
+        trace_id=incoming_trace_id,
+        route=route_template,
+        session_id=session_id,
+        profile_id=profile_id,
+        user_id=request_context["user_id"],
+        run_id=run_id,
+    )
+    status_code = 500
+    response_error_metadata: dict[str, object] = {}
+    try:
+        with span("http.request", node="http_request", attributes={"method": request.method, "route": route_template}):
+            response = await call_next(request)
+        matched_route = getattr(request.scope.get("route"), "path", route_template)
+        status_code = response.status_code
+        if status_code >= 400:
+            response_error_metadata = {
+                **_response_error_metadata(response),
+                **_request_error_metadata(request),
+            }
+        response.headers["X-Request-Id"] = request_id
+        response.headers["X-Trace-Id"] = context.trace_id
+        response.headers["X-App-Version"] = release_version()
+        response.headers["X-App-Node"] = node_name()
+        if REQUEST_DURATION:
+            REQUEST_DURATION.labels(route=matched_route, method=request.method, status_code=str(response.status_code)).observe(perf_counter() - started)
+        return response
+    except Exception as exc:
+        matched_route = getattr(request.scope.get("route"), "path", route_template)
+        if REQUEST_DURATION:
+            REQUEST_DURATION.labels(route=matched_route, method=request.method, status_code="500").observe(perf_counter() - started)
+        status_code = 500
+        request.state.request_observability_error = type(exc).__name__
+        raise
+    finally:
+        matched_route = getattr(request.scope.get("route"), "path", route_template)
+        append_http_request_record(
+            method=request.method,
+            route=matched_route,
+            status_code=status_code,
+            duration_ms=(perf_counter() - started) * 1000,
+            request_id=request_id,
+            trace_id=context.trace_id,
+            span_id=context.span_id,
+            session_id=context.session_id,
+            profile_id=context.profile_id,
+            user_id=context.user_id,
+            run_id=context.run_id,
+            error=str(getattr(request.state, "request_observability_error", "")) if status_code >= 500 else "",
+            extra={
+                "source": "api_middleware",
+                "path": request.url.path,
+                **response_error_metadata,
+            },
+        )
+        reset_telemetry(token)
 
 
 def create_app() -> FastAPI:
@@ -424,89 +525,7 @@ def create_app() -> FastAPI:
             headers={"X-Hailiang-Error-Code": str(payload["code"])},
         )
 
-    @app.middleware("http")
-    async def request_observability(request: Request, call_next):
-        """Attach correlation metadata to every HTTP/SSE request and response."""
-        started = perf_counter()
-        request_id = request.headers.get("X-Request-Id") or f"req_{__import__('uuid').uuid4().hex[:16]}"
-        request.state.hailiang_request_id = request_id
-        traceparent = request.headers.get("traceparent", "")
-        trace_parts = traceparent.split("-")
-        incoming_trace_id = trace_parts[1] if len(trace_parts) == 4 and len(trace_parts[1]) == 32 else ""
-        body_payload = await _read_json_body(request)
-        request_context = _extract_request_context(request, body_payload=body_payload)
-        session_id = request_context["session_id"]
-        profile_id = request_context["profile_id"]
-        run_id = request_context["run_id"]
-        if request.method == "OPTIONS":
-            response = await call_next(request)
-            response.headers.setdefault("X-Request-Id", request_id)
-            # Chrome may send a Private Network Access preflight when a page
-            # on localhost calls a loopback API with a different hostname.
-            # The local development server is intentionally loopback-only.
-            if request.headers.get("Access-Control-Request-Private-Network") == "true":
-                response.headers.setdefault("Access-Control-Allow-Private-Network", "true")
-            return response
-        # The project BFF is the trust boundary. It authenticates users before
-        # calling this private algorithm service, so no browser/JWT auth runs here.
-        route_template = request.url.path
-        context, token = bind_telemetry(
-            request_id=request_id,
-            trace_id=incoming_trace_id,
-            route=route_template,
-            session_id=session_id,
-            profile_id=profile_id,
-            user_id=request_context["user_id"],
-            run_id=run_id,
-        )
-        status_code = 500
-        response_error_metadata: dict[str, object] = {}
-        try:
-            with span("http.request", node="http_request", attributes={"method": request.method, "route": route_template}):
-                response = await call_next(request)
-            matched_route = getattr(request.scope.get("route"), "path", route_template)
-            status_code = response.status_code
-            if status_code >= 400:
-                response_error_metadata = {
-                    **_response_error_metadata(response),
-                    **_request_error_metadata(request),
-                }
-            response.headers["X-Request-Id"] = request_id
-            response.headers["X-Trace-Id"] = context.trace_id
-            response.headers["X-App-Version"] = release_version()
-            response.headers["X-App-Node"] = node_name()
-            if REQUEST_DURATION:
-                REQUEST_DURATION.labels(route=matched_route, method=request.method, status_code=str(response.status_code)).observe(perf_counter() - started)
-            return response
-        except Exception as exc:
-            matched_route = getattr(request.scope.get("route"), "path", route_template)
-            if REQUEST_DURATION:
-                REQUEST_DURATION.labels(route=matched_route, method=request.method, status_code="500").observe(perf_counter() - started)
-            status_code = 500
-            request.state.request_observability_error = type(exc).__name__
-            raise
-        finally:
-            matched_route = getattr(request.scope.get("route"), "path", route_template)
-            append_http_request_record(
-                method=request.method,
-                route=matched_route,
-                status_code=status_code,
-                duration_ms=(perf_counter() - started) * 1000,
-                request_id=request_id,
-                trace_id=context.trace_id,
-                span_id=context.span_id,
-                session_id=context.session_id,
-                profile_id=context.profile_id,
-                user_id=context.user_id,
-                run_id=context.run_id,
-                error=str(getattr(request.state, "request_observability_error", "")) if status_code >= 500 else "",
-                extra={
-                    "source": "api_middleware",
-                    "path": request.url.path,
-                    **response_error_metadata,
-                },
-            )
-            reset_telemetry(token)
+    app.middleware("http")(request_observability)
 
     @app.get("/health")
     def health() -> dict:

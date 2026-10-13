@@ -279,7 +279,7 @@ curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   --data-raw '{
     "session_id":"session-d7c62cd1-cc1b-457f-9349-fb926a6f48f",
     "run_id":"run-1ebfd8d7-76eb-4b0a-9ff5-f5e1f56e388",
-    "input":"{\"action\":\"chat\",\"context_scope\":\"profile\",\"profile_id\":\"pro-0723-1\",\"content\":\"给孩子做一份生涯规划\",\"source\":\"chat\",\"enable_thinking\":false,\"return_reasoning\":false}",
+    "input":"{\"action\":\"chat\",\"context_scope\":\"profile\",\"content\":\"给孩子做一份生涯规划\",\"source\":\"chat\",\"enable_thinking\":false,\"return_reasoning\":false,\"expert_context\":{\"expert_team_id\":null,\"expert_id\":null,\"operation\":\"continue\"}}",
     "context_data":{
       "student_name":"zz",
       "user_id":"test-0723-1",
@@ -298,10 +298,18 @@ curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
 | --- | --- | --- | --- |
 | `session_id` | 非空字符串 | 是 | 首次请求可由 BFF 生成，后续复用。不能更换既有会话的用户或档案。 |
 | `run_id` | 非空字符串 | 是 | 单次执行 ID。普通动作必须全局唯一且不能重用；停止时例外，必须复用活动 run ID。 |
-| `input` | JSON 字符串 | 是 | 字符串内容必须是合法的 JSON 对象；除 `stop` 外必须明确选择 `context_scope`，见下表。 |
-| `context_data` | JSON 对象 | 非停止动作是 | 会话身份与首次建档信息；`stop` 可不传，见下表。 |
+| `input` | JSON 字符串 | 是 | 字符串内容必须是合法的 JSON 对象；支持内部 `context_data`；`context_scope` 可由档案 ID 推断。 |
+| `context_data` | JSON 对象 | 非停止动作两处至少一处 | 会话身份与建档信息；可改放 `input.context_data`，两处都传时顶层优先。 |
 
 顶层未知字段、类型不正确或缺少字段均返回 `422 REQUEST_VALIDATION_ERROR`。
+
+#### 上下文双位置传递
+
+`context_data` 支持顶层或 `input.context_data`（位于 JSON 字符串内的对象）。
+非停止动作至少传一处；缺失和 `null` 视为未提供。两处都传时，分别校验结构，
+使用顶层完整对象且不合并；任何一处结构非法均返回 422，不静默回退。
+`stop` 保留两处均可省略的行为。完整内部单传、双传、停止及错误说明见
+[SSE v2 双位置兼容](SSE_V2_INTEGRATION_GUIDE.md#context_data-双位置兼容)。
 
 #### `run_id`、`message_id`、`source_message_id` 的区别
 
@@ -336,16 +344,16 @@ curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
 
 #### `input` 中的对象
 
-除 `stop` 外，所有动作都必须带 `context_scope`。`profile` 动作携带非空 `profile_id` 并与
-`context_data.profile_id` 保持一致；`unbound` 动作不携带 `profile_id`，且 `context_data` 只含 `user_id`。
+`context_scope` 可省略，由最终选中的 `context_data.profile_id` 推断。`profile` 动作的档案 ID
+只能来自选中的 `context_data`；`input.profile_id` 被禁止。`unbound` 模式不携带档案数据。
 
 | `action` | 必填字段 | `source` | 说明 |
 | --- | --- | --- | --- |
-| `chat` | `content`：非空字符串；`profile` 范围还需 `profile_id` | `chat` | 普通聊天；可选 `expert_team_id` 或 `expert_id`。无专家字段时走通用对话 Runtime。 |
-| `switch_team_member` | `profile_id`、`target_expert_id`、`content`：非空字符串 | `toolbar` | 从当前专家团工具栏指定专家并携带问题；禁止从 `content` 解析专家名称。 |
-| `confirm_team_handoff` | `profile_id`、`source_message_id`、`target_expert_id` | `team_handoff` | 确认主协调专家消息中的有效候选卡片。 |
-| `enter_skill` | `profile_id`、`target_skill_id`：非空字符串 | `toolbar`、`route_suggestion` | 推荐跳转时额外需要 `source_message_id`、`source_interaction_id`。 |
-| `quit_skill` | `profile_id`、`target_skill_id`：非空字符串 | `toolbar`、`exit_button` | `target_skill_id` 必须等于当前活动 Skill。 |
+| `chat` | `content`：非空字符串 | `chat` | 普通聊天；可选 `expert_team_id` 或 `expert_id`。无专家字段时走通用对话 Runtime。 |
+| `switch_team_member` | `target_expert_id`、`content`：非空字符串 | `toolbar` | 从当前专家团工具栏指定专家并携带问题；禁止从 `content` 解析专家名称。 |
+| `confirm_team_handoff` | `source_message_id`、`target_expert_id` | `team_handoff` | 确认主协调专家消息中的有效候选卡片。 |
+| `enter_skill` | `target_skill_id`：非空字符串 | `toolbar`、`route_suggestion` | 推荐跳转时额外需要 `source_message_id`、`source_interaction_id`。 |
+| `quit_skill` | `target_skill_id`：非空字符串 | `toolbar`、`exit_button` | `target_skill_id` 必须等于当前活动 Skill。 |
 | `stop` | 无 | `composer` | 取消当前 run。 |
 
 `enable_thinking`、`return_reasoning` 均为可选布尔值，默认 `false`。未知字段、错误类型或枚举不匹配返回 `422 REQUEST_VALIDATION_ERROR`。
@@ -372,7 +380,7 @@ curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   -H 'X-SSE-Protocol: hailiang.sse.v2' \
   --data-raw '{
     "session_id":"session-1","run_id":"run-expert-toolbar-001",
-    "input":"{\"action\":\"switch_team_member\",\"context_scope\":\"profile\",\"profile_id\":\"pro-0723-1\",\"source\":\"toolbar\",\"target_expert_id\":\"family_education_expert\",\"content\":\"孩子最近不愿意和我沟通，怎么办？\"}",
+    "input":"{\"action\":\"switch_team_member\",\"context_scope\":\"profile\",\"source\":\"toolbar\",\"target_expert_id\":\"family_education_expert\",\"content\":\"孩子最近不愿意和我沟通，怎么办？\",\"expert_context\":{\"expert_team_id\":null,\"expert_id\":null,\"operation\":\"continue\"}}",
     "context_data":{"student_name":"zz","user_id":"test-0723-1","profile_id":"pro-0723-1"}
   }'
 ```
@@ -385,12 +393,14 @@ curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
 {
   "action": "confirm_team_handoff",
   "context_scope": "profile",
-  "profile_id": "pro-0723-1",
+  "expert_context": {"expert_team_id": "student_growth_expert_team", "expert_id": "career_plan_expert", "operation": "continue"},
   "source": "team_handoff",
   "source_message_id": "msg_xxx",
   "target_expert_id": "family_education_expert"
 }
 ```
+
+该内部动作示例的孩子身份放在顶层或内部 `context_data` 中；专家 ID 应回传当前实际状态。
 
 两种来源的校验规则不同：`team_handoff` 只能选择来源卡片中的有效候选；`toolbar` 可以选择当前专家团任一成员，且不携带 `source_message_id`。
 
@@ -404,7 +414,7 @@ curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   -H 'X-SSE-Protocol: hailiang.sse.v2' \
   --data-raw '{
     "session_id":"session-1","run_id":"run-enter-001",
-    "input":"{\"action\":\"enter_skill\",\"context_scope\":\"profile\",\"profile_id\":\"pro-0723-1\",\"target_skill_id\":\"subject_advisor\",\"source\":\"toolbar\"}",
+    "input":"{\"action\":\"enter_skill\",\"context_scope\":\"profile\",\"target_skill_id\":\"subject_advisor\",\"source\":\"toolbar\",\"expert_context\":{\"expert_team_id\":null,\"expert_id\":null,\"operation\":\"continue\"}}",
     "context_data":{"student_name":"zz","user_id":"test-0723-1","profile_id":"pro-0723-1"}
   }'
 ```
@@ -429,7 +439,7 @@ curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   -H 'X-SSE-Protocol: hailiang.sse.v2' \
   --data-raw '{
     "session_id":"session-1","run_id":"run-enter-002",
-    "input":"{\"action\":\"enter_skill\",\"context_scope\":\"profile\",\"profile_id\":\"pro-0723-1\",\"target_skill_id\":\"interest_explore\",\"source\":\"route_suggestion\",\"source_message_id\":\"msg_001\",\"source_interaction_id\":\"route_suggestions\"}",
+    "input":"{\"action\":\"enter_skill\",\"context_scope\":\"profile\",\"target_skill_id\":\"interest_explore\",\"source\":\"route_suggestion\",\"source_message_id\":\"msg_001\",\"source_interaction_id\":\"route_suggestions\",\"expert_context\":{\"expert_team_id\":null,\"expert_id\":null,\"operation\":\"continue\"}}",
     "context_data":{"student_name":"zz","user_id":"test-0723-1","profile_id":"pro-0723-1"}
   }'
 ```
@@ -447,7 +457,7 @@ curl -N "$ALGORITHM_BASE/api/v2/sessions/chat/stream" \
   -H 'X-SSE-Protocol: hailiang.sse.v2' \
   --data-raw '{
     "session_id":"session-1","run_id":"run-exit-001",
-    "input":"{\"action\":\"quit_skill\",\"context_scope\":\"profile\",\"profile_id\":\"pro-0723-1\",\"target_skill_id\":\"interest_explore\",\"source\":\"exit_button\"}",
+    "input":"{\"action\":\"quit_skill\",\"context_scope\":\"profile\",\"target_skill_id\":\"interest_explore\",\"source\":\"exit_button\",\"expert_context\":{\"expert_team_id\":null,\"expert_id\":null,\"operation\":\"continue\"}}",
     "context_data":{"student_name":"zz","user_id":"test-0723-1","profile_id":"pro-0723-1"}
   }'
 ```
@@ -578,7 +588,7 @@ curl -X PATCH "$ALGORITHM_BASE/api/v1/sessions/$SESSION_ID/messages/$MESSAGE_ID/
 对 `multi_path_planning` 这类 `skill_session` 问卷，前端常见续发内容是把答案拼成一条普通 `chat` 文本，例如：
 
 ```json
-{"action":"chat","context_scope":"profile","profile_id":"pro-0723-1","content":"高考省份：浙江；选科科目：物理、化学、生物；预估高考总分：620","source":"chat"}
+{"action":"chat","context_scope":"profile","expert_context":{"expert_team_id":null,"expert_id":null,"operation":"continue"},"content":"高考省份：浙江；选科科目：物理、化学、生物；预估高考总分：620","source":"chat"}
 ```
 
 如果前端暂时无法发送交互状态 PATCH，后端通常仍可从上述文本中解析答案并继续执行；但历史消息中的表单不会自动变成 `submitted`，因此 UI 状态会不完整。

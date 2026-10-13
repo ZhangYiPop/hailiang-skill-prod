@@ -38,8 +38,12 @@ class ExpertContextInput(StrictInput):
 
 
 class ProfileBoundInput(StrictInput):
+    context_data: ContextData | None = Field(
+        default=None,
+        description="Optional inner context. Same schema as top-level context_data; top-level wins without merging. Every supplied object is validated.",
+    )
     context_scope: Literal["profile", "unbound"] | None = None
-    # Every non-stop action can activate the child selected by outer
+    # Every non-stop action can activate the child selected by the resolved
     # context_data. Omitting this field remains equivalent to auto for older
     # clients.
     context_activation: Literal["auto", "strict"] = "auto"
@@ -98,6 +102,10 @@ class OpenSessionInput(ProfileBoundInput):
 
 
 class StopInput(StrictInput):
+    context_data: ContextData | None = Field(
+        default=None,
+        description="Optional stop context, validated but not used to change session identity or profile.",
+    )
     action: Literal["stop"]
     source: Literal["composer"]
 
@@ -108,8 +116,17 @@ StreamInput = Annotated[ChatInput | EnterSkillInput | QuitSkillInput | ConfirmTe
 class ChatStreamRequest(StrictInput):
     session_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
-    input: str = Field(min_length=1)
-    context_data: ContextData | None = None
+    input: str = Field(
+        min_length=1,
+        description="JSON object serialized as a string. May contain context_data with the same schema as the top-level field.",
+    )
+    context_data: ContextData | None = Field(
+        default=None,
+        description=(
+            "Context may be supplied here or inside input; the top-level object wins without merging. "
+            "Non-stop actions require at least one non-null object; every supplied object is validated."
+        ),
+    )
     debug_session_id: str | None = Field(default=None, min_length=1)
 
 
@@ -170,7 +187,7 @@ def _parse_input(raw: str) -> StreamInput:
 
 
 def _resolve_context_scope(input_data: ProfileBoundInput, data: ContextData) -> tuple[str, str | None]:
-    """Resolve one turn's context solely from the BFF-selected context data."""
+    """Resolve one turn's context from the unified BFF-selected context data."""
     context_profile_id = str(data.profile_id or "").strip()
     scope = input_data.context_scope or ("profile" if context_profile_id else "unbound")
     if scope == "unbound":
@@ -644,7 +661,7 @@ def _find_team_handoff_source(context, source_message_id: str) -> tuple[dict, li
     """Find a handoff card in the active or an archived child branch.
 
     The card remains the authorization record even when the caller chose a
-    different target child through top-level ``context_data.profile_id``.
+    different target child through the resolved ``context_data.profile_id``.
     """
     candidates: list[tuple[list[dict], str | None, str | None, dict | None]] = [
         (context.messages, context.profile_id, context.profile_name, None),
@@ -838,6 +855,10 @@ def build_chat_stream_router(
     @router.post("/sessions/chat/stream")
     def post_chat_stream(request: ChatStreamRequest, http_request: Request) -> StreamingResponse:
         input_data = _parse_input(request.input)
+        # Accept both platform envelopes, with the outer identity authoritative.
+        # Select a complete object; never merge identities across locations.
+        if request.context_data is None and input_data.context_data is not None:
+            request = request.model_copy(update={"context_data": input_data.context_data})
         if isinstance(input_data, StopInput):
             try:
                 context = repository.get(request.session_id)
@@ -883,7 +904,7 @@ def build_chat_stream_router(
                 ) from exc
         context_scope, selected_profile_id = _resolve_context_scope(input_data, request.context_data)
         if context_scope == "profile":
-            # ``context_data.profile_id`` is constructed by the BFF and is
+            # The resolved ``context_data.profile_id`` is supplied by the BFF and is
             # deliberately the only child identity accepted by SSE v2.
             target_profile_id: str | None = selected_profile_id
             profile_context_status = "matched"

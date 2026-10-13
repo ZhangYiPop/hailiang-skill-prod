@@ -13,8 +13,8 @@
   每个分支独立保存模型历史、Facts、当前 Skill、表单和交互卡；专家团及最后实际承接
   的专家通常是 session 级选择，会在切换孩子后延续。例外是跨孩子点击专家转交卡：卡片
   只在目标孩子分支绑定被选专家，不改变其他孩子或 session 级选择。
-- 本轮孩子身份只能来自 BFF 写入的 `context_data.profile_id`。`input` 中不得
-  出现 `profile_id`。
+- 本轮孩子身份来自 BFF 写入、按顶层优先解析后的 `context_data.profile_id`。
+  允许 `input.context_data.profile_id`，禁止 `input.profile_id`。
 - 除 `stop` 外，每个动作都必须带 `expert_context`，且**固定同时包含**
   `expert_team_id`、`expert_id`、`operation` 三个键。普通 `chat + continue` 固定传两个
   `null`，由服务端继承权威状态。工具栏选择和专家转交卡同样携带完整对象。
@@ -39,6 +39,11 @@
 
 `input` 必须是 JSON 字符串。非停止动作必须有 `context_data`；停止动作不需要
 `context_data` 或 `expert_context`。
+
+`context_data` 可放顶层或 `input.context_data`，缺失及 `null` 视为未提供。
+两处都传时分别校验结构，并使用顶层完整对象，不合并字段；任何一处结构非法返回 422。
+业务校验只使用选中的对象。示例及上线规则见
+[SSE v2 双位置兼容](SSE_V2_INTEGRATION_GUIDE.md#context_data-双位置兼容)。
 
 `expected_branch_version` 和 `expected_selection_version` 对请求方可省略。省略时，服务端会在完成
 当前 session/profile 分支恢复后，使用对应的权威版本继续处理；响应中的 `state.expert_context` 仍会返回完整版本。
@@ -268,14 +273,14 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 ```
 
 服务端会校验卡片来源、卡片活跃状态、当前团队及目标候选资格；不能用旧卡或手工伪造
-的目标 ID 切换。外层 `context_data.profile_id` 始终是本轮执行孩子：若它不同于卡片来源孩子，
+的目标 ID 切换。统一解析后的 `context_data.profile_id` 始终是本轮执行孩子：若它不同于卡片来源孩子，
 服务端只把卡片作为授权记录，在目标孩子分支激活候选专家，不读取来源孩子的档案、Facts、表单或历史。
 切换孩子时，来源孩子的未完成表单与活动 Skill 会作废，但仍可确认的专家转交卡保持 `active`，直到
 被确认、被新的实质性对话取代或因配置变更而失效。
 
 ### 4.3 切换孩子时：不选专家、选专家、切团队
 
-每次都仅把顶层 `context_data.profile_id` 改为目标孩子。例如从 `child_a` 切到 `child_b`：
+每次都把有效 `context_data.profile_id` 改为目标孩子（双传时以顶层为准）。例如从 `child_a` 切到 `child_b`：
 
 ```json
 "context_data": {"user_id": "user_001", "profile_id": "child_b", "student_name": "小明"}
@@ -308,7 +313,7 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 | `expert_context.expert_id` | `input.expert_context` | `continue` 时与团队字段同为 `null` 表示继承；具体值是严格断言。`select_expert` 时是目标专家；`select_team` 时必须为 `null`。 | 所有非停止动作。 |
 | `target_expert_id` | `input` 顶层 | 已激活团队里的“下一位目标成员”。 | 仅 `switch_team_member`、`confirm_team_handoff`。 |
 | `expert_context.expert_team_id` | `input.expert_context` | 当前/目标专家团；单专家模式为 `null`。 | 所有非停止动作。 |
-| `context_data.profile_id` | 顶层请求 | 本轮目标孩子；变化即切孩子。 | 仅 `context_scope:"profile"`。 |
+| `context_data.profile_id` | 顶层或 `input` 内，顶层优先 | 本轮目标孩子；变化即切孩子。 | 仅 `context_scope:"profile"`。 |
 
 组合规则：
 

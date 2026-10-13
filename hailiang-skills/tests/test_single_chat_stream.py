@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -287,7 +288,7 @@ def _api_payload(*, session_id: str = "sess_1", run_id: str = "run_1", input_pay
 
 
 @pytest.fixture()
-def api_client(monkeypatch, tmp_path: Path) -> tuple[TestClient, InMemorySessionRepository]:
+def api_client(monkeypatch, tmp_path: Path, request) -> tuple[TestClient, InMemorySessionRepository]:
     monkeypatch.setattr(session_logging, "SESSION_LOG_ROOT", tmp_path / "sessions")
     monkeypatch.setattr(session_logging, "USER_LOG_ROOT", tmp_path / "users")
     _FakeRunner.instances.clear()
@@ -296,7 +297,21 @@ def api_client(monkeypatch, tmp_path: Path) -> tuple[TestClient, InMemorySession
     app = FastAPI()
     router = build_chat_stream_router(repository, _FactService(), object())
     app.include_router(router, prefix="/api/v2")
-    return TestClient(app), repository
+    client = TestClient(app)
+    if getattr(request, "param", "outer") == "inner":
+        original_post = client.post
+
+        def post_with_inner_context(url, **kwargs):
+            payload = deepcopy(kwargs.get("json"))
+            if isinstance(payload, dict) and "context_data" in payload:
+                inner = json.loads(payload["input"])
+                inner["context_data"] = payload.pop("context_data")
+                payload["input"] = json.dumps(inner)
+                kwargs["json"] = payload
+            return original_post(url, **kwargs)
+
+        monkeypatch.setattr(client, "post", post_with_inner_context)
+    return client, repository
 
 
 def test_open_or_resume_refreshes_matched_application_projection(tmp_path: Path, monkeypatch) -> None:
@@ -398,6 +413,7 @@ def test_input_contract_and_external_run_id() -> None:
     coordinator.release(lease)
 
 
+@pytest.mark.parametrize("api_client", ["outer", "inner"], indirect=True)
 def test_chat_stream_api_accepts_unbound_context_and_rejects_profile_data(api_client) -> None:
     client, repository = api_client
     response = client.post("/api/v2/sessions/chat/stream", json={
@@ -437,6 +453,49 @@ def test_chat_stream_api_creates_session_and_uses_external_run_id(api_client) ->
     assert context.user_id == "u1"
     assert context.profile_id == "p1"
     assert context.session_meta["external_run_ids"] == ["bff_run_1"]
+
+
+@pytest.mark.parametrize("location", ["outer", "inner", "both", "outer_null", "inner_null"])
+def test_context_data_locations(api_client, location) -> None:
+    client, repository = api_client
+    payload = _api_payload()
+    inner = json.loads(payload["input"])
+    if location in {"inner", "both", "outer_null"}:
+        inner["context_data"] = dict(payload["context_data"])
+    if location == "both":
+        inner["context_data"].update(user_id="other_user", profile_id="other_profile")
+    if location == "inner":
+        payload.pop("context_data")
+    if location == "outer_null":
+        payload["context_data"] = None
+    if location == "inner_null":
+        inner["context_data"] = None
+    payload["input"] = json.dumps(inner)
+
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+
+    assert response.status_code == 200
+    context = repository.get("sess_1")
+    assert context.user_id == "u1"
+    assert context.profile_id == "p1"
+    assert response.headers["x-sse-protocol"] == "hailiang.sse.v2"
+
+
+@pytest.mark.parametrize("outer,inner", [
+    (None, None), ({}, None), (None, {}),
+    ({"user_id": "u1"}, {}), ({}, {"user_id": "u1"}),
+])
+def test_context_data_missing_or_invalid(api_client, outer, inner) -> None:
+    client, repository = api_client
+    payload = _api_payload()
+    payload["context_data"] = outer
+    input_data = json.loads(payload["input"])
+    input_data["context_data"] = inner
+    payload["input"] = json.dumps(input_data)
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+    assert response.status_code == 422
+    with pytest.raises(KeyError):
+        repository.get("sess_1")
 
 
 def test_chat_stream_api_defaults_missing_expert_context_versions_to_current_state(api_client) -> None:
@@ -479,6 +538,7 @@ def test_chat_stream_api_rejects_duplicate_external_run_id(api_client) -> None:
     assert repository.get("sess_1").session_meta["external_run_ids"] == ["same_run"]
 
 
+@pytest.mark.parametrize("api_client", ["outer", "inner"], indirect=True)
 def test_chat_auto_activates_new_child_and_inherits_session_agent(api_client) -> None:
     client, repository = api_client
     first = client.post("/api/v2/sessions/chat/stream", json=_api_payload(session_id="sess_switch", run_id="run_p1"))
@@ -535,6 +595,7 @@ def test_chat_auto_activates_new_child_and_inherits_session_agent(api_client) ->
     assert restored.messages == []
 
 
+@pytest.mark.parametrize("api_client", ["outer", "inner"], indirect=True)
 def test_chat_strict_rejects_cross_child_activation(api_client) -> None:
     client, _ = api_client
     assert client.post("/api/v2/sessions/chat/stream", json=_api_payload(session_id="sess_strict", run_id="run_p1")).status_code == 200
@@ -1308,6 +1369,7 @@ def test_non_stop_actions_still_require_session_and_context_data(api_client) -> 
     assert response.json()["detail"] == "context_data is required for non-stop actions"
 
 
+@pytest.mark.parametrize("api_client", ["outer", "inner"], indirect=True)
 def test_skill_transition_api_uses_single_endpoint_and_external_run_id(api_client) -> None:
     client, repository = api_client
 
@@ -1339,6 +1401,7 @@ def test_skill_transition_api_uses_single_endpoint_and_external_run_id(api_clien
     assert repository.get("sess_1").interaction_state["active_skill"] == "general_chat"
 
 
+@pytest.mark.parametrize("api_client", ["outer", "inner"], indirect=True)
 def test_quit_skill_target_mismatch_does_not_claim_run_id(api_client) -> None:
     client, repository = api_client
     client.post(
@@ -1359,3 +1422,193 @@ def test_quit_skill_target_mismatch_does_not_claim_run_id(api_client) -> None:
 
     assert response.status_code == 409
     assert repository.get("sess_1").session_meta["external_run_ids"] == ["run_enter"]
+
+
+def _inner_context_payload(**kwargs):
+    payload = _api_payload(**kwargs)
+    inner = json.loads(payload["input"])
+    inner["context_data"] = payload.pop("context_data")
+    payload["input"] = json.dumps(inner)
+    return payload
+
+
+@pytest.mark.parametrize("outer", ["missing", None])
+@pytest.mark.parametrize("inner", ["missing", None])
+def test_context_absence_combinations(api_client, outer, inner):
+    client, _ = api_client
+    payload = _api_payload()
+    payload.pop("context_data")
+    if outer is None:
+        payload["context_data"] = None
+    parsed = json.loads(payload["input"])
+    if inner is None:
+        parsed["context_data"] = None
+    payload["input"] = json.dumps(parsed)
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+    assert response.status_code == 422
+    assert response.json()["detail"] == "context_data is required for non-stop actions"
+
+
+@pytest.mark.parametrize("invalid", [{}, {"profile_id": "p1"}, [], "bad", 1, {"user_id": []}])
+@pytest.mark.parametrize("location", ["outer", "inner"])
+def test_invalid_context_never_falls_back_to_valid_other_location(api_client, invalid, location):
+    client, _ = api_client
+    payload = _api_payload()
+    parsed = json.loads(payload["input"])
+    parsed["context_data"] = deepcopy(payload["context_data"])
+    if location == "outer":
+        payload["context_data"] = invalid
+    else:
+        parsed["context_data"] = invalid
+    payload["input"] = json.dumps(parsed)
+    assert client.post("/api/v2/sessions/chat/stream", json=payload).status_code == 422
+
+
+def test_context_precedence_preserves_whole_object(api_client, monkeypatch):
+    client, _ = api_client
+    captured = []
+    original_open = chat_stream.open_or_resume_session
+
+    def capture(*args, **kwargs):
+        captured.append(kwargs["data"].model_dump())
+        return original_open(*args, **kwargs)
+
+    monkeypatch.setattr(chat_stream, "open_or_resume_session", capture)
+    payload = _api_payload()
+    payload["context_data"] = {"user_id": "u1", "outer_metadata": "outer"}
+    parsed = json.loads(payload["input"])
+    parsed["context_data"] = {
+        "user_id": "other", "profile_id": "inner_profile", "student_name": "inner_name",
+        "facts": {"score_total": 580}, "inner_metadata": "inner",
+    }
+    payload["input"] = json.dumps(parsed)
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+    assert response.status_code == 200
+    assert captured == [ContextData.model_validate(payload["context_data"]).model_dump()]
+    assert _state_frames(response.text)[-1]["context_scope"] == "unbound"
+
+
+def test_inner_context_resume_and_owner_conflict(api_client):
+    client, repository = api_client
+    for run_id in ["first", "resume"]:
+        assert client.post("/api/v2/sessions/chat/stream", json=_inner_context_payload(run_id=run_id)).status_code == 200
+    payload = _inner_context_payload(run_id="conflict")
+    parsed = json.loads(payload["input"])
+    parsed["context_data"]["user_id"] = "other"
+    payload["input"] = json.dumps(parsed)
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "SESSION_ID_CONFLICT"
+    assert repository.get("sess_1").user_id == "u1"
+
+
+def test_inner_unbound_rejects_profile_data(api_client):
+    client, _ = api_client
+    payload = _inner_context_payload(input_payload={
+        "action": "chat", "content": "hello", "source": "chat", "context_scope": "unbound",
+    })
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+    assert response.status_code == 422
+    assert response.json()["detail"] == "UNBOUND_CONTEXT_MUST_NOT_INCLUDE_PROFILE_DATA"
+
+
+@pytest.mark.parametrize("location", ["none", "inner", "both"])
+def test_stop_context_is_optional_and_does_not_change_identity(api_client, location):
+    client, repository = api_client
+    assert client.post("/api/v2/sessions/chat/stream", json=_api_payload()).status_code == 200
+    _FakeRunner.instances[-1].reserve_turn("sess_1", "u1", run_id="stop_run")
+    parsed = {"action": "stop", "source": "composer"}
+    payload = {"session_id": "sess_1", "run_id": "stop_run"}
+    if location != "none":
+        parsed["context_data"] = {"user_id": "other", "profile_id": "other"}
+    if location == "both":
+        payload["context_data"] = {"user_id": "outer_other"}
+    payload["input"] = json.dumps(parsed)
+    response = client.post("/api/v2/sessions/chat/stream", json=payload)
+    assert response.status_code == 200
+    assert _state_frames(response.text)[-1]["status"] == "stopped"
+    assert repository.get("sess_1").user_id == "u1"
+    assert repository.get("sess_1").profile_id == "p1"
+    stale = client.post("/api/v2/sessions/chat/stream", json={**payload, "run_id": "inactive"})
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == "RUN_NOT_ACTIVE"
+
+
+@pytest.mark.parametrize("action", ["switch_team_member", "confirm_team_handoff"])
+def test_inner_context_expert_actions(api_client, action):
+    client, repository = api_client
+    assert client.post("/api/v2/sessions/chat/stream", json=_api_payload()).status_code == 200
+    context = repository.get("sess_1")
+    context.set_session_agent_selection(expert_team_id="team", expert_id="coordinator", selection_source="manual_team")
+    context.apply_session_agent_selection()
+    context.messages.append({
+        "message_id": "handoff", "role": "assistant", "content": "请家庭教育专家接管",
+        "team_handoff": {"team_id": "team", "candidates": [{"expert_id": "member", "mention_name": "家庭教育专家"}]},
+    })
+    repository.save(context)
+    member = SimpleNamespace(expert_id="member", mention_name="家庭教育专家")
+    team = SimpleNamespace(team_id="team", coordinator_expert_id="coordinator",
+                           member_for_expert=lambda expert_id: member if expert_id == "member" else None)
+    orchestrator = SimpleNamespace(expert_team_registry={"team": team})
+    app = FastAPI()
+    app.include_router(build_chat_stream_router(repository, _FactService(), orchestrator), prefix="/api/v2")
+    payload = _inner_context_payload(run_id="expert_action", input_payload={
+        "action": action, "target_expert_id": "member",
+        "source": "toolbar" if action == "switch_team_member" else "team_handoff",
+        **({"content": "如何沟通"} if action == "switch_team_member" else {"source_message_id": "handoff"}),
+        "expert_context": {"expert_team_id": "team", "expert_id": "coordinator", "operation": "continue"},
+    })
+    response = TestClient(app).post("/api/v2/sessions/chat/stream", json=payload)
+    assert response.status_code == 200, response.text
+    assert repository.get("sess_1").session_meta["active_expert_id"] == "member"
+    if action == "confirm_team_handoff":
+        assert repository.get("sess_1").messages[-1]["team_handoff"]["status"] == "selected"
+
+
+@pytest.mark.parametrize("case", ["inner", "both", "same", "outer_empty", "outer_invalid", "bad_json", "list_input", "object_input", "inner_invalid"])
+def test_real_request_middleware_context_compatibility(api_client, monkeypatch, case):
+    monkeypatch.setenv("HAILIANG_SANDBOX_PREWARM_ENABLED", "false")
+    from hailiang_skills.api import main
+
+    client, repository = api_client
+    records = []
+    monkeypatch.setattr(main, "append_http_request_record", lambda **record: records.append(record))
+    client.app.middleware("http")(main.request_observability)
+    payload = _inner_context_payload()
+    if case in {"both", "same"}:
+        payload["context_data"] = _context_data().model_dump()
+        if case == "both":
+            parsed = json.loads(payload["input"])
+            parsed["context_data"] = {"user_id": "ignored", "profile_id": "ignored", "student_name": "private-name"}
+            payload["input"] = json.dumps(parsed)
+    elif case == "outer_empty":
+        payload["context_data"] = {}
+    elif case == "outer_invalid":
+        payload["context_data"] = []
+    elif case == "bad_json":
+        payload["input"] = "not-json"
+    elif case == "list_input":
+        payload["input"] = "[]"
+    elif case == "object_input":
+        payload["input"] = json.loads(payload["input"])
+    elif case == "inner_invalid":
+        parsed = json.loads(payload["input"])
+        parsed["context_data"] = {"user_id": {"secret": "must-not-log"}}
+        payload["input"] = json.dumps(parsed)
+    success = case in {"inner", "both", "same"}
+    response = client.post("/api/v2/sessions/chat/stream?profile_id=query-must-not-override", json=payload)
+    assert response.status_code == (200 if success else 422)
+    assert len(records) == 1
+    record = records[0]
+    assert record["user_id"] == ("u1" if success else "")
+    assert record["profile_id"] == ("p1" if success else "")
+    assert record["session_id"] == "sess_1"
+    assert record["run_id"] == "run_1"
+    assert record["status_code"] == response.status_code
+    assert record["request_id"] == response.headers["x-request-id"]
+    assert "input" not in record and "facts" not in record and "student_name" not in record
+    if success:
+        assert record["user_id"] == repository.get("sess_1").user_id
+        assert record["profile_id"] == repository.get("sess_1").profile_id
+        assert response.headers["x-sse-protocol"] == "hailiang.sse.v2"
+        assert _done_frames(response.text) == [_state_frames(response.text)[-1]]

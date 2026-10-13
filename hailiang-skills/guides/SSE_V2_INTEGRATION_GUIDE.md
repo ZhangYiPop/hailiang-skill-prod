@@ -18,11 +18,64 @@
 [SSE_RESPONSE_CONTRACT.md](SSE_RESPONSE_CONTRACT.md) 为准；普通 JSON 接口见
 [API_DOCUMENTATION.md](API_DOCUMENTATION.md)。
 
+## `context_data` 双位置兼容
+
+`context_data` 可以放在请求顶层，也可以放在 `input` JSON 字符串内。
+内部值仍是对象，只对整个 `input` 序列化一次。除 `stop` 外至少有一处非 `null`；
+缺失和 `null` 视为未提供。两处都提供时，分别按 `ContextData` 结构校验，
+然后使用顶层完整对象，不逐字段合并；业务校验只作用于选中的对象。
+例如，顶层合法而内部为 `{}`、缺少 `user_id` 或类型错误，仍返回 422，不能静默回退。
+两处结构合法但身份不同，使用顶层，不增加冲突错误。
+
+内部单传示例（适用于 `/api/v2/sessions/chat/stream`）：
+
+```json
+{
+  "session_id": "session-001",
+  "run_id": "run-001",
+  "input": "{\"action\":\"chat\",\"content\":\"你好\",\"source\":\"chat\",\"expert_context\":{\"expert_team_id\":null,\"expert_id\":null,\"operation\":\"continue\"},\"context_data\":{\"user_id\":\"user-001\",\"profile_id\":\"profile-001\",\"student_name\":\"小海\"}}"
+}
+```
+
+双处传递可在上述请求顶层再增加：
+
+```json
+{
+  "context_data": {"user_id": "user-001", "profile_id": "profile-002", "student_name": "小明"}
+}
+```
+
+此时以顶层的 `profile-002` 为本轮孩子；不会混入内部对象的姓名、Facts 或扩展字段。
+`input.profile_id` 仍被禁止，允许的是 `input.context_data.profile_id`。
+`session_id`、`run_id` 等其他顶层参数不支持移入 `input`。
+
+停止请求仍允许两处都不传：
+
+```json
+{
+  "session_id": "session-001",
+  "run_id": "run-001",
+  "input": "{\"action\":\"stop\",\"source\":\"composer\"}"
+}
+```
+
+停止时复用活动 run ID；即使附带合法上下文，也不会据此改变会话身份或孩子档案。
+非停止请求两处都未提供时，保持 `422` 和 `context_data is required for non-stop actions`。
+
+业务后端应对两种位置执行相同的登录身份和档案权限校验，再将可信上下文转发给算法服务。
+部署顺序为先兼容后端、再启用内部传参；回退时客户端恢复顶层传参即可，无需数据库迁移。
+本变更不新增 v1 路由，不改变 `hailiang.sse.v2`；旧 v1 地址是否通过网关转发必须按部署确认。
+上线后关注 422、会话冲突和请求日志身份字段缺失情况。
+
 ## 1. 接入方只需要先记住这些规则
 
 1. 普通聊天、普通模式下进入/退出 Skill、切换专家、确认专家转交和停止生成，都调用同一个接口：
    `POST /api/v2/sessions/chat/stream`。
 2. 请求体顶层是 JSON，但其中 `input` 本身是一个 **JSON 字符串**，不是嵌套对象。
+   `context_data` 可放在请求顶层或 `input` 字符串内的对象中，结构和校验规则相同。
+   非 `stop` 动作至少提供一处；缺失或 `null` 视为未提供。两处都传时使用顶层完整对象，
+   不逐字段合并；已提供的对象仍需合法（例如 `{}` 缺少 `user_id`，返回 422）。
+   `stop` 保持兼容，允许两处都不传。
 3. 除 `stop` 外，每轮都应显式选择 `context_scope` 并携带 `expert_context`：
    `profile` 时孩子只由 `context_data.profile_id` 表示；`input.profile_id` 会被
    拒绝。`unbound` 时 `context_data` 仅传可信 `user_id`。
