@@ -37,7 +37,7 @@ class TurnCoordinator:
     """
 
     def __init__(self, *, redis_url: str | None = None) -> None:
-        self._max_streams = int(os.getenv("HAILIANG_MAX_SSE_CONNECTIONS", "100"))
+        self._max_streams = int(os.getenv("HAILIANG_MAX_SSE_CONNECTIONS", "250"))
         self._per_user = int(os.getenv("HAILIANG_MAX_SSE_PER_USER", "3"))
         self._queue_timeout = float(os.getenv("HAILIANG_SSE_QUEUE_TIMEOUT_SECONDS", "5"))
         self._global = BoundedSemaphore(self._max_streams)

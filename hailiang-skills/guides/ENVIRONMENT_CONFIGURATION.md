@@ -52,8 +52,10 @@ sudo nano /etc/hailiang-skills/test.env
 | `BACKEND_PORT` | `8010` | `8011` |
 | Redis URL 最后部分 | `/1` | `/2` |
 | `HAILIANG_REDIS_KEY_PREFIX` | `hailiang:test:` | `hailiang:prod:` |
-| `HAILIANG_LLM_RATE_LIMIT_QPS` | `5` | `45` |
-| `HAILIANG_MAX_SSE_CONNECTIONS` | `10` | `100` |
+| `HAILIANG_LLM_RATE_LIMIT_QPS` | `5` | `250` |
+| `HAILIANG_MAX_SSE_CONNECTIONS` | `10` | `250` |
+
+正式环境的模型额度为 15,000 RPM（即 250 QPS）和 1,200,000 TPM。`HAILIANG_LLM_RATE_LIMIT_QPS` 只控制请求频率，当前保留 `HAILIANG_LLM_RATE_LIMIT_CAPACITY=1` 以平滑突发；TPM 需要结合 provider 返回的 `input_tokens`、`output_tokens` 和 `total_tokens` 监控，不能仅由并发数保证。`HAILIANG_STREAM_WORKERS=125` 与 250 条 SSE 连接配套，实际吞吐仍受单轮上下文长度和模型响应耗时影响。
 
 生产环境禁止使用 `HAILIANG_BIND_HOST=0.0.0.0`。API 只应被 BFF 通过私网访问；安全组和防火墙也应只放行 BFF 所在网段。
 

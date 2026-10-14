@@ -49,7 +49,10 @@ return 1
         configured_qps = os.getenv("HAILIANG_LLM_RATE_LIMIT_QPS")
         # Unit tests and one-off local tooling do not source a deployment file.
         # Real test/prod files always set an explicit non-zero limit.
-        self.qps = float(configured_qps if configured_qps is not None else ("0" if not url and deployment_environment() == "test" else "45"))
+        # Provider baseline: 15,000 RPM = 250 requests/second. Deployments
+        # should still set HAILIANG_LLM_RATE_LIMIT_QPS explicitly so a staged
+        # environment can use its own quota.
+        self.qps = float(configured_qps if configured_qps is not None else ("0" if not url and deployment_environment() == "test" else "250"))
         self.capacity = float(os.getenv("HAILIANG_LLM_RATE_LIMIT_CAPACITY", "1"))
         prefix = os.getenv("HAILIANG_REDIS_KEY_PREFIX", f"hailiang:{deployment_environment()}:").strip()
         self.key = f"{prefix}llm:token_bucket"
