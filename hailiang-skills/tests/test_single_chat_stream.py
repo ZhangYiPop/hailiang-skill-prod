@@ -1612,3 +1612,56 @@ def test_real_request_middleware_context_compatibility(api_client, monkeypatch, 
         assert record["profile_id"] == repository.get("sess_1").profile_id
         assert response.headers["x-sse-protocol"] == "hailiang.sse.v2"
         assert _done_frames(response.text) == [_state_frames(response.text)[-1]]
+
+
+@pytest.mark.parametrize("context_location", ["inner", "outer"])
+def test_single_expert_unbound_user_only_create_resume_and_ownership(monkeypatch, context_location):
+    """Public expert Q&A needs a user identity, but never a child profile."""
+    monkeypatch.setattr(chat_stream, "StreamingRunner", _FakeRunner)
+    repository = InMemorySessionRepository()
+    facts = _FactService()
+    orchestrator = SimpleNamespace(
+        expert_registry={"family_education_expert": SimpleNamespace(agent_id="family_education_expert")},
+        expert_team_registry={},
+    )
+    app = FastAPI()
+    app.include_router(build_chat_stream_router(repository, facts, orchestrator), prefix="/api/v2")
+    client = TestClient(app)
+    session_id = "unbound_expert_" + uuid4().hex
+
+    def request(run_id, user_id="business-user-001", extra_context=None):
+        context_data = {"user_id": user_id, **(extra_context or {})}
+        question = {
+            "action": "chat", "content": "请给我一些沟通建议", "source": "chat",
+            "context_scope": "unbound",
+            "expert_context": {
+                "expert_team_id": None, "expert_id": "family_education_expert",
+                "operation": "select_expert",
+            },
+        }
+        payload = {"session_id": session_id, "run_id": run_id}
+        if context_location == "inner":
+            question["context_data"] = context_data
+        else:
+            payload["context_data"] = context_data
+        payload["input"] = json.dumps(question)
+        return client.post("/api/v2/sessions/chat/stream", json=payload)
+
+    for run_id in ["first", "followup"]:
+        response = request(run_id)
+        assert response.status_code == 200, response.text
+        assert response.headers["X-SSE-Protocol"] == "hailiang.sse.v2"
+        context = repository.get(session_id)
+        assert context.user_id == "business-user-001"
+        assert context.profile_id is None
+        assert context.session_meta["active_expert_id"] == "family_education_expert"
+        assert context.session_meta.get("expert_team_id") is None
+        assert _state_frames(response.text)[-1]["context_scope"] == "unbound"
+        assert facts.profile_repo.profiles == {}
+
+    response = request("wrong_owner", user_id="another-user")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "SESSION_ID_CONFLICT"
+    response = request("profile_injection", extra_context={"profile_id": "child-001"})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "UNBOUND_CONTEXT_MUST_NOT_INCLUDE_PROFILE_DATA"
