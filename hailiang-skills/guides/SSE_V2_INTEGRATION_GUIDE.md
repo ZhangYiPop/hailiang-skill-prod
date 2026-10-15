@@ -98,7 +98,7 @@
 项目 BFF
   ├─ 校验登录态、session/profile 归属
   ├─ 生成 session_id / run_id
-  ├─ 注入可信 user_id、profile_id、student_name
+  ├─ 注入可信 user_id、profile_id（student_name 可选；缺失/null 保留已有姓名）
   └─ 原样流式转发请求和响应
   ▼
 算法服务 POST /api/v2/sessions/chat/stream

@@ -196,8 +196,6 @@ def _resolve_context_scope(input_data: ProfileBoundInput, data: ContextData) -> 
         return scope, None
     if not context_profile_id:
         raise HTTPException(status_code=422, detail="PROFILE_ID_REQUIRED")
-    if not data.profile_id or not data.student_name:
-        raise HTTPException(status_code=422, detail="PROFILE_CONTEXT_REQUIRED")
     return scope, context_profile_id
 
 

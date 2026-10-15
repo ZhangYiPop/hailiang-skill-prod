@@ -1665,3 +1665,53 @@ def test_single_expert_unbound_user_only_create_resume_and_ownership(monkeypatch
     response = request("profile_injection", extra_context={"profile_id": "child-001"})
     assert response.status_code == 422
     assert response.json()["detail"] == "UNBOUND_CONTEXT_MUST_NOT_INCLUDE_PROFILE_DATA"
+
+
+@pytest.mark.parametrize("name_mode", ["provided", "omitted", "null"])
+def test_inner_context_single_expert_child_switch_roundtrip(monkeypatch, name_mode):
+    """Forward question unchanged as input, with no top-level context_data."""
+    monkeypatch.setattr(chat_stream, "StreamingRunner", _FakeRunner)
+    repository = InMemorySessionRepository()
+    orchestrator = SimpleNamespace(
+        expert_registry={"academic_coach": SimpleNamespace(agent_id="academic_coach")},
+        expert_team_registry={},
+    )
+    app = FastAPI()
+    app.include_router(build_chat_stream_router(repository, _FactService(), orchestrator), prefix="/api/v2")
+    client = TestClient(app)
+    session_id = "inner_child_" + uuid4().hex
+    for child, name in [("child-a", "小明"), ("child-a", "小明"), ("child-b", "小红"), ("child-a", "小明")]:
+        question = {
+            "action": "chat", "content": "请给出学习建议", "source": "chat",
+            "context_scope": "profile", "context_activation": "auto",
+            "context_data": {"user_id": "test-user", "profile_id": child, "student_name": name},
+            "expert_context": {"expert_team_id": None, "expert_id": "academic_coach", "operation": "select_expert"},
+        }
+        if name_mode == "omitted":
+            question["context_data"].pop("student_name")
+        elif name_mode == "null":
+            question["context_data"]["student_name"] = None
+        response = client.post("/api/v2/sessions/chat/stream", json={
+            "session_id": session_id, "run_id": uuid4().hex, "input": json.dumps(question),
+        })
+        assert response.status_code == 200, response.text
+        assert response.headers["X-SSE-Protocol"] == "hailiang.sse.v2"
+        context = repository.get(session_id)
+        assert context.user_id == "test-user"
+        assert context.profile_id == child
+        assert context.session_meta["active_expert_id"] == "academic_coach"
+        assert context.session_meta.get("expert_team_id") is None
+        assert _state_frames(response.text)[-1]["profile_id"] == child
+
+
+@pytest.mark.parametrize("name_payload", [{}, {"student_name": None}])
+def test_missing_child_name_preserves_existing_profile_name(api_client, name_payload):
+    client, repository = api_client
+    first = _api_payload(session_id="keep_name", run_id="first")
+    first["context_data"] = {"user_id": "u1", "profile_id": "child-a", "student_name": "原姓名"}
+    assert client.post("/api/v2/sessions/chat/stream", json=first).status_code == 200
+    followup = _api_payload(session_id="keep_name", run_id="second")
+    followup["context_data"] = {"user_id": "u1", "profile_id": "child-a", **name_payload}
+    response = client.post("/api/v2/sessions/chat/stream", json=followup)
+    assert response.status_code == 200, response.text
+    assert _state_frames(response.text)[-1]["profile_name"] == "原姓名"

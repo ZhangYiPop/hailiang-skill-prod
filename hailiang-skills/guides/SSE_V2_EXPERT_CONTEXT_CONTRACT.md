@@ -81,7 +81,7 @@
 | --- | --- | --- |
 | `user_id` | 所有非停止动作 | 登录用户 ID，由 BFF 注入。 |
 | `profile_id` | `context_scope="profile"` | 当前孩子 ID，是本轮唯一的孩子来源。 |
-| `student_name` | `profile` | 当前孩子名称，必填。 |
+| `student_name` | 可选 | 当前孩子名称；省略或 null 保留已有姓名，新档案使用默认名称。空字符串仍不合法。 |
 | `school_year`、`grade`、`facts` | `profile` 可选 | 受控的孩子上下文补充数据。 |
 
 `context_scope="unbound"` 时，`context_data` 只能含 `user_id`；不得含孩子 ID、
@@ -165,7 +165,7 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 | 场景 | 顶层 `context_data` | `input` 的关键字段 | `EC` | 结果与边界 |
 | --- | --- | --- | --- | --- |
 | 新会话，未绑定孩子 | `{"user_id":"u1"}` | `chat`、`context_scope:"unbound"`、`source:"chat"` | `{"expert_team_id":null,"expert_id":null,"operation":"continue"}` | 建立/恢复未绑定分支；不会读写孩子档案，也不会自动选专家。 |
-| 新会话或当前会话绑定孩子 | `user_id` + `profile_id` + `student_name` | `chat`、`context_scope:"profile"`、`context_activation:"auto"` | `{"expert_team_id":null,"expert_id":null,"operation":"continue"}` | 建立/切入该孩子分支；未选专家时由通用对话处理。 |
+| 新会话或当前会话绑定孩子 | `user_id` + `profile_id`（`student_name` 可选） | `chat`、`context_scope:"profile"`、`context_activation:"auto"` | `{"expert_team_id":null,"expert_id":null,"operation":"continue"}` | 建立/切入该孩子分支；未选专家时由通用对话处理。 |
 | 绑定孩子并选择专家团 | 同上，`profile_id` 为目标孩子 | `action:"chat"`、`source:"chat"` | `expert_team_id` + `expert_id:null` + `operation:"select_team"` | 激活团队主协调专家。不能在此操作同时指定成员。 |
 | 绑定孩子并直接选择团队成员 | 同上 | `action:"chat"`、`source:"toolbar"` | `expert_team_id` + 团内 `expert_id` + `operation:"select_expert"` | 原子激活团队并选成员；适用于首次进入、再次进入或切换孩子。 |
 | 未绑定孩子的单专家 | 仅 `user_id` | `action:"chat"`、`context_scope:"unbound"`、`source:"chat"` | `expert_team_id:null` + `expert_id` + `operation:"select_expert"` | 进入单专家模式。当前已有专家团时，不能省略团队 ID 来改选团队成员。 |

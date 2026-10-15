@@ -26,7 +26,10 @@ class ContextData(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow")
-    student_name: str | None = Field(default=None, min_length=1)
+    student_name: str | None = Field(
+        default=None, min_length=1,
+        description="Optional child name. Omitted or null preserves an existing name; a new unnamed profile uses the repository default.",
+    )
     user_id: str = Field(min_length=1)
     profile_id: str | None = Field(default=None, min_length=1)
     school_year: str | None = Field(default=None, min_length=1)
@@ -79,7 +82,8 @@ def _seed_profile(
             except KeyError as conflict:
                 raise HTTPException(status_code=409, detail="PROFILE_ID_CONFLICT") from conflict
 
-    if allow_context_seed and str(profile.get("name") or "") != str(data.student_name or ""):
+    # Missing names must not erase an existing profile during resume/switch.
+    if allow_context_seed and data.student_name is not None and str(profile.get("name") or "") != data.student_name:
         try:
             profile = fact_service.profile_repo.update_profile(
                 data.user_id,
