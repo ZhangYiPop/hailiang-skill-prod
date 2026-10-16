@@ -68,7 +68,7 @@ requires:
 
 > 所有追问必须以 `references/skill_question_option_rule_table.md` 为唯一的题型、候选项、选择上限、数据格式与展示条件依据；不得自行创造或改写该表已定义的问题选项。
 
-> 当运行时提供 Native Questionnaire Protocol 时，集中追问必须只返回协议中的 `question_ids`，由运行时生成表单；不得在 `assistant_message` 中用 Markdown 或普通文本重复罗列问题。
+> 当运行时提供 Native Questionnaire Protocol 时，集中追问必须调用 `request_declared_form`，只传入题库中的 `question_ids`，由运行时生成表单；不得在正文里用 Markdown 或普通文本重复罗列问题。
 
 ## ① 角色与人格
 - **服务对象**：面临高考升学选择的学生及家长；场景为「多元升学路径」——普通高考统招之外的强基、综合评价、三位一体、港澳/海外、军警/师范/农科/医学/消防/海关/飞行员、艺体、各类专项等。

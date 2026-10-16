@@ -443,6 +443,13 @@ class AgentScopeExpertRuntime:
                 "reply": agent_reply,
                 "expert_turn_id": state["turn_id"],
             }
+        pending_form = state.get("pending_form")
+        if isinstance(pending_form, dict) and pending_form.get("question_ids") and handoff is None:
+            context.session_meta["expert_declared_form"] = {
+                "skill_id": str(pending_form.get("skill_id") or ""),
+                "question_ids": list(pending_form.get("question_ids") or []),
+                "lead_in": agent_reply,
+            }
         result = legacy_handler(user_message, context)
         if handoff is None and (agent_reply or has_native_handoff):
             self._consume_expert_identity_intro(context, definition)
@@ -889,7 +896,11 @@ class AgentScopeExpertRuntime:
                 }
 
         def request_declared_form(skill_id: str, question_ids: list[str]) -> dict[str, Any]:
-            """Request only question IDs declared by the selected Skill's questionnaire."""
+            """Show a form built only from question IDs declared by the selected Skill.
+
+            After this tool succeeds, stop. Reply with one short lead-in and do not
+            repeat the questions in prose.
+            """
             return runtime._request_declared_form(definition, state, context, skill_id, question_ids)
 
         def read_effective_facts() -> dict[str, Any]:
@@ -1189,7 +1200,12 @@ class AgentScopeExpertRuntime:
         state["pending_form"] = {"skill_id": skill_id, "question_ids": ids}
         context.session_meta["expert_requested_skill_id"] = skill_id
         self._event(context, "expert_form_requested", {"skill_id": skill_id, "question_ids": ids})
-        return {"status": "deferred_to_native_questionnaire", "skill_id": skill_id, "question_ids": ids}
+        return {
+            "status": "form_ready",
+            "skill_id": skill_id,
+            "question_ids": ids,
+            "message": "表单已交给用户。请立即停止工具调用，只用一两句话引导填写，不要在正文里重复题目。",
+        }
 
     def _propose_member_handoff(self, team: ExpertTeamDefinition, state: dict[str, Any], context, candidate_expert_ids: list[str], reason: str) -> dict[str, Any]:
         state["handoff_tool_calls"] = int(state.get("handoff_tool_calls") or 0) + 1
