@@ -13,7 +13,7 @@ from jsonschema import validate, ValidationError as SchemaError
 
 from hailiang_skills.skill_runtime.models import ChatMessage, ToolCallRequest, ToolSpec
 from .context import compose, serialize_message
-from .contracts import AnswerSubmission, HarnessError, InputArguments, TERMINAL, TOOL_TERMINAL, identifier, now, validate_answers
+from .contracts import AnswerSubmission, HarnessError, InputArguments, LEGACY_RAG_SEARCH_TOOL, SEARCH_TOOL_NAMES, SKILL_ASSET_SEARCH_TOOL, TERMINAL, TOOL_TERMINAL, identifier, now, normalize_input_arguments, validate_answers
 from .policy import allowed_skills, check_skill, normalize_skill
 from .wakeup import Wakeup
 from .reply import reply_violations, repair_instruction
@@ -66,7 +66,9 @@ class HarnessRuntime:
         root["messages"] = list(history or []) + root["messages"]
         run = {"run_id": identifier("run"), "session_id": session_id, "user_id": user_id, "profile_id": profile_id,
                "goal": goal, "status": "running", "root_task_id": root["id"], "tasks": {root["id"]: root},
-               "tools": {}, "inputs": {}, "policy": policy, "seed_facts": seed_facts or {}, "created_at": now(), "updated_at": now(), "version": 1}
+               "tools": {}, "inputs": {}, "policy": policy, "seed_facts": seed_facts or {},
+               "input_tokens_estimated": 0, "input_tokens_actual": 0, "input_token_measurements": 0,
+               "created_at": now(), "updated_at": now(), "version": 1}
         self.store.create(run)
         return run["run_id"]
 
@@ -90,15 +92,19 @@ class HarnessRuntime:
                 "skill_id": {"enum": allowed_skills(run, task)}, "task": {"type": "string", "minLength": 1}}, ["skill_id", "task"])))
         if task["kind"] == "skill":
             for item in run["policy"]["skills"][task["skill_id"]]["specs"]:
-                name = "rag_search" if item["name"] == "rag" else item["name"]
+                name = SKILL_ASSET_SEARCH_TOOL if item["name"] == "rag" else item["name"]
                 if name not in {s.name for s in result}:
                     result.append(spec(name, item["description"], item["parameters_schema"]))
         else:
             # Public search uses only data/tools from this actor's authorized skills.
-            searchable = list(run["policy"]["skills"].values())
-            for name, internal in [("rag_search", "rag"), ("web_search", "web_search")]:
+            searchable = [run["policy"]["skills"][skill_id] for skill_id in allowed_skills(run, task)]
+            for name, internal in [(SKILL_ASSET_SEARCH_TOOL, "rag"), ("web_search", "web_search")]:
                 if any(any(s["name"] == internal for s in bundle["specs"]) for bundle in searchable):
-                    result.append(spec(name, "检索当前授权能力中的资料", object_schema({"query": {"type": "string", "minLength": 1}}, ["query"])))
+                    result.append(spec(name, "在当前授权 Skill 的本地文档与资料资产中按关键词检索片段", object_schema({"query": {"type": "string", "minLength": 1}}, ["query"])))
+        # A persisted run may contain a tool call created before this rename.
+        # Expose the legacy name only long enough to finish that checkpoint.
+        if any(run.get("tools", {}).get(call_id, {}).get("name") == LEGACY_RAG_SEARCH_TOOL for call_id in task.get("pending_calls", [])):
+            result.append(spec(LEGACY_RAG_SEARCH_TOOL, "兼容恢复旧运行中的本地 Skill 资料检索调用", object_schema({"query": {"type": "string", "minLength": 1}}, ["query"])))
         return result
 
     def _loop(self):
@@ -159,6 +165,25 @@ class HarnessRuntime:
         task = run["tasks"][task_id]
         return run["status"] not in TERMINAL and task["status"] == "running" and task["lease_token"] == token and task["lease_until"] > now()
 
+    @staticmethod
+    def _reserve_model_input(run, task, diagnostics):
+        settings = run["policy"]["settings"]
+        limit = settings.get("max_run_input_tokens", 300000)
+        reserve = settings.get("main_input_reserve_tokens", 32000) if task["kind"] != "main" else 0
+        projected = run.get("input_tokens_estimated", 0) + diagnostics["estimated_tokens"]
+        if projected > limit - reserve:
+            raise HarnessError("RUN_INPUT_BUDGET_EXCEEDED")
+        run["input_tokens_estimated"] = projected
+
+    @staticmethod
+    def _record_model_usage(run, trace, metrics):
+        usage = {key: metrics.get(key) for key in ("input_tokens", "output_tokens", "total_tokens", "finish_reason") if metrics.get(key) is not None}
+        if usage:
+            trace["usage"] = usage
+        if isinstance(usage.get("input_tokens"), int):
+            run["input_tokens_actual"] = run.get("input_tokens_actual", 0) + usage["input_tokens"]
+            run["input_token_measurements"] = run.get("input_token_measurements", 0) + 1
+
     def _heartbeat(self, run_id, task_id, token, finished):
         while not finished.wait(min(20, self.lease_seconds / 3)):
             def renew(run, changes, _db):
@@ -201,6 +226,7 @@ class HarnessRuntime:
                 live = current["tasks"][task_id]
                 if sum(t["model_calls"] for t in current["tasks"].values()) >= current["policy"]["settings"].get("max_run_model_calls", 96):
                     raise HarnessError("RUN_MODEL_BUDGET_EXCEEDED")
+                self._reserve_model_input(current, live, diagnostics)
                 live["model_calls"] += 1
                 live["fact_versions"] = diagnostics["fact_versions"]
                 live["trace"].append({"execution_id": token, "input": [serialize_message(m) for m in messages], "tools": [asdict(s) for s in specs], "diagnostics": diagnostics})
@@ -208,7 +234,10 @@ class HarnessRuntime:
                 return True
             if not self.store.mutate(run_id, before):
                 return
-            response = self.client_factory(run).complete_with_tools(messages, specs, request_purpose=f"harness_{task['kind']}")
+            client = self.client_factory(run)
+            response = client.complete_with_tools(messages, specs, request_purpose=f"harness_{task['kind']}",
+                                                  max_tokens=run["policy"]["settings"].get("max_output_tokens", 8192))
+            metrics = client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {}
             if not response.tool_calls and not response.final_text.strip():
                 raise HarnessError("EMPTY_MODEL_REPLY")
             if self.moderation:
@@ -222,6 +251,7 @@ class HarnessRuntime:
                     return
                 live = current["tasks"][task_id]
                 live["trace"][-1]["output"] = asdict(response)
+                self._record_model_usage(current, live["trace"][-1], metrics)
                 if live["kind"] == "main" and response.tool_calls and response.final_text.strip():
                     current["phase"] = response.final_text.strip()[:600]
                 # A changed dependency while the model was running invalidates this
@@ -300,13 +330,16 @@ class HarnessRuntime:
             if sum(t["model_calls"] for t in current["tasks"].values()) >= current["policy"]["settings"].get("max_run_model_calls", 96):
                 raise HarnessError("RUN_MODEL_BUDGET_EXCEEDED")
             live = current["tasks"][task_id]
+            self._reserve_model_input(current, live, diagnostics)
             live["model_calls"] += 1
             live["trace"].append({"execution_id": token, "purpose": "summary", "input": [serialize_message(m) for m in messages], "tools": [], "diagnostics": diagnostics})
             changes.append({"event": "model_started", "node_id": task_id})
             return True
         if not self.store.mutate(run_id, admit):
             return
-        summary = self.client_factory(run).complete(messages, request_purpose="harness_context_summary", max_tokens=2000)
+        client = self.client_factory(run)
+        summary = client.complete(messages, request_purpose="harness_context_summary", max_tokens=2000)
+        metrics = client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {}
         if not summary.strip():
             raise HarnessError("EMPTY_CONTEXT_SUMMARY")
         def save(current, changes, _db):
@@ -315,6 +348,7 @@ class HarnessRuntime:
                 live.setdefault("archived_messages", []).extend(live["messages"][:boundary])
                 live["messages"] = live["messages"][boundary:]
                 live["trace"][-1]["output"] = {"final_text": summary}
+                self._record_model_usage(current, live["trace"][-1], metrics)
                 live.update(summary=summary, status="queued")
                 changes.append({"event": "context_compressed", "node_id": task_id})
         self.store.mutate(run_id, save)
@@ -335,18 +369,25 @@ class HarnessRuntime:
                         raise HarnessError("TOOL_NOT_AUTHORIZED", 403)
                     if tool["name"] == "execute_skill" and isinstance(tool["arguments"].get("skill_id"), str):
                         tool["arguments"]["skill_id"] = normalize_skill(tool["arguments"]["skill_id"])
-                    validate(tool["arguments"], available[tool["name"]].parameters_schema)
+                    if tool["name"] == "request_user_input":
+                        tool["arguments"] = normalize_input_arguments(tool["arguments"])
                     if task["tool_calls"] >= run["policy"]["settings"]["max_tool_calls"]:
                         raise HarnessError("TOOL_BUDGET_EXCEEDED")
                     if sum(t["tool_calls"] for t in run["tasks"].values()) >= run["policy"]["settings"].get("max_run_tool_calls", 192):
                         raise HarnessError("RUN_TOOL_BUDGET_EXCEEDED")
+                    if tool["name"] in SEARCH_TOOL_NAMES:
+                        search_calls = sum(t.get("attempts", 0) for t in run["tools"].values()
+                                           if t["name"] in SEARCH_TOOL_NAMES and t["task_id"] == task_id)
+                        if search_calls >= run["policy"]["settings"].get("max_search_calls_per_task", 5):
+                            raise HarnessError("SEARCH_BUDGET_EXCEEDED")
                     tool.update(status="running", execution_id=token, started_at=tool["started_at"] or now(), attempts=tool["attempts"] + 1)
                     task["tool_calls"] += 1
                     changes.append({"event": "tool_started", "node_id": node_id})
+                    validate(tool["arguments"], available[tool["name"]].parameters_schema)
                     handled = self._internal(run, task, tool, changes, db)
                     if not handled:
                         # Unknown side effects are never replayed after a crash.
-                        retryable = tool["name"] in {"rag_search", "web_search", "subject_requirements_lookup"}
+                        retryable = tool["name"] in SEARCH_TOOL_NAMES | {"subject_requirements_lookup"}
                         if not retryable and any(other["id"] != tool["id"] and other["task_id"] == task_id and other["name"] == tool["name"] and other["arguments"] == tool["arguments"] and isinstance(other.get("result"), dict) and other["result"].get("error") in {"TOOL_OUTCOME_UNKNOWN", "TOOL_RECONCILIATION_REQUIRED"} for other in run["tools"].values()):
                             raise HarnessError("TOOL_RECONCILIATION_REQUIRED")
                         if tool["attempts"] > 1 and not retryable:
@@ -355,7 +396,13 @@ class HarnessRuntime:
                             raise HarnessError("TOOL_RETRIES_EXHAUSTED")
                         external.update(run=deepcopy(run), task=deepcopy(task), tool=deepcopy(tool))
                 except (HarnessError, ValidationError, SchemaError, ValueError) as exc:
-                    self._tool_result(tool, {"error": getattr(exc, "code", "INVALID_TOOL_ARGUMENTS")}, "failed")
+                    result = {"error": getattr(exc, "code", "INVALID_TOOL_ARGUMENTS")}
+                    if isinstance(exc, SchemaError):
+                        result["field"] = ".".join(str(part) for part in exc.absolute_path) or "$"
+                        result["expected"] = str(exc.validator_value) if exc.validator == "type" else str(exc.validator)
+                    elif isinstance(exc, ValidationError) and exc.errors():
+                        result["field"] = ".".join(str(part) for part in exc.errors()[0]["loc"]) or "$"
+                    self._tool_result(tool, result, "failed")
                     changes.append({"event": "tool_failed", "node_id": node_id})
             self.store.mutate(run_id, begin)
             if external:
@@ -370,7 +417,7 @@ class HarnessRuntime:
                     tool = run["tools"][node_id]
                     if isinstance(result, dict) and "_harness_runtime_state" in result:
                         run["tasks"][task_id]["runtime_state"] = result.pop("_harness_runtime_state")
-                    if error and tool["name"] in {"rag_search", "web_search"} and tool["attempts"] < 3:
+                    if error and tool["name"] in SEARCH_TOOL_NAMES and tool["attempts"] < 3:
                         tool.update(status="queued", error=error)
                         changes.append({"event": "tool_retrying", "node_id": node_id})
                     else:
@@ -390,6 +437,12 @@ class HarnessRuntime:
     @staticmethod
     def _tool_result(tool, result, status="completed"):
         tool.update(status=status, result=result, ended_at=now())
+        if status == "failed" and isinstance(result, dict) and result.get("error"):
+            detail = f" · {result['field']}" if result.get("field") else ""
+            expected = f" 应为 {result['expected']}" if result.get("expected") else ""
+            tool["error"] = f"{result['error']}{detail}{expected}"
+        elif status != "failed":
+            tool.pop("error", None)
 
     def _internal(self, run, task, tool, changes, db):
         name, args = tool["name"], tool["arguments"]
@@ -416,8 +469,9 @@ class HarnessRuntime:
                 visited.add(key)
             for key in graph:
                 visit(key)
-            existing = {(t.get("expert_id"), t["goal"]) for t in run["tasks"].values() if t["status"] not in TERMINAL}
-            if any((i["expert_id"], i["goal"]) in existing for i in items) or len({(i["expert_id"], i["goal"]) for i in items}) != len(items):
+            existing_experts = {t["expert_id"] for t in run["tasks"].values() if t["kind"] == "expert"}
+            requested_experts = [i["expert_id"] for i in items]
+            if any(expert_id in existing_experts for expert_id in requested_experts) or len(set(requested_experts)) != len(requested_experts):
                 raise HarnessError("DUPLICATE_EXPERT_TASK")
             children = {i["key"]: task_node("expert", i["goal"], task["id"], expert_id=i["expert_id"], completion=i.get("completion", "完成指定任务")) for i in items}
             for item in items:
@@ -523,24 +577,25 @@ class HarnessRuntime:
                 self._tool_result(tool, request["answer"], "skipped")
                 changes.append({"event": "tool_completed", "node_id": tool["id"]})
                 return
-            if request["signature"] == signature and request["status"] == "pending":
+            if request["signature"] == signature and request["status"] in {"pending", "queued"}:
                 local_keys = {identity: field["key"] for field, identity in zip(fields, identities)}
                 field_map = {field["key"]: local_keys[identity] for field, identity in zip(request["fields"], request["identities"])}
                 request["bindings"].append({"task_id": task["id"], "tool_id": tool["id"], "field_map": field_map})
                 tool.update(status="waiting_for_user", input_request_id=request["id"])
-                changes.append({"event": "input_requested", "node_id": task["id"]})
+                changes.append({"event": "input_requested" if request["status"] == "pending" else "input_queued", "node_id": task["id"]})
                 return
         owner = task
         while owner["kind"] == "skill":
             owner = run["tasks"][owner["parent_id"]]
         round_no = 1 + sum(q.get("owner_task_id", q["bindings"][0]["task_id"]) == owner["id"] for q in run["inputs"].values())
-        request = {"id": identifier("input"), "title": args.title, "fields": fields, "status": "pending", "version": 1,
+        request_status = "queued" if any(q["status"] == "pending" for q in run["inputs"].values()) else "pending"
+        request = {"id": identifier("input"), "title": args.title, "fields": fields, "status": request_status, "version": 1,
                    "round": round_no, "signature": signature, "identities": identities, "created_at": now(),
-                   "owner_task_id": owner["id"],
+                   "owner_task_id": owner["id"], "actor": run["policy"]["experts"].get(owner.get("expert_id"), {}).get("name", "主 agent"),
                    "bindings": [{"task_id": task["id"], "tool_id": tool["id"]}], "clarification_reason": args.clarification_reason}
         run["inputs"][request["id"]] = request
         tool.update(status="waiting_for_user", input_request_id=request["id"])
-        changes.append({"event": "input_requested", "node_id": task["id"]})
+        changes.append({"event": "input_requested" if request_status == "pending" else "input_queued", "node_id": task["id"]})
 
     def answer(self, request_id, submission):
         run_id = self.store.request_run(request_id)
@@ -557,6 +612,7 @@ class HarnessRuntime:
             answer = validate_answers(request["fields"], submission)
             request.update(status="skipped" if submission.skipped else "answered", answer=answer, submission_id=submission.submission_id,
                            submission=submission.model_dump(), version=request["version"] + 1)
+            self._promote_input_request(run, changes)
             task = run["tasks"][request["bindings"][0]["task_id"]]
             for field in sorted(request["fields"], key=lambda f: request["identities"][request["fields"].index(f)]):
                 if field["key"] not in answer["answers"]:
@@ -634,7 +690,9 @@ class HarnessRuntime:
                         changes.append({"event": "tool_completed", "node_id": tool["id"]})
             if pending and all(t["status"] in TOOL_TERMINAL for t in pending):
                 for tool in pending:
-                    content, projection = project_evidence(tool, run["policy"]["settings"]["context_tokens"] // max(2, len(pending) * 2))
+                    evidence_limit = min(run["policy"]["settings"]["context_tokens"] // max(2, len(pending) * 2),
+                                         run["policy"]["settings"].get("max_tool_evidence_chars", 8000))
+                    content, projection = project_evidence(tool, evidence_limit)
                     task["messages"].append({"role": "tool", "tool_call_id": tool["call_id"], "name": tool["name"], "content": content, "projection": projection})
                 task["pending_calls"] = []
                 task["status"] = "queued"
@@ -689,8 +747,18 @@ class HarnessRuntime:
                 node.update(status="cancelled", ended_at=now(), lease_token="")
                 changes.append({"event": "node_cancelled", "node_id": node["id"]})
         for request in run["inputs"].values():
-            if request["status"] == "pending" and all(b["task_id"] in closed or run["tasks"][b["task_id"]]["status"] in TERMINAL for b in request["bindings"]):
+            if request["status"] in {"pending", "queued"} and all(b["task_id"] in closed or run["tasks"][b["task_id"]]["status"] in TERMINAL for b in request["bindings"]):
                 request.update(status="expired", version=request["version"] + 1)
+        self._promote_input_request(run, changes)
+
+    @staticmethod
+    def _promote_input_request(run, changes):
+        if run["status"] in TERMINAL or any(q["status"] == "pending" for q in run["inputs"].values()):
+            return
+        next_request = next((q for q in run["inputs"].values() if q["status"] == "queued"), None)
+        if next_request is not None:
+            next_request["status"] = "pending"
+            changes.append({"event": "input_requested", "node_id": next_request["owner_task_id"]})
 
     def cancel(self, run_id):
         def apply(run, changes, _db):
@@ -702,16 +770,19 @@ class HarnessRuntime:
         self.store.mutate(run_id, apply)
 
     def public(self, run):
-        labels = {"delegate_tasks": "分派专家任务", "execute_skill": "执行专项分析", "request_user_input": "补充信息", "rag_search": "检索知识资料", "web_search": "搜索外部资料", "read_facts": "读取相关信息", "propose_fact_updates": "记录观察"}
+        labels = {"delegate_tasks": "分派专家任务", "execute_skill": "执行专项分析", "request_user_input": "补充信息", SKILL_ASSET_SEARCH_TOOL: "检索 Skill 资料", LEGACY_RAG_SEARCH_TOOL: "检索 Skill 资料", "web_search": "搜索外部资料", "read_facts": "读取相关信息", "propose_fact_updates": "记录观察"}
         nodes = []
         for task in run["tasks"].values():
             actor = "主 agent" if task["kind"] == "main" else run["policy"]["experts"].get(task.get("expert_id"), {}).get("name", "主 agent")
             title = run["policy"]["skills"][task["skill_id"]]["name"] if task["kind"] == "skill" else task["goal"]
             nodes.append({"id": task["id"], "parent_id": task["parent_id"], "kind": task["kind"], "title": title, "actor": actor, "status": task["status"], "started_at": task["started_at"], "ended_at": task["ended_at"], "error": task.get("error"), "stale": task.get("stale", False)})
         for tool in run["tools"].values():
-            nodes.append({"id": tool["id"], "parent_id": tool["task_id"], "kind": "tool", "title": labels.get(tool["name"], "执行专项工具"), "status": tool["status"], "started_at": tool["started_at"], "ended_at": tool["ended_at"], "attempts": tool["attempts"]})
-        requests = [{k: deepcopy(v) for k, v in q.items() if k in {"id", "title", "fields", "status", "version", "round", "answer", "bindings", "clarification_reason"}} for q in run["inputs"].values()]
+            error = tool.get("error") or (tool.get("result", {}).get("error") if isinstance(tool.get("result"), dict) else None)
+            nodes.append({"id": tool["id"], "parent_id": tool["task_id"], "kind": "tool", "title": labels.get(tool["name"], "执行专项工具"), "status": tool["status"], "started_at": tool["started_at"], "ended_at": tool["ended_at"], "attempts": tool["attempts"], "error": error})
+        requests = [{k: deepcopy(v) for k, v in q.items() if k in {"id", "title", "fields", "status", "version", "round", "answer", "bindings", "clarification_reason", "owner_task_id", "actor"}} for q in run["inputs"].values()]
         return {"run_id": run["run_id"], "session_id": run["session_id"], "profile_id": run["profile_id"], "goal": run["goal"], "status": run["status"], "version": run["version"], "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "result": run.get("result", ""), "error": run.get("error"),
+                "input_tokens_estimated": run.get("input_tokens_estimated", 0), "input_tokens_actual": run.get("input_tokens_actual") if run.get("input_token_measurements") else None,
+                "input_token_limit": run["policy"]["settings"].get("max_run_input_tokens", 300000),
                 "completed_count": sum(t["status"] == "completed" for t in run["tasks"].values() if t["kind"] != "main"), "task_count": sum(t["kind"] != "main" for t in run["tasks"].values()),
-                "waiting_count": sum(q["status"] == "pending" for q in run["inputs"].values())}
+                "waiting_count": sum(q["status"] in {"pending", "queued"} for q in run["inputs"].values())}

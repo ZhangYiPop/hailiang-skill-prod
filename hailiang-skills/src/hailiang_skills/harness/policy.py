@@ -79,12 +79,12 @@ def capture_policy(orchestrator, context):
         bundle = orchestrator._configured_bundle(context, bundle)
         state = SessionState(session_id=context.session_id, active_skill_id=skill_id)
         specs = build_tool_specs(bundle, state)
-        # RAG is enabled only when relevant evidence exists; the harness query itself
-        # supplies that evidence lookup. Web search still requires configured HTTP.
+        # Local Skill document search is enabled only when the Skill grants access
+        # to its local references/assets. This is not a separate RAG service.
         from hailiang_skills.skill_runtime.tools import _is_capability_enabled, _get_web_search_http_config
         enabled_specs = [asdict(s) for s in specs if s.enabled]
         if _is_capability_enabled(bundle, "rag") and not any(s["name"] == "rag" for s in enabled_specs):
-            enabled_specs.append({"name": "rag", "description": "检索当前能力的知识资料", "parameters_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "additionalProperties": False}, "enabled": True})
+            enabled_specs.append({"name": "rag", "description": "检索当前 Skill 的本地文档与资料资产", "parameters_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "additionalProperties": False}, "enabled": True})
         if _is_capability_enabled(bundle, "web_search") and _get_web_search_http_config(bundle) and not any(s["name"] == "web_search" for s in enabled_specs):
             enabled_specs.append({"name": "web_search", "description": "搜索外部资料", "parameters_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "additionalProperties": False}, "enabled": True})
         skill_data[skill_id] = {"name": bundle.runtime_metadata.name or skill_id, "rules": bundle.skill_markdown,
@@ -103,7 +103,12 @@ def capture_policy(orchestrator, context):
         model_config = {key: value for key, value in asdict(client._config).items() if key != "api_key"}
     return {"experts": expert_data, "skills": skill_data, "independent_skills": independent,
             "settings": {"max_parallel": int(settings.get("max_parallel", 3)), "max_model_calls": int(settings.get("max_model_calls", 24)),
-                         "max_tool_calls": int(settings.get("max_tool_calls", 48)), "context_tokens": int(settings.get("context_tokens", 32000)),
+                         "max_search_calls_per_task": int(settings.get("max_search_calls_per_task", 5)),
+                         "max_tool_calls": int(settings.get("max_tool_calls", 48)), "context_tokens": int(settings.get("context_tokens", 64000)),
+                         "max_tool_evidence_chars": int(settings.get("max_tool_evidence_chars", 8000)),
+                         "max_output_tokens": int(settings.get("max_output_tokens", 8192)),
+                         "max_run_input_tokens": int(settings.get("max_run_input_tokens", 300000)),
+                         "main_input_reserve_tokens": int(settings.get("main_input_reserve_tokens", 32000)),
                          "max_run_model_calls": int(settings.get("max_run_model_calls", 96)), "max_run_tool_calls": int(settings.get("max_run_tool_calls", 192)), "max_tasks": int(settings.get("max_tasks", 64))},
             "team_id": team_id, "snapshot": context.session_meta.get("configuration_snapshot", {}),
             "model_config": model_config,

@@ -9,6 +9,8 @@ import threading
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.skill_runtime.models import ChatMessage, SessionState, ToolCallRequest, ToolCapability, ToolRegistry
 from hailiang_skills.skill_runtime.tools import execute_tool_call, run_local_rag, run_web_search
+from .contracts import LEGACY_RAG_SEARCH_TOOL, SKILL_ASSET_SEARCH_TOOL
+from .policy import allowed_skills
 
 
 class HarnessIntegration:
@@ -65,8 +67,8 @@ class HarnessIntegration:
     def tool(self, run, task, tool):
         skill_ids = [task["skill_id"]] if task["kind"] == "skill" else (
             run["policy"]["independent_skills"] if task["kind"] == "main" else run["policy"]["experts"][task["expert_id"]]["skills"])
-        if task["kind"] != "skill" and tool["name"] in {"rag_search", "web_search"}:
-            skill_ids = list(run["policy"]["skills"])
+        if task["kind"] != "skill" and tool["name"] in {SKILL_ASSET_SEARCH_TOOL, LEGACY_RAG_SEARCH_TOOL, "web_search"}:
+            skill_ids = allowed_skills(run, task)
         persisted = deepcopy(task.get("runtime_state", {}))
         persisted.pop("messages", None)
         persisted.pop("session_id", None)
@@ -81,7 +83,7 @@ class HarnessIntegration:
         for skill_id in skill_ids:
             if skill_id not in run["policy"]["skills"]:
                 continue
-            name = "rag" if tool["name"] == "rag_search" else tool["name"]
+            name = "rag" if tool["name"] in {SKILL_ASSET_SEARCH_TOOL, LEGACY_RAG_SEARCH_TOOL} else tool["name"]
             frozen = run["policy"]["skills"][skill_id]
             if name not in {s["name"] for s in frozen["specs"]}:
                 continue
@@ -95,4 +97,4 @@ class HarnessIntegration:
                 response = asdict(execute_tool_call(bundle, state, ToolCallRequest(tool["call_id"], name, tool["arguments"])))
                 response["_harness_runtime_state"] = asdict(state)
                 return response
-        return {"results": result} if tool["name"] == "rag_search" else {"error": "TOOL_UNAVAILABLE"}
+        return {"results": result} if tool["name"] in {SKILL_ASSET_SEARCH_TOOL, LEGACY_RAG_SEARCH_TOOL} else {"error": "TOOL_UNAVAILABLE"}

@@ -20,6 +20,7 @@ PLATFORM += "\n用户指定的输出长度、格式和信息边界优先于默�
 PLATFORM += "\n带 evidence_projection 的工具消息是有限节选；原始证据由 source_tool_id 标识保存。不能声称看过未提供的内容。"
 PLATFORM += "\nstatus=expired 的事实表示已删除或失效，不得从历史消息或摘要恢复其旧值。"
 PLATFORM += "\n当前用户明确更正信息优先于旧事实；先调用 propose_fact_updates 用 user_statement 和逐字原文证据更新，再继续分析。不把其他对象的信息或模型推断记录为当前对象事实。"
+PLATFORM += "\n只在当前角色规则或 Skill 规则所需的关键信息无法从现有事实和回答中取得时调用 request_user_input。普通工具失败先记录原因并评估是否影响任务；不影响时继续已有分析，影响结论时说明限制，不把工具失败伪装成用户追问。"
 
 
 def serialize_message(message):

@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 TERMINAL = {"completed", "failed", "cancelled"}
 TOOL_TERMINAL = TERMINAL | {"skipped"}
+SKILL_ASSET_SEARCH_TOOL = "search_skill_assets"
+LEGACY_RAG_SEARCH_TOOL = "rag_search"
+SEARCH_TOOL_NAMES = {SKILL_ASSET_SEARCH_TOOL, LEGACY_RAG_SEARCH_TOOL, "web_search"}
 
 
 def now() -> str:
@@ -59,6 +62,26 @@ class InputArguments(BaseModel):
         if len({field.key for field in self.fields}) != len(self.fields):
             raise ValueError("duplicate question keys")
         return self
+
+
+def normalize_input_arguments(arguments: dict) -> dict:
+    """Accept the common label-to-value select shorthand without widening the schema."""
+    if not isinstance(arguments, dict) or not isinstance(arguments.get("fields"), list):
+        return arguments
+    normalized = dict(arguments)
+    normalized["fields"] = []
+    for field in arguments["fields"]:
+        if not isinstance(field, dict):
+            normalized["fields"].append(field)
+            continue
+        item = dict(field)
+        options = item.get("options")
+        if item.get("input_type") in {"single_select", "multi_select"} and isinstance(options, dict) and all(
+            isinstance(label, str) and isinstance(value, str) for label, value in options.items()
+        ):
+            item["options"] = [{"label": label, "value": value} for label, value in options.items()]
+        normalized["fields"].append(item)
+    return normalized
 
 
 class AnswerSubmission(BaseModel):
