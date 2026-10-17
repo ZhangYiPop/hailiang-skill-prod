@@ -69,6 +69,7 @@ import {
   type EvaluationRun,
   type ObjectRelease,
   type ObjectRevision,
+  type OrchestrationRuleRevision,
   type RevisionTestSession,
   type SoulRevision,
   type StandardSkillConversion,
@@ -126,9 +127,13 @@ const emptyPayload = (type: WorkbenchObjectType): Record<string, unknown> => {
     rules_markdown: "# 专家团规则\n\n请填写协同、转交与兜底原则。",
     brief: "",
     coordinator_expert_id: "",
+    fallback_expert_id: "",
+    consultation_policy: { max_subtasks: 3, max_parallel: 3, max_depth: 1 },
     members: [],
   };
 };
+
+const SCHOOL_STAGES = ["小学", "初中", "高中"] as const;
 
 function shortHash(value: string | undefined): string {
   return value ? `${value.slice(0, 8)}…${value.slice(-5)}` : "--";
@@ -530,6 +535,11 @@ export default function Workbench() {
   const [soulRevisions, setSoulRevisions] = useState<SoulRevision[]>([]);
   const [soulRevisionId, setSoulRevisionId] = useState("");
   const [soulDraft, setSoulDraft] = useState("");
+  const [orchestrationRevisions, setOrchestrationRevisions] = useState<OrchestrationRuleRevision[]>([]);
+  const [headRulesDraft, setHeadRulesDraft] = useState("");
+  const [tailRulesDraft, setTailRulesDraft] = useState("");
+  const [recommendationRulesDraft, setRecommendationRulesDraft] = useState("");
+  const [recommendationsDraft, setRecommendationsDraft] = useState("[]");
   const [conversion, setConversion] = useState<StandardSkillConversion | null>(null);
   const [conversionDraft, setConversionDraft] = useState<Record<string, unknown> | null>(null);
   const [conversionTargetId, setConversionTargetId] = useState("");
@@ -681,6 +691,8 @@ export default function Workbench() {
       setAudit(auditResult.events);
       const soulResult = await workbenchApi.listSoulRevisions(apiBaseUrl);
       setSoulRevisions(soulResult.revisions);
+      const orchestrationResult = await workbenchApi.listOrchestrationRules(apiBaseUrl);
+      setOrchestrationRevisions(orchestrationResult.revisions);
     } catch (error) {
       setNotice({
         tone: "error",
@@ -692,6 +704,16 @@ export default function Workbench() {
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    if (headRulesDraft || tailRulesDraft || recommendationRulesDraft || recommendationsDraft !== "[]") return;
+    const published = orchestrationRevisions.find((item) => item.published) ?? orchestrationRevisions[0];
+    if (!published) return;
+    setHeadRulesDraft(published.head_rules);
+    setTailRulesDraft(published.tail_rules);
+    setRecommendationRulesDraft(published.recommendation_rules);
+    setRecommendationsDraft(JSON.stringify(published.recommendations ?? [], null, 2));
+  }, [headRulesDraft, orchestrationRevisions, recommendationRulesDraft, recommendationsDraft, tailRulesDraft]);
 
   const openObject = useCallback(
     async (objectId: string) => {
@@ -820,12 +842,15 @@ export default function Workbench() {
         expert_id: lock.object_key,
         mention_name: String(saved.mention_name ?? release?.name ?? lock.object_key),
         routing_brief: String(saved.routing_brief ?? ""),
+        applicable_stages: Array.isArray(saved.applicable_stages)
+          ? saved.applicable_stages.map((item) => String(item))
+          : [],
         name: release?.name ?? lock.object_key,
       };
     });
   }, [dependencyReleases, payload.members, uniqueSelectedLocks]);
 
-  function updateTeamMember(expertId: string, patch: Partial<{ mention_name: string; routing_brief: string }>) {
+  function updateTeamMember(expertId: string, patch: Partial<{ mention_name: string; routing_brief: string; applicable_stages: string[] }>) {
     setPayload({
       ...payload,
       members: teamMemberSettings.map((member) =>
@@ -1188,6 +1213,41 @@ export default function Workbench() {
     URL.revokeObjectURL(url);
   }
 
+  async function saveOrchestrationRules(publish: boolean) {
+    if (!actor) return;
+    let recommendations: unknown;
+    try {
+      recommendations = JSON.parse(recommendationsDraft || "[]");
+    } catch {
+      setNotice({ tone: "error", text: "推荐清单必须是合法 JSON 数组。" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const saved = await workbenchApi.saveOrchestrationRules(apiBaseUrl, {
+        head_rules: headRulesDraft,
+        tail_rules: tailRulesDraft,
+        recommendation_rules: recommendationRulesDraft,
+        recommendations,
+        actor_id: actor.actor_id,
+      });
+      const published = publish
+        ? await workbenchApi.publishOrchestrationRules(apiBaseUrl, saved.orchestration_revision_id, { actor_id: actor.actor_id })
+        : saved;
+      setOrchestrationRevisions((items) => [published, ...items.filter((item) => item.orchestration_revision_id !== published.orchestration_revision_id)]);
+      setNotice({
+        tone: "ok",
+        text: publish
+          ? `编排规则 r${published.revision_no} 已发布。重新激活部署后，只有新会话会用上这版。`
+          : `编排规则 r${published.revision_no} 已保存，尚未发布。`,
+      });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "编排规则保存失败" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveSoulRevision() {
     if (!actor || !soulDraft.trim()) return;
     setBusy(true);
@@ -1486,10 +1546,11 @@ export default function Workbench() {
     if (selectedObject.object_type === "expert_team") {
       nextPayload = {
         ...nextPayload,
-        members: teamMemberSettings.map(({ expert_id, mention_name, routing_brief }) => ({
+        members: teamMemberSettings.map(({ expert_id, mention_name, routing_brief, applicable_stages }) => ({
           expert_id,
           mention_name: mention_name.trim(),
           routing_brief: routing_brief.trim(),
+          applicable_stages,
         })),
       };
     }
@@ -2827,8 +2888,87 @@ export default function Workbench() {
                                   })}
                                 </select>
                               </label>
+                              <label className="block text-sm text-slate-300">
+                                兜底专家
+                                <select
+                                  value={String(payload.fallback_expert_id ?? "")}
+                                  onChange={(event) => setPayload({ ...payload, fallback_expert_id: event.target.value })}
+                                  className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none"
+                                >
+                                  <option value="">未配置，编排首不能分发</option>
+                                  {uniqueSelectedLocks.map((item) => {
+                                    const expertRelease = dependencyReleases.find((release) => release.release_id === item.release_id);
+                                    return (
+                                      <option key={item.object_id} value={item.object_id}>
+                                        {(expertRelease?.name || item.object_key)}（{item.object_key}）· v{item.release_no}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                              </label>
+                              <div className="grid gap-3 md:grid-cols-3">
+                                <label className="text-xs text-slate-400">
+                                  最多子任务
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={8}
+                                    value={Number((payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3)}
+                                    onChange={(event) => {
+                                      const maxSubtasks = Number(event.target.value);
+                                      const currentParallel = Number((payload.consultation_policy as { max_parallel?: number } | undefined)?.max_parallel ?? maxSubtasks);
+                                      setPayload({
+                                        ...payload,
+                                        consultation_policy: {
+                                          ...(payload.consultation_policy as Record<string, unknown> | undefined),
+                                          max_subtasks: maxSubtasks,
+                                          max_parallel: Math.min(Math.max(1, currentParallel), Math.max(1, maxSubtasks)),
+                                          max_depth: Number((payload.consultation_policy as { max_depth?: number } | undefined)?.max_depth ?? 1),
+                                        },
+                                      });
+                                    }}
+                                    className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none"
+                                  />
+                                </label>
+                                <label className="text-xs text-slate-400">
+                                  并行容量
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={Number((payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3)}
+                                    value={Number((payload.consultation_policy as { max_parallel?: number } | undefined)?.max_parallel ?? (payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3)}
+                                    onChange={(event) => setPayload({
+                                      ...payload,
+                                      consultation_policy: {
+                                        max_subtasks: Number((payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3),
+                                        max_parallel: Number(event.target.value),
+                                        max_depth: Number((payload.consultation_policy as { max_depth?: number } | undefined)?.max_depth ?? 1),
+                                      },
+                                    })}
+                                    className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none"
+                                  />
+                                </label>
+                                <label className="text-xs text-slate-400">
+                                  编排深度
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={3}
+                                    value={Number((payload.consultation_policy as { max_depth?: number } | undefined)?.max_depth ?? 1)}
+                                    onChange={(event) => setPayload({
+                                      ...payload,
+                                      consultation_policy: {
+                                        max_subtasks: Number((payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3),
+                                        max_parallel: Number((payload.consultation_policy as { max_parallel?: number } | undefined)?.max_parallel ?? (payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3),
+                                        max_depth: Number(event.target.value),
+                                      },
+                                    })}
+                                    className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none"
+                                  />
+                                </label>
+                              </div>
                               <div>
-                                <p className="text-sm text-slate-300">成员展示名称与分流职责</p>
+                                <p className="text-sm text-slate-300">成员展示名称、负责范围与适用学段</p>
                                 <p className="mt-1 text-xs text-slate-500">
                                   主协调专家会用展示名称、ID 与职责摘要生成受控移交确认卡；名称在当前专家团内必须唯一。
                                 </p>
@@ -2853,6 +2993,23 @@ export default function Workbench() {
                                           className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400/40"
                                         />
                                       </label>
+                                      <div className="md:col-span-2 flex flex-wrap gap-3 text-xs text-slate-300">
+                                        {SCHOOL_STAGES.map((stage) => (
+                                          <label key={stage} className="flex items-center gap-2">
+                                            <input
+                                              type="checkbox"
+                                              checked={member.applicable_stages.includes(stage)}
+                                              onChange={(event) => updateTeamMember(member.expert_id, {
+                                                applicable_stages: event.target.checked
+                                                  ? [...member.applicable_stages, stage]
+                                                  : member.applicable_stages.filter((item) => item !== stage),
+                                              })}
+                                              className="accent-sky-400"
+                                            />
+                                            {stage}
+                                          </label>
+                                        ))}
+                                      </div>
                                     </div>
                                   ))}
                                 </div>
@@ -3093,6 +3250,18 @@ export default function Workbench() {
                     {selectedSoulRevision ? <details className="mt-3 text-xs text-slate-400"><summary className="cursor-pointer">查看选中 Soul 内容</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 leading-6">{selectedSoulRevision.content}</pre></details> : null}
                     <textarea value={soulDraft} onChange={(event) => setSoulDraft(event.target.value)} placeholder="新增 Soul 版本内容（保存后可选择）" rows={3} className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-xs outline-none" />
                     <button type="button" disabled={!actor || !soulDraft.trim() || busy} onClick={() => void saveSoulRevision()} className="mt-2 rounded-xl border border-violet-400/25 px-3 py-2 text-xs text-violet-200 disabled:opacity-40">保存为新的 Soul 修订</button>
+                  </div>
+                  <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-4">
+                    <p className="text-sm font-medium text-amber-100">编排规则</p>
+                    <p className="mt-1 text-xs text-slate-400">编排首、编排尾和推荐分开保存版本。发布后重新激活部署，只影响新会话。推荐由模型输出 jump_cards 语义字段，枚举以 catalog 为准；match_terms 已废弃。</p>
+                    <label className="mt-3 block text-xs text-slate-400">编排首<textarea value={headRulesDraft} onChange={(event) => setHeadRulesDraft(event.target.value)} rows={6} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-xs outline-none" /></label>
+                    <label className="mt-3 block text-xs text-slate-400">编排尾<textarea value={tailRulesDraft} onChange={(event) => setTailRulesDraft(event.target.value)} rows={4} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-xs outline-none" /></label>
+                    <label className="mt-3 block text-xs text-slate-400">推荐规则<textarea value={recommendationRulesDraft} onChange={(event) => setRecommendationRulesDraft(event.target.value)} rows={4} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-xs outline-none" /></label>
+                    <label className="mt-3 block text-xs text-slate-400">推荐清单 JSON<textarea value={recommendationsDraft} onChange={(event) => setRecommendationsDraft(event.target.value)} rows={4} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 p-3 font-mono text-xs outline-none" /></label>
+                    <div className="mt-3 flex gap-2">
+                      <button type="button" disabled={!actor || busy} onClick={() => void saveOrchestrationRules(false)} className="rounded-xl border border-amber-400/25 px-3 py-2 text-xs text-amber-100 disabled:opacity-40">保存草稿</button>
+                      <button type="button" disabled={!actor || busy || !headRulesDraft.trim()} onClick={() => void saveOrchestrationRules(true)} className="rounded-xl border border-amber-400/40 px-3 py-2 text-xs text-amber-50 disabled:opacity-40">发布</button>
+                    </div>
                   </div>
                 </div>
                 <div className="mt-6 grid gap-6">

@@ -150,6 +150,18 @@ class SoulRevisionInput(StrictModel):
     actor_id: str = Field(min_length=1)
 
 
+class OrchestrationRuleInput(StrictModel):
+    head_rules: str = ""
+    tail_rules: str = ""
+    recommendation_rules: str = ""
+    recommendations: list[dict[str, Any]] = Field(default_factory=list)
+    actor_id: str = Field(min_length=1)
+
+
+class OrchestrationPublishInput(StrictModel):
+    actor_id: str = Field(min_length=1)
+
+
 class ConversionCommitInput(StrictModel):
     draft: dict[str, Any]
     target_object_id: str | None = None
@@ -271,6 +283,20 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
     @router.post("/soul-revisions", status_code=201)
     def save_soul_revision(body: SoulRevisionInput):
         return _call(lambda: service.save_soul_revision(**body.model_dump()))
+
+    @router.get("/orchestration-rules")
+    def list_orchestration_rules():
+        return {"revisions": _call(service.list_orchestration_rules)}
+
+    @router.post("/orchestration-rules", status_code=201)
+    def save_orchestration_rules(body: OrchestrationRuleInput):
+        payload = body.model_dump()
+        actor_id = payload.pop("actor_id")
+        return _call(lambda: service.save_orchestration_rules(payload, actor_id=actor_id))
+
+    @router.post("/orchestration-rules/{orchestration_revision_id}/publish")
+    def publish_orchestration_rules(orchestration_revision_id: str, body: OrchestrationPublishInput):
+        return _call(lambda: service.publish_orchestration_rules(orchestration_revision_id, actor_id=body.actor_id))
 
     @router.post("/revision-tests/{debug_session_id}/turns")
     def run_revision_test_turn(debug_session_id: str, body: RevisionTestTurnInput):

@@ -44,6 +44,7 @@ from hailiang_skills.storage.database import (
     WorkbenchEvaluationRunRow,
     WorkbenchEvaluationSuiteRow,
     WorkbenchObjectRow,
+    WorkbenchOrchestrationRuleRevisionRow,
     WorkbenchReleaseRow,
     WorkbenchSoulRevisionRow,
     WorkbenchRevisionRow,
@@ -259,6 +260,117 @@ class WorkbenchService:
             self._audit(db, actor_id, "soul_revision.saved", "soul_revision", row.soul_revision_id, {"revision_no": row.revision_no})
             db.commit()
             return self._soul_revision_dict(row)
+
+    def list_orchestration_rules(self) -> list[dict[str, Any]]:
+        self._bootstrap_orchestration_rules()
+        with self.session_factory() as db:
+            rows = db.scalars(
+                select(WorkbenchOrchestrationRuleRevisionRow).order_by(WorkbenchOrchestrationRuleRevisionRow.revision_no.desc())
+            )
+            return [self._orchestration_rule_dict(row) for row in rows]
+
+    def save_orchestration_rules(self, payload: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
+        from hailiang_skills.workbench.orchestration import OrchestrationConfigError, normalize_rule_payload
+
+        try:
+            normalized = normalize_rule_payload(payload)
+        except OrchestrationConfigError as exc:
+            raise WorkbenchError(str(exc), code="ORCHESTRATION_RULES_INVALID") from exc
+        if not any(normalized[key] for key in ("head_rules", "tail_rules", "recommendation_rules")) and not normalized["recommendations"]:
+            raise WorkbenchError("编排规则不能为空", code="ORCHESTRATION_RULES_INVALID")
+        encoded = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+        with self.session_factory() as db:
+            latest = db.scalar(
+                select(WorkbenchOrchestrationRuleRevisionRow).order_by(WorkbenchOrchestrationRuleRevisionRow.revision_no.desc()).limit(1)
+            )
+            row = WorkbenchOrchestrationRuleRevisionRow(
+                orchestration_revision_id=_id("orch"),
+                revision_no=(latest.revision_no if latest else 0) + 1,
+                payload=normalized,
+                content_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+                published=False,
+                created_by=actor_id,
+            )
+            db.add(row)
+            self._audit(db, actor_id, "orchestration_rules.saved", "orchestration_rules", row.orchestration_revision_id, {"revision_no": row.revision_no})
+            db.commit()
+            return self._orchestration_rule_dict(row)
+
+    def publish_orchestration_rules(self, orchestration_revision_id: str, *, actor_id: str) -> dict[str, Any]:
+        with self.session_factory() as db:
+            row = db.get(WorkbenchOrchestrationRuleRevisionRow, orchestration_revision_id)
+            if row is None:
+                raise WorkbenchError("编排规则版本不存在", code="ORCHESTRATION_RULES_NOT_FOUND")
+            head = str((row.payload or {}).get("head_rules") or "").strip()
+            if not head:
+                raise WorkbenchError("发布前必须写好编排首规则", code="ORCHESTRATION_RULES_INVALID")
+            for item in db.scalars(select(WorkbenchOrchestrationRuleRevisionRow).where(WorkbenchOrchestrationRuleRevisionRow.published.is_(True))):
+                item.published = False
+            row.published = True
+            self._audit(db, actor_id, "orchestration_rules.published", "orchestration_rules", row.orchestration_revision_id, {"revision_no": row.revision_no})
+            db.commit()
+            return self._orchestration_rule_dict(row)
+
+    def _bootstrap_orchestration_rules(self) -> dict[str, Any] | None:
+        with self.session_factory() as db:
+            self._ensure_orchestration_rules(db)
+            db.commit()
+            row = db.scalar(
+                select(WorkbenchOrchestrationRuleRevisionRow).order_by(WorkbenchOrchestrationRuleRevisionRow.revision_no.desc()).limit(1)
+            )
+            return self._orchestration_rule_dict(row) if row is not None else None
+
+    def _ensure_orchestration_rules(self, db) -> WorkbenchOrchestrationRuleRevisionRow:
+        from hailiang_skills.workbench.orchestration import load_seed_rules
+
+        existing = db.scalar(
+            select(WorkbenchOrchestrationRuleRevisionRow).order_by(WorkbenchOrchestrationRuleRevisionRow.revision_no.desc()).limit(1)
+        )
+        if existing is not None:
+            return existing
+        payload = load_seed_rules()
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        row = WorkbenchOrchestrationRuleRevisionRow(
+            orchestration_revision_id=_id("orch"),
+            revision_no=1,
+            payload=payload,
+            content_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+            published=True,
+            created_by="system",
+        )
+        db.add(row)
+        db.flush()
+        self._audit(db, "system", "orchestration_rules.imported", "orchestration_rules", row.orchestration_revision_id, {"revision_no": 1})
+        return row
+
+    def _published_orchestration_rules(self, db) -> dict[str, Any]:
+        self._ensure_orchestration_rules(db)
+        row = db.scalar(
+            select(WorkbenchOrchestrationRuleRevisionRow)
+            .where(WorkbenchOrchestrationRuleRevisionRow.published.is_(True))
+            .order_by(WorkbenchOrchestrationRuleRevisionRow.revision_no.desc())
+            .limit(1)
+        )
+        if row is None:
+            return {"head_rules": "", "tail_rules": "", "recommendation_rules": "", "recommendations": []}
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        return {
+            "orchestration_revision_id": row.orchestration_revision_id,
+            "revision_no": row.revision_no,
+            "content_hash": row.content_hash,
+            "head_rules": str(payload.get("head_rules") or ""),
+            "tail_rules": str(payload.get("tail_rules") or ""),
+            "recommendation_rules": str(payload.get("recommendation_rules") or ""),
+            "recommendations": list(payload.get("recommendations") or []),
+        }
+
+    def _attach_orchestration_rules(self, db, deployment: WorkbenchDeploymentRow) -> None:
+        manifest = dict(deployment.manifest or {})
+        current = manifest.get("orchestration_rules")
+        if isinstance(current, dict) and str(current.get("head_rules") or "").strip():
+            return
+        manifest["orchestration_rules"] = self._published_orchestration_rules(db)
+        deployment.manifest = manifest
 
     def create_object(
         self,
@@ -3284,6 +3396,7 @@ class WorkbenchService:
                 },
                 "objects": manifest_objects,
                 "kernel_fingerprint": self.kernel_fingerprint,
+                "orchestration_rules": self._published_orchestration_rules(db),
                 "exported_by": actor_id,
                 "exported_at": _iso(utc_now()),
             }
@@ -3500,6 +3613,7 @@ class WorkbenchService:
                     "activated_at": _iso(row.activated_at),
                 },
                 "entries": entries or row.manifest.get("objects", []),
+                "orchestration_rules": row.manifest.get("orchestration_rules") if isinstance(row.manifest.get("orchestration_rules"), dict) else None,
                 "bound_at": _iso(utc_now()),
             }
 
@@ -3563,6 +3677,7 @@ class WorkbenchService:
             target.status = "active"
             target.activated_by = actor_id
             target.activated_at = utc_now()
+            self._attach_orchestration_rules(db, target)
             self._install_deployment_runtime(target)
             self._audit(db, actor_id, "deployment.activated", "deployment", target.deployment_id, {
                 "previous_deployment_id": target.previous_deployment_id,
@@ -3610,6 +3725,7 @@ class WorkbenchService:
             target.status = "active"
             target.activated_by = actor_id
             target.activated_at = utc_now()
+            self._attach_orchestration_rules(db, target)
             self._install_deployment_runtime(target)
             self._audit(db, actor_id, "deployment.restored", "deployment", target.deployment_id, {
                 "previous_deployment_id": target.previous_deployment_id,
@@ -3700,8 +3816,15 @@ class WorkbenchService:
                 "rules_markdown": team.rules_markdown,
                 "brief": team.brief,
                 "coordinator_expert_id": coordinator_object_id,
+                "consultation_policy": team.consultation_policy.as_dict(),
+                "fallback_expert_id": team.fallback_expert_id,
                 "members": [
-                    {"expert_id": item.expert_id, "mention_name": item.mention_name, "routing_brief": item.routing_brief}
+                    {
+                        "expert_id": item.expert_id,
+                        "mention_name": item.mention_name,
+                        "routing_brief": item.routing_brief,
+                        "applicable_stages": list(item.applicable_stages),
+                    }
                     for item in team.members
                 ],
             }
@@ -3844,12 +3967,20 @@ class WorkbenchService:
         for team in getattr(getattr(self.orchestrator, "expert_team_registry", None), "definitions", {}).values():
             locks = [self._filesystem_lock("expert", item.expert_id, source_ids) for item in team.members]
             coordinator_lock = next((item for item in locks if item["object_key"] == team.coordinator_expert_id), None)
+            fallback_lock = next((item for item in locks if item["object_key"] == team.fallback_expert_id), None)
             payload = {
                 "rules_markdown": team.rules_markdown,
                 "brief": team.brief,
                 "coordinator_expert_id": str((coordinator_lock or {}).get("object_id") or team.coordinator_expert_id),
+                "consultation_policy": team.consultation_policy.as_dict(),
+                "fallback_expert_id": str((fallback_lock or {}).get("object_id") or team.fallback_expert_id),
                 "members": [
-                    {"expert_id": item.expert_id, "mention_name": item.mention_name, "routing_brief": item.routing_brief}
+                    {
+                        "expert_id": item.expert_id,
+                        "mention_name": item.mention_name,
+                        "routing_brief": item.routing_brief,
+                        "applicable_stages": list(item.applicable_stages),
+                    }
                     for item in team.members
                 ],
             }
@@ -4192,13 +4323,17 @@ class WorkbenchService:
 
             coordinator_object_id = str(payload.get("coordinator_expert_id") or "")
             coordinator = next((str(item.get("object_key") or "") for item in locks if str(item.get("object_id") or "") == coordinator_object_id), "")
+            from hailiang_skills.runtime_bridge.expert_team_bundle import published_team_overlay
+
             member_payloads = payload.get("members") if isinstance(payload.get("members"), list) else []
             by_key = {str(item.get("expert_id") or ""): item for item in member_payloads if isinstance(item, dict)}
+            policy, fallback_expert_id, stages = published_team_overlay(payload, locks)
             members = tuple(
                 ExpertTeamMember(
                     expert_id=str(item.get("object_key") or ""),
                     mention_name=str((by_key.get(str(item.get("object_key") or "")) or {}).get("mention_name") or item.get("object_key") or ""),
                     routing_brief=str((by_key.get(str(item.get("object_key") or "")) or {}).get("routing_brief") or ""),
+                    applicable_stages=stages.get(str(item.get("object_key") or ""), ()),
                 )
                 for item in locks if str(item.get("object_key") or "")
             )
@@ -4210,6 +4345,8 @@ class WorkbenchService:
                     coordinator_expert_id=coordinator,
                     members=members,
                     brief=str(payload.get("brief") or ""),
+                    consultation_policy=policy,
+                    fallback_expert_id=fallback_expert_id,
                 )
                 self.orchestrator.expert_team_registry.definitions[object_key] = definition
                 self.orchestrator.expert_runtime.team_registry.definitions[object_key] = definition
@@ -4407,6 +4544,11 @@ class WorkbenchService:
                 ]
                 if not all(mentions) or len(set(mentions)) != len(mentions):
                     errors.append("成员展示名称不能为空且必须在专家团内唯一")
+            from hailiang_skills.workbench.orchestration import validate_expert_team_orchestration
+
+            team_errors, team_warnings = validate_expert_team_orchestration(payload, locks)
+            errors.extend(team_errors)
+            warnings.extend(team_warnings)
             if not str(payload.get("rules_markdown") or "").strip():
                 warnings.append("建议补充专家团协同规则")
         return {"valid": not errors, "errors": errors, "warnings": warnings, "checked_at": _iso(utc_now())}
@@ -4543,6 +4685,7 @@ class WorkbenchService:
             snapshot["soul_context"] = self._soul_revision_dict(soul)
         else:
             snapshot["soul_context"] = {"enabled": False, "content": "", "content_hash": None}
+        snapshot["orchestration_rules"] = self._published_orchestration_rules(db)
         snapshot["snapshot_hash"] = _hash(snapshot)
         snapshot["entries"] = [materialize_entry_files(item) for item in entries]
         return snapshot
@@ -5320,6 +5463,22 @@ class WorkbenchService:
             "dependency_locks": row.dependency_locks, "validation": row.validation,
             "content_hash": row.content_hash, "created_by": row.created_by,
             "created_by_display_name": (actor_names or {}).get(row.created_by, row.created_by),
+            "created_at": _iso(row.created_at),
+        }
+
+    @staticmethod
+    def _orchestration_rule_dict(row) -> dict[str, Any]:
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        return {
+            "orchestration_revision_id": row.orchestration_revision_id,
+            "revision_no": row.revision_no,
+            "head_rules": str(payload.get("head_rules") or ""),
+            "tail_rules": str(payload.get("tail_rules") or ""),
+            "recommendation_rules": str(payload.get("recommendation_rules") or ""),
+            "recommendations": list(payload.get("recommendations") or []),
+            "content_hash": row.content_hash,
+            "published": bool(row.published),
+            "created_by": row.created_by,
             "created_at": _iso(row.created_at),
         }
 
