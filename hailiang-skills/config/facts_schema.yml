@@ -1,4 +1,30 @@
 facts:
+  user_role:
+    label: "用户身份"
+    value_type: "string"
+    extractor: "platform_identity"
+    input_type: "single_select"
+    placeholder: "请选择您的身份"
+    example: "例如：家长"
+    submit_mode: "auto"
+    allowed_values: ["家长", "学生"]
+    scope_policy: "user"
+    scenario: "platform_identity"
+    scenario_group: ["platform_identity"]
+    enabled: true
+  school_stage:
+    label: "学段"
+    value_type: "string"
+    extractor: "platform_identity"
+    input_type: "single_select"
+    placeholder: "请选择学段"
+    example: "例如：高中"
+    submit_mode: "auto"
+    allowed_values: ["小学", "初中", "高中"]
+    scope_policy: "profile"
+    scenario: "platform_identity"
+    scenario_group: ["platform_identity"]
+    enabled: true
   grade:
     label: "孩子年级"
     value_type: "string"
