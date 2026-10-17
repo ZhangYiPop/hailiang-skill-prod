@@ -64,6 +64,7 @@ def build_runtime_registries(entries: list[dict[str, Any]], *, enabled_by_id: di
         ExpertTeamDefinition,
         ExpertTeamMember,
         ExpertTeamRegistry,
+        published_team_overlay,
     )
     from hailiang_skills.skill_runtime.skill_registry import SkillRegistry
     from hailiang_skills.workbench.runtime_overlay import skill_bundle_from_entry
@@ -107,11 +108,13 @@ def build_runtime_registries(entries: list[dict[str, Any]], *, enabled_by_id: di
             (str(lock.get("object_key") or "") for lock in locks if str(lock.get("object_id") or "") == coordinator_object_id),
             coordinator_object_id,
         )
+        policy, fallback_expert_id, stages = published_team_overlay(payload, locks)
         members = tuple(
             ExpertTeamMember(
                 expert_id=str(lock.get("object_key") or ""),
                 mention_name=str((by_key.get(str(lock.get("object_key") or "")) or {}).get("mention_name") or lock.get("object_key") or ""),
                 routing_brief=str((by_key.get(str(lock.get("object_key") or "")) or {}).get("routing_brief") or ""),
+                applicable_stages=stages.get(str(lock.get("object_key") or ""), ()),
             )
             for lock in locks
             if str(lock.get("object_key") or "")
@@ -123,6 +126,9 @@ def build_runtime_registries(entries: list[dict[str, Any]], *, enabled_by_id: di
             coordinator_expert_id=coordinator,
             members=members,
             brief=str(payload.get("brief") or ""),
+            consultation_policy=policy,
+            fallback_expert_id=fallback_expert_id,
+            collaboration_rules=str(payload.get("collaboration_rules") or "").strip(),
         )
         teams.definitions[definition.team_id] = definition
     return skills, experts, teams
