@@ -79,6 +79,43 @@ facts:
     scenario: "admission_simulation"
     scenario_group: ["admission_simulation", "multi_path_planning"]
     enabled: true
+  selected_subjects:
+    label: "已选或意向选科组合"
+    value_type: "string_list"
+    extractor: "reserved"
+    input_type: "multi_select"
+    placeholder: "请选择已选或意向科目"
+    example: "例如：物理、化学、生物"
+    submit_mode: "manual"
+    allowed_values: ["物理", "历史", "化学", "生物", "政治", "地理", "技术"]
+    scope_policy: "profile"
+    scenario: "subject_advisor"
+    scenario_group: ["admission_simulation", "multi_path_planning", "subject_advisor"]
+    enabled: true
+  target_major:
+    label: "目标专业"
+    value_type: "string"
+    extractor: "reserved"
+    input_type: "text"
+    placeholder: "请输入目标专业"
+    example: "例如：临床医学"
+    submit_mode: "manual"
+    scope_policy: "profile"
+    scenario: "subject_advisor"
+    scenario_group: ["admission_simulation", "multi_path_planning", "subject_advisor"]
+    enabled: true
+  talent_direction:
+    label: "特长方向"
+    value_type: "string"
+    extractor: "reserved"
+    input_type: "text"
+    placeholder: "请输入特长方向"
+    example: "例如：钢琴"
+    submit_mode: "manual"
+    scope_policy: "profile"
+    scenario: "special_development"
+    scenario_group: ["special_development", "interest_explore"]
+    enabled: true
   foreign_language:
     label: "高考外语科目"
     value_type: "string"

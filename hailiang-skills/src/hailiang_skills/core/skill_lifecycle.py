@@ -18,6 +18,7 @@ from hailiang_skills.core.skill_ids import (
     canonical_skill_id,
 )
 from hailiang_skills.core.message_interactions import ensure_message_interactions
+from hailiang_skills.core.skill_duty_registry import registered_school_stages
 from hailiang_skills.skill_runtime.skill_contract import get_stage_contract
 from hailiang_skills.skill_runtime.models import ChatMessage
 
@@ -1387,16 +1388,24 @@ def _school_stage_scope_values(raw_scope: object) -> set[str]:
     return {part for part in re.split(r"[,/|\\s]+", normalized) if part in {"primary", "junior", "senior"}}
 
 
+def _allowed_school_stages_for_skill(skill_id: str, bundle) -> set[str]:
+    """Prefer duty registry (P3); fall back to SKILL.md routing.school_stage_scope."""
+    registered = registered_school_stages(skill_id)
+    if registered is not None:
+        return set(registered)
+    runtime_meta = getattr(bundle, "runtime_metadata", None)
+    routing = getattr(runtime_meta, "routing", None)
+    scope = getattr(routing, "school_stage_scope", "") if routing is not None else ""
+    return _school_stage_scope_values(scope)
+
+
 def _is_skill_visible_for_context(context, skill_id: str, *, runtime_registry=None) -> bool:
     if skill_id in {GENERAL_CHAT_SKILL_ID, LEGACY_MAIN_PLANNER_SKILL_ID}:
         return False
     bundle = runtime_registry.get(skill_id) if runtime_registry is not None else None
     if bundle is None:
         return False
-    runtime_meta = getattr(bundle, "runtime_metadata", None)
-    routing = getattr(runtime_meta, "routing", None)
-    scope = getattr(routing, "school_stage_scope", "") if routing is not None else ""
-    allowed_stages = _school_stage_scope_values(scope)
+    allowed_stages = _allowed_school_stages_for_skill(skill_id, bundle)
     if not allowed_stages:
         return True
     current_stage = _infer_school_stage(context)
@@ -1419,17 +1428,24 @@ def _visible_skill_catalog(context, *, runtime_registry=None) -> list[dict[str, 
             active_skill=str(skill_id),
             runtime_registry=runtime_registry,
         )
+        allowed_stages = sorted(_allowed_school_stages_for_skill(skill_id, bundle))
         catalog.append(
             {
                 "skill_id": skill_id,
                 "agent_label": display["agent_label"],
                 "name": str(getattr(runtime_meta, "name", "") or ""),
-                "description": _truncate_text(str(getattr(runtime_meta, "description", "") or ""), limit=120),
+                # P1: main router needs the full description as the sole selection signal.
+                "description": str(getattr(runtime_meta, "description", "") or ""),
                 "scene_name": str(getattr(routing, "scene_name", "") or "") if routing is not None else "",
                 "accepts_scenes": list(getattr(runtime_meta, "accepts_scenes", ()) or ()),
                 "triggers": list(getattr(runtime_meta, "triggers", ()) or ())[:8],
                 "routing_examples": list(getattr(routing, "routing_examples", ()) or ())[:5] if routing is not None else [],
-                "school_stage_scope": str(getattr(routing, "school_stage_scope", "") or "") if routing is not None else "",
+                "school_stage_scope": (
+                    ",".join(allowed_stages)
+                    if allowed_stages
+                    else (str(getattr(routing, "school_stage_scope", "") or "") if routing is not None else "")
+                ),
+                "school_stages": allowed_stages,
             }
         )
     return catalog

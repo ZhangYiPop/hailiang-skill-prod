@@ -36,6 +36,8 @@ WEB_SEARCH_TOOL_NAME = "web_search"
 MCP_TOOL_NAME = "mcp"
 USER_PROFILE_TOOL_NAME = "user_profile"
 SUBJECT_REQUIREMENTS_TOOL_NAME = "subject_requirements"
+REQUEST_DECLARED_FORM_TOOL_NAME = "request_declared_form"
+RETURN_TO_MAIN_ROUTER_TOOL_NAME = "return_to_main_router"
 TOOL_ORDER = (
     WEB_SEARCH_TOOL_NAME,
     SUBJECT_REQUIREMENTS_TOOL_NAME,
@@ -43,6 +45,8 @@ TOOL_ORDER = (
     STATUS_TRACK_TOOL_NAME,
     MCP_TOOL_NAME,
     USER_PROFILE_TOOL_NAME,
+    REQUEST_DECLARED_FORM_TOOL_NAME,
+    RETURN_TO_MAIN_ROUTER_TOOL_NAME,
 )
 
 DEFAULT_TOOL_REGISTRY_SETTINGS: dict[str, Any] = {
@@ -120,6 +124,14 @@ DEFAULT_TOOL_REGISTRY_SETTINGS: dict[str, Any] = {
         USER_PROFILE_TOOL_NAME: {
             "enabled": False,
             "description": "预留给用户画像持久化能力，当前版本未启用。",
+        },
+        REQUEST_DECLARED_FORM_TOOL_NAME: {
+            "enabled": True,
+            "description": "召唤本 skill 问卷文件中已声明题目的表单，并等待用户提交。",
+        },
+        RETURN_TO_MAIN_ROUTER_TOOL_NAME: {
+            "enabled": True,
+            "description": "当前问题越界时交回主路由重新分发，不在回复里推荐其他 skill。",
         },
     }
 }
@@ -321,6 +333,48 @@ def build_tool_specs(
             enabled=False,
         )
     )
+    declared_tools = set(getattr(bundle.runtime_metadata, "tool_dependency", ()) or ())
+    if REQUEST_DECLARED_FORM_TOOL_NAME in declared_tools:
+        specs.append(
+            ToolSpec(
+                name=REQUEST_DECLARED_FORM_TOOL_NAME,
+                description="召唤问卷文件中已声明题目的表单；只传 question_ids，题面以问卷文件为准。",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "question_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "问卷文件中已声明的题目 id 列表。",
+                        },
+                    },
+                    "required": ["question_ids"],
+                    "additionalProperties": False,
+                },
+                enabled=True,
+            )
+        )
+    # P8: child skills can always hand out-of-scope work back to the main router.
+    if str(getattr(bundle.contract, "skill_role", "") or "child") != "parent":
+        specs.append(
+            ToolSpec(
+                name=RETURN_TO_MAIN_ROUTER_TOOL_NAME,
+                description="当前用户问题不属于本 skill 职责时调用：交回主路由重新分发，不要在正文推荐其他 skill。",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "reason": {"type": "string", "description": "简短内部依据，不展示给用户。"},
+                        "user_message": {
+                            "type": "string",
+                            "description": "可选；向用户说明不在本次咨询范围后结束本轮。",
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                enabled=True,
+            )
+        )
+    specs = list(_apply_tool_dependency_filter(bundle, specs))
     if logger:
         logger.log(
             "tool.auth.computed",
@@ -334,6 +388,7 @@ def build_tool_specs(
             recommended_tool=asset_result.recommended_tool,
             tool_calling_allowed=asset_result.tool_calling_allowed,
             unsupported_reason=asset_result.unsupported_reason,
+            tool_dependency=sorted(declared_tools),
         )
     return tuple(specs)
 
@@ -372,6 +427,11 @@ def execute_tool_call(
         )
         _log_tool_result(logger, result)
         return result
+
+    if call.name == REQUEST_DECLARED_FORM_TOOL_NAME:
+        return _execute_request_declared_form(bundle, state, call, logger=logger)
+    if call.name == RETURN_TO_MAIN_ROUTER_TOOL_NAME:
+        return _execute_return_to_main_router(state, call, logger=logger)
 
     if call.name == RAG_TOOL_NAME:
         results = run_local_rag(bundle, state, query_override=_string_arg(call.arguments, "query"))
@@ -802,6 +862,118 @@ def _is_capability_enabled(bundle: SkillBundle, name: str) -> bool:
 
 def _has_capability(bundle: SkillBundle, name: str) -> bool:
     return any(item.name == name for item in bundle.tool_registry.capabilities)
+
+
+def _apply_tool_dependency_filter(
+    bundle: SkillBundle,
+    specs: list[ToolSpec],
+) -> tuple[ToolSpec, ...]:
+    """P10: expose only platform-enabled tools ∩ skill tool_dependency when declared."""
+    raw = getattr(bundle.runtime_metadata, "raw", {}) or {}
+    metadata = getattr(bundle, "metadata", {}) or {}
+    if "tool_dependency" not in raw and "tool_dependency" not in metadata:
+        return tuple(specs)
+    allowed = set(getattr(bundle.runtime_metadata, "tool_dependency", ()) or ())
+    # Platform-owned control tools stay available even when not listed.
+    allowed.add(RETURN_TO_MAIN_ROUTER_TOOL_NAME)
+    filtered: list[ToolSpec] = []
+    for spec in specs:
+        if spec.name in allowed:
+            filtered.append(spec)
+        else:
+            filtered.append(
+                ToolSpec(
+                    name=spec.name,
+                    description=spec.description,
+                    parameters_schema=spec.parameters_schema,
+                    enabled=False,
+                )
+            )
+    return tuple(filtered)
+
+
+def _execute_request_declared_form(
+    bundle: SkillBundle,
+    state: SessionState,
+    call: ToolCallRequest,
+    *,
+    logger: RuntimeLogger | None = None,
+) -> ToolCallResult:
+    from hailiang_skills.runtime_bridge.native_questionnaire import question_specs, questionnaire_config
+
+    raw_ids = call.arguments.get("question_ids") if isinstance(call.arguments, dict) else None
+    ids = [str(item).strip() for item in (raw_ids or []) if str(item).strip()]
+    declared = {str(item.get("question_id") or "") for item in question_specs(bundle)}
+    invalid = sorted(set(ids) - declared)
+    if invalid:
+        result = ToolCallResult(
+            id=call.id,
+            name=call.name,
+            ok=False,
+            content="",
+            error=f"题库未声明的问题: {', '.join(invalid)}",
+        )
+        _log_tool_result(logger, result)
+        return result
+    max_fields = int(questionnaire_config(bundle).get("max_fields_per_form") or 1)
+    if len(ids) > max_fields:
+        result = ToolCallResult(
+            id=call.id,
+            name=call.name,
+            ok=False,
+            content="",
+            error=f"单次表单最多请求 {max_fields} 个问题",
+        )
+        _log_tool_result(logger, result)
+        return result
+    skill_id = state.active_skill_id or bundle.contract.skill_id or bundle.root_name
+    state.status_flags["pending_form"] = {"skill_id": skill_id, "question_ids": ids}
+    state.status_flags["expert_requested_skill_id"] = skill_id
+    from hailiang_skills.runtime_bridge.native_questionnaire import stage_declared_form
+
+    block = stage_declared_form(bundle, state, ids)
+    result = ToolCallResult(
+        id=call.id,
+        name=call.name,
+        ok=True,
+        content=json.dumps(
+            {
+                "status": "form_requested",
+                "skill_id": skill_id,
+                "question_ids": ids,
+                "form_id": (block or {}).get("payload", {}).get("form_id"),
+            },
+            ensure_ascii=False,
+        ),
+    )
+    _log_tool_result(logger, result)
+    return result
+
+
+def _execute_return_to_main_router(
+    state: SessionState,
+    call: ToolCallRequest,
+    *,
+    logger: RuntimeLogger | None = None,
+) -> ToolCallResult:
+    reason = _string_arg(call.arguments, "reason") or "out_of_scope"
+    user_message = _string_arg(call.arguments, "user_message") or (
+        "这个问题不在本次咨询范围内，我先交回统一入口帮你重新分流。"
+    )
+    state.status_flags["return_to_main_router"] = True
+    state.status_flags["return_to_main_router_reason"] = reason
+    state.status_flags["return_to_main_router_message"] = user_message
+    result = ToolCallResult(
+        id=call.id,
+        name=call.name,
+        ok=True,
+        content=json.dumps(
+            {"status": "queued", "action": "return_to_main_router", "reason": reason},
+            ensure_ascii=False,
+        ),
+    )
+    _log_tool_result(logger, result)
+    return result
 
 
 def _routing_allows_web_search(routing_decision: RoutingDecision | None) -> bool:

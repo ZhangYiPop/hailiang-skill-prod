@@ -354,9 +354,12 @@ def _build_prompt_assembly(
     ]
     if runtime_metadata.prompt_loading.include_skill_markdown != "none":
         core_sections.append(f"# Skill Instructions\n{bundle.skill_markdown}\n\n")
-    questionnaire_protocol = build_questionnaire_protocol(bundle, state)
-    if questionnaire_protocol:
-        core_sections.append(f"{questionnaire_protocol}\n")
+    # P11: when the skill declares request_declared_form, do not inject the JSON
+    # questionnaire envelope protocol; the model summons forms via the tool instead.
+    if "request_declared_form" not in set(runtime_metadata.tool_dependency or ()):
+        questionnaire_protocol = build_questionnaire_protocol(bundle, state)
+        if questionnaire_protocol:
+            core_sections.append(f"{questionnaire_protocol}\n")
     if runtime_metadata.prompt_loading.include_session_state:
         core_sections.append(f"# Session State\n{state_json}\n\n")
     core_sections.extend(
@@ -745,6 +748,8 @@ def _build_runtime_facts_text(
     *,
     fact_ledger: dict[str, Any] | None = None,
 ) -> str:
+    from hailiang_skills.skill_runtime.skill_contract import field_uses
+
     active_skill_id = state.active_skill_id or bundle.contract.skill_id or bundle.root_name
     current_stage_facts = state.stage_facts.get(active_skill_id, {}).get(state.stage, {})
     route_history = state.route_history[-3:]
@@ -758,8 +763,17 @@ def _build_runtime_facts_text(
             skill_progress=progress,
             context_contract_version=state.status_flags.get("context_contract_version"),
         )
+    # P6: surface declared fields.uses so the model sees the backfilled keys first.
+    declared_uses = field_uses(bundle.contract)
+    uses_projection = {
+        key: (fact_ledger or {}).get(key)
+        if isinstance(fact_ledger, dict)
+        else state.global_facts.get(key)
+        for key in declared_uses
+    }
     return (
         f"active_skill_id={active_skill_id}\n"
+        f"fields_uses={json.dumps(uses_projection, ensure_ascii=False)}\n"
         f"effective_fact_ledger={json.dumps(fact_ledger, ensure_ascii=False)}\n"
         f"stage_facts={json.dumps(current_stage_facts, ensure_ascii=False)}\n"
         f"status_flags={json.dumps(_status_flags_for_prompt(state.status_flags), ensure_ascii=False)}\n"
@@ -928,10 +942,8 @@ def _latest_user_message(state: SessionState) -> str:
 
 
 def _retrieve_context_items(bundle: SkillBundle, state: SessionState, asset_lookup) -> list[RetrievedContextItem]:
+    # P4: full/legacy reference dumps are removed; always load by planner/progressive path.
     runtime_metadata = bundle.runtime_metadata
-    if runtime_metadata.prompt_loading.strategy != "progressive" and not runtime_metadata.retrieval.enabled:
-        return _legacy_reference_items(bundle)
-
     query = _latest_user_message(state)
     if not query:
         return []
