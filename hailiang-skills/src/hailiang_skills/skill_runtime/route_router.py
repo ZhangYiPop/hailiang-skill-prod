@@ -9,21 +9,19 @@ def choose_route(
     *,
     available_bundles: dict[str, SkillBundle] | None = None,
 ) -> RouteDecision:
-    available_bundles = available_bundles or {}
+    del available_bundles  # P2: target accepts_scenes is no longer consulted.
     requested_scene = str(state.status_flags.get("pending_route_scene") or "").strip()
     if not requested_scene:
         return RouteDecision()
     for route in current_bundle.contract.routes:
-        if route.scene != requested_scene:
+        # Transitional: routes may still declare a scene alias; also accept target_skill_id.
+        aliases = {
+            str(route.scene or "").strip(),
+            str(route.target_skill_id or "").strip(),
+        }
+        aliases.discard("")
+        if requested_scene not in aliases:
             continue
-        target_bundle = available_bundles.get(route.target_skill_id)
-        if target_bundle and requested_scene not in target_bundle.contract.accepts_scenes:
-            return RouteDecision(
-                should_route=False,
-                scene=requested_scene,
-                target_skill_id=route.target_skill_id,
-                reason="目标 skill 未声明接收该场景。",
-            )
         missing_global = tuple(
             item for item in route.required_global_facts if not str(state.global_facts.get(item, "")).strip()
         )
@@ -32,16 +30,24 @@ def choose_route(
         missing_skill = tuple(
             item for item in route.required_skill_facts if not str(skill_facts.get(item, "")).strip()
         )
+        pass_fields = tuple(getattr(route, "pass_fields", ()) or ())
+        pass_missing = tuple(
+            item
+            for item in pass_fields
+            if not str(state.global_facts.get(item, "")).strip()
+            and not str(skill_facts.get(item, "")).strip()
+        )
+        blocked = bool(missing_global or missing_skill or pass_missing)
         return RouteDecision(
-            should_route=not missing_global and not missing_skill,
+            should_route=not blocked,
             target_skill_id=route.target_skill_id,
             scene=requested_scene,
-            reason="场景与双向声明匹配。" if not missing_global and not missing_skill else "缺少前置 facts。",
-            missing_global_facts=missing_global,
+            reason="按 target_skill_id 交接。" if not blocked else "缺少前置 facts。",
+            missing_global_facts=missing_global + pass_missing,
             missing_skill_facts=missing_skill,
         )
     return RouteDecision(
         should_route=False,
         scene=requested_scene,
-        reason="当前 skill 未声明该路由场景。",
+        reason="当前 skill 未声明该路由目标。",
     )

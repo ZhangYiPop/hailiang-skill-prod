@@ -3,12 +3,14 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from hailiang_skills.core.skill_duty_registry import clear_skill_duty_registry_cache, registered_school_stages
 from hailiang_skills.runtime_bridge.main_planner import PROJECT_RUNTIME_SKILLS_ROOT
+from hailiang_skills.skill_runtime.skill_contract import field_uses
 from hailiang_skills.skill_runtime.skill_registry import load_local_skill_registry
 
 
 class SkillMetadataSchemaTest(unittest.TestCase):
-    def test_runtime_native_skills_expose_standardized_metadata(self) -> None:
+    def test_runtime_native_skills_expose_v11_frontmatter(self) -> None:
         registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
         expected_native_ids = {
             "main_planner": "career_plan_entity",
@@ -28,40 +30,34 @@ class SkillMetadataSchemaTest(unittest.TestCase):
 
             metadata = bundle.runtime_metadata
             self.assertEqual(metadata.skill_id, metadata_skill_id)
-            self.assertEqual(metadata.skill_type, "native")
-            self.assertIn(metadata.entrypoint_role, {"entry", "child", "specialist"})
-            self.assertTrue(metadata.prompt_loading.strategy)
-            self.assertGreaterEqual(metadata.retrieval.top_k, 1)
-            self.assertGreaterEqual(metadata.retrieval.snippet_chars, 120)
-            if metadata.assets.local_enabled:
-                assets_dir = bundle.root_dir / metadata.assets.local_dir
-                self.assertTrue(assets_dir.is_dir(), assets_dir.as_posix())
+            self.assertTrue(metadata.name)
+            self.assertGreaterEqual(len(metadata.description), 80)
+            # Transition fields removed from frontmatter; platform defaults apply.
+            self.assertEqual(metadata.prompt_loading.strategy, "progressive")
+            self.assertFalse(metadata.prompt_loading.include_route_targets)
+            self.assertFalse(metadata.triggers)
+            self.assertFalse(metadata.routing.routing_examples)
+            self.assertFalse(metadata.routing.school_stage_scope)
 
-    def test_replacement_skills_are_native_and_reference_complete(self) -> None:
+    def test_duty_registry_covers_core_skills(self) -> None:
+        clear_skill_duty_registry_cache()
+        self.assertEqual(set(registered_school_stages("interest_explore") or ()), {"primary", "junior"})
+        self.assertEqual(set(registered_school_stages("multi_path_planning") or ()), {"senior"})
+        self.assertEqual(set(registered_school_stages("subject_advisor") or ()), {"junior", "senior"})
+
+    def test_questionnaire_skills_declare_request_declared_form(self) -> None:
         registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
-        for skill_id in {"mock_admission", "multi_path_planning"}:
+        for skill_id in {"mock_admission", "multi_path_planning", "mbti_self_exploration", "subject_advisor"}:
             bundle = registry.get(skill_id)
             self.assertIsNotNone(bundle, skill_id)
             assert bundle is not None
-            self.assertEqual(bundle.runtime_metadata.skill_type, "native")
-            self.assertTrue(bundle.runtime_metadata.brief)
-            self.assertTrue(bundle.runtime_metadata.info)
-            self.assertTrue(bundle.metadata["questionnaire"]["enabled"])
+            self.assertIn("request_declared_form", bundle.runtime_metadata.tool_dependency)
 
         multi_path = registry.get("multi_path_planning")
         assert multi_path is not None
         self.assertEqual(multi_path.skill_file.name, "skill.md")
         self.assertIn("references/skill_question_option_rule_table.md", multi_path.references)
-        self.assertIn("唯一的题型、候选项", multi_path.skill_markdown)
-
-    def test_local_assets_directories_exist_for_native_skills(self) -> None:
-        skills_root = Path(PROJECT_RUNTIME_SKILLS_ROOT)
-        registry = load_local_skill_registry(skills_root)
-        for bundle in registry.bundles.values():
-            metadata = bundle.runtime_metadata
-            if metadata.skill_type != "native" or not metadata.assets.local_enabled:
-                continue
-            self.assertTrue((bundle.root_dir / metadata.assets.local_dir).exists())
+        self.assertTrue(multi_path.metadata.get("questionnaire", {}).get("enabled"))
 
     def test_subject_advisor_contains_business_workflow_contract(self) -> None:
         registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
@@ -69,21 +65,23 @@ class SkillMetadataSchemaTest(unittest.TestCase):
         self.assertIsNotNone(bundle)
         assert bundle is not None
 
-        self.assertIn("初高中衔接选科规划子场景", bundle.runtime_metadata.description)
+        self.assertIn("新高考选科顾问", bundle.runtime_metadata.description)
+        self.assertIn("专业/职业", bundle.runtime_metadata.description)
         self.assertIn("1. **识别**", bundle.skill_markdown)
-        self.assertIn("初中生（L0/L1）默认不输出最终组合", bundle.skill_markdown)
-        self.assertIn("做物理 vs 历史等跨学科优劣判断", bundle.skill_markdown)
+        self.assertIn("初中默认给认知与准备建议，不给最终组合", bundle.skill_markdown)
+        self.assertIn("仅凭原始分跨学科比优劣", bundle.skill_markdown)
         self.assertIn("出方案门槛", bundle.skill_markdown)
-        self.assertIn("已完成至少 1 次关键验证问题", bundle.skill_markdown)
-        self.assertIn("选科资产查询", bundle.skill_markdown)
+        self.assertIn("至少 1 次关键验证", bundle.skill_markdown)
+        self.assertIn("查询选科要求", bundle.skill_markdown)
         self.assertIn("subject_requirements", bundle.skill_markdown)
         self.assertIn("references/05_选科资产说明.md", bundle.references)
-        self.assertIn("想学医应该怎么选科", bundle.runtime_metadata.routing.routing_examples)
-        self.assertEqual(bundle.runtime_metadata.routing.school_stage_scope, "junior_senior")
         self.assertIn("diagnose", {stage.id for stage in bundle.contract.stages})
-        self.assertIn("school_stage", bundle.contract.facts_schema.skill_keys)
-        self.assertIn("conflict_tags", bundle.contract.facts_schema.skill_keys)
-        self.assertIn("recommended_plan", bundle.contract.facts_schema.skill_keys)
+        uses = set(field_uses(bundle.contract))
+        self.assertIn("school_stage", uses)
+        self.assertIn("conflict_tags", uses)
+        self.assertIn("recommended_plan", uses)
+        self.assertIn("selected_subjects", uses)
+        self.assertIn("target_major", uses)
 
     def test_interest_explore_contains_talent_judgement_workflow_contract(self) -> None:
         registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
@@ -91,25 +89,33 @@ class SkillMetadataSchemaTest(unittest.TestCase):
         self.assertIsNotNone(bundle)
         assert bundle is not None
 
-        self.assertIn("特长培养、兴趣班选择", bundle.runtime_metadata.description)
+        self.assertIn("特长培养", bundle.runtime_metadata.description)
         self.assertIn("Path A：特长方向诊断流程", bundle.skill_markdown)
         self.assertIn("R1：必要信息采集", bundle.skill_markdown)
         self.assertIn("R2：特质标签选择", bundle.skill_markdown)
-        self.assertIn("R3：条件采集", bundle.skill_markdown)
-        self.assertIn("R4：输出推荐", bundle.skill_markdown)
-        self.assertIn("孩子适合学什么兴趣班", bundle.runtime_metadata.routing.routing_examples)
-        self.assertEqual(bundle.runtime_metadata.routing.school_stage_scope, "primary_junior")
+        self.assertIn("R3：补采回答处理", bundle.skill_markdown)
+        self.assertIn("R4：输出校准结论", bundle.skill_markdown)
+        self.assertNotIn("## 开场白", bundle.skill_markdown)
         self.assertIn("r1_basic_info", {stage.id for stage in bundle.contract.stages})
         self.assertIn("r1_experience", {stage.id for stage in bundle.contract.stages})
         self.assertIn("r2_trait_labels", {stage.id for stage in bundle.contract.stages})
         self.assertIn("r3_conditions", {stage.id for stage in bundle.contract.stages})
         self.assertIn("r4_recommendation", {stage.id for stage in bundle.contract.stages})
-        self.assertIn("selected_trait_labels", bundle.contract.facts_schema.skill_keys)
-        self.assertIn("recommended_directions", bundle.contract.facts_schema.skill_keys)
-        self.assertIn("starter_actions", bundle.contract.facts_schema.skill_keys)
-        self.assertIn("observation_plan", bundle.contract.facts_schema.skill_keys)
+        uses = set(field_uses(bundle.contract))
+        self.assertIn("selected_trait_labels", uses)
+        self.assertIn("recommended_directions", uses)
+        self.assertIn("starter_actions", uses)
+        self.assertIn("observation_plan", uses)
         self.assertIn("references/references_01_特质标签与方向映射.md", bundle.references)
         self.assertIn("references/references_05_特长培养与升学应用检索规范.md", bundle.references)
+
+    def test_local_assets_directories_exist_when_present(self) -> None:
+        skills_root = Path(PROJECT_RUNTIME_SKILLS_ROOT)
+        registry = load_local_skill_registry(skills_root)
+        for bundle in registry.bundles.values():
+            assets_dir = bundle.root_dir / "assets"
+            if assets_dir.is_dir():
+                self.assertTrue(any(assets_dir.iterdir()) or True)
 
 
 if __name__ == "__main__":

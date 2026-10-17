@@ -1281,6 +1281,59 @@ class StreamingRunner:
                 context.session_meta["streamed_reply_parts"] = []
                 context.session_meta["streamed_reasoning_parts"] = []
                 context.session_meta["skill_intro_emitted"] = False
+                from hailiang_skills.runtime_bridge.harness_chat_adapter import (
+                    run_orchestrator_v2_turn,
+                    uses_orchestrator_v2,
+                )
+                if uses_orchestrator_v2(context):
+                    # App stays on chat SSE; project one orchestrator_v2 round.
+                    context.add_message("user", content)
+                    assistant_parts: list[str] = []
+                    form_blocks: list[dict[str, Any]] = []
+                    with span("orchestrator_v2.turn", node="orchestrator_v2"):
+                        for event, data in run_orchestrator_v2_turn(
+                            context=context,
+                            user_message=content,
+                            run_id=stream_generation,
+                        ):
+                            if self.turn_coordinator.is_cancelled(lease):
+                                finalize_cancelled_response()
+                                return
+                            if event == "final_text_delta":
+                                if protocol == UNIFIED_PROTOCOL and not emit_summary_before_body():
+                                    finalize_cancelled_response()
+                                    return
+                                delta = str(data.get("delta") or "")
+                                if delta:
+                                    assistant_parts.append(delta)
+                                    streamed = context.session_meta.setdefault("streamed_reply_parts", [])
+                                    if isinstance(streamed, list):
+                                        streamed.append(delta)
+                                    first_text_seen.set()
+                            if event == "skill_action":
+                                blocks = data.get("message_blocks") if isinstance(data.get("message_blocks"), list) else []
+                                form_blocks.extend(block for block in blocks if isinstance(block, dict))
+                            push(event, data)
+                    assistant_text = "".join(assistant_parts)
+                    if assistant_text or form_blocks:
+                        context.add_message(
+                            "assistant",
+                            assistant_text,
+                            metadata={
+                                "run_id": stream_generation,
+                                "orchestrator_v2": True,
+                                "blocks": form_blocks,
+                            },
+                        )
+                        for message in reversed(context.messages):
+                            if message.get("role") == "assistant":
+                                message["presentation"] = envelope_builder.presentation()
+                                metadata = message.setdefault("metadata", {})
+                                if isinstance(metadata, dict):
+                                    metadata["presentation"] = message["presentation"]
+                                break
+                    self.repository.save(context)
+                    return
                 control_reply = context.session_meta.pop("control_reply", None)
                 control_handoff = context.session_meta.pop("control_handoff", None)
                 if isinstance(control_reply, str) and control_reply.strip():

@@ -79,6 +79,15 @@ def empty_message_state(*, session_id: str, run_id: str) -> dict[str, Any]:
         "team_handoff": {},
         "expert": {"mode": "none", "team": {}, "active": {}, "activation": {}, "transition": {}},
         "expert_context": {"expert_team_id": None, "expert_id": None, "branch_version": 0, "selection_version": 0},
+        # orchestrator_v2 projections (empty for legacy sessions)
+        "round_experts": {
+            "assigned_expert_ids": [],
+            "running_expert_ids": [],
+            "completed_expert_ids": [],
+            "failed_expert_ids": [],
+            "status": "idle",
+        },
+        "jump_cards": [],
         "skill_transition": {},
         # Questionnaire planning is a diagnostic projection.  It never
         # contains prompt text, script input or personal facts.
@@ -372,13 +381,41 @@ class SseEnvelopeBuilder:
         if isinstance(restored.get("expert_context"), dict):
             restored["expert_context"].setdefault("selection_version", 0)
         restored.setdefault("context_activation", "none")
+        restored.setdefault(
+            "round_experts",
+            {
+                "assigned_expert_ids": [],
+                "running_expert_ids": [],
+                "completed_expert_ids": [],
+                "failed_expert_ids": [],
+                "status": "idle",
+            },
+        )
+        restored.setdefault("jump_cards", [])
         self.state = restored
         self.seq = int(restored.get("seq") or 0)
 
     def presentation(self) -> dict[str, Any]:
         return {
             key: deepcopy(self.state[key])
-            for key in ("assistant", "intent", "form", "path_options", "skill_rooms", "team_handoff", "expert", "expert_context", "skill_transition", "questionnaire", "session", "risk", "error")
+            for key in (
+                "assistant",
+                "intent",
+                "form",
+                "path_options",
+                "skill_rooms",
+                "team_handoff",
+                "expert",
+                "expert_context",
+                "round_experts",
+                "jump_cards",
+                "skill_transition",
+                "questionnaire",
+                "session",
+                "risk",
+                "error",
+            )
+            if key in self.state
         }
 
     def encode(self, event: str, data: dict[str, Any]) -> str | None:
@@ -567,6 +604,34 @@ class SseEnvelopeBuilder:
                     "selection_version": int(data["expert_context"].get("selection_version") or 0),
                 })
             return changed
+
+        if event == "round_experts":
+            payload = _as_mapping(data.get("round_experts") if "round_experts" in data else data)
+            return self._set(
+                "round_experts",
+                {
+                    "assigned_expert_ids": [
+                        str(item) for item in (payload.get("assigned_expert_ids") or []) if str(item)
+                    ],
+                    "running_expert_ids": [
+                        str(item) for item in (payload.get("running_expert_ids") or []) if str(item)
+                    ],
+                    "completed_expert_ids": [
+                        str(item) for item in (payload.get("completed_expert_ids") or []) if str(item)
+                    ],
+                    "failed_expert_ids": [
+                        str(item) for item in (payload.get("failed_expert_ids") or []) if str(item)
+                    ],
+                    "status": str(payload.get("status") or "idle"),
+                },
+            )
+
+        if event == "jump_cards":
+            cards = data.get("jump_cards") if "jump_cards" in data else data.get("cards")
+            if not isinstance(cards, list):
+                cards = []
+            normalized = [dict(item) for item in cards if isinstance(item, dict)]
+            return self._set("jump_cards", normalized)
 
         if event == "skill_transition":
             transition = {

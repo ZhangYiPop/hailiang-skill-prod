@@ -1,4 +1,30 @@
 facts:
+  user_role:
+    label: "您的身份"
+    input_type: "single_select"
+    placeholder: "请选择您的身份"
+    example: "例如：家长"
+    submit_mode: "auto"
+    scope: "user"
+    options:
+      - label: "家长"
+        value: "家长"
+      - label: "学生"
+        value: "学生"
+  school_stage:
+    label: "学段"
+    input_type: "single_select"
+    placeholder: "请选择学段"
+    example: "例如：高中"
+    submit_mode: "auto"
+    scope: "profile"
+    options:
+      - label: "小学"
+        value: "小学"
+      - label: "初中"
+        value: "初中"
+      - label: "高中"
+        value: "高中"
   grade:
     label: "孩子年级"
     input_type: "single_select"

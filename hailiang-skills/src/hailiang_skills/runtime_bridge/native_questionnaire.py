@@ -690,7 +690,12 @@ def resolve_questionnaire_continuation(
     # A well-formed model envelope already contains reviewed evidence. The
     # deterministic matcher is a resilience path for malformed/empty output,
     # not a second competing extractor.
-    resolved = [] if isinstance(payload, dict) and isinstance(payload.get("resolved_answers"), list) else _apply_explicit_message_answers(bundle, state, reconciliation)
+    model_resolved = payload.get("resolved_answers") if isinstance(payload, dict) else None
+    resolved = (
+        []
+        if isinstance(model_resolved, list) and model_resolved
+        else _apply_explicit_message_answers(bundle, state, reconciliation)
+    )
     resolved.extend(_apply_reconciled_answers(bundle, state, payload, reconciliation))
     refreshed = questionnaire_continuation_context(bundle, state)
     if refreshed is None:
@@ -1100,6 +1105,25 @@ def deterministic_questionnaire_fallback(
         visible_text = str(invalid_replies[-1] if invalid_replies else "").strip()
         return visible_text, None
     return "请通过下面的表单补充关键信息。", _form_block(skill_id, selected)
+
+
+def stage_declared_form(bundle: Any, state: Any, question_ids: list[str]) -> dict[str, Any] | None:
+    """P11: stage a fact_form for question ids requested via request_declared_form."""
+    ids = [str(item).strip() for item in question_ids if str(item).strip()]
+    if not ids:
+        return None
+    specs_by_id = {
+        str(item.get("question_id") or ""): item
+        for item in question_specs(bundle)
+        if str(item.get("question_id") or "").strip()
+    }
+    selected = [specs_by_id[item] for item in ids if item in specs_by_id]
+    if not selected:
+        return None
+    skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
+    block = _form_block(skill_id, selected)
+    stage_questionnaire_form(state, bundle, block)
+    return block
 
 
 def stage_questionnaire_form(state: Any, bundle: Any, block: dict[str, Any] | None) -> None:
@@ -1697,8 +1721,9 @@ def _promote(
     persistence = questionnaire_config(bundle).get("persistence", {})
     mappings = persistence.get("mappings", {}) if isinstance(persistence, dict) else {}
     mapping = mappings.get(question_id) if isinstance(mappings, dict) else None
+    # P6: when no transitional mapping exists, treat question_id as the field key.
     if not isinstance(mapping, dict):
-        return []
+        return _write_promotion(bundle, question_id, value, context, skill_id)
     timing = str(mapping.get("submit_timing") or mapping.get("write_timing") or "on_submit")
     if timing == "on_completion":
         state.skill_facts.setdefault(skill_id, {}).setdefault("_deferred_questionnaire_promotions", []).append(
@@ -1720,16 +1745,29 @@ def _write_promotion(
     persistence = questionnaire_config(bundle).get("persistence", {})
     mappings = persistence.get("mappings", {}) if isinstance(persistence, dict) else {}
     mapping = mappings.get(question_id) if isinstance(mappings, dict) else None
-    if not isinstance(mapping, dict):
-        return []
-    scope = _SCOPE_BY_TARGET.get(str(mapping.get("target") or ""))
-    fact_key = str(mapping.get("fact_key") or "")
+    if isinstance(mapping, dict):
+        scope = _SCOPE_BY_TARGET.get(str(mapping.get("target") or ""))
+        fact_key = str(mapping.get("fact_key") or "")
+        value_type = str(mapping.get("value_type") or "string")
+    else:
+        # P6 default: question id == field key; prefer profile scope for unified facts.
+        package_fields = getattr(getattr(bundle, "contract", None), "package_fields", {}) or {}
+        field_def = package_fields.get(question_id) if isinstance(package_fields, dict) else None
+        scope_policy = ""
+        value_type = "string"
+        if isinstance(field_def, dict):
+            scope_policy = str(field_def.get("scope_policy") or "")
+            value_type = str(field_def.get("value_type") or "string")
+        scope = {"shared": "shared", "profile": "profile", "session": "session", "user": "user"}.get(
+            scope_policy, "profile"
+        )
+        fact_key = question_id
     if not scope or not fact_key:
         return []
     normalized = FactService.validate_configured_update(
         fact_key,
-        _fact_value(value, str(mapping.get("value_type") or "string")),
-        declared_value_type=str(mapping.get("value_type") or "") or None,
+        _fact_value(value, value_type),
+        declared_value_type=value_type or None,
     )
     if normalized is None:
         return []

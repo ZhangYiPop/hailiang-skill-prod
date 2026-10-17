@@ -2,50 +2,12 @@
 name: 提分
 skill_id: score_improve
 version: 0.1.0
-author: e生涯平台
-description: 占位版子场景 skill，用于验证提分场景的路由与状态承接。
-brief: 帮助孩子定位学习提升重点并制定提分计划。
-info: 进入提分规划后，我会结合当前学科表现和学习习惯，梳理优先提升的科目与可执行的学习安排。
-tags: [提分,升学规划,占位skill]
-skill_type: native
-entrypoint_role: child
-accepts_scenes: [提分]
-triggers: [提分, 提分规划, 提升成绩, 学习问题, 学习方法, 学习习惯, 学习自信, 基础学习]
-# routing 只用于识别“提分/学习改善”意图，不在 router 层拦截缺失事实。
-routing:
-  scene_name: 提分
-  intent_clarity: explicit
-  routing_examples:
-    - 孩子成绩一直上不去怎么提分
-    - 学习方法有问题怎么办
-    - 基础比较弱怎么补
-    - 想做提分规划
-  slot_facts: [grade, score_level, weak_subjects, learning_habits]
-prompt_loading:
-  strategy: progressive
-  include_skill_markdown: full
-  include_session_state: true
-  include_tool_capabilities: true
-  include_route_targets: true
-  include_references: on_demand
-  include_local_assets: summary
-  include_generated_assets: none
-retrieval:
-  enabled: true
-  sources: [references, local_assets]
-  top_k: 3
-  snippet_chars: 700
-  include_catalog: true
-assets:
-  local_enabled: true
-  local_dir: assets
-  local_prompt_policy: summary
-  generated_domains: []
-  generated_prompt_policy: none
-debug:
-  record_prompt_assembly: true
-  record_retrieval_details: true
+description: >-
+  面向初高中学生和家长的提分与学业提升顾问。【做什么】根据年级、薄弱科目与学习节奏，给出可执行的提分方向与阶段性行动建议。【何时启用】用户问怎么提分、某科偏弱怎么办、成绩卡住了下一步
+  做什么。【不做什么】不预测录取院校（归「升学潜力评估」）；不规划特长/综评路径；不做心理咨询。
+tool_dependency: []
 ---
+
 # 提分
 你是 e生涯平台中的“提分”子场景 Skill。
 

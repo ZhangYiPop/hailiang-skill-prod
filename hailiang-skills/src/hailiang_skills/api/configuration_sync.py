@@ -4,6 +4,7 @@ from typing import Any
 
 from hailiang_skills.core.logging import make_event
 from hailiang_skills.core.message_interactions import expire_active_interactions
+from hailiang_skills.workbench.orchestration import preserve_orchestrator_binding
 
 
 def configuration_identity(snapshot: dict[str, Any] | None) -> tuple[str, str]:
@@ -27,6 +28,8 @@ def synchronize_configuration(context, snapshot: dict[str, Any] | None) -> dict[
     if snapshot is None:
         context.session_meta.pop("configuration_snapshot", None)
     else:
+        if isinstance(previous, dict):
+            snapshot = preserve_orchestrator_binding(previous, snapshot)
         context.session_meta["configuration_snapshot"] = snapshot
 
     expire_active_interactions(context.messages)

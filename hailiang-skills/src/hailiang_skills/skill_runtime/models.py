@@ -111,6 +111,7 @@ class StageContract:
     id: str
     kind: str = "default"
     required_facts: tuple[str, ...] = ()
+    required_fields: tuple[str, ...] = ()
     enable_intent_check: bool = False
     enable_satisfaction_check: bool = False
 
@@ -121,6 +122,7 @@ class RouteTarget:
     target_skill_id: str
     required_global_facts: tuple[str, ...] = ()
     required_skill_facts: tuple[str, ...] = ()
+    pass_fields: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -130,6 +132,9 @@ class FactsSchema:
     stage_keys: dict[str, tuple[str, ...]] = field(default_factory=dict)
     promote_to_global: tuple[str, ...] = ()
     share_with_parent_skill: tuple[str, ...] = ()
+    # P7 new shape (fields.uses / fields.outputs); old keys remain as fallback.
+    uses: tuple[str, ...] = ()
+    outputs: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -140,6 +145,7 @@ class SkillContract:
     facts_schema: FactsSchema = field(default_factory=FactsSchema)
     routes: tuple[RouteTarget, ...] = ()
     accepts_scenes: tuple[str, ...] = ()
+    package_fields: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -171,12 +177,12 @@ class ToolRegistry:
 
 @dataclass(slots=True, frozen=True)
 class PromptLoadingConfig:
-    strategy: str = "legacy"
+    strategy: str = "progressive"
     include_skill_markdown: str = "full"
     include_session_state: bool = True
     include_tool_capabilities: bool = True
-    include_route_targets: bool = True
-    include_references: str = "full"
+    include_route_targets: bool = False
+    include_references: str = "on_demand"
     include_local_assets: str = "summary"
     include_generated_assets: str = "summary"
 
@@ -286,6 +292,7 @@ class SkillRuntimeMetadata:
     entrypoint_role: str = "child"
     accepts_scenes: tuple[str, ...] = ()
     triggers: tuple[str, ...] = ()
+    tool_dependency: tuple[str, ...] = ()
     prompt_loading: PromptLoadingConfig = field(default_factory=PromptLoadingConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     assets: SkillAssetsConfig = field(default_factory=SkillAssetsConfig)

@@ -2,51 +2,13 @@
 name: 前景探路
 skill_id: future_explore
 version: 0.1.0
-author: e生涯平台
-description: 占位版子场景 skill，用于验证前景探路场景的路由与状态承接。
-brief: 帮助探索未来专业、职业与发展方向。
-info: 进入未来方向探索后，我会从兴趣、能力和发展目标出发，帮助梳理值得进一步了解的专业与职业方向。
-tags: [前景探路,升学规划,占位skill]
-skill_type: native
-entrypoint_role: child
-accepts_scenes: [前景探路, 专业职业探索]
-triggers: [前景探路, 专业职业探索, 专业前景, 职业方向, 长期发展]
-# routing 只识别专业/职业/未来发展意图；具体信息缺口留给本 skill 追问。
-routing:
-  scene_name: 前景探路
-  intent_clarity: explicit
-  routing_examples:
-    - 孩子以后适合什么职业
-    - 孩子适合什么专业方向
-    - 想做专业职业探索
-    - 想看看专业前景
-    - 未来发展方向怎么选
-  slot_facts: [grade, interest_direction, score_level, career_orientation]
-prompt_loading:
-  strategy: progressive
-  include_skill_markdown: full
-  include_session_state: true
-  include_tool_capabilities: true
-  include_route_targets: true
-  include_references: on_demand
-  include_local_assets: summary
-  include_generated_assets: none
-retrieval:
-  enabled: true
-  sources: [references, local_assets]
-  top_k: 3
-  snippet_chars: 700
-  include_catalog: true
-assets:
-  local_enabled: true
-  local_dir: assets
-  local_prompt_policy: summary
-  generated_domains: []
-  generated_prompt_policy: none
-debug:
-  record_prompt_assembly: true
-  record_retrieval_details: true
+description: >-
+  面向学生与家长的专业与职业方向探索顾问。【做什么】根据兴趣、能力与发展目标，梳理值得进一步了解的专业与职业方向，并给出下一步探索建议。【何时启用】用户问孩子适合什么专业/职业、想看
+  专业前景、未来发展方向怎么选；也包括没说“前景”的情形，如“以后干什么比较好”。【不做什么】不预测录取分数（归「升学潜力评估」）；不规划强基综评等升学路径（归「多元路径推荐」）；不
+  做选科组合决策（归「选科参谋」）。
+tool_dependency: []
 ---
+
 # 前景探路
 你是 e生涯平台中的“前景探路”子场景 Skill。
 

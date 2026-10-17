@@ -374,6 +374,39 @@ def test_legacy_history_is_normalized_and_only_latest_room_is_enabled() -> None:
     assert latest["skill_rooms"][0]["enabled"] is True
 
 
+def test_v2_round_experts_and_jump_cards_are_part_of_state() -> None:
+    builder = SseEnvelopeBuilder(run_id="run_orch", session_id="sess_orch")
+    assert builder.snapshot()["round_experts"]["status"] == "idle"
+    assert builder.snapshot()["jump_cards"] == []
+
+    builder.encode(
+        "round_experts",
+        {
+            "assigned_expert_ids": ["career_plan_expert", "family_education_expert"],
+            "running_expert_ids": ["career_plan_expert"],
+            "completed_expert_ids": [],
+            "failed_expert_ids": [],
+            "status": "running",
+        },
+    )
+    builder.encode(
+        "jump_cards",
+        {"jump_cards": [{"intent": "explore", "object_type": "assessment"}]},
+    )
+    state = builder.snapshot()
+    assert state["round_experts"] == {
+        "assigned_expert_ids": ["career_plan_expert", "family_education_expert"],
+        "running_expert_ids": ["career_plan_expert"],
+        "completed_expert_ids": [],
+        "failed_expert_ids": [],
+        "status": "running",
+    }
+    assert state["jump_cards"] == [{"intent": "explore", "object_type": "assessment"}]
+    presentation = builder.presentation()
+    assert "round_experts" in presentation
+    assert "jump_cards" in presentation
+
+
 def test_legacy_path_actions_are_normalized_to_v2_path_options() -> None:
     message = {
         "message_id": "msg_path",

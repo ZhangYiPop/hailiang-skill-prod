@@ -641,7 +641,14 @@ def create_app() -> FastAPI:
                 except KeyError:
                     context = None
                 from hailiang_skills.api.routes.harness import harness_enabled
-                if ((context and context.session_meta.get("runtime_mode") == "harness_v1") or (context is None and harness_enabled())) and (path.endswith("/messages") or path.endswith("/chat/stream")):
+                # orchestrator_v2 sessions keep the App on /chat/stream; the
+                # harness_chat_adapter projects Harness orchestration to SSE v2.
+                orchestrator_v2 = bool(context and context.session_meta.get("orchestrator_v2"))
+                if (
+                    not orchestrator_v2
+                    and ((context and context.session_meta.get("runtime_mode") == "harness_v1") or (context is None and harness_enabled()))
+                    and (path.endswith("/messages") or path.endswith("/chat/stream"))
+                ):
                     return JSONResponse(status_code=409, content={"code": "HARNESS_ENDPOINT_REQUIRED", "message": "请使用 harness 任务接口。"})
         return await call_next(request)
     app.include_router(
