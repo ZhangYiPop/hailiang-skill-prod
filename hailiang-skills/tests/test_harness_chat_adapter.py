@@ -75,7 +75,7 @@ def test_adapter_gate_missing_identity_does_not_call_head() -> None:
     assert state["jump_cards"] == []
 
 
-def test_adapter_consult_single_expert_direct() -> None:
+def test_adapter_consult_single_expert_goes_through_tail() -> None:
     plan = ConsultationPlan(
         action="consult",
         subtasks=[
@@ -86,6 +86,7 @@ def test_adapter_consult_single_expert_direct() -> None:
             )
         ],
     )
+    tail_calls: list[dict] = []
 
     def head(**_kwargs):
         return plan
@@ -100,6 +101,12 @@ def test_adapter_consult_single_expert_direct() -> None:
             "text": "单专家直出答复",
         }
 
+    def run_tail(**kwargs):
+        tail_calls.append(kwargs)
+        rows = kwargs.get("expert_results") or []
+        assert len(rows) == 1
+        return rows[0]["text"]
+
     events = list(
         run_orchestrator_v2_turn(
             context=_context(facts={"user_role": "家长", "school_stage": "高中"}),
@@ -108,12 +115,14 @@ def test_adapter_consult_single_expert_direct() -> None:
             deps=HarnessChatDeps(
                 run_head=head,
                 run_expert=expert,
+                run_tail=run_tail,
                 members=[{"expert_id": "career_plan_expert"}],
                 extract_cards=lambda **_: [],
             ),
         )
     )
     state = _project(events)
+    assert len(tail_calls) == 1
     assert state["assistant"]["content"] == "单专家直出答复"
     assert state["round_experts"]["assigned_expert_ids"] == ["career_plan_expert"]
     assert state["round_experts"]["completed_expert_ids"] == ["career_plan_expert"]

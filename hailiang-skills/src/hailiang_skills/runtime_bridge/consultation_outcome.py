@@ -1,4 +1,4 @@
-"""Round expert progress + final reply selection (direct / merge / failed)."""
+"""Round expert progress + final reply selection (tail / failed)."""
 
 from __future__ import annotations
 
@@ -105,19 +105,20 @@ def select_final_reply(
     user_question: str = "",
     collaboration_rules: str = "",
 ) -> dict[str, Any]:
-    """Pick direct expert text, merge multi-expert answers, or mark failed."""
+    """Route successful expert answers through the orchestration tail when available.
+
+    - 0 successes → failed (empty text; platform may show a fixed failure message)
+    - ≥1 success + call_tail/client → always run tail (single-expert: baseline then passthrough)
+    - ≥1 success without tail deps → passthrough (1) or simple_concat (≥2)
+    """
     rows = _normalize_results(expert_results)
     successful = [row for row in rows if row["status"] == "completed" and row["text"]]
     if not successful:
         return {"mode": "failed", "text": "", "source_expert_id": ""}
 
-    if len(successful) == 1:
-        winner = successful[0]
-        return {
-            "mode": "direct",
-            "text": winner["text"],
-            "source_expert_id": winner["expert_id"],
-        }
+    single = len(successful) == 1
+    source_expert_id = successful[0]["expert_id"] if single else ""
+    mode = "direct" if single else "merge"
 
     if call_tail is not None:
         text = str(
@@ -130,7 +131,12 @@ def select_final_reply(
             )
             or ""
         ).strip()
-    elif client is not None:
+        # Empty tail output for a single expert: fall back to raw expert text.
+        if not text and single:
+            text = successful[0]["text"]
+        return {"mode": mode, "text": text, "source_expert_id": source_expert_id}
+
+    if client is not None:
         text = run_tail_merge(
             client,
             tail_rules=tail_rules,
@@ -138,11 +144,19 @@ def select_final_reply(
             user_question=user_question,
             collaboration_rules=collaboration_rules,
         )
-    else:
-        text = simple_concat_merge(rows)
+        if not text and single:
+            text = successful[0]["text"]
+        return {"mode": mode, "text": text, "source_expert_id": source_expert_id}
+
+    if single:
+        return {
+            "mode": "direct",
+            "text": successful[0]["text"],
+            "source_expert_id": source_expert_id,
+        }
 
     return {
         "mode": "merge",
-        "text": text,
+        "text": simple_concat_merge(rows),
         "source_expert_id": "",
     }

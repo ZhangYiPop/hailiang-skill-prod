@@ -376,11 +376,13 @@ def run_orchestrator_v2_turn(
 
         return simple_concat_merge(expert_results)
 
-    multi_success = len([row for row in results if row.get("status") != "failed" and row.get("text")]) > 1
+    # Any successful expert answer goes through the orchestration tail gate
+    # (single-expert: baseline checks then near-verbatim; multi: merge).
+    any_success = any(row.get("status") != "failed" and row.get("text") for row in results)
     final = select_final_reply(
         results,
-        call_tail=_call_tail if multi_success else None,
-        client=deps.tail_client if multi_success else None,
+        call_tail=_call_tail if any_success else None,
+        client=deps.tail_client if any_success else None,
         tail_rules=view["tail_rules"],
         user_question=user_message,
         collaboration_rules=view["collaboration_rules"],
