@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from contextvars import copy_context
 from queue import Empty, Full, Queue
@@ -495,6 +496,9 @@ class StreamingRunner:
         )
         self._active_stream_queues: dict[tuple[str, str], Queue] = {}
         self._active_stream_queues_lock = threading.Lock()
+        self._active_run_finalizers: dict[tuple[str, str], Any] = {}
+        self._active_run_contexts: dict[tuple[str, str], Any] = {}
+        self._active_run_initial_facts: dict[tuple[str, str], dict[str, Any]] = {}
         # A stop request is served by another HTTP worker while this stream is
         # still producing deltas.  Keep the latest immutable envelope in the
         # runner as well as the persisted run record so the stopped response
@@ -539,6 +543,57 @@ class StreamingRunner:
             except Exception:
                 return
 
+    @staticmethod
+    def _merge_superseded_run_context(
+        target_context,
+        active_context,
+        run_id: str,
+        initial_facts: dict[str, Any],
+    ) -> None:
+        turn_by_generation = active_context.session_meta.get("turn_id_by_stream_generation")
+        active_turn_id = (
+            str(turn_by_generation.get(run_id) or "")
+            if isinstance(turn_by_generation, dict)
+            else ""
+        )
+        existing_ids = {
+            str(item.get("message_id") or "")
+            for item in target_context.messages
+            if isinstance(item, dict)
+        }
+        for message in active_context.messages:
+            if not isinstance(message, dict):
+                continue
+            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+            is_run_user = (
+                message.get("role") == "user"
+                and active_turn_id
+                and str(metadata.get("turn_id") or "") == active_turn_id
+            )
+            is_run_partial = (
+                message.get("role") == "assistant"
+                and str(metadata.get("run_id") or "") == run_id
+            )
+            message_id = str(message.get("message_id") or "")
+            if (is_run_user or is_run_partial) and message_id not in existing_ids:
+                target_context.messages.append(deepcopy(message))
+                existing_ids.add(message_id)
+
+        # Only confirmed Facts cross the run boundary. Candidate facts and
+        # transient orchestration state stay with the old worker.
+        for field_name in ("shared_facts", "profile_facts", "session_facts"):
+            source_facts = getattr(active_context, field_name)
+            target_facts = getattr(target_context, field_name)
+            for fact_key, record in list(source_facts.facts.items()):
+                if record.status != "confirmed":
+                    if initial_facts.get(fact_key) != record.model_dump():
+                        target_facts.facts.pop(fact_key, None)
+                    continue
+                previous_record = target_facts.facts.get(fact_key)
+                if previous_record is None or record.updated_at >= previous_record.updated_at:
+                    target_facts.facts[fact_key] = deepcopy(record)
+        target_context.refresh_effective_facts()
+
     def reserve_turn(self, session_id: str, user_id: str, *, run_id: str | None = None) -> TurnLease:
         return self.turn_coordinator.acquire(session_id, user_id, run_id=run_id)
 
@@ -578,23 +633,90 @@ class StreamingRunner:
         return cancelled
 
     def supersede_active_run(self, session_id: str, user_id: str, *, next_run_id: str) -> str | None:
-        """Record that a newer user action has replaced the active generation."""
+        """Finalize the visible part of the active run before replacing it."""
+        try:
+            current_context = self.repository.get(session_id)
+        except KeyError:
+            return None
+        if str(current_context.user_id or "") != str(user_id or ""):
+            return None
         previous = self.turn_coordinator.supersede(session_id, next_run_id=next_run_id)
         if not previous:
             return None
+        key = (session_id, previous)
+        # Finalize synchronously while the old run's context is still the
+        # authoritative session snapshot. This captures streamed text and
+        # confirmed facts before the new request reloads and mutates it.
+        with self._active_stream_queues_lock:
+            finalize = self._active_run_finalizers.get(key)
+            queue = self._active_stream_queues.get(key)
+            active_context = self._active_run_contexts.get(key)
+            initial_facts = self._active_run_initial_facts.get(key, {})
+        if callable(finalize):
+            finalize(for_supersede=True)
+        elif self.turn_coordinator.redis_enabled and not self.turn_coordinator.wait_for_finalized(
+            session_id, previous,
+        ):
+            raise RuntimeError("RUN_SUPERSEDE_CHECKPOINT_TIMEOUT")
         for _ in range(3):
             context = self.repository.get(session_id)
             if str(context.user_id or "") != str(user_id or ""):
                 return None
+            if active_context is not None:
+                self._merge_superseded_run_context(context, active_context, previous, initial_facts)
             ledger = context.session_meta.setdefault("run_ledger", {})
             if isinstance(ledger, dict) and isinstance(ledger.get(previous), dict):
                 ledger[previous]["status"] = "superseded"
+                ledger[previous]["finished_at"] = utc_now_iso()
+            for message in reversed(context.messages):
+                metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+                if message.get("role") == "assistant" and str(metadata.get("run_id") or "") == previous:
+                    message["generation_status"] = "superseded"
+                    message["is_complete"] = False
+                    metadata["generation_status"] = "superseded"
+                    break
             context.session_meta["superseded_run_id"] = previous
             try:
+                self.fact_service.persist_context(context)
                 self.repository.save(context)
+                if context is active_context:
+                    # The in-memory repository returns a shared mutable
+                    # object. Detach the next turn so a late old worker can
+                    # finish mutating its private context without polluting
+                    # the newly accepted conversation.
+                    next_context = deepcopy(context)
+                    next_meta = next_context.session_meta
+                    next_meta.pop("stream_generation_by_thread", None)
+                    next_meta.pop("cancelled_stream_generation", None)
+                    if next_meta.get("active_stream_generation") == previous:
+                        next_meta.pop("active_stream_generation", None)
+                    turn_map = next_meta.get("turn_id_by_stream_generation")
+                    if isinstance(turn_map, dict):
+                        turn_map.pop(previous, None)
+                    self.repository.save(next_context)
+                if hasattr(self.repository, "update_run_status"):
+                    self.repository.update_run_status(previous, "superseded")
                 break
             except SessionVersionConflict:
                 continue
+        else:
+            raise RuntimeError("unable to checkpoint superseded run")
+        self.turn_coordinator.mark_finalized(session_id, previous)
+        if queue is not None:
+            try:
+                queue.put_nowait(_CANCEL_WAKEUP)
+            except Full:
+                try:
+                    while True:
+                        queue.get_nowait()
+                except Empty:
+                    pass
+                try:
+                    queue.put_nowait(_CANCEL_WAKEUP)
+                except Full:
+                    pass
+            except Exception:
+                pass
         return previous
 
     def stream_stop(
@@ -831,7 +953,7 @@ class StreamingRunner:
         progress_completed_emitted = False
         summary_lock = threading.Lock()
 
-        def finalize_cancelled_response() -> None:
+        def finalize_cancelled_response(*, for_supersede: bool = False) -> None:
             """Persist what the browser has already received, exactly once."""
             nonlocal cancelled_finalized
             with cancelled_lock:
@@ -859,18 +981,41 @@ class StreamingRunner:
                     partial,
                     metadata={
                         "run_id": stream_generation,
-                        "generation_status": "cancelled",
+                        "generation_status": "superseded" if for_supersede else "cancelled",
                         "is_complete": False,
                         "cancelled_at": utc_now_iso(),
                     },
                 )
                 message = context.messages[-1]
-                message["generation_status"] = "cancelled"
+                message["generation_status"] = "superseded" if for_supersede else "cancelled"
                 message["is_complete"] = False
                 message["cancelled_at"] = message["metadata"]["cancelled_at"]
                 message_id = str(message.get("message_id") or "")
-            clear_runtime_callbacks()
-            self.repository.save(context)
+            clear_runtime_callbacks(force=True)
+            if not for_supersede:
+                target_context = self.repository.get(session_id)
+                self._merge_superseded_run_context(
+                    target_context,
+                    context,
+                    stream_generation,
+                    before_facts,
+                )
+                status = "superseded" if not self.turn_coordinator.is_current(lease) else "stopped"
+                ledger = target_context.session_meta.setdefault("run_ledger", {})
+                if isinstance(ledger, dict):
+                    item = ledger.setdefault(stream_generation, {})
+                    if isinstance(item, dict):
+                        item["status"] = status
+                        item["finished_at"] = utc_now_iso()
+                for saved_message in reversed(target_context.messages):
+                    metadata = saved_message.get("metadata") if isinstance(saved_message.get("metadata"), dict) else {}
+                    if saved_message.get("role") == "assistant" and str(metadata.get("run_id") or "") == stream_generation:
+                        saved_message["generation_status"] = status
+                        saved_message["is_complete"] = False
+                        metadata["generation_status"] = status
+                        break
+                self.fact_service.persist_context(target_context)
+                self.repository.save(target_context)
             cancelled_at = utc_now_iso()
             push(
                 "run_cancelled",
@@ -895,6 +1040,11 @@ class StreamingRunner:
                     "conversation_state": get_conversation_state(context),
                 },
             )
+
+        with self._active_stream_queues_lock:
+            self._active_run_finalizers[stream_queue_key] = finalize_cancelled_response
+            self._active_run_contexts[stream_queue_key] = context
+            self._active_run_initial_facts[stream_queue_key] = before_facts
 
         def prune_stale_assistant_turn(turn_id: str) -> None:
             if not turn_id:
@@ -1060,8 +1210,8 @@ class StreamingRunner:
             push("skill_intro", payload)
             context.session_meta["skill_intro_emitted"] = True
 
-        def clear_runtime_callbacks() -> None:
-            if not is_current_stream():
+        def clear_runtime_callbacks(*, force: bool = False) -> None:
+            if not force and not is_current_stream():
                 return
             context.session_meta.pop("stream_final_reply", None)
             context.session_meta.pop("status_callback", None)
@@ -1478,7 +1628,19 @@ class StreamingRunner:
                     )
             finally:
                 progress_stop.set()
+                cancelled = self.turn_coordinator.is_cancelled(lease)
+                if cancelled:
+                    try:
+                        finalize_cancelled_response()
+                    except Exception:
+                        pass
+                    else:
+                        self.turn_coordinator.mark_finalized(session_id, stream_generation)
                 clear_runtime_callbacks()
+                with self._active_stream_queues_lock:
+                    self._active_run_finalizers.pop(stream_queue_key, None)
+                    self._active_run_contexts.pop(stream_queue_key, None)
+                    self._active_run_initial_facts.pop(stream_queue_key, None)
                 generation_by_thread.pop(thread_generation_key, None)
                 turn_by_generation = context.session_meta.get("turn_id_by_stream_generation")
                 if isinstance(turn_by_generation, dict):
@@ -1569,6 +1731,7 @@ class StreamingRunner:
                 daemon=True,
             ).start()
         self._executor.submit(worker_context.run, run)
+        normal_end = False
         try:
             while True:
                 try:
@@ -1581,6 +1744,7 @@ class StreamingRunner:
                     yield "event: ping\ndata: {}\n\n"
                     continue
                 if item is None:
+                    normal_end = True
                     break
                 if item is _CANCEL_WAKEUP:
                     # Finalize before closing the original response, then
@@ -1608,6 +1772,16 @@ class StreamingRunner:
             # boundary and therefore cannot overwrite a newer request.
             if context.session_meta.get("active_stream_generation") == stream_generation:
                 context.session_meta["active_stream_generation"] = "client_cancelled"
+                if not normal_end:
+                    # Keep what the user already saw even when the UI drops
+                    # the connection before the run can produce its terminal
+                    # frame. A later turn can then continue from this answer.
+                    try:
+                        finalize_cancelled_response()
+                    except Exception:
+                        pass
+                    else:
+                        self.turn_coordinator.mark_finalized(session_id, stream_generation)
             # Covers generator/client disconnects and unexpected worker
             # exits where the exception branch could not emit run_failed.
             self._persist_terminal_run_status(

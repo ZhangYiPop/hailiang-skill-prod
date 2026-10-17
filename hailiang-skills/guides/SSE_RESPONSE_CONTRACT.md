@@ -138,7 +138,7 @@ Skill 元数据统一包含 `brief` 和 `info`：`brief` 用于推荐按钮下�
 | `streaming` | 否 | 显示生成中；允许当前帧继续替换正文、推理、表单和卡片。 |
 | `completed` | 是 | 结束 loading，保留正文、表单和有效卡片。 |
 | `stopped` | 是 | 展示“已停止”，保留已收到的正文；不展示本轮后续新表单或卡片。 |
-| `superseded` | 是 | 新输入取代旧 run；旧占位消息标记已被取代，清空未完成正文、表单和卡片。 |
+| `superseded` | 是 | 新输入取代旧 run；旧占位消息标记已被取代，清空未完成正文、表单和卡片。算法服务保留已展示的部分回答及已确认信息供新一轮上下文使用。 |
 | `blocked` | 是 | 风控拦截；只展示 `risk.message`，正文、表单、卡片均以当前帧为空值为准。 |
 | `failed` | 是 | 展示 `error.code + error.message`；存在 `retryable=true` 时可提供“重试”。 |
 
@@ -546,7 +546,7 @@ Content-Type: application/json
 | 场景 | 最终状态帧 | UI 结果 |
 | --- | --- | --- |
 | 用户停止 | `status=stopped` | 保留已经显示的正文，显示已停止。 |
-| 新输入替代旧 run | `status=superseded` | 清空旧未完成正文/表单/卡片，标记已被新输入取代。 |
+| 新输入替代旧 run | `status=superseded` | 清空旧未完成正文/表单/卡片，标记已被新输入取代；服务端将已展示的部分回答及已确认信息承接到新一轮上下文。 |
 | 风控拦截 | `status=blocked`、`risk.blocked=true` | 仅显示通用 `risk.message`。 |
 | 主模型失败 | `status=failed`、`error.terminal=true` | 显示错误码和友好提示；可按 `retryable` 提供重试。 |
 | 推荐判定等辅助模型失败 | `error.terminal=false`，最终通常 `completed` | 保留正文，不显示本轮新卡片。 |

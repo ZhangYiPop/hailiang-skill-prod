@@ -78,7 +78,7 @@ DEFAULT_TOOL_REGISTRY_SETTINGS: dict[str, Any] = {
         },
         RAG_TOOL_NAME: {
             "enabled": True,
-            "description": "本地 Skill 资料搜索：仅搜索已加载的 Skill references 与 assets/generated 资产，不调用独立 RAG 服务。",
+            "description": "受控本地检索增强：仅检索已加载的 skill references 与仓库级 assets/generated 资产。",
         },
         SUBJECT_REQUIREMENTS_TOOL_NAME: {
             "enabled": True,

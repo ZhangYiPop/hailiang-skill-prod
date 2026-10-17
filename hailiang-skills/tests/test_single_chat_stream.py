@@ -396,6 +396,17 @@ def test_input_contract_and_external_run_id() -> None:
     lease = coordinator.acquire("sess_1", "u1", run_id="bff_run_1")
     assert lease.generation == "bff_run_1"
     coordinator.release(lease)
+    assert coordinator.supersede("sess_1", next_run_id="bff_run_2") is None
+
+
+def test_turn_coordinator_supersedes_only_an_active_generation() -> None:
+    coordinator = TurnCoordinator()
+    first = coordinator.acquire("sess_active", "u1", run_id="run_active")
+
+    assert coordinator.supersede("sess_active", next_run_id="run_next") == "run_active"
+    assert coordinator.is_cancelled(first)
+    coordinator.release(first)
+    assert coordinator.current_generation("sess_active") == "run_next"
 
 
 def test_chat_stream_api_accepts_unbound_context_and_rejects_profile_data(api_client) -> None:
