@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 TERMINAL = {"completed", "failed", "cancelled"}
 TOOL_TERMINAL = TERMINAL | {"skipped"}
@@ -24,6 +24,18 @@ class HarnessError(ValueError):
         super().__init__(code)
 
 
+def _normalize_option(option: Any) -> Any:
+    """Accept model-emitted ``key`` as an alias of the required ``value`` field."""
+    if not isinstance(option, dict):
+        return option
+    normalized = dict(option)
+    if "value" not in normalized and "key" in normalized:
+        normalized["value"] = normalized.pop("key")
+    elif "key" in normalized and normalized.get("key") == normalized.get("value"):
+        normalized.pop("key", None)
+    return normalized
+
+
 class InputField(BaseModel):
     model_config = ConfigDict(extra="forbid")
     key: str = Field(min_length=1, max_length=160)
@@ -35,6 +47,13 @@ class InputField(BaseModel):
     fact_key: str | None = None
     min: float | None = None
     max: float | None = None
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def normalize_options(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [_normalize_option(item) for item in value]
 
     @model_validator(mode="after")
     def valid_options(self):

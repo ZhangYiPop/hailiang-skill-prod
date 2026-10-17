@@ -5469,7 +5469,7 @@ class WorkbenchService:
     @staticmethod
     def _orchestration_rule_dict(row) -> dict[str, Any]:
         payload = row.payload if isinstance(row.payload, dict) else {}
-        return {
+        result = {
             "orchestration_revision_id": row.orchestration_revision_id,
             "revision_no": row.revision_no,
             "head_rules": str(payload.get("head_rules") or ""),
@@ -5481,6 +5481,11 @@ class WorkbenchService:
             "created_by": row.created_by,
             "created_at": _iso(row.created_at),
         }
+        if isinstance(payload.get("recommend_catalog"), dict):
+            result["recommend_catalog"] = payload["recommend_catalog"]
+        if isinstance(payload.get("system_skills"), dict) and payload["system_skills"]:
+            result["system_skills"] = payload["system_skills"]
+        return result
 
     @staticmethod
     def _soul_revision_dict(row) -> dict[str, Any]:

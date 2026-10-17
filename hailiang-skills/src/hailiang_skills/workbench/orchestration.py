@@ -201,6 +201,9 @@ def normalize_rule_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if catalog is not None:
         result["recommend_catalog"] = normalize_catalog(catalog)
+    system_skills = payload.get("system_skills")
+    if isinstance(system_skills, dict) and system_skills:
+        result["system_skills"] = system_skills
     return result
 
 

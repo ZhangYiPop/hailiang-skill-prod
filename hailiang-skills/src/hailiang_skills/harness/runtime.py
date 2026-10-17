@@ -702,14 +702,36 @@ class HarnessRuntime:
         self.store.mutate(run_id, apply)
 
     def public(self, run):
-        labels = {"delegate_tasks": "分派专家任务", "execute_skill": "执行专项分析", "request_user_input": "补充信息", "rag_search": "检索知识资料", "web_search": "搜索外部资料", "read_facts": "读取相关信息", "propose_fact_updates": "记录观察"}
+        labels = {
+            "delegate_tasks": "分派专家任务",
+            "execute_skill": "执行专项分析",
+            "request_user_input": "补充信息",
+            "rag_search": "检索知识资料",
+            "web_search": "搜索外部资料",
+            "read_facts": "读取相关信息",
+            "propose_fact_updates": "记录观察",
+            "subject_requirements": "查询选科要求",
+            "subject_requirements_lookup": "查询选科要求",
+        }
         nodes = []
         for task in run["tasks"].values():
             actor = "主 agent" if task["kind"] == "main" else run["policy"]["experts"].get(task.get("expert_id"), {}).get("name", "主 agent")
             title = run["policy"]["skills"][task["skill_id"]]["name"] if task["kind"] == "skill" else task["goal"]
-            nodes.append({"id": task["id"], "parent_id": task["parent_id"], "kind": task["kind"], "title": title, "actor": actor, "status": task["status"], "started_at": task["started_at"], "ended_at": task["ended_at"], "error": task.get("error"), "stale": task.get("stale", False)})
+            nodes.append({
+                "id": task["id"], "parent_id": task["parent_id"], "kind": task["kind"], "title": title, "actor": actor,
+                "status": task["status"], "created_at": task.get("created_at"), "started_at": task["started_at"],
+                "ended_at": task["ended_at"], "error": task.get("error"), "stale": task.get("stale", False),
+            })
         for tool in run["tools"].values():
-            nodes.append({"id": tool["id"], "parent_id": tool["task_id"], "kind": "tool", "title": labels.get(tool["name"], "执行专项工具"), "status": tool["status"], "started_at": tool["started_at"], "ended_at": tool["ended_at"], "attempts": tool["attempts"]})
+            nodes.append({
+                "id": tool["id"], "parent_id": tool["task_id"], "kind": "tool",
+                "title": labels.get(tool["name"], "执行专项工具"), "status": tool["status"],
+                "created_at": tool.get("created_at"), "started_at": tool["started_at"], "ended_at": tool["ended_at"],
+                "attempts": tool["attempts"],
+            })
+        # Tasks were previously appended before all tools, so "分派专家任务" appeared
+        # under its expert children. Sort siblings by timeline instead.
+        nodes.sort(key=lambda n: (n.get("created_at") or n.get("started_at") or "", n["id"]))
         requests = [{k: deepcopy(v) for k, v in q.items() if k in {"id", "title", "fields", "status", "version", "round", "answer", "bindings", "clarification_reason"}} for q in run["inputs"].values()]
         return {"run_id": run["run_id"], "session_id": run["session_id"], "profile_id": run["profile_id"], "goal": run["goal"], "status": run["status"], "version": run["version"], "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "result": run.get("result", ""), "error": run.get("error"),

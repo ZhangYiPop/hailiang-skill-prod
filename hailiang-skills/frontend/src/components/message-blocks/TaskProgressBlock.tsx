@@ -63,6 +63,17 @@ export function AgentInputRequest({ request, sessionId, onSubmitAnswer }: { requ
   </form>;
 }
 
+function nodeTime(node: HarnessNode): string {
+  return node.created_at || node.started_at || "";
+}
+
+function sortNodes(nodes: HarnessNode[]): HarnessNode[] {
+  return [...nodes].sort((a, b) => {
+    const byTime = nodeTime(a).localeCompare(nodeTime(b));
+    return byTime || a.id.localeCompare(b.id);
+  });
+}
+
 export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedConnection }: { run: HarnessRun; onSubmitAnswer?: SubmitHarnessAnswer; connection?: string }) {
   const [clock, setClock] = useState(Date.now());
   const chatConnection = useHarnessState((s) => s.connection);
@@ -70,7 +81,7 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
   useEffect(() => { if (isHarnessTerminal(run.status)) return; const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, [run.status]);
   const end = isHarnessTerminal(run.status) ? Date.parse(run.updated_at) : clock;
   const render = (node: HarnessNode, depth = 0) => {
-    const children = run.nodes.filter((n) => n.parent_id === node.id);
+    const children = sortNodes(run.nodes.filter((n) => n.parent_id === node.id));
     const requests = run.inputs.filter((q) => q.bindings.some((b) => b.task_id === node.id));
     return <div key={node.id} className={depth ? "ml-3 border-l border-white/10 pl-3" : ""}>
       <details open={!isHarnessTerminal(node.status) && node.status !== "skipped"}>
@@ -88,7 +99,7 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
     {run.phase && !isHarnessTerminal(run.status) && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-300">{run.phase}</p>}
     <p className="mt-1 text-xs text-slate-400">已完成 {run.completed_count} / {run.task_count} 项任务 · {run.waiting_count} 项等待补充 · {Math.max(0, Math.floor((end - Date.parse(run.created_at)) / 1000))}s</p>
     {connection === "reconnecting" && !isHarnessTerminal(run.status) && <p role="status" className="mt-2 text-xs text-amber-200">连接恢复中，后台任务继续执行</p>}
-    {run.nodes.filter((n) => !n.parent_id).map((n) => render(n))}
+    {sortNodes(run.nodes.filter((n) => !n.parent_id)).map((n) => render(n))}
     {run.inputs.filter((q) => q.status === "pending").map((q) => {
       const owner = run.nodes.find((n) => n.id === q.bindings[0]?.task_id);
       return <div key={q.id} className="mt-3">

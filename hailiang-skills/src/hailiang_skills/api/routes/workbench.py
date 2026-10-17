@@ -155,6 +155,8 @@ class OrchestrationRuleInput(StrictModel):
     tail_rules: str = ""
     recommendation_rules: str = ""
     recommendations: list[dict[str, Any]] = Field(default_factory=list)
+    recommend_catalog: dict[str, Any] | None = None
+    system_skills: dict[str, Any] | None = None
     actor_id: str = Field(min_length=1)
 
 

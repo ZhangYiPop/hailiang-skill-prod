@@ -1,6 +1,7 @@
 export type HarnessNode = {
   id: string; parent_id: string | null; kind: "main" | "expert" | "skill" | "tool";
-  title: string; actor?: string; status: string; started_at: string | null; ended_at: string | null;
+  title: string; actor?: string; status: string;
+  created_at?: string | null; started_at: string | null; ended_at: string | null;
   error?: string; attempts?: number; stale?: boolean;
 };
 export type HarnessField = {

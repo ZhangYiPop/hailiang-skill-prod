@@ -398,6 +398,7 @@ function CandidateTestComposer({
   prefillKey,
   resetKey,
   onSubmit,
+  expertMenu,
 }: {
   disabled: boolean;
   placeholder: string;
@@ -405,9 +406,18 @@ function CandidateTestComposer({
   prefillKey: number;
   resetKey: number;
   onSubmit: (message: string) => Promise<boolean>;
+  expertMenu?: {
+    members: Array<{ expert_id: string; mention_name: string; is_coordinator?: boolean; routing_brief?: string }>;
+    selectedId: string;
+    disabled?: boolean;
+    onSelect: (expertId: string) => void;
+  };
 }) {
   const [value, setValue] = useState("");
+  const [expertMenuOpen, setExpertMenuOpen] = useState(false);
+  const expertMenuRef = useRef<HTMLDivElement | null>(null);
   const lastPrefill = useRef("");
+  const selectedExpert = expertMenu?.members.find((item) => item.expert_id === expertMenu.selectedId) ?? null;
 
   useEffect(() => {
     setValue("");
@@ -419,6 +429,15 @@ function CandidateTestComposer({
       lastPrefill.current = prefill;
     }
   }, [prefill, prefillKey]);
+
+  useEffect(() => {
+    if (!expertMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!expertMenuRef.current?.contains(event.target as Node)) setExpertMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [expertMenuOpen]);
 
   function submit() {
     const message = value.trim();
@@ -439,15 +458,71 @@ function CandidateTestComposer({
         disabled={disabled}
         className="mt-4 w-full rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 outline-none focus:border-sky-400/40 disabled:opacity-40"
       />
-      <button
-        type="button"
-        disabled={disabled || !value.trim()}
-        onClick={submit}
-        className="mt-4 inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-40"
-      >
-        <FlaskConical size={16} />
-        发送测试问题
-      </button>
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {expertMenu?.members.length ? (
+          <div className="relative" ref={expertMenuRef}>
+            <button
+              type="button"
+              disabled={disabled || expertMenu.disabled}
+              onClick={() => setExpertMenuOpen((open) => !open)}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition disabled:opacity-40 ${
+                selectedExpert
+                  ? "border-violet-300/40 bg-violet-300/10 text-violet-100"
+                  : "border-white/10 bg-slate-950/70 text-slate-300 hover:border-violet-400/30 hover:text-violet-100"
+              }`}
+              title={selectedExpert ? `下一条由 @${selectedExpert.mention_name} 处理` : "手动指定团内专家（可选）"}
+            >
+              @{selectedExpert ? selectedExpert.mention_name : "指定专家"}
+            </button>
+            {expertMenuOpen ? (
+              <div className="absolute bottom-full left-0 z-40 mb-2 w-64 rounded-xl border border-violet-300/25 bg-[#0c1a2b] p-2 shadow-2xl shadow-black/40">
+                <p className="px-2 pb-1.5 text-[11px] leading-4 text-slate-500">选择后只影响下一条发送；不选则走团协调/编排。</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    expertMenu.onSelect("");
+                    setExpertMenuOpen(false);
+                  }}
+                  className={`mb-1 w-full rounded-lg px-2.5 py-2 text-left text-xs transition ${
+                    !selectedExpert ? "bg-violet-300/15 text-violet-100" : "text-slate-300 hover:bg-white/5"
+                  }`}
+                >
+                  默认走团协调/编排
+                </button>
+                <div className="max-h-52 space-y-1 overflow-auto">
+                  {expertMenu.members.map((member) => {
+                    const selected = member.expert_id === expertMenu.selectedId;
+                    return (
+                      <button
+                        key={member.expert_id}
+                        type="button"
+                        title={member.routing_brief || `下一条交由 ${member.mention_name}`}
+                        onClick={() => {
+                          expertMenu.onSelect(selected ? "" : member.expert_id);
+                          setExpertMenuOpen(false);
+                        }}
+                        className={`w-full rounded-lg px-2.5 py-2 text-left text-xs transition ${
+                          selected ? "bg-violet-300/15 text-violet-100" : "text-slate-300 hover:bg-white/5"
+                        }`}
+                      >
+                        {member.is_coordinator ? "主协调：" : "@"}{member.mention_name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        <button
+          type="button"
+          disabled={disabled || !value.trim()}
+          onClick={submit}
+          className="rounded-lg bg-sky-400 px-3 py-2 text-xs font-semibold text-slate-950 disabled:opacity-40"
+        >
+          发送
+        </button>
+      </div>
     </>
   );
 }
@@ -460,7 +535,7 @@ export default function Workbench() {
     readWorkbenchActor(),
   );
   const [actorName, setActorName] = useState("");
-  const [candidateTraceOpen, setCandidateTraceOpen] = useState(false);
+  const [chatRightPane, setChatRightPane] = useState<"chat" | "trace">("chat");
   const [section, setSection] = useState<Section>("objects");
   const [objects, setObjects] = useState<WorkbenchObject[]>([]);
   const [releases, setReleases] = useState<ObjectRelease[]>([]);
@@ -540,6 +615,8 @@ export default function Workbench() {
   const [tailRulesDraft, setTailRulesDraft] = useState("");
   const [recommendationRulesDraft, setRecommendationRulesDraft] = useState("");
   const [recommendationsDraft, setRecommendationsDraft] = useState("[]");
+  const [orchestrationRulesTab, setOrchestrationRulesTab] = useState<"head" | "tail" | "recommend" | "catalog">("head");
+  const [debugZoneTab, setDebugZoneTab] = useState<"chat" | "harness">("chat");
   const [conversion, setConversion] = useState<StandardSkillConversion | null>(null);
   const [conversionDraft, setConversionDraft] = useState<Record<string, unknown> | null>(null);
   const [conversionTargetId, setConversionTargetId] = useState("");
@@ -551,9 +628,9 @@ export default function Workbench() {
   const [debugZoneWidth, setDebugZoneWidth] = useState(() => {
     try {
       const saved = Number(window.localStorage.getItem("hailiang.workbench.debug-zone-width"));
-      return Number.isFinite(saved) && saved >= 360 && saved <= 900 ? saved : 420;
+      return Number.isFinite(saved) && saved >= 480 && saved <= 1100 ? saved : 720;
     } catch {
-      return 420;
+      return 720;
     }
   });
   const [revisionTestSession, setRevisionTestSession] =
@@ -656,8 +733,43 @@ export default function Workbench() {
   }, [debugZoneWidth]);
 
   function clampDebugZoneWidth(width: number) {
-    const maximum = Math.max(360, Math.min(900, window.innerWidth - 420));
-    return Math.round(Math.max(360, Math.min(maximum, width)));
+    const maximum = Math.max(480, Math.min(1100, window.innerWidth - 360));
+    return Math.round(Math.max(480, Math.min(maximum, width)));
+  }
+
+  function chatSessionOptionLabel(item: DebugHistoryItem | RevisionTestSession): string {
+    const firstUser = item.transcript?.find((row) => row.role === "user")?.content
+      || item.conclusion
+      || "空会话";
+    const status = item.status === "completed" ? "已完成" : "进行中";
+    return `${formatTime(item.created_at)} · ${status} · ${firstUser.slice(0, 28)}${firstUser.length > 28 ? "…" : ""}`;
+  }
+
+  function selectChatDebugSession(sessionId: string) {
+    candidateStreamAbortRef.current?.abort();
+    candidateStreamAbortRef.current = null;
+    setChatRightPane("chat");
+    setCandidateInputPrefill("");
+    setCandidateInputResetKey((current) => current + 1);
+    setCandidateTargetExpertId("");
+    setCandidateConversationState(null);
+    candidateLastSeqRef.current = {};
+    candidatePendingUiRef.current = null;
+    if (candidateUiTimerRef.current !== null) {
+      window.clearTimeout(candidateUiTimerRef.current);
+      candidateUiTimerRef.current = null;
+    }
+    if (!sessionId) {
+      setRevisionTestSession(null);
+      return;
+    }
+    const fromHistory = debugHistory.find((item) => item.debug_session_id === sessionId);
+    if (fromHistory) {
+      setRevisionTestSession(fromHistory);
+      return;
+    }
+    if (revisionTestSession?.debug_session_id === sessionId) return;
+    setRevisionTestSession(null);
   }
 
   function startDebugZoneResize(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -1749,6 +1861,9 @@ export default function Workbench() {
           { role: "assistant", content: "", message_id: optimisticAssistantId, blocks: [], interaction_states: {}, created_at: submittedAt },
         ],
       });
+      if (debugObject && selectedTestRevision) {
+        void loadDebugHistory(debugObject.object_id, selectedTestRevision.revision_id);
+      }
       await workbenchApi.streamRevisionTestTurn(
         apiBaseUrl,
         session.debug_session_id,
@@ -3254,10 +3369,63 @@ export default function Workbench() {
                   <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-4">
                     <p className="text-sm font-medium text-amber-100">编排规则</p>
                     <p className="mt-1 text-xs text-slate-400">编排首、编排尾和推荐分开保存版本。发布后重新激活部署，只影响新会话。推荐由模型输出 jump_cards 语义字段，枚举以 catalog 为准；match_terms 已废弃。</p>
-                    <label className="mt-3 block text-xs text-slate-400">编排首<textarea value={headRulesDraft} onChange={(event) => setHeadRulesDraft(event.target.value)} rows={6} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-xs outline-none" /></label>
-                    <label className="mt-3 block text-xs text-slate-400">编排尾<textarea value={tailRulesDraft} onChange={(event) => setTailRulesDraft(event.target.value)} rows={4} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-xs outline-none" /></label>
-                    <label className="mt-3 block text-xs text-slate-400">推荐规则<textarea value={recommendationRulesDraft} onChange={(event) => setRecommendationRulesDraft(event.target.value)} rows={4} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-xs outline-none" /></label>
-                    <label className="mt-3 block text-xs text-slate-400">推荐清单 JSON<textarea value={recommendationsDraft} onChange={(event) => setRecommendationsDraft(event.target.value)} rows={4} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 p-3 font-mono text-xs outline-none" /></label>
+                    <div className="mt-3 flex flex-wrap gap-1.5" role="tablist" aria-label="编排规则分区">
+                      {([
+                        { id: "head" as const, label: "编排首" },
+                        { id: "tail" as const, label: "编排尾" },
+                        { id: "recommend" as const, label: "推荐规则" },
+                        { id: "catalog" as const, label: "推荐清单" },
+                      ]).map((tab) => {
+                        const active = orchestrationRulesTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={active}
+                            onClick={() => setOrchestrationRulesTab(tab.id)}
+                            className={`rounded-lg px-2.5 py-1 text-xs transition ${
+                              active
+                                ? "border border-amber-300/40 bg-amber-300/15 text-amber-50"
+                                : "border border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/20 hover:text-slate-200"
+                            }`}
+                          >
+                            {tab.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <label className="mt-3 block text-xs text-slate-400">
+                      {orchestrationRulesTab === "head"
+                        ? "编排首"
+                        : orchestrationRulesTab === "tail"
+                          ? "编排尾"
+                          : orchestrationRulesTab === "recommend"
+                            ? "推荐规则"
+                            : "推荐清单 JSON"}
+                      <textarea
+                        value={
+                          orchestrationRulesTab === "head"
+                            ? headRulesDraft
+                            : orchestrationRulesTab === "tail"
+                              ? tailRulesDraft
+                              : orchestrationRulesTab === "recommend"
+                                ? recommendationRulesDraft
+                                : recommendationsDraft
+                        }
+                        onChange={(event) => {
+                          const next = event.target.value;
+                          if (orchestrationRulesTab === "head") setHeadRulesDraft(next);
+                          else if (orchestrationRulesTab === "tail") setTailRulesDraft(next);
+                          else if (orchestrationRulesTab === "recommend") setRecommendationRulesDraft(next);
+                          else setRecommendationsDraft(next);
+                        }}
+                        rows={16}
+                        className={`mt-2 min-h-[22rem] w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-xs outline-none ${
+                          orchestrationRulesTab === "catalog" ? "font-mono" : ""
+                        }`}
+                      />
+                    </label>
                     <div className="mt-3 flex gap-2">
                       <button type="button" disabled={!actor || busy} onClick={() => void saveOrchestrationRules(false)} className="rounded-xl border border-amber-400/25 px-3 py-2 text-xs text-amber-100 disabled:opacity-40">保存草稿</button>
                       <button type="button" disabled={!actor || busy || !headRulesDraft.trim()} onClick={() => void saveOrchestrationRules(true)} className="rounded-xl border border-amber-400/40 px-3 py-2 text-xs text-amber-50 disabled:opacity-40">发布</button>
@@ -3290,7 +3458,7 @@ export default function Workbench() {
                         <h2 className="mt-1 text-lg font-semibold">候选修订手动测试</h2>
                       </div>
                       <div className="flex items-center gap-2">
-                        {busy && candidateConversationState?.status === "streaming" ? (
+                        {debugZoneTab === "chat" && busy && candidateConversationState?.status === "streaming" ? (
                           <button
                             type="button"
                             onClick={() => void stopCandidateRevisionTest()}
@@ -3299,165 +3467,246 @@ export default function Workbench() {
                             <X size={13} /> 停止
                           </button>
                         ) : null}
-                        <StatusBadge tone={revisionTestSession?.status === "active" ? "green" : "slate"}>
-                          {candidateConversationState?.status === "stopped"
-                            ? "已停止"
-                            : revisionTestSession?.status === "active" ? "会话进行中" : "等待测试"}
-                        </StatusBadge>
-                      </div>
-                    </div>
-                    {selectedTestRevision && <HarnessDebugPanel baseUrl={apiBaseUrl} revisionId={selectedTestRevision.revision_id} actorId={actor.actor_id} soulRevisionId={soulRevisionId} />}
-                    <p className="mt-2 text-sm text-slate-500">
-                      直接测试所选 Skill、专家或专家团的不可变候选快照；不会跳转或写入现有长对话测试台。
-                    </p>
-                    <div className="mt-3 rounded-xl border border-sky-300/15 bg-sky-300/[0.05] px-3 py-2 text-xs leading-5 text-slate-300">
-                      <span className="text-slate-500">候选上下文：</span>未绑定孩子
-                      <span className="mx-2 text-slate-600">·</span>
-                      <span className="text-slate-500">专家团：</span>{candidateTeamName}
-                      <span className="mx-2 text-slate-600">·</span>
-                      <span className="text-slate-500">专家：</span>{candidateExpertName}
-                      <span className="mx-2 text-slate-600">·</span>
-                      <span className="text-slate-500">Skill：</span>{candidateSkillName}
-                    </div>
-                    {revisionTestSession?.transcript?.length && revisionTestSession.status === "active" ? (
-                      <button
-                        type="button"
-                        onClick={() => void completeRevisionTest()}
-                        className="mt-3 w-full rounded-xl border border-emerald-400/25 bg-emerald-400/10 px-4 py-2.5 text-sm text-emerald-200"
-                      >
-                        记录为候选修订测试证据
-                      </button>
-                    ) : null}
-                    {revisionTestSession?.transcript?.length && selectedTestRevision ? <button type="button" onClick={() => downloadTranscript(
-                      selectedTestRevision.revision_id,
-                      revisionTestSession.transcript,
-                      revisionTestSession.trace,
-                      candidateConversationState?.session_id || `revision_test_${revisionTestSession.debug_session_id}`,
-                      revisionTestSession.debug_session_id,
-                    )} className="mt-3 rounded-xl border border-white/10 px-3 py-2 text-xs text-sky-200">导出纯对话 JSON</button> : null}
-                    <div className="mt-5 max-h-[520px] min-h-[360px] space-y-3 overflow-auto rounded-2xl border border-white/10 bg-slate-950/50 p-4 xl:max-h-none xl:min-h-0 xl:flex-1">
-                      {revisionTestSession?.transcript?.length ? (
-                        revisionTestSession.transcript.map((item, index) => {
-                          const isAssistant = item.role === "assistant";
-                          const blocks = item.blocks ?? [];
-                          const handoffBlock = blocks.find((block) => block.type === "team_handoff");
-                          const handoff = item.team_handoff ?? (handoffBlock?.payload as TeamHandoff | undefined);
-                          const interactionStates = item.interaction_states ?? {};
-                          const presentation = item.presentation as MessagePresentation | undefined;
-                          const isTransition = item.message_type === "skill_transition";
-                          const isTeamHandoffConfirmation = item.message_type === "team_handoff_confirmation";
-                          const transition = presentation?.skill_transition as { action?: string } | undefined;
-                          return (
-                            <div key={item.message_id || `${item.role}-${index}`} className={item.role === "user" ? "text-right" : "text-left"}>
-                              {isTeamHandoffConfirmation ? (
-                                <div className="my-1 text-center text-xs text-violet-200/80">
-                                  <span className="rounded-full border border-violet-300/25 bg-violet-300/[0.08] px-3 py-1.5">
-                                    已确认由 {item.content.replace(/^@/, "")} 专家接管
-                                  </span>
-                                </div>
-                              ) : isAssistant && isTransition ? (
-                                <div className="inline-block max-w-[90%] rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-xs text-slate-300">
-                                  {transition?.action === "exit"
-                                    ? "已退出当前 Skill"
-                                    : `已进入 ${(presentation?.session?.active_skill as { title?: string } | undefined)?.title || "当前 Skill"}`}
-                                </div>
-                              ) : (
-                                <div className={`inline-block max-w-[90%] rounded-2xl px-3 py-2 text-sm leading-6 ${item.role === "user" ? "bg-sky-400 text-slate-950" : "bg-white/10 text-slate-200"}`}>
-                                  {isAssistant ? <CandidateMarkdown content={item.content} className="text-slate-200" /> : item.content}
-                                  {isAssistant ? (
-                                    <div className="mt-3 text-left">
-                                      <MessageBlocksRenderer
-                                        messageId={item.message_id || `${revisionTestSession.debug_session_id}-${index}`}
-                                        blocks={blocks.filter((block) => block.type !== "team_handoff") as MessageBlock[]}
-                                        onPathAction={(pathName, description) => {
-                                          setCandidateInputPrefill(description || pathName);
-                                          setCandidateInputPrefillKey((current) => current + 1);
-                                        }}
-                                        onSubmitFactForm={submitCandidateFactForm}
-                                        interactionStates={interactionStates as Record<string, MessageInteractionState>}
-                                      />
-                                    </div>
-                                  ) : null}
-                                  {isAssistant && handoff?.candidates?.length ? (
-                                    <div className="mt-3 text-left">
-                                      <TeamHandoffCard
-                                        handoff={handoff}
-                                        interactionState={interactionStates.team_handoff as MessageInteractionState | undefined}
-                                        disabled={busy || !item.message_id}
-                                        onConfirm={(candidate) => confirmCandidateTeamHandoff(item.message_id || "", handoff, candidate.expert_id)}
-                                      />
-                                    </div>
-                                  ) : null}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <p className="py-8 text-center text-sm text-slate-600">选择一个修订后输入问题，开始候选版本测试。</p>
-                      )}
-                    </div>
-                    {revisionTestSession?.trace?.length ? (
-                      <details
-                        className="mt-4 rounded-2xl border border-white/10 bg-slate-950/40 p-4"
-                        onToggle={(event) => setCandidateTraceOpen(event.currentTarget.open)}
-                      >
-                        <summary className="cursor-pointer text-sm font-medium text-slate-200">本轮调用轨迹与调试信息</summary>
-                        <p className="mt-2 text-xs leading-5 text-slate-500">展开后可查看本轮的专家团、专家、实际 Skill、引用资料和脚本输入/输出；这些内容会一并保存到候选修订测试证据。</p>
-                        {candidateTraceOpen ? <CandidateTurnTrace turn={revisionTestSession.trace.at(-1) ?? {}} /> : null}
-                      </details>
-                    ) : null}
-                    {candidateTeamMembers.length ? (
-                      <div className="mt-4 rounded-2xl border border-violet-300/20 bg-violet-300/[0.05] p-3">
-                        <p className="text-xs font-medium text-violet-100">手动 @ 团内专家</p>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {candidateTeamMembers.map((member) => {
-                            const selected = member.expert_id === candidateTargetExpertId;
-                            return (
-                              <button
-                                key={member.expert_id}
-                                type="button"
-                                disabled={busy || activeCandidateHandoff}
-                                title={member.routing_brief || `下一条消息交由 ${member.mention_name} 处理`}
-                                onClick={() => setCandidateTargetExpertId(selected ? "" : member.expert_id)}
-                                className={`rounded-full border px-3 py-1.5 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 ${selected ? "border-violet-200/60 bg-violet-200/15 text-violet-100" : "border-white/10 bg-slate-950/50 text-slate-300 hover:border-violet-400/30 hover:text-violet-100"}`}
-                              >
-                                {member.is_coordinator ? "主协调：" : "@"}{member.mention_name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <p className="mt-2 text-[11px] leading-5 text-slate-500">
-                          {candidateTargetExpert ? `下一条消息将由 @${candidateTargetExpert.mention_name} 接管。` : "选择团内专家后发送问题；选择会绑定本次匿名候选会话。"}
-                        </p>
-                        {activeCandidateForm ? (
-                          <p className="mt-2 text-[11px] leading-5 text-amber-200/80">
-                            切换专家并发送新问题会自动结束当前未提交表单；原表单会保留在记录中但不能再提交。
-                          </p>
+                        {debugZoneTab === "chat" ? (
+                          <StatusBadge tone={revisionTestSession?.status === "active" ? "green" : "slate"}>
+                            {candidateConversationState?.status === "stopped"
+                              ? "已停止"
+                              : revisionTestSession?.status === "active" ? "会话进行中" : "等待测试"}
+                          </StatusBadge>
                         ) : null}
                       </div>
-                    ) : null}
-                    <p className="mt-3 text-[11px] leading-5 text-slate-500">
-                      匿名上下文：本会话会持续保留对话、表单状态、Facts 与运行时摘要；不读取、不创建、不写入孩子档案或正式 Profile。
-                    </p>
-                    {activeCandidateHandoff ? (
-                      <p className="mt-3 rounded-xl border border-violet-300/20 bg-violet-300/[0.06] px-3 py-2 text-[11px] leading-5 text-violet-100/80">
-                        专家转交卡片仍待确认。你可以继续输入问题；文字只会由当前主协调专家处理，不会因此切换专家。需要切换时请点击卡片。
-                      </p>
-                    ) : null}
-                    <CandidateTestComposer
-                      disabled={!selectedTestRevision || busy}
-                      placeholder={selectedTestRevision ? `向 r${selectedTestRevision.revision_no} 输入测试问题…` : "请先选择要测试的修订"}
-                      prefill={candidateInputPrefill}
-                      prefillKey={candidateInputPrefillKey}
-                      resetKey={candidateInputResetKey}
-                      onSubmit={(message) => runRevisionTestTurn(
-                        message,
-                        undefined,
-                        undefined,
-                        candidateTargetExpert ? { target_expert_id: candidateTargetExpert.expert_id } : undefined,
+                    </div>
+                    <div className="mt-3 flex gap-1 rounded-xl border border-white/10 bg-slate-950/40 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setDebugZoneTab("chat")}
+                        className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${debugZoneTab === "chat" ? "bg-sky-400/15 text-sky-100" : "text-slate-400 hover:text-slate-200"}`}
+                      >
+                        问答测试
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDebugZoneTab("harness")}
+                        className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${debugZoneTab === "harness" ? "bg-cyan-400/15 text-cyan-100" : "text-slate-400 hover:text-slate-200"}`}
+                      >
+                        Harness 专项
+                      </button>
+                    </div>
+                    <div className={debugZoneTab === "chat" ? "mt-3 flex min-h-0 flex-1 flex-col gap-3" : "hidden"}>
+                      <label className="block shrink-0 text-xs text-slate-400">
+                        历史会话
+                        <select
+                          value={revisionTestSession?.debug_session_id || ""}
+                          onChange={(event) => selectChatDebugSession(event.target.value)}
+                          className="mt-1 w-full rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-400/40"
+                        >
+                          <option value="">新建问答会话</option>
+                          {revisionTestSession
+                            && !debugHistory.some((item) => item.debug_session_id === revisionTestSession.debug_session_id)
+                            ? (
+                              <option value={revisionTestSession.debug_session_id}>
+                                {chatSessionOptionLabel(revisionTestSession)}
+                              </option>
+                            ) : null}
+                          {debugHistory.map((item) => (
+                            <option key={item.debug_session_id} value={item.debug_session_id}>
+                              {chatSessionOptionLabel(item)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="flex min-h-0 flex-1 gap-3">
+                        <div className="flex w-[42%] min-w-[200px] shrink-0 flex-col gap-3 overflow-auto">
+                          <p className="text-sm text-slate-500">
+                            直接测试所选候选快照；回复在右侧完整展示。
+                          </p>
+                          <div className="rounded-xl border border-sky-300/15 bg-sky-300/[0.05] px-3 py-2 text-xs leading-5 text-slate-300">
+                            <span className="text-slate-500">专家团：</span>{candidateTeamName}
+                            <span className="mx-2 text-slate-600">·</span>
+                            <span className="text-slate-500">专家：</span>{candidateExpertName}
+                            <span className="mx-2 text-slate-600">·</span>
+                            <span className="text-slate-500">Skill：</span>{candidateSkillName}
+                          </div>
+                          {(revisionTestSession?.transcript?.length && (revisionTestSession.status === "active" || selectedTestRevision)) ? (
+                            <div className="flex flex-wrap gap-2">
+                              {revisionTestSession.status === "active" ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void completeRevisionTest()}
+                                  className="rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-1.5 text-xs text-emerald-200"
+                                  title="把本会话记成发布候选修订所需的测试证据"
+                                >
+                                  记为测试证据
+                                </button>
+                              ) : null}
+                              {selectedTestRevision ? (
+                                <button
+                                  type="button"
+                                  onClick={() => downloadTranscript(
+                                    selectedTestRevision.revision_id,
+                                    revisionTestSession.transcript,
+                                    revisionTestSession.trace,
+                                    candidateConversationState?.session_id || `revision_test_${revisionTestSession.debug_session_id}`,
+                                    revisionTestSession.debug_session_id,
+                                  )}
+                                  className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-sky-200"
+                                  title="下载本会话对话与轨迹 JSON，便于留档或对照"
+                                >
+                                  导出对话 JSON
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {activeCandidateHandoff ? (
+                            <p className="shrink-0 text-[11px] leading-5 text-violet-100/80">
+                              专家转交卡片仍待确认；文字仍由当前主协调处理。
+                            </p>
+                          ) : null}
+                          <div className="mt-auto shrink-0 border-t border-white/10 pt-3">
+                            <CandidateTestComposer
+                              disabled={!selectedTestRevision || busy || revisionTestSession?.status === "completed"}
+                              placeholder={
+                                revisionTestSession?.status === "completed"
+                                  ? "该历史会话已完成，请新建会话继续测试"
+                                  : selectedTestRevision
+                                    ? `向 r${selectedTestRevision.revision_no} 输入测试问题…`
+                                    : "请先选择要测试的修订"
+                              }
+                              prefill={candidateInputPrefill}
+                              prefillKey={candidateInputPrefillKey}
+                              resetKey={candidateInputResetKey}
+                              expertMenu={candidateTeamMembers.length ? {
+                                members: candidateTeamMembers,
+                                selectedId: candidateTargetExpertId,
+                                disabled: busy || activeCandidateHandoff,
+                                onSelect: setCandidateTargetExpertId,
+                              } : undefined}
+                              onSubmit={(message) => runRevisionTestTurn(
+                                message,
+                                undefined,
+                                undefined,
+                                candidateTargetExpert ? { target_expert_id: candidateTargetExpert.expert_id } : undefined,
+                              )}
+                            />
+                            <p className="mt-2 text-[11px] leading-5 text-slate-500">
+                              匿名会话：保留对话/表单/Facts；不读写孩子档案。
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-2xl border border-sky-300/15 bg-slate-950/50">
+                          <div className="flex shrink-0 gap-1 border-b border-white/10 p-1">
+                            <button
+                              type="button"
+                              onClick={() => setChatRightPane("chat")}
+                              className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${chatRightPane === "chat" ? "bg-sky-400/15 text-sky-100" : "text-slate-400 hover:text-slate-200"}`}
+                            >
+                              对话
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setChatRightPane("trace")}
+                              className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${chatRightPane === "trace" ? "bg-sky-400/15 text-sky-100" : "text-slate-400 hover:text-slate-200"}`}
+                            >
+                              轨迹过程
+                              {revisionTestSession?.trace?.length ? ` · ${revisionTestSession.trace.length}` : ""}
+                            </button>
+                          </div>
+                          <div className="min-h-0 flex-1 space-y-3 overflow-auto p-4">
+                            {chatRightPane === "chat" ? (
+                              revisionTestSession?.transcript?.length ? (
+                                revisionTestSession.transcript.map((item, index) => {
+                                  const isAssistant = item.role === "assistant";
+                                  const blocks = item.blocks ?? [];
+                                  const handoffBlock = blocks.find((block) => block.type === "team_handoff");
+                                  const handoff = item.team_handoff ?? (handoffBlock?.payload as TeamHandoff | undefined);
+                                  const interactionStates = item.interaction_states ?? {};
+                                  const presentation = item.presentation as MessagePresentation | undefined;
+                                  const isTransition = item.message_type === "skill_transition";
+                                  const isTeamHandoffConfirmation = item.message_type === "team_handoff_confirmation";
+                                  const transition = presentation?.skill_transition as { action?: string } | undefined;
+                                  return (
+                                    <div key={item.message_id || `${item.role}-${index}`} className={item.role === "user" ? "text-right" : "text-left"}>
+                                      {isTeamHandoffConfirmation ? (
+                                        <div className="my-1 text-center text-xs text-violet-200/80">
+                                          <span className="rounded-full border border-violet-300/25 bg-violet-300/[0.08] px-3 py-1.5">
+                                            已确认由 {item.content.replace(/^@/, "")} 专家接管
+                                          </span>
+                                        </div>
+                                      ) : isAssistant && isTransition ? (
+                                        <div className="inline-block max-w-[95%] rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-xs text-slate-300">
+                                          {transition?.action === "exit"
+                                            ? "已退出当前 Skill"
+                                            : `已进入 ${(presentation?.session?.active_skill as { title?: string } | undefined)?.title || "当前 Skill"}`}
+                                        </div>
+                                      ) : (
+                                        <div className={`inline-block max-w-[95%] rounded-2xl px-3 py-2 text-sm leading-6 ${item.role === "user" ? "bg-sky-400 text-slate-950" : "bg-white/10 text-slate-200"}`}>
+                                          {isAssistant ? <CandidateMarkdown content={item.content} className="text-slate-200" /> : item.content}
+                                          {isAssistant ? (
+                                            <div className="mt-3 text-left">
+                                              <MessageBlocksRenderer
+                                                messageId={item.message_id || `${revisionTestSession.debug_session_id}-${index}`}
+                                                blocks={blocks.filter((block) => block.type !== "team_handoff") as MessageBlock[]}
+                                                onPathAction={(pathName, description) => {
+                                                  setCandidateInputPrefill(description || pathName);
+                                                  setCandidateInputPrefillKey((current) => current + 1);
+                                                }}
+                                                onSubmitFactForm={submitCandidateFactForm}
+                                                interactionStates={interactionStates as Record<string, MessageInteractionState>}
+                                              />
+                                            </div>
+                                          ) : null}
+                                          {isAssistant && handoff?.candidates?.length ? (
+                                            <div className="mt-3 text-left">
+                                              <TeamHandoffCard
+                                                handoff={handoff}
+                                                interactionState={interactionStates.team_handoff as MessageInteractionState | undefined}
+                                                disabled={busy || !item.message_id || revisionTestSession.status === "completed"}
+                                                onConfirm={(candidate) => confirmCandidateTeamHandoff(item.message_id || "", handoff, candidate.expert_id)}
+                                              />
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })
+                              ) : (
+                                <p className="py-10 text-center text-sm text-slate-600">选择修订并提问后，回复会出现在这里。</p>
+                              )
+                            ) : revisionTestSession?.trace?.length ? (
+                              <div className="space-y-4">
+                                {revisionTestSession.trace.map((turn, index) => (
+                                  <div key={`trace-${index}`} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                                    <p className="mb-2 text-xs font-medium text-slate-300">第 {index + 1} 轮轨迹</p>
+                                    <CandidateTurnTrace turn={turn} />
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="py-10 text-center text-sm text-slate-600">尚无调用轨迹；完成一轮问答后可在此查看。</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className={debugZoneTab === "harness" ? "mt-3 flex min-h-0 flex-1 flex-col" : "hidden"}>
+                      {selectedTestRevision ? (
+                        <HarnessDebugPanel
+                          baseUrl={apiBaseUrl}
+                          revisionId={selectedTestRevision.revision_id}
+                          actorId={actor.actor_id}
+                          soulRevisionId={soulRevisionId}
+                          historySessions={debugHistory}
+                          onHistoryChange={() => {
+                            if (debugObject && selectedTestRevision) {
+                              void loadDebugHistory(debugObject.object_id, selectedTestRevision.revision_id);
+                            }
+                          }}
+                        />
+                      ) : (
+                        <p className="mt-6 py-8 text-center text-sm text-slate-600">请先选择要测试的修订，再进入 Harness 专项。</p>
                       )}
-                    />
+                    </div>
                   </div>
                   <div className="order-2 rounded-3xl border border-white/10 bg-white/[0.025] p-6">
                     <div className="flex flex-wrap items-center justify-between gap-4">
