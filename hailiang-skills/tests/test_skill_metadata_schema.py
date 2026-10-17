@@ -52,7 +52,7 @@ class SkillMetadataSchemaTest(unittest.TestCase):
         assert multi_path is not None
         self.assertEqual(multi_path.skill_file.name, "skill.md")
         self.assertIn("references/skill_question_option_rule_table.md", multi_path.references)
-        self.assertIn("唯一的题型、候选项", multi_path.skill_markdown)
+        self.assertIn("唯一依据——题型、选项、上限、格式、展示条件", multi_path.skill_markdown)
 
     def test_local_assets_directories_exist_for_native_skills(self) -> None:
         skills_root = Path(PROJECT_RUNTIME_SKILLS_ROOT)
@@ -69,13 +69,14 @@ class SkillMetadataSchemaTest(unittest.TestCase):
         self.assertIsNotNone(bundle)
         assert bundle is not None
 
-        self.assertIn("初高中衔接选科规划子场景", bundle.runtime_metadata.description)
+        self.assertIn("新高考选科顾问", bundle.runtime_metadata.description)
+        self.assertIn("专业/职业", bundle.runtime_metadata.description)
         self.assertIn("1. **识别**", bundle.skill_markdown)
-        self.assertIn("初中生（L0/L1）默认不输出最终组合", bundle.skill_markdown)
-        self.assertIn("做物理 vs 历史等跨学科优劣判断", bundle.skill_markdown)
+        self.assertIn("初中默认给认知与准备建议，不给最终组合", bundle.skill_markdown)
+        self.assertIn("仅凭原始分跨学科比优劣", bundle.skill_markdown)
         self.assertIn("出方案门槛", bundle.skill_markdown)
-        self.assertIn("已完成至少 1 次关键验证问题", bundle.skill_markdown)
-        self.assertIn("选科资产查询", bundle.skill_markdown)
+        self.assertIn("至少 1 次关键验证", bundle.skill_markdown)
+        self.assertIn("查询选科要求", bundle.skill_markdown)
         self.assertIn("subject_requirements", bundle.skill_markdown)
         self.assertIn("references/05_选科资产说明.md", bundle.references)
         self.assertIn("想学医应该怎么选科", bundle.runtime_metadata.routing.routing_examples)
@@ -95,8 +96,8 @@ class SkillMetadataSchemaTest(unittest.TestCase):
         self.assertIn("Path A：特长方向诊断流程", bundle.skill_markdown)
         self.assertIn("R1：必要信息采集", bundle.skill_markdown)
         self.assertIn("R2：特质标签选择", bundle.skill_markdown)
-        self.assertIn("R3：条件采集", bundle.skill_markdown)
-        self.assertIn("R4：输出推荐", bundle.skill_markdown)
+        self.assertIn("R3：补采回答处理", bundle.skill_markdown)
+        self.assertIn("R4：输出校准结论", bundle.skill_markdown)
         self.assertIn("孩子适合学什么兴趣班", bundle.runtime_metadata.routing.routing_examples)
         self.assertEqual(bundle.runtime_metadata.routing.school_stage_scope, "primary_junior")
         self.assertIn("r1_basic_info", {stage.id for stage in bundle.contract.stages})
