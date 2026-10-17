@@ -1,44 +1,13 @@
 ---
 name: 多元路径推荐
 skill_id: multi_path_planning
-version: "1.1"
+version: 1.1
 description: >-
-  面向高中学生与家长的多元升学路径顾问。
-  【做什么】通过结构化问询收集档案与偏好，按省份分数线与路径规则匹配强基/综评/三位一体/港澳海外/军警师范/艺体/专项等可行路径，或科普单条路径、做单路径轻量匹配；结果以白名单卡片呈现。
-  【何时启用】用户问除了高考还有什么路、强基综评怎么报、某路径适不适合我、多元升学规划、从其他场景带入档案要做路径匹配等。
-  【不做什么】不承诺录取、不预测录取概率、不做志愿代填；不提供医学/法律结论；小学与初中升学归对应阶段 skill，本 skill 聚焦高中。
-brief: 帮高中生匹配强基、综评、三位一体等多元升学路径。
-info: 根据省份、年级、成绩与个人偏好，筛选值得关注的升学路径并说明依据和风险。
-tool_dependency: []
-triggers:
-  - 多元路径规划
-  - 多元路径
-  - 多元升学路径
-  - 强基计划
-  - 综合评价
-  - 三位一体
-accepts_scenes:
-  - 多元路径规划
-  - 多元路径
-  - 多元升学路径
-routing:
-  scene_name: 多元路径推荐
-  school_stage_scope: senior
-  routing_examples:
-    - 除了普通高考还有什么路径
-    - 高中多元升学路径怎么规划
-    - 强基计划详细讲讲
-    - 我这种情况能报综合评价吗
-    - 帮我匹配一下适合我的升学路径
-prompt_loading:
-  strategy: progressive
-  include_skill_markdown: full
-  include_references: on_demand
-retrieval:
-  enabled: true
-  sources: [references]
-  top_k: 3
-  snippet_chars: 700
+  面向高中学生与家长的多元升学路径顾问。【做什么】通过结构化问询收集档案与偏好，按省份分数线与路径规则匹配强基/综评/三位一体/港澳海外/军警师范/艺体/专项等可行路径，或科普单条路
+  径、做单路径轻量匹配；结果以白名单卡片呈现。【何时启用】用户问除了高考还有什么路、强基综评怎么报、某路径适不适合、多元升学规划，或从其他场景带入档案做路径匹配。【不做什么】不承诺录
+  取、不预测录取概率、不做志愿代填；不提供医学/法律结论；小学初中升学归对应阶段 skill。
+tool_dependency:
+  - request_declared_form
 questionnaire:
   enabled: true
   rule_table: references/skill_question_option_rule_table.md

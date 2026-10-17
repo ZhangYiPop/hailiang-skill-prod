@@ -1,91 +1,40 @@
 ---
 name: 升学潜力评估
-description: 当用户想了解"当前成绩能上什么大学"、"想考某层次院校"或询问某大学/专业时启用。基于地区与成绩判定院校层级，输出层次介绍、代表院校、推荐路径及提分差距；可检索院校与专业信息。升学路径详情由「多元升学路径规划」承接，专业适配问题由「升学顾问」承接。触发词：模拟升学、升学潜力评估、成绩定位、能考什么大学、目标院校、院校层次、冲稳保、想上985、XX大学怎么样、XX专业好不好等。
-brief: 现在的分数能上什么层次的大学？说出成绩，帮你定位院校层次，明确努力方向。
-info: 告诉我所在地区和成绩，我帮你定位当前能上的院校层次、看看代表性院校和升学路径，并估算离目标层次还差多少分。
-version: v20260723092858845842
-tags: [模拟升学, 成绩定位, 院校层次, 高考志愿]
 skill_id: mock_admission
-user_match_tags: []
-skill_type: native
-entrypoint_role: child
-target_region: 全国
-bind_script: false
-ref_path: ./references/
-accepts_scenes: [模拟升学]
-triggers: [模拟升学, 模拟录取, 可报学校, 学校层次, 能上什么大学, 分数能上, 冲稳保]
-tool_dependency: []
-tool_policy:
-  allow_tool_call_first: false
-  allow_direct_answer: true
-  max_tool_calls: 0
-prompt_loading:
-  strategy: progressive
-  include_skill_markdown: full
-  include_session_state: true
-  include_tool_capabilities: false
-  include_route_targets: true
-  include_references: on_demand
-  include_local_assets: none
-  include_generated_assets: summary
-retrieval:
-  enabled: true
-  sources: [references, generated_assets]
-  top_k: 5
-  snippet_chars: 1000
-  include_catalog: true
-assets:
-  local_enabled: false
-  generated_domains: [admission, school_intro]
-  generated_prompt_policy: summary
-debug:
-  record_prompt_assembly: true
-  record_retrieval_details: true
-routing:
-  scene_name: 模拟升学
-  intent_clarity: explicit
-  school_stage_scope: senior
-  routing_examples: [浙江物理512分能上什么大学, 高三想看看能报哪些学校, 这个分数是什么院校层次]
-  slot_facts: []
+version: v20260723092858845842
+description: >-
+  面向高中学生和家长的成绩定位与院校层次顾问。【做什么】根据高考省份、成绩与首选科目判定院校层级，输出层次介绍、代表院校、推荐路径与提分差距。【何时启用】用户问当前成绩能上什么大学、
+  想考某层次院校、某大学大概什么层次、成绩定位/冲稳保。【不做什么】不承诺录取、不做志愿代填；路径细则归「多元路径推荐」；选科组合归「选科参谋」。
+tool_dependency:
+  - request_declared_form
 questionnaire:
   enabled: true
   persistence:
     default: skill_session
-    # Future mappings declare target, fact_key, value_type and submit_timing
-    # (on_submit or on_completion); clients cannot choose a write target.
     mappings: {}
   fields:
-    - question_id: 高考省份
-      label: 高考省份
-      input_type: text
-      value_type: string
-    - question_id: 当前成绩
-      label: 最近一次大考成绩
-      input_type: text
-      value_type: integer
-    - question_id: 首选科目
-      label: 首选科目
-      input_type: single_select
-      value_type: string
-      options: [物理, 历史]
-requires:
-  tools: []
-  env: []
+  - question_id: 高考省份
+    label: 高考省份
+    input_type: text
+    value_type: string
+  - question_id: 当前成绩
+    label: 最近一次大考成绩
+    input_type: text
+    value_type: integer
+  - question_id: 首选科目
+    label: 首选科目
+    input_type: single_select
+    value_type: string
+    options:
+    - 物理
+    - 历史
 ---
 
 # 升学潜力评估
 
-## 开场白
+【禁止】开场白、自我介绍。用户带着问题进入时，直接按下方流程分流；已有省份/成绩时立即判定，不重复寒暄。
 
-### 场景一：用户直接进入本场景
-
-> 你好，我是你的专属规划师，请告诉我孩子的所在省份和最近一次大考成绩，我来帮你看看预估目前大致对应什么层次的大学、该层次的部分代表院校，距离想去的层次还差多少分。
-
-### 场景二：用户由其他场景路由至本场景
-
-> 好的，接下来我帮你看看孩子的成绩目前大致对应什么层次的大学。请告诉我孩子的所在省份和最近一次大考成绩。
-
-**对话历史已具备地区与成绩时**，省略开场白中的信息收集部分，保留问候后直接判定。
+越界时说明不在本次咨询范围内并结束本轮（由主路由重新分发），【禁止】在正文推荐其他 skill 名称或按钮。
 
 ## 必填信息（MUST）
 

@@ -2,65 +2,13 @@
 name: 升学规划顾问
 skill_id: career_plan_entity
 version: 2.1.0
-author: e生涯平台
-description: e生涯平台家庭生涯规划专项技能。先识别家长诉求：诉求明确时直接回应并推荐对应场景，不再强制问诊、继续追问或反复回答；诉求模糊时才通过必要问题补齐情况。结构化表单只展示尚未回答的问题，并复用当前会话中已有的可靠答案。普通文本命中由 general_chat 生成进入建议，用户确认后才启用本技能。
-brief: 对升学规划还没头绪？和我聊聊，帮你理清方向、找到下一步。
-info: 聊聊年级、成绩和兴趣特长，我帮你分析当前情况、理清最该关注的方向，并按需带你进特长规划、选科、多元路径等场景深入了解。
-tags: [升学规划,新高考,中小学,选科,生涯指导]
-skill_type: native
-entrypoint_role: specialist
-trigger_rule: 用户在 general_chat 中点击生涯规划建议按钮，或从工具栏主动进入本技能后启用；普通文本命中只生成建议，不自动切换
-tool_dependency: [web_search,user_profile,status_track]
-target_region: 全国
-bind_script: false
-ref_path: ./references/
-accepts_scenes: []
-triggers: [升学规划, 选科, 择校, 升学路径, 学业规划, 特长升学]
-tool_policy:
-  allow_tool_call_first: true
-  allow_direct_answer: true
-  max_tool_calls: 3
-prompt_loading:
-  strategy: progressive
-  include_skill_markdown: full
-  include_session_state: true
-  include_tool_capabilities: true
-  include_route_targets: true
-  include_references: on_demand
-  include_local_assets: summary
-  include_generated_assets: summary
-retrieval:
-  enabled: true
-  sources: [references, local_assets, generated_assets]
-  top_k: 4
-  snippet_chars: 900
-  include_catalog: true
-assets:
-  local_enabled: true
-  local_dir: assets
-  local_prompt_policy: summary
-  generated_domains: [admission, multiroute, school_intro]
-  generated_prompt_policy: summary
-debug:
-  record_prompt_assembly: true
-  record_retrieval_details: true
-planner:
-  scene_selection:
-    mode: profile_matrix
-    matrix_reference: references/06_画像_说明_五型与选择.md
-    match_fields: [grade, score_level, talent, subject_preference]
-    fallback: keyword
-    enable_implicit_routing: true
-routing:
-  scene_name: 生涯规划
-  intent_clarity: entry
-  routing_examples:
-    - 给孩子做一份生涯规划
-    - 想做生涯规划
-    - 想规划孩子的升学方向
-    - 想咨询升学规划
-    - 不知道孩子未来怎么规划
-  school_stage_scope: all
+description: >-
+  面向家庭的升学规划入口顾问。【做什么】识别家长诉求：明确时直接回应并引导到合适场景；模糊时用最少问题补齐情况后给方向。【何时启用】用户想做生涯/升学规划、不知道孩子下一步怎么走；由
+  自由问答确认进入后启用。【不做什么】不替代选科参谋、模拟升学、多元路径等专项 skill 的细则；不强制长问卷开场。
+tool_dependency:
+  - web_search
+  - user_profile
+  - status_track
 ---
 
 # 升学规划顾问

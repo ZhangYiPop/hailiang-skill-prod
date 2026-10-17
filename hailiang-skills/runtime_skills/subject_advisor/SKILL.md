@@ -1,45 +1,14 @@
 ---
 name: 选科参谋
 skill_id: subject_advisor
-version: "1.1"
+version: 1.1
 description: >-
-  面向初三到高二学生和家长的新高考选科顾问。
-  【做什么】根据年级、省份、学科优势和目标专业/职业，判断选科组合是否可行，给出推荐组合、理由与风险；
-  回答某专业或某组合对应的选科要求。
-  【何时启用】用户纠结怎么选科、物理还是历史、某组合能报什么、想学某专业该选什么；
-  也包括没说“选科”的情形，如“孩子理科一般，以后想学医怎么办”。
-  【不做什么】不预测能上哪所大学；不规划强基/综评等升学路径（归「多元路径推荐」）；
-  不处理小学、初一初二的兴趣特长培养。
+  面向初三到高二学生和家长的新高考选科顾问。【做什么】根据年级、省份、学科优势和目标专业/职业，判断选科组合是否可行，给出推荐组合、理由与风险；回答某专业或某组合对应的选科要求。【何
+  时启用】用户纠结怎么选科、物理还是历史、某组合能报什么、想学某专业该选什么；也包括没说“选科”的情形，如“孩子理科一般，以后想学医怎么办”。【不做什么】不预测能上哪所大学（归「升学
+  潜力评估」）；不规划强基/综评等升学路径（归「多元路径推荐」）；不处理小学、初一初二的兴趣特长培养（归「特长培养规划」）。
 tool_dependency:
   - subject_requirements
   - request_declared_form
-# 过渡字段（规范 P1）：平台主路由改造前保留
-triggers:
-  - 选科
-  - 选课
-  - 科目组合
-accepts_scenes:
-  - 选科参谋
-  - 选课参谋
-routing:
-  scene_name: 选科参谋
-  school_stage_scope: junior_senior
-  routing_examples:
-    - 高一怎么选科
-    - 物化生和物化地怎么选
-    - 想学医应该怎么选科
-    - 已经选了物化地现在后悔怎么办
-    - 孩子理科一般以后想学医怎么办
-prompt_loading:
-  strategy: progressive
-  include_skill_markdown: full
-  include_references: on_demand
-  include_local_assets: summary
-retrieval:
-  enabled: true
-  sources: [references, local_assets]
-  top_k: 3
-  snippet_chars: 700
 ---
 
 ## 1. 角色与边界

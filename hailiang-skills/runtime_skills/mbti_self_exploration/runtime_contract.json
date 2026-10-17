@@ -2,17 +2,63 @@
   "skill_id": "mbti_self_exploration",
   "skill_role": "child",
   "stages": [
-    {"id": "init", "kind": "entry", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false},
-    {"id": "assessment", "kind": "collection", "required_facts": [], "enable_intent_check": false, "enable_satisfaction_check": false},
-    {"id": "report", "kind": "analysis", "required_facts": [], "enable_intent_check": true, "enable_satisfaction_check": true}
+    {
+      "id": "init",
+      "kind": "entry",
+      "required_facts": [],
+      "enable_intent_check": false,
+      "enable_satisfaction_check": false,
+      "required_fields": []
+    },
+    {
+      "id": "assessment",
+      "kind": "collection",
+      "required_facts": [],
+      "enable_intent_check": false,
+      "enable_satisfaction_check": false,
+      "required_fields": []
+    },
+    {
+      "id": "report",
+      "kind": "analysis",
+      "required_facts": [],
+      "enable_intent_check": true,
+      "enable_satisfaction_check": true,
+      "required_fields": []
+    }
   ],
   "facts": {
     "global": [],
-    "skill": ["answers", "mbti_type", "mbti_score_summary"],
-    "stage": {"assessment": ["answers"], "report": ["mbti_type", "mbti_score_summary"]},
-    "exports": {"promote_to_global": [], "share_with_parent_skill": []}
+    "skill": [
+      "answers",
+      "mbti_type",
+      "mbti_score_summary"
+    ],
+    "stage": {
+      "assessment": [
+        "answers"
+      ],
+      "report": [
+        "mbti_type",
+        "mbti_score_summary"
+      ]
+    },
+    "exports": {
+      "promote_to_global": [],
+      "share_with_parent_skill": []
+    }
   },
   "routes": [],
-  "accepts_scenes": ["MBTI人格探索", "MBTI测评"],
-  "metadata": {"module_group": "family_education", "scene_name": "MBTI 人格探索"}
+  "metadata": {
+    "module_group": "family_education",
+    "scene_name": "MBTI 人格探索"
+  },
+  "fields": {
+    "uses": [
+      "answers",
+      "mbti_type",
+      "mbti_score_summary"
+    ],
+    "outputs": []
+  }
 }
