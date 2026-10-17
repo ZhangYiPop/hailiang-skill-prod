@@ -690,7 +690,12 @@ def resolve_questionnaire_continuation(
     # A well-formed model envelope already contains reviewed evidence. The
     # deterministic matcher is a resilience path for malformed/empty output,
     # not a second competing extractor.
-    resolved = [] if isinstance(payload, dict) and isinstance(payload.get("resolved_answers"), list) else _apply_explicit_message_answers(bundle, state, reconciliation)
+    model_resolved = payload.get("resolved_answers") if isinstance(payload, dict) else None
+    resolved = (
+        []
+        if isinstance(model_resolved, list) and model_resolved
+        else _apply_explicit_message_answers(bundle, state, reconciliation)
+    )
     resolved.extend(_apply_reconciled_answers(bundle, state, payload, reconciliation))
     refreshed = questionnaire_continuation_context(bundle, state)
     if refreshed is None:

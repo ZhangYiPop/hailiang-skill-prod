@@ -79,6 +79,40 @@ def test_run_api_ownership_idempotence_modes_and_private_trace(tmp_path, monkeyp
     runtime.close()
 
 
+def test_run_goal_seeds_explicit_grade_before_requesting_missing_facts(tmp_path, monkeypatch):
+    import hailiang_skills.api.routes.harness as api
+    monkeypatch.setattr(api, 'capture_policy', lambda *_: policy())
+    runtime = make_runtime(
+        tmp_path,
+        lambda messages, *_args, **_kwargs: (
+            AssistantTurnResult(final_text='完成')
+            if any(message.role == 'tool' for message in messages)
+            else call('request_user_input', {
+                'title': '补充年级',
+                'fields': [{'key': 'grade', 'label': '当前年级', 'scope': 'session'}],
+            })
+        ),
+    )
+    app = FastAPI()
+    app.include_router(build_harness_router(Repository(), Facts(), None, runtime), prefix='/api/v2')
+
+    with TestClient(app) as client:
+        started = client.post('/api/v2/sessions/grade-seed/harness/runs', json={
+            'goal': '帮高二学生做选科规划：偏理科，目标冲强基，家里希望稳妥一点',
+            'context_data': {'user_id': 'u'},
+        })
+        assert started.status_code == 202, started.text
+        rid = started.json()['run_id']
+        advance(runtime, rid, 5)
+        run = runtime.store.get(rid)
+
+    assert run['status'] == 'completed'
+    assert not run['inputs']
+    tool = next(iter(run['tools'].values()))
+    assert tool['result'] == {'answers': {'grade': '高二'}, 'source': 'existing_facts'}
+    runtime.close()
+
+
 def test_model_failure_does_not_create_input_requests(tmp_path):
     def fail(*_):
         raise TimeoutError()
