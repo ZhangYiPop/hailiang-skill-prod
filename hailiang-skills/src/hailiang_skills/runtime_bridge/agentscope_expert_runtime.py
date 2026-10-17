@@ -812,6 +812,9 @@ class AgentScopeExpertRuntime:
         )
         member_payloads = payload.get("members") if isinstance(payload.get("members"), list) else []
         by_expert = {str(item.get("expert_id") or ""): item for item in member_payloads if isinstance(item, dict)}
+        from hailiang_skills.runtime_bridge.expert_team_bundle import published_team_overlay
+
+        policy, fallback_expert_id, stages = published_team_overlay(payload, locks)
         members = tuple(
             ExpertTeamMember(
                 expert_id=str(item.get("object_key") or ""),
@@ -822,6 +825,7 @@ class AgentScopeExpertRuntime:
                     or ""
                 ),
                 routing_brief=str((by_expert.get(str(item.get("object_key") or "")) or {}).get("routing_brief") or ""),
+                applicable_stages=stages.get(str(item.get("object_key") or ""), ()),
             )
             for item in locks
             if str(item.get("object_key") or "")
@@ -832,6 +836,8 @@ class AgentScopeExpertRuntime:
             rules_markdown=str(payload.get("rules_markdown") or team.rules_markdown),
             coordinator_expert_id=coordinator_expert_id,
             members=members or team.members,
+            consultation_policy=policy,
+            fallback_expert_id=fallback_expert_id or team.fallback_expert_id,
         )
 
     def _run_agent(
@@ -1787,6 +1793,9 @@ class AgentScopeExpertRuntime:
         )
         member_payloads = payload.get("members") if isinstance(payload.get("members"), list) else []
         by_key = {str(item.get("expert_id") or ""): item for item in member_payloads if isinstance(item, dict)}
+        from hailiang_skills.runtime_bridge.expert_team_bundle import published_team_overlay
+
+        policy, fallback_expert_id, stages = published_team_overlay(payload, locks)
         members = tuple(
             ExpertTeamMember(
                 expert_id=str(item.get("object_key") or ""),
@@ -1797,6 +1806,7 @@ class AgentScopeExpertRuntime:
                     or ""
                 ),
                 routing_brief=str((by_key.get(str(item.get("object_key") or "")) or {}).get("routing_brief") or ""),
+                applicable_stages=stages.get(str(item.get("object_key") or ""), ()),
             )
             for item in locks if str(item.get("object_key") or "")
         )
@@ -1807,6 +1817,8 @@ class AgentScopeExpertRuntime:
             coordinator_expert_id=coordinator,
             members=members,
             brief=str(payload.get("brief") or "").strip(),
+            consultation_policy=policy,
+            fallback_expert_id=fallback_expert_id,
         )
 
     def _apply_structured_team_switch(self, context, team: ExpertTeamDefinition | None, user_message: str) -> str:

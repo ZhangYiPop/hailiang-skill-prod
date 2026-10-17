@@ -244,6 +244,8 @@ def open_or_resume_session(
     _initialize_general_chat_state(context)
     get_conversation_state(context)
     context.session_meta["_session_created"] = True
+    from hailiang_skills.workbench.orchestration import stamp_new_session
+    stamp_new_session(context)
     from hailiang_skills.api.routes.harness import harness_enabled
     context.session_meta["runtime_mode"] = "harness_v1" if harness_enabled() else "legacy"
     context.session_meta["_profile_branch_created"] = True

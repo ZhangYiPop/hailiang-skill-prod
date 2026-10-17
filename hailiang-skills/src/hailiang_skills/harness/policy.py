@@ -7,6 +7,7 @@ import yaml
 
 from hailiang_skills.skill_runtime.models import SessionState
 from hailiang_skills.skill_runtime.tools import build_tool_specs
+from hailiang_skills.workbench.orchestration import orchestrator_snapshot_view
 from .contracts import HarnessError
 
 
@@ -107,7 +108,12 @@ def capture_policy(orchestrator, context):
                          "max_run_model_calls": int(settings.get("max_run_model_calls", 96)), "max_run_tool_calls": int(settings.get("max_run_tool_calls", 192)), "max_tasks": int(settings.get("max_tasks", 64))},
             "team_id": team_id, "snapshot": context.session_meta.get("configuration_snapshot", {}),
             "model_config": model_config,
-            "soul": orchestrator._soul_context(context).get("content", "")}
+            "soul": orchestrator._soul_context(context).get("content", ""),
+            "orchestrator": orchestrator_snapshot_view(
+                team,
+                context.session_meta.get("configuration_snapshot") or {},
+                enabled=bool(context.session_meta.get("orchestrator_v2")),
+            )}
 
 
 def allowed_skills(run, task):
