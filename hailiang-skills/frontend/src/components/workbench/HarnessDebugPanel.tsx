@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AgentInputRequest, TaskProgressBlock, type SubmitHarnessAnswer } from "@/components/message-blocks/TaskProgressBlock";
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { HarnessContextDiagnostics } from "./HarnessContextDiagnostics";
 import type { HarnessRun, HarnessSnapshot } from "@/types/harness";
 import { isHarnessTerminal } from "@/types/harness";
 
@@ -392,9 +393,12 @@ export function HarnessDebugPanel({
                   </div>
                 ) : null}
                 {trace ? (
+                  <>
+                  <HarnessContextDiagnostics trace={trace} />
                   <pre className="whitespace-pre-wrap rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-slate-400">
                     {trace}
                   </pre>
+                  </>
                 ) : (
                   <p className="py-6 text-center text-sm text-slate-600">
                     {runs.length ? "正在加载或尚未拉取调用追踪；也可点左侧「查看调用追踪」。" : "开始任务后可在此查看轨迹过程。"}

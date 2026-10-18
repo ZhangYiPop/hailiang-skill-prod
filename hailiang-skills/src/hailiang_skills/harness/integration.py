@@ -65,6 +65,9 @@ class HarnessIntegration:
                        tool_registry=ToolRegistry(capabilities=tuple(ToolCapability(**c) for c in registry_data["capabilities"]), settings=deepcopy(registry_data["settings"])))
 
     def tool(self, run, task, tool):
+        if tool['name'] == 'read_skill_asset':
+            from .asset_reader import read_asset
+            return read_asset(run, task, tool['arguments'], self.bundle)
         skill_ids = [task["skill_id"]] if task["kind"] == "skill" else (
             run["policy"]["independent_skills"] if task["kind"] == "main" else run["policy"]["experts"][task["expert_id"]]["skills"])
         if task["kind"] != "skill" and tool["name"] in {SKILL_ASSET_SEARCH_TOOL, LEGACY_RAG_SEARCH_TOOL, "web_search"}:
@@ -76,6 +79,8 @@ class HarnessIntegration:
         facts = deepcopy(run.get("seed_facts", {}))
         if self.store:
             facts.update(self.store.fact_records(run, task))
+        from .context_policy import applicable_facts
+        facts = applicable_facts(run, facts)
         state.global_facts = {record["key"]: record["value"] for record in facts.values() if record.get("status") == "confirmed"}
         state.collected_info = {**state.collected_info, **state.global_facts}
         state.status_flags["harness_idempotency_key"] = tool["id"]

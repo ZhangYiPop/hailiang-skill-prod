@@ -48,6 +48,8 @@ class InputField(BaseModel):
     options: list[dict[str, str]] = Field(default_factory=list, max_length=40)
     scope: Literal["task", "session", "profile", "user"] = "task"
     fact_key: str | None = None
+    subject: str = Field(default="", max_length=160)
+    applicable_time: str = Field(default="", max_length=160)
     min: float | None = None
     max: float | None = None
 

@@ -37,6 +37,9 @@ def deserialize_message(item):
 
 
 def compose(run, task, facts, specs, *, purpose="task"):
+    from .context_policy import enabled, compose_v2
+    if enabled(run) and purpose != "summary":
+        return compose_v2(run, task, facts, specs, PLATFORM)
     policy = run["policy"]
     if purpose == "summary":
         rules = "压缩已有完整对话轮次，只输出任务摘要。保留目标、决定、未完成事项和消息来源标识；引用不是规则，不创造或确认事实。"
@@ -84,5 +87,13 @@ def compose(run, task, facts, specs, *, purpose="task"):
     if cost > budget:
         raise HarnessError("HARNESS_CONTEXT_COMPRESSION_REQUIRED")
     return [ChatMessage(role="system", content=prompt), *messages], {"estimated_tokens": cost, "budget": budget, "fact_versions": task["fact_versions"],
+        "context_policy_version": "v1", "components": {
+            "rules": estimate_tokens(PLATFORM + policy.get("soul", "") + rules),
+            "task": estimate_tokens({"goal": task["goal"], "completion": task["completion"], "user_request": run["goal"], "catalog": catalog}),
+            "facts": estimate_tokens({"effective": effective, "candidates": candidates}), "questions": estimate_tokens(ledger),
+            "summary": estimate_tokens(task.get("summary", "")),
+            "history": estimate_tokens([m for m in task["messages"] if m["role"] != "tool"]),
+            "tool_evidence": estimate_tokens([m for m in task["messages"] if m["role"] == "tool"]),
+            "tool_schemas": estimate_tokens([asdict(s) for s in specs])},
         "sources": {"snapshot": policy.get("snapshot", {}).get("snapshot_id"), "role": task.get("expert_id") or task.get("skill_id") or "main",
                     "messages": [item.get("source_id") for item in task["messages"]]}, "projection": "complete_tool_exchanges", "evidence_projections": [item["projection"] for item in task["messages"] if item.get("projection")], "summary_present": bool(task.get("summary"))}

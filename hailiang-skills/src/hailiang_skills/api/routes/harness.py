@@ -172,7 +172,11 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
         run = operation(lambda: runtime.store.get(run_id))
         if run["session_id"] != session_id or run["user_id"] != user_id or run["profile_id"] != profile_id:
             raise HTTPException(403, "HARNESS_ACCESS_DENIED")
-        return {"run_id": run_id, "tasks": [{"task_id": t["id"], "kind": t["kind"], "trace": t["trace"]} for t in run["tasks"].values()]}
+        return {"run_id": run_id, "context_policy_version": run.get("context_policy_version", "v1"),
+                "input_tokens_estimated": run.get("input_tokens_estimated", 0),
+                "input_tokens_actual": run.get("input_tokens_actual", 0),
+                "input_tokens_charged": run.get("input_tokens_charged", run.get("input_tokens_estimated", 0)),
+                "tasks": [{"task_id": t["id"], "kind": t["kind"], "trace": t["trace"]} for t in run["tasks"].values()]}
 
     @router.get("/sessions/{session_id}/harness/runs/{run_id}")
     def get_run(session_id: str, run_id: str, user_id: str, profile_id: str | None = None):

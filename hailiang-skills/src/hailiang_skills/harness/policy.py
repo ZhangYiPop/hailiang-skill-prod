@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import os
 
 import yaml
 
@@ -91,6 +92,8 @@ def capture_policy(orchestrator, context):
         skill_data[skill_id] = {"name": bundle.runtime_metadata.name or skill_id, "rules": bundle.skill_markdown,
                                "specs": enabled_specs, "root": str(bundle.root_dir), "metadata": bundle.metadata,
                                "tool_registry": asdict(bundle.tool_registry), "contract": asdict(bundle.contract)}
+        from hailiang_skills.skill_runtime.skill_contract import field_uses
+        skill_data[skill_id]["fact_keys"] = list(field_uses(bundle.contract))
         from .assets import snapshot_assets
         skill_data[skill_id]["assets"] = snapshot_assets(bundle.root_dir)
     if set(independent) - set(skill_data):
@@ -103,12 +106,13 @@ def capture_policy(orchestrator, context):
     if client is not None and getattr(client, "_config", None) is not None:
         model_config = {key: value for key, value in asdict(client._config).items() if key != "api_key"}
     return {"experts": expert_data, "skills": skill_data, "independent_skills": independent,
-            "settings": {"max_parallel": int(settings.get("max_parallel", 3)), "max_model_calls": int(settings.get("max_model_calls", 24)),
+            "settings": {"context_policy_version": "v2" if os.getenv("HAILIANG_CONTEXT_POLICY", settings.get("context_policy_version", "v1")) == "v2" else "v1",
+                         "max_parallel": int(settings.get("max_parallel", 3)), "max_model_calls": int(settings.get("max_model_calls", 24)),
                          "max_search_calls_per_task": int(settings.get("max_search_calls_per_task", 5)),
                          "max_tool_calls": int(settings.get("max_tool_calls", 48)), "context_tokens": int(settings.get("context_tokens", 64000)),
                          "max_tool_evidence_chars": int(settings.get("max_tool_evidence_chars", 8000)),
                          "max_output_tokens": int(settings.get("max_output_tokens", 8192)),
-                         "max_run_input_tokens": int(settings.get("max_run_input_tokens", 300000)),
+                         "max_run_input_tokens": max(0, int(os.getenv("HAILIANG_HARNESS_MAX_RUN_INPUT_TOKENS", settings.get("max_run_input_tokens", 300000)))),
                          "main_input_reserve_tokens": int(settings.get("main_input_reserve_tokens", 32000)),
                          "max_run_model_calls": int(settings.get("max_run_model_calls", 96)), "max_run_tool_calls": int(settings.get("max_run_tool_calls", 192)), "max_tasks": int(settings.get("max_tasks", 64))},
             "team_id": team_id, "snapshot": context.session_meta.get("configuration_snapshot", {}),

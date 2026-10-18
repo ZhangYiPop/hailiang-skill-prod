@@ -208,6 +208,8 @@ class OpenAICompatibleChatClient:
                     "model": self._config.model,
                     "prompt_chars": prompt_chars,
                     "input_tokens": usage.get("input_tokens"),
+                    "prompt_cache_hit_tokens": usage.get("prompt_cache_hit_tokens"),
+                    "prompt_cache_miss_tokens": usage.get("prompt_cache_miss_tokens"),
                     "output_tokens": usage.get("output_tokens"),
                     "total_tokens": usage.get("total_tokens"),
                     "finish_reason": finish_reason,
@@ -360,6 +362,8 @@ class OpenAICompatibleChatClient:
                             "model": self._config.model,
                             "prompt_chars": prompt_chars,
                             "input_tokens": usage.get("input_tokens"),
+                            "prompt_cache_hit_tokens": usage.get("prompt_cache_hit_tokens"),
+                            "prompt_cache_miss_tokens": usage.get("prompt_cache_miss_tokens"),
                             "output_tokens": usage.get("output_tokens"),
                             "total_tokens": usage.get("total_tokens"),
                             "finish_reason": finish_reason,
@@ -463,6 +467,8 @@ def _extract_usage_payload(payload: object) -> dict[str, int | None]:
         "input_tokens": token_value("prompt_tokens", "input_tokens"),
         "output_tokens": token_value("completion_tokens", "output_tokens"),
         "total_tokens": token_value("total_tokens"),
+        "prompt_cache_hit_tokens": token_value("prompt_cache_hit_tokens"),
+        "prompt_cache_miss_tokens": token_value("prompt_cache_miss_tokens"),
     }
 
 

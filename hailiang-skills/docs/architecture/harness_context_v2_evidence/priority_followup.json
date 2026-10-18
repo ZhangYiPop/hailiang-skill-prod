@@ -1,0 +1,893 @@
+{
+  "model": "deepseek-v4-flash-0731",
+  "temperature": 0,
+  "policy_sha256": "4e359e8148d5a22105c259aabc42a30dd353654761f680fcc40f5e36df19912a",
+  "fixture": "fictional",
+  "repeats": 1,
+  "cases": [
+    {
+      "name": "multi_round_inputs",
+      "repeat": 1,
+      "goal": "请家庭教育专家制定亲子冲突计划；先分两轮分别了解孩子年级和最近冲突场景，每轮问一个问题，然后给三条建议。",
+      "v1": {
+        "status": "completed",
+        "error": null,
+        "text": "根据您提供的信息，孩子就读高中，最近冲突主要发生在催作业时双方提高声音，且您每晚只有半小时陪伴时间。以下是三条具体建议：\n\n**建议一：把\"催作业\"换成\"约定+提醒\"**\n\n高中孩子自我意识强，最反感被当成小孩催着管。催得越急，他越觉得不被信任，声音自然就上去了。\n\n具体做法：和孩子约定一个固定的作业启动时间（比如晚上8点），到点只做一次平静提醒，不反复追问、不提高声音。把\"你赶紧写作业\"换成\"8点了，按咱们说好的来\"。把监督权交还给他，冲突的导火索就少了一半。\n\n**建议二：半小时陪伴，先\"聊\"后\"管\"**\n\n半小时如果全用来盯作业，孩子感受到的全是压力。建议把时间分成两段：前15分钟聊点学习以外的事（学校趣事、他感兴趣的话题），后15分钟再问作业进度和需要什么帮助。\n\n高中孩子需要的是\"被理解\"而不是\"被管理\"。先让他感受到你关心的是他这个人，而不是他的分数，他才会愿意听你的建议。\n\n**建议三：冲突发生时，先\"暂停\"再\"复盘\"**\n\n当双方声音都提高时，说明情绪已经上来了，这时候讲道理没用。约定一个\"暂停暗号\"（比如一方说\"我们先停一下\"），各自回房间冷静10分钟，等情绪平复再谈。\n\n事后找个平静的时间，简短复盘：\"刚才咱们都急了，下次怎么避免？\"让孩子参与定规则，他会更愿意遵守。这也能让半小时的相处质量更高，而不是消耗在争吵里。\n\n核心思路：高中阶段，孩子要的是尊重和信任，家长要的是效率和安心。把\"催\"变成\"约定\"，把\"管\"变成\"陪伴\"，冲突自然减少。如果执行一段时间后仍有困难，可以再和我聊聊具体情况。",
+        "estimated_input": 40526,
+        "actual_input": 26132,
+        "measurement_complete": true,
+        "model_calls": 5,
+        "stages": {
+          "main": {
+            "calls": 4,
+            "estimated_input": 32758,
+            "actual_input": 20969,
+            "output": 831
+          },
+          "expert": {
+            "calls": 1,
+            "estimated_input": 7768,
+            "actual_input": 5163,
+            "output": 416
+          }
+        },
+        "components": {
+          "rules": 19937,
+          "task": 1252,
+          "facts": 1994,
+          "questions": 1282,
+          "summary": 0,
+          "history": 2455,
+          "tool_evidence": 1803,
+          "tool_schemas": 11301
+        },
+        "questions": [
+          {
+            "title": "了解孩子年级",
+            "fields": [
+              {
+                "key": "grade",
+                "label": "孩子目前就读的年级是？",
+                "input_type": "single_select",
+                "required": true,
+                "options": [
+                  {
+                    "label": "小学低年级（1-3年级）",
+                    "value": "primary_low"
+                  },
+                  {
+                    "label": "小学高年级（4-6年级）",
+                    "value": "primary_high"
+                  },
+                  {
+                    "label": "初中",
+                    "value": "junior"
+                  },
+                  {
+                    "label": "高中",
+                    "value": "senior"
+                  }
+                ],
+                "scope": "task",
+                "fact_key": null,
+                "min": null,
+                "max": null
+              }
+            ],
+            "status": "answered",
+            "answer": {
+              "skipped": false,
+              "answers": {
+                "grade": "senior"
+              }
+            }
+          },
+          {
+            "title": "了解最近冲突场景",
+            "fields": [
+              {
+                "key": "conflict_scene",
+                "label": "最近一次和孩子发生冲突，主要是什么场景或原因？",
+                "input_type": "text",
+                "required": true,
+                "options": [],
+                "scope": "task",
+                "fact_key": null,
+                "min": null,
+                "max": null
+              }
+            ],
+            "status": "answered",
+            "answer": {
+              "skipped": false,
+              "answers": {
+                "conflict_scene": "催作业时双方提高声音；家长每晚只有半小时"
+              }
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "kind": "main",
+            "goal": "请家庭教育专家制定亲子冲突计划；先分两轮分别了解孩子年级和最近冲突场景，每轮问一个问题，然后给三条建议。",
+            "status": "completed",
+            "structured_result": null
+          },
+          {
+            "kind": "expert",
+            "goal": "孩子就读高中，最近冲突场景是家长催作业时双方提高声音，家长每晚只有半小时陪伴时间。请制定亲子冲突应对计划，给出三条具体可操作的建议，聚焦高中阶段孩子的心理特点和高效陪伴方式。",
+            "status": "completed",
+            "structured_result": null
+          }
+        ],
+        "tools": [
+          {
+            "name": "request_user_input",
+            "status": "completed",
+            "arguments": {
+              "title": "了解孩子年级",
+              "fields": [
+                {
+                  "key": "grade",
+                  "label": "孩子目前就读的年级是？",
+                  "input_type": "single_select",
+                  "options": [
+                    {
+                      "key": "primary_low",
+                      "label": "小学低年级（1-3年级）"
+                    },
+                    {
+                      "key": "primary_high",
+                      "label": "小学高年级（4-6年级）"
+                    },
+                    {
+                      "key": "junior",
+                      "label": "初中"
+                    },
+                    {
+                      "key": "senior",
+                      "label": "高中"
+                    }
+                  ]
+                }
+              ]
+            },
+            "error": null
+          },
+          {
+            "name": "request_user_input",
+            "status": "completed",
+            "arguments": {
+              "fields": [
+                {
+                  "key": "conflict_scene",
+                  "label": "最近一次和孩子发生冲突，主要是什么场景或原因？",
+                  "input_type": "text"
+                }
+              ],
+              "title": "了解最近冲突场景"
+            },
+            "error": null
+          },
+          {
+            "name": "delegate_tasks",
+            "status": "completed",
+            "arguments": {
+              "tasks": [
+                {
+                  "key": "family_conflict_plan",
+                  "expert_id": "family_education_expert",
+                  "goal": "孩子就读高中，最近冲突场景是家长催作业时双方提高声音，家长每晚只有半小时陪伴时间。请制定亲子冲突应对计划，给出三条具体可操作的建议，聚焦高中阶段孩子的心理特点和高效陪伴方式。",
+                  "completion": "输出三条针对该家庭情况的亲子冲突应对建议"
+                }
+              ]
+            },
+            "error": null
+          }
+        ],
+        "duplicate_question_signatures": 0,
+        "quality_review": "pending",
+        "constraint_review": "pending",
+        "elapsed_s": 16.48
+      },
+      "v2": {
+        "status": "completed",
+        "error": null,
+        "text": "专家已完成两轮信息收集并给出建议。以下是汇总结果：\n\n---\n\n**第一轮：孩子年级**\n孩子就读高二，正处于青春期自尊心强、对家长监督比较敏感的年龄段。\n\n**第二轮：最近冲突场景**\n冲突集中在催作业这件事上——双方容易提高声音，而且家长每晚能陪的时间只有半小时左右。\n\n---\n\n**三条建议：**\n\n**1. 把\"催\"换成\"约\"**\n与其每天临时催\"作业写了吗\"，不如和孩子提前约好一个固定作业时段。到了点提醒一次，其余时间不反复追问，减少\"被盯着\"的感觉，也减少你反复开口带来的摩擦。\n\n**2. 冲突升级时用\"暂停暗号\"**\n当双方声音开始提高，先约定一个暗号（比如\"先停一下\"），各自冷静几分钟再继续谈。硬碰硬只会让情绪盖过事情本身，暂停一下往往比继续吵更有效。\n\n**3. 半小时定位为\"陪伴\"而非\"监督\"**\n你每晚只有半小时，与其用来盯作业，不如把它定位成\"我在旁边陪你\"——孩子需要帮助时你在，但不去逐项检查。这样既给了支持，又降低了被监视感，冲突自然少一些。\n\n---\n\n如果后续想针对作业量、学习状态或日常沟通模式做更细的调整，可以对接真人规划师进一步沟通。",
+        "estimated_input": 67690,
+        "actual_input": 40897,
+        "measurement_complete": true,
+        "model_calls": 7,
+        "stages": {
+          "main": {
+            "calls": 3,
+            "estimated_input": 26425,
+            "actual_input": 16262,
+            "output": 588
+          },
+          "expert": {
+            "calls": 4,
+            "estimated_input": 41265,
+            "actual_input": 24635,
+            "output": 961
+          }
+        },
+        "components": {
+          "rules": 30930,
+          "task": 2680,
+          "facts": 1227,
+          "questions": 837,
+          "summary": 0,
+          "history": 3230,
+          "tool_evidence": 2241,
+          "tool_schemas": 23200
+        },
+        "questions": [
+          {
+            "title": "第一轮：了解孩子年级",
+            "fields": [
+              {
+                "key": "grade",
+                "label": "孩子目前就读几年级？",
+                "input_type": "text",
+                "required": true,
+                "options": [],
+                "scope": "task",
+                "fact_key": null,
+                "subject": "",
+                "applicable_time": "",
+                "min": null,
+                "max": null
+              }
+            ],
+            "status": "answered",
+            "answer": {
+              "skipped": false,
+              "answers": {
+                "grade": "高二"
+              }
+            }
+          },
+          {
+            "title": "第二轮：了解最近冲突场景",
+            "fields": [
+              {
+                "key": "conflict_scene",
+                "label": "最近一次比较典型的亲子冲突是什么场景？比如因为什么话题、在什么情况下发生的？",
+                "input_type": "text",
+                "required": true,
+                "options": [],
+                "scope": "task",
+                "fact_key": null,
+                "subject": "",
+                "applicable_time": "",
+                "min": null,
+                "max": null
+              }
+            ],
+            "status": "answered",
+            "answer": {
+              "skipped": false,
+              "answers": {
+                "conflict_scene": "催作业时双方提高声音；家长每晚只有半小时"
+              }
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "kind": "main",
+            "goal": "请家庭教育专家制定亲子冲突计划；先分两轮分别了解孩子年级和最近冲突场景，每轮问一个问题，然后给三条建议。",
+            "status": "completed",
+            "structured_result": null
+          },
+          {
+            "kind": "expert",
+            "goal": "制定亲子冲突计划：先分两轮分别了解孩子年级和最近冲突场景，每轮问一个问题，然后给三条建议。",
+            "status": "completed",
+            "structured_result": {
+              "version": "v2",
+              "status": "completed",
+              "conclusion": "已完成两轮信息收集（孩子高二；冲突场景为催作业时双方提高声音、家长每晚仅半小时），并基于此给出三条亲子冲突建议：1）把\"催\"换成\"约\"，固定作业时段减少临时催促；2）冲突升级时用\"暂停暗号\"冷静后再谈，避免硬碰硬；3）半小时内定位为\"陪伴\"而非\"监督\"，减少被监视感。建议已按单轮300字内、引导式口吻输出。",
+              "findings": [
+                "孩子就读高二，处于青春期自尊心强、对家长监督敏感的年龄段",
+                "冲突集中在催作业场景，双方提高声音，且家长每晚可用时间仅半小时",
+                "时间紧张+临时催促+情绪升级是冲突的核心触发链条"
+              ],
+              "limitations": [
+                "未了解孩子作业量、学习状态、亲子日常沟通模式等更深层信息，建议如需进一步调整可对接真人规划师"
+              ],
+              "unresolved": [],
+              "evidence_refs": []
+            }
+          }
+        ],
+        "tools": [
+          {
+            "name": "read_facts",
+            "status": "completed",
+            "arguments": {},
+            "error": null
+          },
+          {
+            "name": "delegate_tasks",
+            "status": "completed",
+            "arguments": {
+              "tasks": [
+                {
+                  "key": "family_conflict_plan",
+                  "expert_id": "family_education_expert",
+                  "goal": "制定亲子冲突计划：先分两轮分别了解孩子年级和最近冲突场景，每轮问一个问题，然后给三条建议。",
+                  "completion": "完成两轮信息收集（孩子年级、最近冲突场景），并给出三条亲子冲突处理建议",
+                  "brief": {
+                    "version": "v2",
+                    "objective": "制定亲子冲突计划，分两轮收集信息后给出三条建议",
+                    "scope": [
+                      "亲子冲突",
+                      "家庭教育"
+                    ],
+                    "constraints": [
+                      "必须分两轮，每轮只问一个问题：第一轮问孩子年级，第二轮问最近冲突场景",
+                      "两轮信息收集完成后给出三条建议",
+                      "单轮回复不超过300字"
+                    ],
+                    "completion": "完成两轮信息收集并给出三条建议",
+                    "expected_outputs": [
+                      "两轮追问记录",
+                      "三条亲子冲突建议"
+                    ]
+                  }
+                }
+              ]
+            },
+            "error": null
+          },
+          {
+            "name": "request_user_input",
+            "status": "completed",
+            "arguments": {
+              "title": "第一轮：了解孩子年级",
+              "fields": [
+                {
+                  "key": "grade",
+                  "label": "孩子目前就读几年级？",
+                  "input_type": "text",
+                  "required": true,
+                  "scope": "task"
+                }
+              ],
+              "clarification_reason": "按任务要求，第一轮先了解孩子年级，以便后续给出贴合年龄段的亲子冲突建议。"
+            },
+            "error": null
+          },
+          {
+            "name": "request_user_input",
+            "status": "completed",
+            "arguments": {
+              "clarification_reason": "按任务要求，第二轮了解最近冲突场景，以便给出针对性建议。",
+              "fields": [
+                {
+                  "input_type": "text",
+                  "key": "conflict_scene",
+                  "label": "最近一次比较典型的亲子冲突是什么场景？比如因为什么话题、在什么情况下发生的？",
+                  "required": true,
+                  "scope": "task"
+                }
+              ],
+              "title": "第二轮：了解最近冲突场景"
+            },
+            "error": null
+          },
+          {
+            "name": "submit_result",
+            "status": "completed",
+            "arguments": {
+              "status": "completed",
+              "conclusion": "已完成两轮信息收集（孩子高二；冲突场景为催作业时双方提高声音、家长每晚仅半小时），并基于此给出三条亲子冲突建议：1）把\"催\"换成\"约\"，固定作业时段减少临时催促；2）冲突升级时用\"暂停暗号\"冷静后再谈，避免硬碰硬；3）半小时内定位为\"陪伴\"而非\"监督\"，减少被监视感。建议已按单轮300字内、引导式口吻输出。",
+              "findings": [
+                "孩子就读高二，处于青春期自尊心强、对家长监督敏感的年龄段",
+                "冲突集中在催作业场景，双方提高声音，且家长每晚可用时间仅半小时",
+                "时间紧张+临时催促+情绪升级是冲突的核心触发链条"
+              ],
+              "evidence_refs": [],
+              "limitations": [
+                "未了解孩子作业量、学习状态、亲子日常沟通模式等更深层信息，建议如需进一步调整可对接真人规划师"
+              ],
+              "unresolved": []
+            },
+            "error": null
+          }
+        ],
+        "duplicate_question_signatures": 0,
+        "quality_review": "pending",
+        "constraint_review": "pending",
+        "elapsed_s": 23.25
+      }
+    },
+    {
+      "name": "long_evidence",
+      "repeat": 1,
+      "goal": "请升学专家调用授权 Skill，检索本地 Skill 资料比较普通高考与强基计划，给出证据支持的三条差异和适用限制，不承诺录取。孩子浙江高二，目前成绩尚不明确。",
+      "v1": {
+        "status": "completed",
+        "error": null,
+        "text": "根据升学规划专家的分析，以下是普通高考与强基计划的客观比较，供您参考。\n\n**三条核心差异**\n\n**一、录取依据不同**\n普通高考完全以高考总分和志愿填报为依据，按分数从高到低录取。强基计划则采用\"高考成绩+高校校测\"综合评定，高考成绩占综合成绩的一定比例，还需通过高校组织的笔试、面试和体测，录取环节更复杂。\n\n**二、专业范围差异大**\n普通高考可报考几乎所有专业，选择面广。强基计划聚焦基础学科，主要面向数学、物理、化学、生物、历史、哲学、古文字学等方向，专业选择面窄，以国家战略需求为导向。\n\n**三、培养模式不同**\n普通高考录取后按常规本科培养，发展方向相对自由。强基计划实行小班化、导师制，普遍采用本硕博衔接培养，入学后转专业受限，培养路径固定，更强调长期投入基础研究。\n\n**强基计划的适用限制**\n\n1. **院校层次高**：强基计划对应顶尖985层次高校，分数要求很高，属于高分段升学通道。\n2. **专业选择受限**：如果孩子对应用型、热门专业（如金融、计算机应用、临床医学等）更感兴趣，强基计划并不适合。\n3. **培养路径固定**：本硕博衔接意味着长期投入，转专业空间小，需要孩子对基础学科有真正的兴趣和坚持意愿，不能只当作\"低分进名校\"的跳板。\n4. **成绩尚不明确时**：孩子目前高二、成绩未定，建议先以普通高考为主线夯实基础，待高三成绩稳定后再评估是否具备强基计划的报考条件。\n\n以上为客观比较，不构成任何录取承诺，最终以当年省考试院及招生院校官方简章为准。等孩子成绩出来后，可以再帮您做更具体的匹配分析。",
+        "estimated_input": 154233,
+        "actual_input": 94044,
+        "measurement_complete": true,
+        "model_calls": 9,
+        "stages": {
+          "main": {
+            "calls": 2,
+            "estimated_input": 14699,
+            "actual_input": 9907,
+            "output": 558
+          },
+          "expert": {
+            "calls": 2,
+            "estimated_input": 26071,
+            "actual_input": 15051,
+            "output": 625
+          },
+          "skill": {
+            "calls": 5,
+            "estimated_input": 113463,
+            "actual_input": 69086,
+            "output": 892
+          }
+        },
+        "components": {
+          "rules": 52072,
+          "task": 2223,
+          "facts": 216,
+          "questions": 0,
+          "summary": 0,
+          "history": 4340,
+          "tool_evidence": 73661,
+          "tool_schemas": 21197
+        },
+        "questions": [],
+        "tasks": [
+          {
+            "kind": "main",
+            "goal": "请升学专家调用授权 Skill，检索本地 Skill 资料比较普通高考与强基计划，给出证据支持的三条差异和适用限制，不承诺录取。孩子浙江高二，目前成绩尚不明确。",
+            "status": "completed",
+            "structured_result": null
+          },
+          {
+            "kind": "expert",
+            "goal": "调用授权 Skill，检索本地 Skill 资料，比较普通高考与强基计划，给出证据支持的三条差异和适用限制。孩子为浙江高二学生，目前成绩尚不明确。注意：不承诺录取，仅做客观比较和适用性分析。",
+            "status": "completed",
+            "structured_result": null
+          },
+          {
+            "kind": "skill",
+            "goal": "比较普通高考与强基计划，给出三条有证据支持的差异和强基计划的适用限制。孩子为浙江高二学生，成绩尚不明确。不承诺录取，仅做客观比较和适用性分析。",
+            "status": "completed",
+            "structured_result": null
+          }
+        ],
+        "tools": [
+          {
+            "name": "delegate_tasks",
+            "status": "completed",
+            "arguments": {
+              "tasks": [
+                {
+                  "key": "compare_gaokao_qiangji",
+                  "expert_id": "career_plan_expert",
+                  "goal": "调用授权 Skill，检索本地 Skill 资料，比较普通高考与强基计划，给出证据支持的三条差异和适用限制。孩子为浙江高二学生，目前成绩尚不明确。注意：不承诺录取，仅做客观比较和适用性分析。",
+                  "completion": "输出三条有证据支撑的差异，以及强基计划的适用限制说明，不承诺录取。"
+                }
+              ]
+            },
+            "error": null
+          },
+          {
+            "name": "execute_skill",
+            "status": "completed",
+            "arguments": {
+              "skill_id": "multi_path_planning",
+              "task": "比较普通高考与强基计划，给出三条有证据支持的差异和强基计划的适用限制。孩子为浙江高二学生，成绩尚不明确。不承诺录取，仅做客观比较和适用性分析。"
+            },
+            "error": null
+          },
+          {
+            "name": "search_skill_assets",
+            "status": "completed",
+            "arguments": {
+              "query": "强基计划 普通高考 差异 适用条件"
+            },
+            "error": null
+          },
+          {
+            "name": "search_skill_assets",
+            "status": "completed",
+            "arguments": {
+              "query": "强基计划 普通高考 差异 适用条件"
+            },
+            "error": null
+          },
+          {
+            "name": "search_skill_assets",
+            "status": "completed",
+            "arguments": {
+              "query": "强基计划 报名条件 录取方式 基础学科"
+            },
+            "error": null
+          },
+          {
+            "name": "search_skill_assets",
+            "status": "completed",
+            "arguments": {
+              "query": "强基计划 基础学科 培养模式 本硕博 专业限制"
+            },
+            "error": null
+          },
+          {
+            "name": "search_skill_assets",
+            "status": "completed",
+            "arguments": {
+              "query": "强基计划 报名 高考成绩占比 校测 入围"
+            },
+            "error": null
+          },
+          {
+            "name": "search_skill_assets",
+            "status": "completed",
+            "arguments": {
+              "query": "强基计划 pathway_rules 触发条件 基础学科 数学物理化学 生物 历史 哲学 古文字"
+            },
+            "error": null
+          },
+          {
+            "name": "search_skill_assets",
+            "status": "failed",
+            "arguments": {
+              "query": "强基计划 规则 触发条件 高考成绩 校测 基础学科 本硕博衔接"
+            },
+            "error": "SEARCH_BUDGET_EXCEEDED"
+          }
+        ],
+        "duplicate_question_signatures": 0,
+        "quality_review": "pending",
+        "constraint_review": "pending",
+        "elapsed_s": 28.59
+      },
+      "v2": {
+        "status": "completed",
+        "error": null,
+        "text": "专家已完成任务，我来汇总面向用户的结论。\n\n---\n\n关于普通高考和强基计划，帮您把两者的核心差异和适用限制梳理清楚，供您参考。\n\n**三条关键差异**\n\n第一，录取依据不同。普通高考基本以高考总分作为录取依据，按分数填报志愿、从高到低录取，覆盖全国各类普通高校、专业选择面广。强基计划则采用\"85%高考成绩+15%校测成绩\"的综合评价模式，校测表现会直接影响最终录取。\n\n第二，招生范围窄。强基计划目前仅限39所985高校试点，专业集中在数学、物理、化学、生物、力学、基础医学、育种以及历史、哲学、古文字学等基础学科，不像普通高考那样专业几乎全覆盖。\n\n第三，培养方式不同。强基计划录取后单独编班、实行导师制和小班化培养，符合转段条件可本研衔接培养，这是普通高考常规培养路径不具备的。\n\n**适用限制要提醒您**\n\n强基计划有明确的成绩门槛。按浙江的规则，通常要求最近三次大考总成绩均分达到特控线以上水平；另外，五大学科奥赛全国决赛二等奖及以上的学生也符合报名条件。报名时间一般在每年4到5月，需要提前关注高校简章并完成报名，错过就无法参加。\n\n您提到孩子目前成绩尚不明确，这一点很关键——强基计划对成绩要求较高，建议先结合孩子近几次大考成绩判断是否达到特控线水平，再决定是否投入精力准备。具体分数线以当年省考试院和各校官方简章为准，我这里不做任何录取承诺。\n\n如果后续孩子成绩明确了，可以再帮您进一步分析是否适合走强基这条路。",
+        "estimated_input": 169761,
+        "actual_input": 106657,
+        "measurement_complete": true,
+        "model_calls": 10,
+        "stages": {
+          "main": {
+            "calls": 2,
+            "estimated_input": 18298,
+            "actual_input": 11536,
+            "output": 637
+          },
+          "expert": {
+            "calls": 3,
+            "estimated_input": 40365,
+            "actual_input": 25729,
+            "output": 1486
+          },
+          "skill": {
+            "calls": 5,
+            "estimated_input": 111098,
+            "actual_input": 69392,
+            "output": 1995
+          }
+        },
+        "components": {
+          "rules": 60151,
+          "task": 4131,
+          "facts": 170,
+          "questions": 0,
+          "summary": 0,
+          "history": 5179,
+          "tool_evidence": 60796,
+          "tool_schemas": 34212
+        },
+        "questions": [],
+        "tasks": [
+          {
+            "kind": "main",
+            "goal": "请升学专家调用授权 Skill，检索本地 Skill 资料比较普通高考与强基计划，给出证据支持的三条差异和适用限制，不承诺录取。孩子浙江高二，目前成绩尚不明确。",
+            "status": "completed",
+            "structured_result": null
+          },
+          {
+            "kind": "expert",
+            "goal": "调用授权 Skill，检索本地 Skill 资料，比较普通高考与强基计划，给出证据支持的三条差异和适用限制，不承诺录取。孩子浙江高二，成绩尚不明确。",
+            "status": "completed",
+            "structured_result": {
+              "version": "v2",
+              "status": "completed",
+              "conclusion": "普通高考与强基计划的三条核心差异及适用限制如下（孩子浙江高二、成绩尚不明确，以下为规则性说明，不承诺录取）：\n\n【差异一：录取评价方式不同】\n普通高考以高考总分作为唯一录取依据，按分数填报志愿、从高分到低分录取，覆盖全国各类普通高校、专业全。强基计划采用\"85%高考成绩 + 15%校测\"的多维度考核评价模式，校测成绩在综合分中占15%，为综合素质优秀的学生提供一定空间。\n\n【差异二：招生院校与专业范围不同】\n普通高考可报考全国各类普通高校，涵盖综合、理工、师范、医学等多类型院校及不同学科专业。强基计划仅限39所985高校试点，且专业集中在数学、物理、化学、生物、力学、基础医学、育种及历史、哲学、古文字学等基础学科和国家重大战略领域相关专业。\n\n【差异三：培养模式不同】\n普通高考录取后按常规专业培养。强基计划入校单独编班，实行导师制、小班化培养，符合转段条件则实行本研衔接培养，学术资源倾斜明显。\n\n【强基计划适用限制】\n1. 成绩门槛：需高考成绩优异（预计超过特控线），浙江考生需最近三次大考总成绩均分达到特控线以上水平（具体以当年官方为准）。\n2. 专业限制：仅限基础学科专业，专业选择面窄，需对基础学科有真实兴趣，不适合追求热门应用型专业的学生。\n3. 报名流程前置：需在4-5月提前报名，错过报名窗口无法补报；且需参加校测，流程比普通高考多出报名和校测环节。\n4. 第二类考生通道：全国中学生学科奥林匹克竞赛全国决赛二等奖及以上且喜欢强基专业的考生可走特殊通道。\n\n以上结果仅供参考，最终以当年省考试院及招生院校官方简章为准。孩子目前成绩尚不明确，建议先稳定学业、明确对基础学科的兴趣后再评估是否适合强基路径。",
+              "findings": [
+                "普通高考以高考总分作为唯一录取依据，按分数填报志愿、从高分到低分录取，覆盖全国各类普通高校、专业全（path_catalog 0101）",
+                "强基计划采用85%高考+15%校测的多维度考核评价模式，校测成绩在综合分中占15%（path_catalog 0401）",
+                "强基计划仅限39所985高校试点，专业集中在数学、物理、化学、生物、力学、基础医学、育种及历史、哲学、古文字学等基础学科（path_catalog 0401）",
+                "强基计划入校单独编班、导师制、小班化培养，符合转段条件实行本研衔接（path_catalog 0401）",
+                "强基计划适用对象：高考成绩优异（预计超过特控线）且喜欢强基专业的学生，或五大学科奥赛全国决赛二等奖及以上（path_catalog 0401）",
+                "浙江强基计划规则：最近三次大考总成绩均分需达到特控线以上水平（path_catalog 0401 rule_text_by_province）",
+                "强基计划流程：高校公布简章（4月）→报名（4-5月）→高考（6月）→入围名单+校测（6月底-7月初）→录取（7月），需提前报名（path_catalog 0401）"
+              ],
+              "limitations": [
+                "孩子成绩尚不明确，无法判断是否达到强基计划成绩门槛，仅做规则性说明",
+                "具体分数线以当年省考试院及招生院校官方简章为准"
+              ],
+              "unresolved": [],
+              "evidence_refs": [
+                "ev_0bbd8a9df241487b04f0e1a2faf668dd9e026cdd7c3f7f3597d89792f96f283b",
+                "ev_40729dc42dbb8770c5bd5e58ecaa17d6c23431664ee732120e244cd0b2d8e5e5",
+                "ev_abfaeda211e283d66be7e7dfc10ab9715692f9b4d2b864cd0a8d1c214fcd86c7"
+              ]
+            }
+          },
+          {
+            "kind": "skill",
+            "goal": "比较普通高考与强基计划，给出证据支持的三条差异和适用限制。孩子浙江高二，成绩尚不明确。不承诺录取。",
+            "status": "completed",
+            "structured_result": {
+              "version": "v2",
+              "status": "completed",
+              "conclusion": "普通高考与强基计划的三条核心差异及适用限制如下（孩子浙江高二、成绩尚不明确，以下为规则性说明，不承诺录取）：\n\n【差异一：录取评价方式不同】\n普通高考以高考总分作为唯一录取依据，按分数填报志愿、从高分到低分录取（覆盖全国各类普通高校、专业全）。强基计划采用\"85%高考成绩 + 15%校测\"的多维度考核评价模式，校测成绩在综合分中占15%，为综合素质优秀的学生提供一定空间。证据来源：path_catalog 中普通高考（0101）与强基计划（0401）路径介绍。\n\n【差异二：招生院校与专业范围不同】\n普通高考可报考全国各类普通高校，涵盖综合、理工、师范、医学等多类型院校及不同学科专业。强基计划仅限39所985高校试点，且专业集中在数学、物理、化学、生物、力学、基础医学、育种及历史、哲学、古文字学等基础学科和国家重大战略领域相关专业。证据来源：强基计划路径介绍明确试点高校为39所985高校、专业限定为基础学科。\n\n【差异三：培养模式不同】\n普通高考录取后按常规专业培养。强基计划入校单独编班，实行导师制、小班化培养，符合转段条件则实行本研衔接培养，学术资源倾斜明显。证据来源：强基计划路径特色说明。\n\n【强基计划适用限制】\n1. 成绩门槛：需高考成绩优异（预计超过特控线），浙江考生需最近三次大考总成绩均分达到特控线以上水平（具体以当年官方为准）。\n2. 专业限制：仅限基础学科专业，专业选择面窄，需对基础学科有真实兴趣，不适合追求热门应用型专业的学生。\n3. 报名流程前置：需在4-5月提前报名，错过报名窗口无法补报；且需参加校测，流程比普通高考多出报名和校测环节。\n4. 第二类考生通道：全国中学生学科奥林匹克竞赛全国决赛二等奖及以上且喜欢强基专业的考生可走特殊通道。\n\n以上结果仅供参考，最终以当年省考试院及招生院校官方简章为准。孩子目前成绩尚不明确，建议先稳定学业、明确对基础学科的兴趣后再评估是否适合强基路径。",
+              "findings": [
+                "普通高考以高考总分作为唯一录取依据，按分数填报志愿、从高分到低分录取，覆盖全国各类普通高校、专业全（path_catalog 0101）",
+                "强基计划采用85%高考+15%校测的多维度考核评价模式，校测成绩在综合分中占15%（path_catalog 0401）",
+                "强基计划仅限39所985高校试点，专业集中在数学、物理、化学、生物、力学、基础医学、育种及历史、哲学、古文字学等基础学科（path_catalog 0401）",
+                "强基计划入校单独编班、导师制、小班化培养，符合转段条件实行本研衔接（path_catalog 0401）",
+                "强基计划适用对象：高考成绩优异（预计超过特控线）且喜欢强基专业的学生，或五大学科奥赛全国决赛二等奖及以上（path_catalog 0401）",
+                "浙江强基计划规则：最近三次大考总成绩均分需达到特控线以上水平（path_catalog 0401 rule_text_by_province）",
+                "强基计划流程：高校公布简章（4月）→报名（4-5月）→高考（6月）→入围名单+校测（6月底-7月初）→录取（7月），需提前报名（path_catalog 0401）"
+              ],
+              "limitations": [
+                "孩子成绩尚不明确，无法判断是否达到强基计划成绩门槛，仅做规则性说明",
+                "具体分数线以当年省考试院及招生院校官方简章为准"
+              ],
+              "unresolved": [],
+              "evidence_refs": [
+                "ev_40729dc42dbb8770c5bd5e58ecaa17d6c23431664ee732120e244cd0b2d8e5e5",
+                "ev_abfaeda211e283d66be7e7dfc10ab9715692f9b4d2b864cd0a8d1c214fcd86c7"
+              ]
+            }
+          }
+        ],
+        "tools": [
+          {
+            "name": "delegate_tasks",
+            "status": "completed",
+            "arguments": {
+              "tasks": [
+                {
+                  "key": "gaokao_vs_qiangji",
+                  "expert_id": "career_plan_expert",
+                  "goal": "调用授权 Skill，检索本地 Skill 资料，比较普通高考与强基计划，给出证据支持的三条差异和适用限制，不承诺录取。孩子浙江高二，成绩尚不明确。",
+                  "completion": "完成指定任务",
+                  "brief": {
+                    "version": "v2",
+                    "objective": "比较普通高考与强基计划，给出证据支持的三条差异和适用限制，不承诺录取。",
+                    "scope": [
+                      "普通高考与强基计划的差异",
+                      "强基计划适用限制"
+                    ],
+                    "constraints": [
+                      "不承诺录取",
+                      "孩子浙江高二，成绩尚不明确",
+                      "差异需有证据支持"
+                    ],
+                    "completion": "完成指定任务",
+                    "fact_keys": [],
+                    "evidence_refs": [],
+                    "expected_outputs": [
+                      "三条有证据支持的差异",
+                      "适用限制说明"
+                    ]
+                  }
+                }
+              ]
+            },
+            "error": null
+          },
+          {
+            "name": "execute_skill",
+            "status": "completed",
+            "arguments": {
+              "skill_id": "multi_path_planning",
+              "task": "比较普通高考与强基计划，给出证据支持的三条差异和适用限制。孩子浙江高二，成绩尚不明确。不承诺录取。",
+              "brief": {
+                "version": "v2",
+                "objective": "比较普通高考与强基计划，给出证据支持的三条差异和适用限制",
+                "scope": [
+                  "普通高考与强基计划的差异",
+                  "强基计划适用限制"
+                ],
+                "constraints": [
+                  "不承诺录取",
+                  "孩子浙江高二，成绩尚不明确",
+                  "差异需有证据支持"
+                ],
+                "completion": "完成指定任务",
+                "expected_outputs": [
+                  "三条有证据支持的差异",
+                  "适用限制说明"
+                ]
+              }
+            },
+            "error": null
+          },
+          {
+            "name": "search_skill_assets",
+            "status": "completed",
+            "arguments": {
+              "query": "强基计划 普通高考 差异 适用条件"
+            },
+            "error": null
+          },
+          {
+            "name": "read_skill_asset",
+            "status": "completed",
+            "arguments": {
+              "skill_id": "multi_path_planning",
+              "source": "references/pathway_rules.md"
+            },
+            "error": null
+          },
+          {
+            "name": "read_skill_asset",
+            "status": "completed",
+            "arguments": {
+              "skill_id": "multi_path_planning",
+              "source": "multiroute/path_catalog.json",
+              "filters": {
+                "path_id": "强基计划"
+              }
+            },
+            "error": null
+          },
+          {
+            "name": "search_skill_assets",
+            "status": "completed",
+            "arguments": {
+              "query": "强基计划 定位 培养 专业 录取方式"
+            },
+            "error": null
+          },
+          {
+            "name": "read_skill_asset",
+            "status": "completed",
+            "arguments": {
+              "skill_id": "multi_path_planning",
+              "source": "multiroute/path_catalog.json",
+              "filters": {
+                "primary_category": "强基计划"
+              }
+            },
+            "error": null
+          },
+          {
+            "name": "search_skill_assets",
+            "status": "completed",
+            "arguments": {
+              "query": "强基计划 基础学科 培养模式 本硕博 专业限制"
+            },
+            "error": null
+          },
+          {
+            "name": "read_evidence",
+            "status": "completed",
+            "arguments": {
+              "evidence_id": "ev_40729dc42dbb8770c5bd5e58ecaa17d6c23431664ee732120e244cd0b2d8e5e5"
+            },
+            "error": null
+          },
+          {
+            "name": "submit_result",
+            "status": "completed",
+            "arguments": {
+              "status": "completed",
+              "conclusion": "普通高考与强基计划的三条核心差异及适用限制如下（孩子浙江高二、成绩尚不明确，以下为规则性说明，不承诺录取）：\n\n【差异一：录取评价方式不同】\n普通高考以高考总分作为唯一录取依据，按分数填报志愿、从高分到低分录取（覆盖全国各类普通高校、专业全）。强基计划采用\"85%高考成绩 + 15%校测\"的多维度考核评价模式，校测成绩在综合分中占15%，为综合素质优秀的学生提供一定空间。证据来源：path_catalog 中普通高考（0101）与强基计划（0401）路径介绍。\n\n【差异二：招生院校与专业范围不同】\n普通高考可报考全国各类普通高校，涵盖综合、理工、师范、医学等多类型院校及不同学科专业。强基计划仅限39所985高校试点，且专业集中在数学、物理、化学、生物、力学、基础医学、育种及历史、哲学、古文字学等基础学科和国家重大战略领域相关专业。证据来源：强基计划路径介绍明确试点高校为39所985高校、专业限定为基础学科。\n\n【差异三：培养模式不同】\n普通高考录取后按常规专业培养。强基计划入校单独编班，实行导师制、小班化培养，符合转段条件则实行本研衔接培养，学术资源倾斜明显。证据来源：强基计划路径特色说明。\n\n【强基计划适用限制】\n1. 成绩门槛：需高考成绩优异（预计超过特控线），浙江考生需最近三次大考总成绩均分达到特控线以上水平（具体以当年官方为准）。\n2. 专业限制：仅限基础学科专业，专业选择面窄，需对基础学科有真实兴趣，不适合追求热门应用型专业的学生。\n3. 报名流程前置：需在4-5月提前报名，错过报名窗口无法补报；且需参加校测，流程比普通高考多出报名和校测环节。\n4. 第二类考生通道：全国中学生学科奥林匹克竞赛全国决赛二等奖及以上且喜欢强基专业的考生可走特殊通道。\n\n以上结果仅供参考，最终以当年省考试院及招生院校官方简章为准。孩子目前成绩尚不明确，建议先稳定学业、明确对基础学科的兴趣后再评估是否适合强基路径。",
+              "findings": [
+                "普通高考以高考总分作为唯一录取依据，按分数填报志愿、从高分到低分录取，覆盖全国各类普通高校、专业全（path_catalog 0101）",
+                "强基计划采用85%高考+15%校测的多维度考核评价模式，校测成绩在综合分中占15%（path_catalog 0401）",
+                "强基计划仅限39所985高校试点，专业集中在数学、物理、化学、生物、力学、基础医学、育种及历史、哲学、古文字学等基础学科（path_catalog 0401）",
+                "强基计划入校单独编班、导师制、小班化培养，符合转段条件实行本研衔接（path_catalog 0401）",
+                "强基计划适用对象：高考成绩优异（预计超过特控线）且喜欢强基专业的学生，或五大学科奥赛全国决赛二等奖及以上（path_catalog 0401）",
+                "浙江强基计划规则：最近三次大考总成绩均分需达到特控线以上水平（path_catalog 0401 rule_text_by_province）",
+                "强基计划流程：高校公布简章（4月）→报名（4-5月）→高考（6月）→入围名单+校测（6月底-7月初）→录取（7月），需提前报名（path_catalog 0401）"
+              ],
+              "limitations": [
+                "孩子成绩尚不明确，无法判断是否达到强基计划成绩门槛，仅做规则性说明",
+                "具体分数线以当年省考试院及招生院校官方简章为准"
+              ],
+              "unresolved": [],
+              "evidence_refs": [
+                "ev_40729dc42dbb8770c5bd5e58ecaa17d6c23431664ee732120e244cd0b2d8e5e5",
+                "ev_abfaeda211e283d66be7e7dfc10ab9715692f9b4d2b864cd0a8d1c214fcd86c7"
+              ],
+              "version": "v2"
+            },
+            "error": null
+          },
+          {
+            "name": "read_evidence",
+            "status": "completed",
+            "arguments": {
+              "evidence_id": "ev_0bbd8a9df241487b04f0e1a2faf668dd9e026cdd7c3f7f3597d89792f96f283b"
+            },
+            "error": null
+          },
+          {
+            "name": "read_evidence",
+            "status": "completed",
+            "arguments": {
+              "evidence_id": "ev_40729dc42dbb8770c5bd5e58ecaa17d6c23431664ee732120e244cd0b2d8e5e5"
+            },
+            "error": null
+          },
+          {
+            "name": "read_evidence",
+            "status": "completed",
+            "arguments": {
+              "evidence_id": "ev_abfaeda211e283d66be7e7dfc10ab9715692f9b4d2b864cd0a8d1c214fcd86c7"
+            },
+            "error": null
+          },
+          {
+            "name": "submit_result",
+            "status": "completed",
+            "arguments": {
+              "status": "completed",
+              "conclusion": "普通高考与强基计划的三条核心差异及适用限制如下（孩子浙江高二、成绩尚不明确，以下为规则性说明，不承诺录取）：\n\n【差异一：录取评价方式不同】\n普通高考以高考总分作为唯一录取依据，按分数填报志愿、从高分到低分录取，覆盖全国各类普通高校、专业全。强基计划采用\"85%高考成绩 + 15%校测\"的多维度考核评价模式，校测成绩在综合分中占15%，为综合素质优秀的学生提供一定空间。\n\n【差异二：招生院校与专业范围不同】\n普通高考可报考全国各类普通高校，涵盖综合、理工、师范、医学等多类型院校及不同学科专业。强基计划仅限39所985高校试点，且专业集中在数学、物理、化学、生物、力学、基础医学、育种及历史、哲学、古文字学等基础学科和国家重大战略领域相关专业。\n\n【差异三：培养模式不同】\n普通高考录取后按常规专业培养。强基计划入校单独编班，实行导师制、小班化培养，符合转段条件则实行本研衔接培养，学术资源倾斜明显。\n\n【强基计划适用限制】\n1. 成绩门槛：需高考成绩优异（预计超过特控线），浙江考生需最近三次大考总成绩均分达到特控线以上水平（具体以当年官方为准）。\n2. 专业限制：仅限基础学科专业，专业选择面窄，需对基础学科有真实兴趣，不适合追求热门应用型专业的学生。\n3. 报名流程前置：需在4-5月提前报名，错过报名窗口无法补报；且需参加校测，流程比普通高考多出报名和校测环节。\n4. 第二类考生通道：全国中学生学科奥林匹克竞赛全国决赛二等奖及以上且喜欢强基专业的考生可走特殊通道。\n\n以上结果仅供参考，最终以当年省考试院及招生院校官方简章为准。孩子目前成绩尚不明确，建议先稳定学业、明确对基础学科的兴趣后再评估是否适合强基路径。",
+              "findings": [
+                "普通高考以高考总分作为唯一录取依据，按分数填报志愿、从高分到低分录取，覆盖全国各类普通高校、专业全（path_catalog 0101）",
+                "强基计划采用85%高考+15%校测的多维度考核评价模式，校测成绩在综合分中占15%（path_catalog 0401）",
+                "强基计划仅限39所985高校试点，专业集中在数学、物理、化学、生物、力学、基础医学、育种及历史、哲学、古文字学等基础学科（path_catalog 0401）",
+                "强基计划入校单独编班、导师制、小班化培养，符合转段条件实行本研衔接（path_catalog 0401）",
+                "强基计划适用对象：高考成绩优异（预计超过特控线）且喜欢强基专业的学生，或五大学科奥赛全国决赛二等奖及以上（path_catalog 0401）",
+                "浙江强基计划规则：最近三次大考总成绩均分需达到特控线以上水平（path_catalog 0401 rule_text_by_province）",
+                "强基计划流程：高校公布简章（4月）→报名（4-5月）→高考（6月）→入围名单+校测（6月底-7月初）→录取（7月），需提前报名（path_catalog 0401）"
+              ],
+              "limitations": [
+                "孩子成绩尚不明确，无法判断是否达到强基计划成绩门槛，仅做规则性说明",
+                "具体分数线以当年省考试院及招生院校官方简章为准"
+              ],
+              "unresolved": [],
+              "evidence_refs": [
+                "ev_0bbd8a9df241487b04f0e1a2faf668dd9e026cdd7c3f7f3597d89792f96f283b",
+                "ev_40729dc42dbb8770c5bd5e58ecaa17d6c23431664ee732120e244cd0b2d8e5e5",
+                "ev_abfaeda211e283d66be7e7dfc10ab9715692f9b4d2b864cd0a8d1c214fcd86c7"
+              ]
+            },
+            "error": null
+          }
+        ],
+        "duplicate_question_signatures": 0,
+        "quality_review": "pending",
+        "constraint_review": "pending",
+        "elapsed_s": 44.43
+      }
+    }
+  ],
+  "release_gate": "not_accepted_pending_quality_review",
+  "implementation_sha256": "98ba6a341612a1ec5f39faaae08ce5e2e876a89c49eb6e639807a0d24aa7cfcb",
+  "comparison": {
+    "v1": {
+      "median_input": 60088.0,
+      "completed": 2,
+      "runs": 2,
+      "all_usage_measured": true
+    },
+    "v2": {
+      "median_input": 73777.0,
+      "completed": 2,
+      "runs": 2,
+      "all_usage_measured": true
+    }
+  }
+}
