@@ -25,7 +25,7 @@ function formatSessionTime(value: string): string {
 function sessionLabel(item: HarnessHistorySession): string {
   const first = item.transcript?.find((row) => row.role === "user")?.content
     || item.conclusion
-    || "Harness 会话";
+    || "问答会话";
   const status = item.status === "completed" ? "已完成" : "进行中";
   return `${formatSessionTime(item.created_at)} · ${status} · ${first.slice(0, 28)}${first.length > 28 ? "…" : ""}`;
 }
@@ -39,17 +39,25 @@ export function HarnessDebugPanel({
   revisionId,
   actorId,
   soulRevisionId,
+  objectType,
   historySessions = [],
   onHistoryChange,
+  onEvidenceSaved,
 }: {
   baseUrl: string;
   revisionId: string;
   actorId: string;
   soulRevisionId?: string | null;
+  objectType?: string;
   historySessions?: HarnessHistorySession[];
   onHistoryChange?: () => void;
+  onEvidenceSaved?: (debugSessionId: string) => void;
 }) {
   const [goal, setGoal] = useState("");
+  // 正式流程里身份、学段由平台前置收集；测试时在这里预置，避免专家被反复追问。
+  const [userRole, setUserRole] = useState("家长");
+  const [schoolStage, setSchoolStage] = useState("高中");
+  const [gradeName, setGradeName] = useState("");
   const [debugId, setDebugId] = useState("");
   const [runs, setRuns] = useState<HarnessRun[]>([]);
   const [error, setError] = useState("");
@@ -115,7 +123,7 @@ export function HarnessDebugPanel({
           debug_session_id: id,
           created_at: "",
           status: id === debugId ? "active" : "active",
-          conclusion: id === debugId ? "当前 Harness 会话" : "本地 Harness 会话",
+          conclusion: id === debugId ? "当前问答会话" : "本地问答会话",
         });
       }
     }
@@ -124,7 +132,7 @@ export function HarnessDebugPanel({
         debug_session_id: debugId,
         created_at: "",
         status: evidenceSaved ? "completed" : "active",
-        conclusion: "当前 Harness 会话",
+        conclusion: "当前问答会话",
       });
     }
     return Array.from(byId.values()).sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
@@ -192,12 +200,17 @@ export function HarnessDebugPanel({
   };
 
   const start = async () => {
-    if (active || !goal.trim()) return;
-    setBusy(true); setError("");
+    if (active || busy || !goal.trim()) return;
+    setBusy(true); setError(""); setTrace("");
     try {
       const id = (!evidenceSaved && debugId) || (await request<{ debug_session_id: string }>("/workbench/v1/revision-tests", { revision_id: revisionId, actor_id: actorId, soul_revision_id: soulRevisionId || null })).debug_session_id;
       if (id !== debugId) setRuns([]);
-      await request(`/api/v2/sessions/harness-${id}/harness/runs`, { goal, context_data: { user_id: userId }, debug_session_id: id });
+      const presetFacts = objectType === "skill" ? {} : { user_role: userRole, school_stage: schoolStage };
+      await request(`/api/v2/sessions/harness-${id}/harness/runs`, {
+        goal,
+        context_data: { user_id: userId, facts: presetFacts, ...(gradeName && objectType !== "skill" ? { grade: gradeName } : {}) },
+        debug_session_id: id,
+      });
       setDebugId(id);
       sessionStorage.setItem(persistenceKey, id);
       rememberSession(id);
@@ -215,29 +228,66 @@ export function HarnessDebugPanel({
   };
 
   const saveEvidence = async () => {
-    if (active || !conclusion.trim() || !debugId) return;
+    if (active || !debugId) return;
     setBusy(true); setError("");
     try {
       for (const run of runs) await request(`/workbench/v1/debug-sessions/${debugId}/turns`, {
         actor_id: actorId, user_message: run.goal, assistant_message: run.result || `任务状态：${run.status}，原因：${run.error || "未返回结论"}`,
         trace: [{ runtime_mode: "harness_v1", run_id: run.run_id, version: run.version, status: run.status, nodes: run.nodes }],
       });
-      await request(`/workbench/v1/debug-sessions/${debugId}/complete`, { actor_id: actorId, conclusion });
+      await request(`/workbench/v1/debug-sessions/${debugId}/complete`, {
+        actor_id: actorId,
+        conclusion: conclusion.trim() || "业务人员已在候选修订测试台完成验证，并确认当前修订可进入发布流程。",
+      });
       setEvidenceSaved(true);
       onHistoryChange?.();
+      onEvidenceSaved?.(debugId);
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
 
+  const canSend = Boolean(revisionId) && !active && !busy && !evidenceSaved && Boolean(goal.trim());
+
+  const flowHint = objectType === "expert_team"
+    ? "完整流程：身份学段检查 → 编排首 → 专家 → 编排尾 → 推荐"
+    : objectType === "expert"
+      ? "单专家：直接由该专家作答，不经过编排首和编排尾"
+      : objectType === "skill"
+        ? "单 Skill：通过临时测试专家调用，不经过编排"
+        : "";
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
+      {flowHint ? <p className="shrink-0 rounded-lg border border-sky-300/15 bg-sky-400/5 px-3 py-2 text-xs text-sky-100">{flowHint}</p> : null}
+      {objectType && objectType !== "skill" ? (
+        <div className="grid shrink-0 grid-cols-3 gap-2 text-xs text-slate-400">
+          {([
+            ["身份", userRole, setUserRole, ["家长", "学生"]],
+            ["学段", schoolStage, setSchoolStage, ["小学", "初中", "高中"]],
+            ["年级", gradeName, setGradeName, ["", "初一", "初二", "初三", "高一", "高二", "高三"]],
+          ] as Array<[string, string, (value: string) => void, string[]]>).map(([label, value, setter, options]) => (
+            <label key={label} className="block">
+              {label}
+              <select
+                value={value}
+                disabled={Boolean(debugId)}
+                onChange={(event) => setter(event.target.value)}
+                title={debugId ? "预置信息只在新建会话时生效" : "测试预置信息，等同正式流程里平台前置收集的结果"}
+                className="mt-1 w-full rounded-lg border border-white/10 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 outline-none disabled:opacity-50"
+              >
+                {options.map((option) => <option key={option} value={option}>{option || "不预置"}</option>)}
+              </select>
+            </label>
+          ))}
+        </div>
+      ) : null}
       <label className="block shrink-0 text-xs text-slate-400">
         历史会话
         <select
           value={debugId}
           onChange={(event) => selectSession(event.target.value)}
-          className="mt-1 w-full rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/40"
+          className="mt-1 w-full rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-400/40"
         >
-          <option value="">新建 Harness 会话</option>
+          <option value="">新建问答会话</option>
           {sessionOptions.map((item) => (
             <option key={item.debug_session_id} value={item.debug_session_id}>
               {sessionLabel(item)}
@@ -246,169 +296,178 @@ export function HarnessDebugPanel({
         </select>
       </label>
 
-      <div className="flex min-h-0 flex-1 gap-3">
-        <div className="flex w-[42%] min-w-[200px] shrink-0 flex-col gap-3">
-          <p className="shrink-0 text-sm leading-6 text-slate-400">
-            用完整任务目标验证并行分派、工具追问与恢复；补充表单、回复与轨迹都在右侧。
-          </p>
-          <textarea
-            aria-label="Harness 测试目标"
-            value={goal}
-            disabled={Boolean(active) || busy || !revisionId}
-            onChange={(e) => setGoal(e.target.value)}
-            className="min-h-[8rem] w-full flex-1 rounded-lg border border-white/10 bg-slate-950 p-3 text-sm outline-none focus:border-cyan-400/40 disabled:opacity-40"
-            placeholder={revisionId ? "输入完整任务，测试专家分派、追问与恢复" : "请先选择要测试的修订"}
-            rows={6}
-          />
-          {error ? <p role="alert" className="shrink-0 text-xs text-rose-300">{error}</p> : null}
-          <div className="flex shrink-0 flex-wrap gap-3">
-            <button
-              type="button"
-              disabled={Boolean(active) || busy || !revisionId || !goal.trim()}
-              onClick={() => void start()}
-              className="rounded-lg bg-cyan-400/15 px-3 py-2 text-xs text-cyan-100 disabled:opacity-40"
-            >
-              开始 Harness 测试
-            </button>
-            {active ? (
-              <button
-                type="button"
-                onClick={() => void request(`/api/v2/sessions/${sessionId}/harness/runs/${active.run_id}/cancel`, { user_id: userId, profile_id: null }).catch((e) => setError(String(e)))}
-                className="text-xs text-rose-200"
-              >
-                停止任务
-              </button>
-            ) : null}
-            {runs.length > 0 ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setRightPane("trace");
-                  void loadTrace();
-                }}
-                className="text-xs text-slate-300"
-              >
-                查看调用追踪
-              </button>
-            ) : null}
-          </div>
-          {runs.length > 0 && !active ? (
-            <div className="shrink-0 space-y-2 border-t border-white/10 pt-3">
-              <textarea
-                aria-label="Harness 调试结论"
-                value={conclusion}
-                disabled={busy || evidenceSaved}
-                onChange={(e) => setConclusion(e.target.value)}
-                className="w-full rounded-lg border border-white/10 bg-slate-950 p-2 text-sm outline-none focus:border-violet-400/40 disabled:opacity-40"
-                placeholder="记录人工核查结论，说明通过或发现的问题"
-                rows={2}
-              />
-              <button
-                type="button"
-                disabled={busy || evidenceSaved || !conclusion.trim()}
-                onClick={() => void saveEvidence()}
-                className="rounded-lg bg-violet-400/15 px-3 py-2 text-xs text-violet-100 disabled:opacity-40"
-              >
-                保存为调试依据
-              </button>
-              {evidenceSaved ? (
-                <p className="text-xs text-slate-300">已保存调试依据：{debugId}。</p>
-              ) : null}
-            </div>
-          ) : null}
+      <div className="flex min-h-[20rem] min-w-0 flex-1 flex-col rounded-2xl border border-sky-300/15 bg-slate-950/50">
+        <div className="flex shrink-0 gap-1 border-b border-white/10 p-1">
+          <button
+            type="button"
+            onClick={() => setRightPane("reply")}
+            className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${rightPane === "reply" ? "bg-sky-400/15 text-sky-100" : "text-slate-400 hover:text-slate-200"}`}
+          >
+            对话
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRightPane("trace");
+              if (!trace && runs.length) void loadTrace();
+            }}
+            className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${rightPane === "trace" ? "bg-sky-400/15 text-sky-100" : "text-slate-400 hover:text-slate-200"}`}
+          >
+            轨迹过程{runs.length ? ` · ${runs.length}` : ""}
+          </button>
         </div>
-
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-2xl border border-cyan-300/15 bg-slate-950/50">
-          <div className="flex shrink-0 gap-1 border-b border-white/10 p-1">
-            <button
-              type="button"
-              onClick={() => setRightPane("reply")}
-              className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${rightPane === "reply" ? "bg-cyan-400/15 text-cyan-100" : "text-slate-400 hover:text-slate-200"}`}
-            >
-              对话
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setRightPane("trace");
-                if (!trace && runs.length) void loadTrace();
-              }}
-              className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${rightPane === "trace" ? "bg-cyan-400/15 text-cyan-100" : "text-slate-400 hover:text-slate-200"}`}
-            >
-              轨迹过程
-            </button>
-          </div>
-          <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
-            {rightPane === "reply" ? (
-              <div className="space-y-4">
-                {runs.length ? (
-                  runs.map((run) => {
-                    const pending = run.inputs.filter((item) => item.status === "pending");
-                    return (
-                      <div key={`chat-${run.run_id}`} className="space-y-3 rounded-2xl border border-cyan-300/15 bg-cyan-950/10 p-4">
-                        <p className="text-sm text-cyan-100">
-                          {run.goal} · {isHarnessTerminal(run.status) ? "已结束" : run.status === "waiting_for_user" ? "等待补充" : "进行中"}
-                        </p>
-                        {run.phase && !isHarnessTerminal(run.status) ? (
-                          <p className="whitespace-pre-wrap text-sm text-slate-300">{run.phase}</p>
-                        ) : null}
-                        <p className="text-xs text-slate-500">
-                          已完成 {run.completed_count} / {run.task_count} · 等待补充 {run.waiting_count}
-                          {connection === "reconnecting" && !isHarnessTerminal(run.status) ? " · 连接恢复中" : ""}
-                        </p>
-                        {pending.length ? (
-                          pending.map((item) => {
-                            const owner = run.nodes.find((node) => node.id === item.bindings[0]?.task_id);
-                            return (
-                              <div key={item.id}>
-                                <p className="mb-1 text-xs text-violet-200">{owner?.actor || "主 agent"} · {owner?.title || "补充信息"}</p>
-                                <AgentInputRequest request={item} sessionId={run.session_id} onSubmitAnswer={submit} />
-                              </div>
-                            );
-                          })
-                        ) : !run.result ? (
-                          <p className="text-xs text-slate-500">任务树与调用详情见「轨迹过程」。</p>
-                        ) : null}
-                        {run.result ? (
-                          <div className="space-y-2 border-t border-white/10 pt-3">
-                            <p className="text-[11px] text-slate-500">结论</p>
-                            <MarkdownContent content={run.result} />
+        <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
+          {rightPane === "reply" ? (
+            runs.length ? (
+              runs.map((run) => {
+                const pending = run.inputs.filter((item) => item.status === "pending");
+                const terminal = isHarnessTerminal(run.status);
+                return (
+                  <div key={`chat-${run.run_id}`} className="space-y-3">
+                    <div className="text-right">
+                      <div className="inline-block max-w-[95%] whitespace-pre-wrap rounded-2xl bg-sky-400 px-3 py-2 text-left text-sm leading-6 text-slate-950">
+                        {run.goal}
+                      </div>
+                    </div>
+                    <div className="text-left">
+                      <div className="inline-block max-w-[95%] space-y-3 rounded-2xl bg-white/10 px-3 py-2 text-sm leading-6 text-slate-200">
+                        {!terminal ? (
+                          <div className="space-y-1">
+                            <p className="text-xs text-sky-200">
+                              {run.status === "waiting_for_user" ? "等待补充" : "进行中"}
+                              {connection === "reconnecting" ? " · 连接恢复中" : ""}
+                            </p>
+                            {run.phase ? <p className="whitespace-pre-wrap text-sm text-slate-300">{run.phase}</p> : null}
+                            <p className="text-xs text-slate-500">
+                              已完成 {run.completed_count} / {run.task_count} · 等待补充 {run.waiting_count}
+                            </p>
                           </div>
                         ) : null}
+                        {pending.map((item) => {
+                          const owner = run.nodes.find((node) => node.id === item.bindings[0]?.task_id);
+                          return (
+                            <div key={item.id}>
+                              <p className="mb-1 text-xs text-violet-200">{owner?.actor || "主 agent"} · {owner?.title || "补充信息"}</p>
+                              <AgentInputRequest request={item} sessionId={run.session_id} onSubmitAnswer={submit} />
+                            </div>
+                          );
+                        })}
+                        {run.result ? (
+                          <MarkdownContent content={run.result} />
+                        ) : null}
+                        {run.jump_cards?.length ? (
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            {run.jump_cards.map((card, index) => (
+                              <span key={index} className="rounded-full border border-sky-300/30 px-3 py-1 text-xs text-sky-100">
+                                {String((card as Record<string, unknown>).title || (card as Record<string, unknown>).id || "推荐")}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {!run.result && terminal ? (
+                          <p className="text-sm text-slate-400">任务状态：{run.status}{run.error ? `，原因：${run.error}` : ""}</p>
+                        ) : null}
                       </div>
-                    );
-                  })
-                ) : (
-                  <p className="py-10 text-center text-sm text-slate-600">补充表单与结论会显示在这里；任务树在「轨迹过程」。</p>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {runs.length ? (
-                  <div className="space-y-2 rounded-xl border border-white/10 bg-black/20 p-3">
-                    <p className="text-xs font-medium text-slate-300">任务树与执行过程</p>
-                    {runs.map((run) => (
-                      <TaskProgressBlock key={`trace-${run.run_id}`} run={run} connection={connection} />
-                    ))}
+                    </div>
                   </div>
-                ) : null}
-                {trace ? (
-                  <>
+                );
+              })
+            ) : (
+              <p className="py-10 text-center text-sm text-slate-600">选择修订并提问后，回复会出现在这里。</p>
+            )
+          ) : (
+            <div className="space-y-4">
+              {runs.length ? (
+                <div className="space-y-2 rounded-xl border border-white/10 bg-black/20 p-3">
+                  <p className="text-xs font-medium text-slate-300">任务树与执行过程</p>
+                  {runs.map((run) => (
+                    <TaskProgressBlock key={`trace-${run.run_id}`} run={run} connection={connection} />
+                  ))}
+                </div>
+              ) : null}
+              {trace ? (
+                <>
                   <HarnessContextDiagnostics trace={trace} />
                   <pre className="whitespace-pre-wrap rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-slate-400">
                     {trace}
                   </pre>
-                  </>
-                ) : (
-                  <p className="py-6 text-center text-sm text-slate-600">
-                    {runs.length ? "正在加载或尚未拉取调用追踪；也可点左侧「查看调用追踪」。" : "开始任务后可在此查看轨迹过程。"}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
+                </>
+              ) : (
+                <p className="py-6 text-center text-sm text-slate-600">
+                  {runs.length ? "正在加载调用追踪…" : "尚无调用轨迹；完成一轮问答后可在此查看。"}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
+
+      {error ? <p role="alert" className="shrink-0 text-xs text-rose-300">{error}</p> : null}
+
+      {runs.length > 0 && !active ? (
+        <div className="flex shrink-0 items-center gap-2">
+          <input
+            aria-label="测试结论"
+            value={conclusion}
+            disabled={busy || evidenceSaved}
+            onChange={(e) => setConclusion(e.target.value)}
+            className="min-w-0 flex-1 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-xs outline-none focus:border-emerald-400/40 disabled:opacity-40"
+            placeholder="测试结论（可选）：说明通过或发现的问题"
+          />
+          <button
+            type="button"
+            disabled={busy || evidenceSaved}
+            onClick={() => void saveEvidence()}
+            title="把本会话记成发布候选修订所需的测试证据"
+            className="shrink-0 rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-xs text-emerald-200 disabled:opacity-40"
+          >
+            {evidenceSaved ? "已记为测试证据" : "记为测试证据"}
+          </button>
+        </div>
+      ) : null}
+
+      <div className="flex shrink-0 items-end gap-2 border-t border-white/10 pt-3">
+        <textarea
+          aria-label="测试问题"
+          value={goal}
+          disabled={Boolean(active) || busy || !revisionId || evidenceSaved}
+          onChange={(e) => setGoal(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              if (canSend) void start();
+            }
+          }}
+          className="max-h-40 min-h-[3.25rem] w-full flex-1 resize-y rounded-lg border border-white/10 bg-slate-950 p-3 text-sm outline-none focus:border-sky-400/40 disabled:opacity-40"
+          placeholder={
+            !revisionId
+              ? "请先选择要测试的修订"
+              : evidenceSaved
+                ? "该会话已记为测试证据，请新建问答会话继续测试"
+                : "输入测试问题，Enter 发送，Shift+Enter 换行"
+          }
+          rows={2}
+        />
+        {active ? (
+          <button
+            type="button"
+            onClick={() => void request(`/api/v2/sessions/${sessionId}/harness/runs/${active.run_id}/cancel`, { user_id: userId, profile_id: null }).catch((e) => setError(String(e)))}
+            className="shrink-0 rounded-lg border border-rose-300/30 px-4 py-3 text-sm text-rose-100"
+          >
+            停止
+          </button>
+        ) : (
+          <button
+            type="button"
+            disabled={!canSend}
+            onClick={() => void start()}
+            className="shrink-0 rounded-lg bg-sky-400 px-4 py-3 text-sm font-medium text-slate-950 disabled:opacity-40"
+          >
+            发送
+          </button>
+        )}
+      </div>
+      <p className="shrink-0 text-[11px] leading-5 text-slate-500">匿名会话：不读写孩子档案；任务树、分派与追问都在「轨迹过程」。</p>
     </div>
   );
 }

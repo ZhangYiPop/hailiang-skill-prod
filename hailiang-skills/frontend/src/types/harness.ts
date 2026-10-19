@@ -20,6 +20,7 @@ export type HarnessRun = {
   created_at: string; updated_at: string; result: string; phase?: string; error?: string;
   input_tokens_estimated?: number; input_tokens_actual?: number | null; input_token_limit?: number;
   completed_count: number; task_count: number; waiting_count: number;
+  orchestrated?: boolean; jump_cards?: Array<Record<string, unknown>>;
 };
 export type HarnessSnapshot = { runtime_mode: string; cursor: number; runs: HarnessRun[] };
 export const isHarnessTerminal = (status: string) => ["completed", "failed", "cancelled"].includes(status);
