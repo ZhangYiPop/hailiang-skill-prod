@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 from hailiang_skills.harness.contracts import AnswerSubmission, HarnessError
-from hailiang_skills.harness.policy import capture_policy
+from hailiang_skills.harness.policy import capture_policy, snapshot_root
 from hailiang_skills.security.models import ModerationBlockedError
 from hailiang_skills.skills.common import extract_grade
 
@@ -112,7 +112,7 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
             snapshot = debug_snapshot_resolver(request.debug_session_id) if request.debug_session_id and debug_snapshot_resolver else (snapshot_resolver() if snapshot_resolver else None)
             if snapshot:
                 context.session_meta["configuration_snapshot"] = snapshot
-                root = snapshot.get("root", {})
+                root = snapshot_root(snapshot)
                 if root.get("object_type") == "expert_team":
                     context.session_meta["expert_team_id"] = root["object_key"]
             if request.debug_session_id:
