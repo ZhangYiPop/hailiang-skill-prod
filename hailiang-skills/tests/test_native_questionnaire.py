@@ -615,6 +615,33 @@ def test_first_questionnaire_turn_reuses_safe_facts_and_explicit_user_answers():
     assert next_context["answer_reconciliation"]["enabled"] is False
 
 
+def test_empty_model_reconciliation_falls_back_to_explicit_message_answers():
+    bundle = _bundle("multi_path_planning")
+    state = SessionState(session_id="sess_empty_reconcile", active_skill_id="multi_path_planning")
+    state.conversation_memory = {
+        "recent_messages": [
+            {
+                "role": "user",
+                "content": "帮高二学生做选科规划：偏理科，目标冲强基，家里希望稳妥一点",
+            },
+        ],
+    }
+
+    _text, block, decision = resolve_questionnaire_continuation(
+        bundle,
+        state,
+        '{"assistant_message":"请补充学生所在省份。","resolved_answers":[],'
+        '"question_ids":["当前年级","高考省份"],"collection_complete":false}',
+    )
+
+    assert state.skill_facts["multi_path_planning"]["answers"]["当前年级"] == "高二"
+    assert any(item["question_id"] == "当前年级" for item in decision["resolved_answers"])
+    assert block is not None
+    assert "当前年级" not in {
+        field["question_id"] for field in block["payload"]["fields"]
+    }
+
+
 def test_first_questionnaire_turn_reuses_summarized_english_exam_answer():
     bundle = _bundle("multi_path_planning")
     state = SessionState(session_id="sess_reconcile_english", active_skill_id="multi_path_planning")

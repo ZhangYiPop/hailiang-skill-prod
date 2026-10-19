@@ -418,13 +418,16 @@ def _build_runtime_metadata(metadata: dict[str, object], contract) -> SkillRunti
         ).strip() or "child",
         accepts_scenes=_string_tuple(metadata.get("accepts_scenes")) or contract.accepts_scenes,
         triggers=_string_tuple(metadata.get("triggers")),
+        tool_dependency=_string_tuple(metadata.get("tool_dependency")),
         prompt_loading=PromptLoadingConfig(
-            strategy=str(prompt_loading.get("strategy") or "legacy").strip() or "legacy",
+            # P4: platform forces progressive reference loading; ignore legacy full dumps.
+            strategy="progressive",
             include_skill_markdown=str(prompt_loading.get("include_skill_markdown") or "full").strip() or "full",
             include_session_state=bool(prompt_loading.get("include_session_state", True)),
             include_tool_capabilities=bool(prompt_loading.get("include_tool_capabilities", True)),
-            include_route_targets=bool(prompt_loading.get("include_route_targets", True)),
-            include_references=str(prompt_loading.get("include_references") or "full").strip() or "full",
+            # P5: do not inject routable-target paragraphs for the model to recommend other skills.
+            include_route_targets=False,
+            include_references=str(prompt_loading.get("include_references") or "on_demand").strip() or "on_demand",
             include_local_assets=str(prompt_loading.get("include_local_assets") or "summary").strip() or "summary",
             include_generated_assets=str(prompt_loading.get("include_generated_assets") or "summary").strip()
             or "summary",

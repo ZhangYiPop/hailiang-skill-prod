@@ -1,5 +1,7 @@
 runtime_dir: runtime
 harness:
+  # Keep v1 until the paired real-model and PostgreSQL acceptance gates pass.
+  context_policy_version: v1
   # Only explicitly listed skills may be invoked directly by the main agent.
   # Publishing an expert that owns one of these skills is rejected.
   independent_skill_ids: []
@@ -9,7 +11,13 @@ harness:
   max_run_model_calls: 96
   max_run_tool_calls: 192
   max_tasks: 64
-  context_tokens: 32000
+  context_tokens: 64000
+  max_tool_evidence_chars: 8000
+  max_output_tokens: 8192
+  # 0 disables the cumulative input guard, not the per-call context limit.
+  # Environment override: HAILIANG_HARNESS_MAX_RUN_INPUT_TOKENS.
+  max_run_input_tokens: 300000
+  main_input_reserve_tokens: 32000
 soul_path: config/soul.md
 memory_enabled: true
 # Summarize messages older than the active window in the background. While a

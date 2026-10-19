@@ -276,7 +276,7 @@ prompt 装载分三层：
 适合场景：
 
 - 新业务主要由 `SKILL.md` + references + status_track 管理。
-- 需要 runtime 的通用状态协议、tool 调用、RAG、本地资产约束。
+- 需要 runtime 的通用状态协议、tool 调用、Skill 本地文档与资产搜索能力。
 - 不依赖大量旧 hailiang 规则代码。
 
 接入步骤：

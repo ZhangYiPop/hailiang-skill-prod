@@ -294,6 +294,19 @@ class WorkbenchSoulRevisionRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class WorkbenchOrchestrationRuleRevisionRow(Base):
+    __tablename__ = "workbench_orchestration_rule_revisions"
+    __table_args__ = (UniqueConstraint("revision_no", name="uq_workbench_orchestration_revision_no"),)
+
+    orchestration_revision_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    revision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    published: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class WorkbenchDebugSessionRow(Base):
     __tablename__ = "workbench_debug_sessions"
 

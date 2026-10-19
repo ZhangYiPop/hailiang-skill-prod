@@ -2,6 +2,7 @@
 
 from hailiang_skills.workbench.domain import (
     BusinessObject,
+    ConsultationPolicy,
     DependencyLock,
     DeploymentSnapshot,
     EvaluationRun,
@@ -15,6 +16,7 @@ from hailiang_skills.workbench.runtime_registry import VersionedConfigurationReg
 
 __all__ = [
     "BusinessObject",
+    "ConsultationPolicy",
     "DependencyLock",
     "DeploymentSnapshot",
     "EvaluationRun",

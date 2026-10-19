@@ -34,7 +34,7 @@ def advance(runtime, run_id, count=1):
 
 def make_runtime(tmp_path, responder):
     class Client:
-        def complete_with_tools(self, messages, specs, request_purpose):
+        def complete_with_tools(self, messages, specs, request_purpose, max_tokens=None):
             return responder(messages, specs, request_purpose)
     return HarnessRuntime(HarnessStore.local(tmp_path / 'harness.sqlite3'), lambda _run: Client())
 
@@ -109,18 +109,138 @@ def test_two_expert_cards_resume_only_the_answered_node(tmp_path):
     snapshot = runtime.public(runtime.store.get(rid))
     assert snapshot['waiting_count'] == 2
     cards = sorted(snapshot['inputs'], key=lambda q: q['title'])
+    assert {q['status'] for q in cards} == {'pending', 'queued'}
+    assert {q['actor'] for q in cards} == {'专家 A', '专家 B'}
     owner_a = cards[0]['bindings'][0]['task_id']
     owner_b = cards[1]['bindings'][0]['task_id']
     assert owner_a != owner_b
-    runtime.answer(cards[0]['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='a-answer', expected_version=1, text='A 的详情'))
+    queued = next(q for q in cards if q['status'] == 'queued')
+    with pytest.raises(HarnessError):
+        runtime.answer(queued['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='too-early', expected_version=1, text='提前回答'))
+    active = next(q for q in cards if q['status'] == 'pending')
+    runtime.answer(active['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='first-answer', expected_version=1, text='第一位的详情'))
     advance(runtime, rid, 8)
     waiting = runtime.store.get(rid)
-    assert waiting['tasks'][owner_a]['status'] == 'completed'
-    assert waiting['tasks'][owner_b]['status'] == 'waiting_for_user'
+    assert waiting['tasks'][active['bindings'][0]['task_id']]['status'] == 'completed'
+    assert waiting['tasks'][queued['bindings'][0]['task_id']]['status'] == 'waiting_for_user'
+    assert waiting['inputs'][queued['id']]['status'] == 'pending'
     assert waiting['status'] not in {'completed', 'failed'}
-    runtime.answer(cards[1]['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='b-answer', expected_version=1, skipped=True))
+    runtime.answer(queued['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='second-answer', expected_version=1, skipped=True))
     advance(runtime, rid, 12)
     assert runtime.store.get(rid)['status'] == 'completed'
+    runtime.close()
+
+
+def test_search_budget_failure_is_returned_to_agent(tmp_path):
+    calls = {'value': 0}
+    def respond(messages, specs, purpose):
+        if not any(m.role == 'tool' for m in messages):
+            return call('search_skill_assets', {'query': '资料'}, 'search-1')
+        if calls['value'] == 0:
+            calls['value'] += 1
+            return call('search_skill_assets', {'query': '再次检索'}, 'search-2')
+        return AssistantTurnResult(final_text='检索受限，基于已有信息回答')
+    runtime = make_runtime(tmp_path, respond)
+    configured = policy()
+    configured['settings']['max_search_calls_per_task'] = 1
+    # Local Skill asset search must be present in the authorized catalog for the call to reach its budget.
+    configured['skills']['independent']['specs'] = [{'name': 'rag', 'description': '资料检索', 'parameters_schema': {'type': 'object', 'properties': {'query': {'type': 'string'}}, 'required': ['query']}}]
+    rid = runtime.create('s', 'u', 'p', '分析', configured)
+    advance(runtime, rid, 12)
+    run = runtime.store.get(rid)
+    assert run['status'] == 'completed'
+    assert any(t['status'] == 'failed' and t['result']['error'] == 'SEARCH_BUDGET_EXCEEDED' for t in run['tools'].values())
+    assert not run['inputs']
+    runtime.close()
+
+
+def test_search_catalog_follows_actor_skill_grants(tmp_path):
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='完成'))
+    configured = policy()
+    configured['skills']['internal']['specs'] = [{'name': 'rag', 'description': '内部资料', 'parameters_schema': {}}]
+    rid = runtime.create('s', 'u', 'p', '分析', configured)
+    run = runtime.store.get(rid)
+    main = run['tasks'][run['root_task_id']]
+    assert 'search_skill_assets' not in {spec.name for spec in runtime.specs(run, main)}
+    runtime.close()
+
+
+def test_harness_input_budget_and_output_limit_are_enforced(tmp_path):
+    requests = []
+    class Client:
+        def complete_with_tools(self, messages, specs, request_purpose, max_tokens=None):
+            requests.append(max_tokens)
+            return AssistantTurnResult(final_text='完成')
+        def last_request_metrics(self):
+            return {'input_tokens': 123, 'output_tokens': 12, 'total_tokens': 135}
+    client = Client()
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / 'budget.sqlite3'), lambda _run: client)
+    configured = policy()
+    configured['settings'].update(context_tokens=64000, max_output_tokens=8192, max_run_input_tokens=300000)
+    rid = runtime.create('s', 'u', 'p', '分析', configured)
+    advance(runtime, rid, 2)
+    run = runtime.store.get(rid)
+    assert requests == [8192]
+    assert run['status'] == 'completed'
+    assert run['input_tokens_estimated'] > 0
+    assert runtime.public(run)['input_tokens_actual'] == 123
+    runtime.close()
+
+    blocked = HarnessRuntime(HarnessStore.local(tmp_path / 'blocked.sqlite3'), lambda _run: client)
+    configured['settings']['max_run_input_tokens'] = 1
+    blocked_rid = blocked.create('blocked', 'u', 'p', '分析', configured)
+    advance(blocked, blocked_rid, 2)
+    failed = blocked.store.get(blocked_rid)
+    assert failed['status'] == 'failed'
+    assert failed['error'] == 'RUN_INPUT_BUDGET_EXCEEDED'
+    assert requests == [8192]
+    blocked.close()
+
+
+def test_select_question_map_is_normalized_and_invalid_call_has_field_feedback(tmp_path):
+    options = {'是本人': 'self', '帮别人问': 'other'}
+    question = {'title': '确认对象', 'fields': [{'key': 'who', 'label': '是谁的成绩', 'input_type': 'single_select', 'options': options}]}
+    runtime = make_runtime(tmp_path, lambda messages, *_: call('request_user_input', question) if not any(m.role == 'tool' for m in messages) else AssistantTurnResult(final_text='已确认'))
+    rid = runtime.create('s', 'u', 'p', '确认', policy())
+    advance(runtime, rid, 3)
+    run = runtime.store.get(rid)
+    request = next(iter(run['inputs'].values()))
+    assert request['status'] == 'pending'
+    assert request['fields'][0]['options'] == [{'label': '是本人', 'value': 'self'}, {'label': '帮别人问', 'value': 'other'}]
+    runtime.answer(request['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='answer', expected_version=1, answers={'who': 'self'}))
+    advance(runtime, rid, 3)
+    assert runtime.store.get(rid)['status'] == 'completed'
+    runtime.close()
+
+    invalid = {**question, 'fields': [{**question['fields'][0], 'options': 42}]}
+    rejected = make_runtime(tmp_path / 'rejected', lambda messages, *_: call('request_user_input', invalid) if not any(m.role == 'tool' for m in messages) else AssistantTurnResult(final_text='说明格式失败'))
+    rejected_rid = rejected.create('bad', 'u', 'p', '确认', policy())
+    advance(rejected, rejected_rid, 5)
+    failed_run = rejected.store.get(rejected_rid)
+    failed_tool = next(iter(failed_run['tools'].values()))
+    assert failed_tool['result']['error'] == 'INVALID_TOOL_ARGUMENTS'
+    assert failed_tool['result']['field'] == 'fields.0.options'
+    assert failed_tool['attempts'] == 1
+    assert failed_run['tasks'][failed_run['root_task_id']]['tool_calls'] == 1
+    rejected.close()
+
+
+def test_failed_expert_cannot_be_recreated_for_same_run(tmp_path):
+    def respond(messages, specs, purpose):
+        if purpose == 'harness_main':
+            delegated = [m for m in messages if m.role == 'tool' and m.name == 'delegate_tasks']
+            if not delegated:
+                return call('delegate_tasks', {'tasks': [{'key': 'first', 'expert_id': 'a', 'goal': '首次分析'}]}, 'delegate-1')
+            if len(delegated) == 1:
+                return call('delegate_tasks', {'tasks': [{'key': 'retry', 'expert_id': 'a', 'goal': '换个说法再试'}]}, 'delegate-2')
+            return AssistantTurnResult(final_text='专家失败，说明限制')
+        raise RuntimeError('EXPERT_MODEL_FAILED')
+    runtime = make_runtime(tmp_path, respond)
+    rid = runtime.create('s', 'u', 'p', '分析', policy())
+    advance(runtime, rid, 12)
+    run = runtime.store.get(rid)
+    assert len([t for t in run['tasks'].values() if t['kind'] == 'expert']) == 1
+    assert any(t['result']['error'] == 'DUPLICATE_EXPERT_TASK' for t in run['tools'].values() if t['name'] == 'delegate_tasks' and t['status'] == 'failed')
     runtime.close()
 
 

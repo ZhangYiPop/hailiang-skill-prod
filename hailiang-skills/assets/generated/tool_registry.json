@@ -31,7 +31,7 @@
     },
     "rag": {
       "enabled": true,
-      "description": "受控本地检索增强：仅检索已加载的 skill references 与仓库级 data/generated 资产。"
+      "description": "本地 Skill 资料搜索：仅搜索已加载的 Skill references 与 data/generated 资产，不调用独立 RAG 服务。"
     },
     "status_track": {
       "enabled": true,

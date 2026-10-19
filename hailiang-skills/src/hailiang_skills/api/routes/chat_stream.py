@@ -1057,7 +1057,28 @@ def build_chat_stream_router(
         context = _save_and_refresh_context(repository, context)
 
         if not profile_switched and hasattr(runner, "supersede_active_run"):
-            runner.supersede_active_run(request.session_id, context.user_id, next_run_id=request.run_id)
+            try:
+                runner.supersede_active_run(
+                    request.session_id,
+                    context.user_id,
+                    next_run_id=request.run_id,
+                )
+            except RuntimeError as exc:
+                if str(exc) == "RUN_SUPERSEDE_CHECKPOINT_TIMEOUT":
+                    raise HTTPException(
+                        status_code=503,
+                        detail="RUN_SUPERSEDE_CHECKPOINT_TIMEOUT",
+                        headers={"Retry-After": "1"},
+                    ) from exc
+                raise
+            # Superseding can synchronously checkpoint the old run's visible
+            # partial answer and confirmed facts. Continue the new request
+            # from that committed snapshot, especially with the SQL repository
+            # where ``context`` above is detached from the worker's instance.
+            try:
+                context = repository.get(request.session_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="session not found") from exc
         if isinstance(input_data, ConfirmTeamHandoffInput):
             def apply_handoff(current_context):
                 team_member_switch = _confirm_team_handoff(current_context, orchestrator, input_data)

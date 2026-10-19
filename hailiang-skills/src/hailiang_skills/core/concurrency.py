@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from threading import BoundedSemaphore, Lock
-from time import monotonic
+from time import monotonic, sleep
 from uuid import uuid4
 
 from hailiang_skills.core.telemetry import span
@@ -104,9 +104,10 @@ class TurnCoordinator:
                     if not admitted:
                         raise CapacityExceededError("global SSE capacity is saturated; retry later")
                     redis_reserved = True
-                    # Atomic last-writer-wins generation makes an earlier stream
-                    # observe cancellation at every existing boundary.
+                    # The new lease owns this session; a prior cancellation
+                    # marker must not leak into the new generation.
                     self._redis.set(f"hailiang:turn:{session_id}:generation", generation, ex=900)
+                    self._redis.delete(f"hailiang:turn:{session_id}:cancelled")
                 except CapacityExceededError:
                     user_sem.release()
                     self._global.release()
@@ -125,7 +126,36 @@ class TurnCoordinator:
         return value or None
 
     def supersede(self, session_id: str, *, next_run_id: str) -> str | None:
-        """Mark the current local run as replaced before a new turn starts."""
+        """Atomically cancel the active run across workers before a new turn."""
+        if self._redis:
+            try:
+                previous = self._redis.eval(
+                    """
+                    local current = redis.call('GET', KEYS[1])
+                    local cancelled = redis.call('GET', KEYS[2])
+                    if not current then return '' end
+                    local previous = current
+                    if cancelled and cancelled ~= current then previous = cancelled end
+                    if previous == ARGV[1] then return '' end
+                    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+                    redis.call('SET', KEYS[2], previous, 'EX', ARGV[2])
+                    return previous
+                    """,
+                    2,
+                    f"hailiang:turn:{session_id}:generation",
+                    f"hailiang:turn:{session_id}:cancelled",
+                    next_run_id,
+                    900,
+                )
+            except Exception:
+                previous = None
+            if previous:
+                previous = str(previous)
+                with self._guard:
+                    self._local_cancelled[session_id] = previous
+                    self._local_generations[session_id] = next_run_id
+                return previous
+            return None
         with self._guard:
             current = self._local_generations.get(session_id)
             if not current or current == next_run_id:
@@ -201,10 +231,50 @@ class TurnCoordinator:
         except Exception:
             return local_cancelled
 
+    def mark_finalized(self, session_id: str, run_id: str) -> None:
+        if not self._redis:
+            return
+        try:
+            self._redis.set(f"hailiang:turn:{session_id}:finalized:{run_id}", "1", ex=900)
+        except Exception:
+            return
+
+    def wait_for_finalized(self, session_id: str, run_id: str, *, timeout_s: float = 15.0) -> bool:
+        if not self._redis:
+            return True
+        deadline = monotonic() + max(0.0, timeout_s)
+        key = f"hailiang:turn:{session_id}:finalized:{run_id}"
+        while True:
+            try:
+                if self._redis.get(key):
+                    return True
+            except Exception:
+                return False
+            if monotonic() >= deadline:
+                return False
+            sleep(min(0.05, max(0.0, deadline - monotonic())))
+
     def release(self, lease: TurnLease) -> None:
         with self._guard:
             if self._local_cancelled.get(lease.session_id) == lease.generation:
                 self._local_cancelled.pop(lease.session_id, None)
+            if self._local_generations.get(lease.session_id) == lease.generation:
+                self._local_generations.pop(lease.session_id, None)
+        if self._redis:
+            try:
+                self._redis.eval(
+                    """
+                    if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]) end
+                    if redis.call('GET', KEYS[2]) == ARGV[1] then redis.call('DEL', KEYS[2]) end
+                    return 1
+                    """,
+                    2,
+                    f"hailiang:turn:{lease.session_id}:generation",
+                    f"hailiang:turn:{lease.session_id}:cancelled",
+                    lease.generation,
+                )
+            except Exception:
+                pass
         with self._guard:
             user_sem = self._user_locks.get(lease.user_id)
         if user_sem:

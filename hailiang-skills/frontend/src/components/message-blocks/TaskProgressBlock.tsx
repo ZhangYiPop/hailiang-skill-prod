@@ -41,11 +41,11 @@ export function AgentInputRequest({ request, sessionId, onSubmitAnswer }: { requ
     finally { setSubmitting(false); }
   };
   if (request.status !== "pending") return <div className="mt-2 rounded-xl border border-white/10 p-3 text-xs text-slate-400">
-    {request.title} · 第 {request.round} 轮 · {request.status === "answered" ? "已回答" : request.status === "skipped" ? "未补充" : "已失效"}
+    {request.actor || "主 agent"} · {request.title} · 第 {request.round} 轮 · {request.status === "queued" ? "排队等待提问" : request.status === "answered" ? "已回答" : request.status === "skipped" ? "未补充" : "已失效"}
     {request.answer && !request.answer.skipped && <dl className="mt-2">{request.fields.map((f) => <div key={f.key}><dt className="inline">{f.label}：</dt><dd className="inline">{String(request.answer?.answers[f.key] ?? "")}</dd></div>)}</dl>}
   </div>;
   return <form aria-label={request.title} className="mt-3 space-y-3 rounded-xl border border-amber-300/30 bg-amber-300/5 p-3" onSubmit={(e) => { e.preventDefault(); void submit(false); }}>
-    <p className="text-sm text-amber-100">{request.title} · 第 {request.round} 轮</p>
+    <p className="text-sm text-amber-100">{request.actor || "主 agent"} 向你追问 · {request.title} · 第 {request.round} 轮</p>
     {request.clarification_reason && <p className="text-xs text-slate-300">{request.clarification_reason}</p>}
     {request.fields.map((field) => <div key={field.key} className="block text-sm text-slate-200">
       {field.label}{field.required ? " *" : ""}
@@ -63,6 +63,17 @@ export function AgentInputRequest({ request, sessionId, onSubmitAnswer }: { requ
   </form>;
 }
 
+function nodeTime(node: HarnessNode): string {
+  return node.created_at || node.started_at || "";
+}
+
+function sortNodes(nodes: HarnessNode[]): HarnessNode[] {
+  return [...nodes].sort((a, b) => {
+    const byTime = nodeTime(a).localeCompare(nodeTime(b));
+    return byTime || a.id.localeCompare(b.id);
+  });
+}
+
 export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedConnection }: { run: HarnessRun; onSubmitAnswer?: SubmitHarnessAnswer; connection?: string }) {
   const [clock, setClock] = useState(Date.now());
   const chatConnection = useHarnessState((s) => s.connection);
@@ -70,7 +81,7 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
   useEffect(() => { if (isHarnessTerminal(run.status)) return; const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, [run.status]);
   const end = isHarnessTerminal(run.status) ? Date.parse(run.updated_at) : clock;
   const render = (node: HarnessNode, depth = 0) => {
-    const children = run.nodes.filter((n) => n.parent_id === node.id);
+    const children = sortNodes(run.nodes.filter((n) => n.parent_id === node.id));
     const requests = run.inputs.filter((q) => q.bindings.some((b) => b.task_id === node.id));
     return <div key={node.id} className={depth ? "ml-3 border-l border-white/10 pl-3" : ""}>
       <details open={!isHarnessTerminal(node.status) && node.status !== "skipped"}>
@@ -79,7 +90,8 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
           {(node.attempts ?? 0) > 1 && <span className="ml-2 text-xs text-slate-400">第 {node.attempts} 次执行</span>}
         </summary>
         {children.map((child) => render(child, depth + 1))}
-        {requests.filter((q) => q.status !== "pending").map((q) => <AgentInputRequest key={q.id} request={q} sessionId={run.session_id} onSubmitAnswer={onSubmitAnswer} />)}
+        {requests.filter((q) => !["pending", "queued"].includes(q.status)).map((q) => <AgentInputRequest key={q.id} request={q} sessionId={run.session_id} onSubmitAnswer={onSubmitAnswer} />)}
+        {node.error && <p className="text-xs text-rose-300">失败原因：{node.error}</p>}
       </details>
     </div>;
   };
@@ -87,14 +99,18 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
     <p className="text-sm text-cyan-100">{run.goal} · {labels[run.status] || "处理中"}</p>
     {run.phase && !isHarnessTerminal(run.status) && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-300">{run.phase}</p>}
     <p className="mt-1 text-xs text-slate-400">已完成 {run.completed_count} / {run.task_count} 项任务 · {run.waiting_count} 项等待补充 · {Math.max(0, Math.floor((end - Date.parse(run.created_at)) / 1000))}s</p>
+    {run.input_token_limit && <p className="mt-1 text-xs text-slate-400">累计模型输入估算 {run.input_tokens_estimated?.toLocaleString() ?? 0} / {run.input_token_limit.toLocaleString()} token{run.input_tokens_actual != null ? ` · 已回报实际输入 ${run.input_tokens_actual.toLocaleString()} token` : ""}</p>}
     {connection === "reconnecting" && !isHarnessTerminal(run.status) && <p role="status" className="mt-2 text-xs text-amber-200">连接恢复中，后台任务继续执行</p>}
-    {run.nodes.filter((n) => !n.parent_id).map((n) => render(n))}
+    {sortNodes(run.nodes.filter((n) => !n.parent_id)).map((n) => render(n))}
     {run.inputs.filter((q) => q.status === "pending").map((q) => {
-      const owner = run.nodes.find((n) => n.id === q.bindings[0]?.task_id);
+      const owner = run.nodes.find((n) => n.id === q.owner_task_id);
       return <div key={q.id} className="mt-3">
-        <p className="text-xs text-violet-200">{owner?.actor || "主 agent"} · {owner?.title || "补充信息"}</p>
+        <p className="text-xs text-violet-200">{q.actor || owner?.actor || "主 agent"} · {owner?.title || "补充信息"}</p>
         <AgentInputRequest request={q} sessionId={run.session_id} onSubmitAnswer={onSubmitAnswer} />
       </div>;
     })}
+    {run.inputs.filter((q) => q.status === "queued").map((q, index) => <div key={q.id} className="mt-2 rounded-lg border border-white/10 p-2 text-xs text-slate-400">
+      排队第 {index + 1} 位 · {q.actor || "主 agent"}：{q.title}
+    </div>)}
   </section>;
 }

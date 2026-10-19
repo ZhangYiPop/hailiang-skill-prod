@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from hailiang_skills.runtime_bridge.consultation_policy import ConsultationPolicy
+
 
 ObjectType = Literal["skill", "expert", "expert_team"]
 

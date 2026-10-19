@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from hailiang_skills.skill_runtime.data_loader import load_generated_tool_registry
-from hailiang_skills.skill_runtime.models import SessionState, SkillBundle, SkillContract
+from hailiang_skills.skill_runtime.models import SessionState, SkillBundle, SkillContract, SkillRuntimeMetadata
 from hailiang_skills.skill_runtime.tools import (
     DATABASE_QUERY_TOOLS,
     QUERY_SCORE_LINES_TOOL_NAME,
@@ -60,6 +60,7 @@ def _bundle(tmp_path: Path, deps: list[str], *, tools: dict | None = None) -> Sk
         skill_file=tmp_path / "SKILL.md",
         tool_registry=default_tool_registry(config),
         contract=SkillContract(skill_id="test"),
+        runtime_metadata=SkillRuntimeMetadata(tool_dependency=tuple(deps)),
     )
 
 

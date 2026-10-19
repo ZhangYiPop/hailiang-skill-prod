@@ -3519,7 +3519,12 @@ class MainPlannerOrchestrator:
         combined_response_streamed = bool(
             state.status_flags.pop("ms_agent_combined_response_streamed", False)
         )
-        if questionnaire_enabled(current_bundle):
+        # P11: skills that declare request_declared_form keep normal tool routing;
+        # legacy JSON questionnaire path only runs when the tool is not declared.
+        uses_declared_form = "request_declared_form" in set(
+            getattr(current_bundle.runtime_metadata, "tool_dependency", ()) or ()
+        )
+        if questionnaire_enabled(current_bundle) and not uses_declared_form:
             if routing_decision.required:
                 logger.log(
                     "routing.ms_agent.questionnaire_tools_suppressed",
@@ -3761,6 +3766,25 @@ class MainPlannerOrchestrator:
             tool_results = tuple(next_tool_results)
             transient_messages = tuple(next_transient_messages)
             preferred_mode = turn_result.tool_mode
+            # P8: out-of-scope handoff back to main router for re-dispatch.
+            if state.status_flags.pop("return_to_main_router", False):
+                reply = str(
+                    state.status_flags.pop("return_to_main_router_message", "")
+                    or "这个问题不在本次咨询范围内，我先交回统一入口帮你重新分流。"
+                )
+                state.status_flags.pop("return_to_main_router_reason", None)
+                state.active_skill_id = GENERAL_CHAT_ID
+                state.status_flags["entry_skill_id"] = GENERAL_CHAT_ID
+                context.interaction_state["active_skill"] = GENERAL_CHAT_ID
+                self._emit_runtime_status(context, "response", "正在交回主路由")
+                self._emit_reply_delta(context, reply)
+                return reply, ""
+            # P11: form was staged by request_declared_form — stop and wait for submit.
+            if state.status_flags.get("native_questionnaire_form"):
+                reply = "请先补充下面这几项信息。"
+                self._emit_runtime_status(context, "response", "正在生成表单")
+                self._emit_reply_delta(context, reply)
+                return reply, ""
 
         final_text = "当前无法稳定完成工具调用流程；如果你愿意，我先基于现有信息给出方向性建议。"
         self._emit_runtime_status(context, "response", "正在生成回复")
@@ -6010,6 +6034,8 @@ class MainPlannerOrchestrator:
         return result
 
     def _emit_skill_intro_if_needed(self, context, state: SessionState, active_skill_id: str) -> None:
+        # P5: stop sending brief/info opening messages when entering a skill.
+        # Keep a session_meta marker for diagnostics, but do not surface intro text.
         entry_skill_id = str(state.status_flags.pop("entry_skill_id", "") or "").strip()
         if not entry_skill_id or entry_skill_id in {MAIN_PLANNER_ID, GENERAL_CHAT_ID}:
             return
@@ -6019,35 +6045,23 @@ class MainPlannerOrchestrator:
         bundle = self.runtime_registry.get(active_skill_id or entry_skill_id)
         if bundle is None:
             return
+        del bundle
         display = build_skill_display(
             context,
             active_skill=active_skill_id or entry_skill_id,
             runtime_registry=self.runtime_registry,
         )
-        # Use the same normalized display metadata as the SSE context so
-        # imported Skills with partial frontmatter still get a useful intro.
-        brief = display.get("brief", "")
-        info = display.get("info", "")
-        description = display.get("description", "")
         intro = {
             "skill_id": active_skill_id or entry_skill_id,
             "skill_label": display["agent_label"],
-            "brief": brief,
-            "info": info,
-            "description": description,
+            "brief": "",
+            "info": "",
+            "description": display.get("description", ""),
             "scene_name": display["scene_name"],
             "skill_theme": display["skill_theme"],
+            "suppressed": True,
         }
         context.session_meta["skill_intro"] = intro
-        context.add_message(
-            "assistant",
-            info,
-            metadata={
-                **self._assistant_message_metadata(context, active_skill_id or entry_skill_id),
-                "message_type": "skill_intro",
-                "skill_intro": intro,
-            },
-        )
         callback = (context.session_meta or {}).get("skill_intro_callback")
         if callable(callback):
             callback(intro)

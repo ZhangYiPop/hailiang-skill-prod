@@ -1,0 +1,260 @@
+{
+  "schema_version": 1,
+  "items": [
+    {
+      "id": "assessment.career_first",
+      "title": "首次生涯测评",
+      "kind": "feature",
+      "when": "用户要做首次生涯测评",
+      "intent": "assessment",
+      "object_type": "career_first",
+      "url_or_route": ""
+    },
+    {
+      "id": "assessment.single_assessment.career_interest",
+      "title": "职业兴趣测评",
+      "kind": "feature",
+      "when": "用户讨论或要求职业兴趣测评",
+      "intent": "assessment",
+      "object_type": "single_assessment",
+      "sub_type": "career_interest",
+      "url_or_route": ""
+    },
+    {
+      "id": "assessment.single_assessment.multiple_intelligence",
+      "title": "多元智能测评",
+      "kind": "feature",
+      "when": "用户讨论或要求多元智能测评",
+      "intent": "assessment",
+      "object_type": "single_assessment",
+      "sub_type": "multiple_intelligence",
+      "url_or_route": ""
+    },
+    {
+      "id": "assessment.single_assessment.subject_aptitude",
+      "title": "学科潜能测评",
+      "kind": "feature",
+      "when": "用户讨论或要求学科潜能测评",
+      "intent": "assessment",
+      "object_type": "single_assessment",
+      "sub_type": "subject_aptitude",
+      "url_or_route": ""
+    },
+    {
+      "id": "assessment.learning_ability",
+      "title": "学习力测评",
+      "kind": "feature",
+      "when": "用户要做学习力测评",
+      "intent": "assessment",
+      "object_type": "learning_ability",
+      "url_or_route": ""
+    },
+    {
+      "id": "assessment.generic",
+      "title": "通用测评入口",
+      "kind": "feature",
+      "when": "用户只说想做测评，没有具体种类",
+      "intent": "assessment",
+      "object_type": "generic",
+      "url_or_route": ""
+    },
+    {
+      "id": "course.expert_course",
+      "title": "专家课程",
+      "kind": "feature",
+      "when": "用户要看专家课程",
+      "intent": "course",
+      "object_type": "expert_course",
+      "url_or_route": ""
+    },
+    {
+      "id": "course.live",
+      "title": "直播",
+      "kind": "feature",
+      "when": "用户要看直播",
+      "intent": "course",
+      "object_type": "live",
+      "url_or_route": ""
+    },
+    {
+      "id": "course.my_course",
+      "title": "我的课程",
+      "kind": "feature",
+      "when": "用户要看已购或进行中的课程",
+      "intent": "course",
+      "object_type": "my_course",
+      "url_or_route": ""
+    },
+    {
+      "id": "counselor.counselor_list",
+      "title": "咨询师列表",
+      "kind": "feature",
+      "when": "用户要找咨询师",
+      "intent": "counselor",
+      "object_type": "counselor_list",
+      "url_or_route": ""
+    },
+    {
+      "id": "counselor.counselor_detail",
+      "title": "咨询师详情",
+      "kind": "feature",
+      "when": "用户要看某位咨询师介绍",
+      "intent": "counselor",
+      "object_type": "counselor_detail",
+      "url_or_route": ""
+    },
+    {
+      "id": "counselor.consult_intro",
+      "title": "咨询说明",
+      "kind": "feature",
+      "when": "用户要了解咨询服务说明",
+      "intent": "counselor",
+      "object_type": "consult_intro",
+      "url_or_route": ""
+    },
+    {
+      "id": "counselor.im_consult",
+      "title": "在线咨询",
+      "kind": "feature",
+      "when": "用户要发起在线咨询",
+      "intent": "counselor",
+      "object_type": "im_consult",
+      "url_or_route": ""
+    },
+    {
+      "id": "theme.college_explore",
+      "title": "院校探索",
+      "kind": "feature",
+      "when": "用户要查学校",
+      "intent": "theme",
+      "object_type": "college_explore",
+      "url_or_route": ""
+    },
+    {
+      "id": "theme.career_explore",
+      "title": "职业探索",
+      "kind": "feature",
+      "when": "用户要查职业",
+      "intent": "theme",
+      "object_type": "career_explore",
+      "url_or_route": ""
+    },
+    {
+      "id": "theme.primary_path",
+      "title": "小学路径",
+      "kind": "feature",
+      "when": "用户要看小学路径",
+      "intent": "theme",
+      "object_type": "primary_path",
+      "url_or_route": ""
+    },
+    {
+      "id": "theme.path_major",
+      "title": "专业路径",
+      "kind": "feature",
+      "when": "用户要看专业路径",
+      "intent": "theme",
+      "object_type": "path_major",
+      "url_or_route": ""
+    },
+    {
+      "id": "theme.path_primary",
+      "title": "初中路径",
+      "kind": "feature",
+      "when": "用户要看初中路径",
+      "intent": "theme",
+      "object_type": "path_primary",
+      "url_or_route": ""
+    },
+    {
+      "id": "theme.path_secondary",
+      "title": "高中路径",
+      "kind": "feature",
+      "when": "用户要看高中路径",
+      "intent": "theme",
+      "object_type": "path_secondary",
+      "url_or_route": ""
+    },
+    {
+      "id": "news_case.news",
+      "title": "资讯",
+      "kind": "feature",
+      "when": "用户要看资讯",
+      "intent": "news_case",
+      "object_type": "news",
+      "url_or_route": ""
+    },
+    {
+      "id": "news_case.case",
+      "title": "案例",
+      "kind": "feature",
+      "when": "用户要看案例",
+      "intent": "news_case",
+      "object_type": "case",
+      "url_or_route": ""
+    },
+    {
+      "id": "account.student_create",
+      "title": "新建学生档案",
+      "kind": "feature",
+      "when": "用户明确要求新建学生档案",
+      "intent": "account",
+      "object_type": "student_create",
+      "url_or_route": ""
+    },
+    {
+      "id": "account.student_modify",
+      "title": "修改学生档案",
+      "kind": "feature",
+      "when": "用户明确要求修改学生档案",
+      "intent": "account",
+      "object_type": "student_modify",
+      "url_or_route": ""
+    },
+    {
+      "id": "product.product_list",
+      "title": "商品列表",
+      "kind": "feature",
+      "when": "用户要找升学产品或服务列表",
+      "intent": "product",
+      "object_type": "product_list",
+      "url_or_route": ""
+    },
+    {
+      "id": "product.product_detail",
+      "title": "商品详情",
+      "kind": "feature",
+      "when": "用户要看某个商品详情",
+      "intent": "product",
+      "object_type": "product_detail",
+      "url_or_route": ""
+    },
+    {
+      "id": "product.product_search",
+      "title": "商品搜索",
+      "kind": "feature",
+      "when": "用户要搜索商品",
+      "intent": "product",
+      "object_type": "product_search",
+      "url_or_route": ""
+    },
+    {
+      "id": "product.product_consult",
+      "title": "商品咨询",
+      "kind": "feature",
+      "when": "用户要咨询商品",
+      "intent": "product",
+      "object_type": "product_consult",
+      "url_or_route": ""
+    },
+    {
+      "id": "product.my_order",
+      "title": "我的订单",
+      "kind": "feature",
+      "when": "用户要看订单",
+      "intent": "product",
+      "object_type": "my_order",
+      "url_or_route": ""
+    }
+  ]
+}

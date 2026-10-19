@@ -4,10 +4,13 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 TERMINAL = {"completed", "failed", "cancelled"}
 TOOL_TERMINAL = TERMINAL | {"skipped"}
+SKILL_ASSET_SEARCH_TOOL = "search_skill_assets"
+LEGACY_RAG_SEARCH_TOOL = "rag_search"
+SEARCH_TOOL_NAMES = {SKILL_ASSET_SEARCH_TOOL, LEGACY_RAG_SEARCH_TOOL, "web_search"}
 
 
 def now() -> str:
@@ -24,6 +27,18 @@ class HarnessError(ValueError):
         super().__init__(code)
 
 
+def _normalize_option(option: Any) -> Any:
+    """Accept model-emitted ``key`` as an alias of the required ``value`` field."""
+    if not isinstance(option, dict):
+        return option
+    normalized = dict(option)
+    if "value" not in normalized and "key" in normalized:
+        normalized["value"] = normalized.pop("key")
+    elif "key" in normalized and normalized.get("key") == normalized.get("value"):
+        normalized.pop("key", None)
+    return normalized
+
+
 class InputField(BaseModel):
     model_config = ConfigDict(extra="forbid")
     key: str = Field(min_length=1, max_length=160)
@@ -33,8 +48,17 @@ class InputField(BaseModel):
     options: list[dict[str, str]] = Field(default_factory=list, max_length=40)
     scope: Literal["task", "session", "profile", "user"] = "task"
     fact_key: str | None = None
+    subject: str = Field(default="", max_length=160)
+    applicable_time: str = Field(default="", max_length=160)
     min: float | None = None
     max: float | None = None
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def normalize_options(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [_normalize_option(item) for item in value]
 
     @model_validator(mode="after")
     def valid_options(self):
@@ -59,6 +83,26 @@ class InputArguments(BaseModel):
         if len({field.key for field in self.fields}) != len(self.fields):
             raise ValueError("duplicate question keys")
         return self
+
+
+def normalize_input_arguments(arguments: dict) -> dict:
+    """Accept the common label-to-value select shorthand without widening the schema."""
+    if not isinstance(arguments, dict) or not isinstance(arguments.get("fields"), list):
+        return arguments
+    normalized = dict(arguments)
+    normalized["fields"] = []
+    for field in arguments["fields"]:
+        if not isinstance(field, dict):
+            normalized["fields"].append(field)
+            continue
+        item = dict(field)
+        options = item.get("options")
+        if item.get("input_type") in {"single_select", "multi_select"} and isinstance(options, dict) and all(
+            isinstance(label, str) and isinstance(value, str) for label, value in options.items()
+        ):
+            item["options"] = [{"label": label, "value": value} for label, value in options.items()]
+        normalized["fields"].append(item)
+    return normalized
 
 
 class AnswerSubmission(BaseModel):

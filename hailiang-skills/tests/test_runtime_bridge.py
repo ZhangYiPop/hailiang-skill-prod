@@ -258,6 +258,41 @@ class FakeInterruptibleStreamingOrchestrator(FakeStreamingOrchestrator):
         return SkillResult(assistant_message=reply)
 
 
+class FakePartialStreamingOrchestrator(FakeStreamingOrchestrator):
+    def __init__(self) -> None:
+        self.old_started = threading.Event()
+        self.new_context: dict[str, object] = {}
+
+    def handle_message(self, content: str, context: SessionContext) -> SkillResult:
+        turn_id = f"turn_{content}"
+        context.session_meta["active_turn_id"] = turn_id
+        turn_by_generation = context.session_meta.setdefault("turn_id_by_stream_generation", {})
+        generation_by_thread = context.session_meta.get("stream_generation_by_thread")
+        generation = generation_by_thread.get(str(threading.get_ident())) if isinstance(generation_by_thread, dict) else ""
+        if isinstance(turn_by_generation, dict) and generation:
+            turn_by_generation[generation] = turn_id
+        context.add_message("user", content, metadata={"turn_id": turn_id})
+        if content == "old":
+            context.update_fact("grade", "高一", source_skill="test")
+            context.update_fact("candidate_fact", "暂定内容", source_skill="test", status="candidate")
+            callback = context.session_meta.get("reply_delta_callback")
+            if callable(callback):
+                callback("已经展示的部分回答")
+            self.old_started.set()
+            cancel_check = context.session_meta.get("stream_cancel_check")
+            while callable(cancel_check) and not cancel_check():
+                time.sleep(0.005)
+            context.add_message("assistant", "未展示的尾部", metadata={"turn_id": turn_id})
+            return SkillResult(assistant_message="已经展示的部分回答未展示的尾部")
+        self.new_context = {
+            "messages": [(item.get("role"), item.get("content")) for item in context.messages],
+            "grade": context.known_facts.get_value("grade"),
+            "candidate_fact": context.known_facts.get_value("candidate_fact"),
+        }
+        context.add_message("assistant", "新一轮回答", metadata={"turn_id": turn_id})
+        return SkillResult(assistant_message="新一轮回答")
+
+
 def parse_sse_events(chunks: list[str]) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
     for chunk in chunks:
@@ -2130,6 +2165,50 @@ class RuntimeBridgeTest(unittest.TestCase):
         self.assertFalse(any(state["assistant"]["content"] == "old reply" for state in old_states))
         self.assertEqual(new_states[-1]["assistant"]["content"], "new reply")
         self.assertEqual(new_states[-1]["status"], "completed")
+
+    def test_superseding_run_preserves_visible_partial_answer_and_confirmed_facts(self) -> None:
+        context = SessionContext(user_id="u1", session_id="sess_partial_supersede")
+        orchestrator = FakePartialStreamingOrchestrator()
+        runner = StreamingRunner(
+            FakeStreamingRepository(context),
+            FakeStreamingFactService(),
+            orchestrator,
+        )
+        old_events: list[dict[str, object]] = []
+
+        def consume_old() -> None:
+            old_events.extend(parse_sse_events(list(runner.stream_message(
+                "sess_partial_supersede", "u1", "old", lease=runner.reserve_turn(
+                    "sess_partial_supersede", "u1", run_id="run_old",
+                ), protocol="v2",
+            ))))
+
+        old_thread = threading.Thread(target=consume_old)
+        old_thread.start()
+        self.assertTrue(orchestrator.old_started.wait(timeout=1))
+
+        self.assertEqual(
+            runner.supersede_active_run("sess_partial_supersede", "u1", next_run_id="run_new"),
+            "run_old",
+        )
+        new_events = parse_sse_events(list(runner.stream_message(
+            "sess_partial_supersede", "u1", "new", lease=runner.reserve_turn(
+                "sess_partial_supersede", "u1", run_id="run_new",
+            ), protocol="v2",
+        )))
+        old_thread.join(timeout=1)
+
+        stored_context = runner.repository.get("sess_partial_supersede")
+        assistant_messages = [
+            item.get("content") for item in stored_context.messages if item.get("role") == "assistant"
+        ]
+        self.assertIn("已经展示的部分回答", assistant_messages)
+        self.assertNotIn("未展示的尾部", assistant_messages)
+        self.assertEqual(orchestrator.new_context["grade"], "高一")
+        self.assertIsNone(orchestrator.new_context["candidate_fact"])
+        self.assertIn(("assistant", "已经展示的部分回答"), orchestrator.new_context["messages"])
+        self.assertEqual(assistant_messages[-1], "新一轮回答")
+        self.assertTrue(new_events)
 
     def test_requested_target_skill_is_active_before_stream_finishes(self) -> None:
         context = SessionContext(user_id="u1", session_id="sess_requested_target")

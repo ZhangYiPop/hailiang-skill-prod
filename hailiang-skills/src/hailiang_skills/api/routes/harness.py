@@ -11,6 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 from hailiang_skills.harness.contracts import AnswerSubmission, HarnessError
 from hailiang_skills.harness.policy import capture_policy
+from hailiang_skills.security.models import ModerationBlockedError
+from hailiang_skills.skills.common import extract_grade
 
 
 class StartRun(BaseModel):
@@ -89,7 +91,19 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                 except KeyError:
                     pass
         if runtime.moderation:
-            runtime.moderation.check(request.goal, stage="input", session_id=session_id)
+            try:
+                runtime.moderation.check(request.goal, stage="input", session_id=session_id)
+            except ModerationBlockedError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "CONTENT_BLOCKED",
+                        "message": "该内容检测到非合规内容，请重新输入",
+                        "stage": exc.stage,
+                        "case_id": exc.case_id,
+                        **exc.result.to_public_dict(),
+                    },
+                ) from exc
         context, created = open_or_resume_session(repository, fact_service, session_id=session_id, data=data,
                                                   context_scope="profile" if data.profile_id else "unbound", allow_context_seed=context is None)
         if created:
@@ -124,6 +138,21 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
             for key, record in facts.facts.items():
                 identity = HarnessStore.fact_identity(dummy, {"id": "seed"}, scope, key)
                 seed[identity] = {"key": key, "value": record.value, "scope": scope, "status": record.status, "version": 1, "source": record.model_dump()}
+        explicit_grade = extract_grade(request.goal)
+        if explicit_grade:
+            identity = HarnessStore.fact_identity(dummy, {"id": "seed"}, "session", "grade")
+            seed[identity] = {
+                "key": "grade",
+                "value": explicit_grade,
+                "scope": "session",
+                "status": "confirmed",
+                "version": 1,
+                "source": {
+                    "source_type": "user_input",
+                    "source_id": f"{session_id}:goal",
+                    "evidence": explicit_grade,
+                },
+            }
         previous = runtime.store.runs(session_id)
         history = []
         for run in sorted(previous, key=lambda r: r["created_at"])[-10:]:
@@ -143,7 +172,11 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
         run = operation(lambda: runtime.store.get(run_id))
         if run["session_id"] != session_id or run["user_id"] != user_id or run["profile_id"] != profile_id:
             raise HTTPException(403, "HARNESS_ACCESS_DENIED")
-        return {"run_id": run_id, "tasks": [{"task_id": t["id"], "kind": t["kind"], "trace": t["trace"]} for t in run["tasks"].values()]}
+        return {"run_id": run_id, "context_policy_version": run.get("context_policy_version", "v1"),
+                "input_tokens_estimated": run.get("input_tokens_estimated", 0),
+                "input_tokens_actual": run.get("input_tokens_actual", 0),
+                "input_tokens_charged": run.get("input_tokens_charged", run.get("input_tokens_estimated", 0)),
+                "tasks": [{"task_id": t["id"], "kind": t["kind"], "trace": t["trace"]} for t in run["tasks"].values()]}
 
     @router.get("/sessions/{session_id}/harness/runs/{run_id}")
     def get_run(session_id: str, run_id: str, user_id: str, profile_id: str | None = None):
