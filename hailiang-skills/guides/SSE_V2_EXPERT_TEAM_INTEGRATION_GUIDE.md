@@ -1,5 +1,10 @@
 # SSE v2 专家团对话接入说明
 
+> Harness 多 Agent 链路使用独立的 `hailiang.sse.v3`。接入方请阅读
+> [SSE_V3_HARNESS_CONTRACT.md](SSE_V3_HARNESS_CONTRACT.md) 和
+> [SSE_V3_HARNESS_INTEGRATION_GUIDE.md](SSE_V3_HARNESS_INTEGRATION_GUIDE.md)；V2 的完整
+> `state` 替换模型不能直接用于 V3 的实体事件 reducer。
+
 > 文档状态：当前实现（2026-09-04）
 >
 > 协议：`hailiang.sse.v2`

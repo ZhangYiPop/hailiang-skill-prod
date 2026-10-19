@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { legacyView, subscribeV3, type V3Snapshot } from "@/utils/harnessV3";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentInputRequest, TaskProgressBlock, type SubmitHarnessAnswer } from "@/components/message-blocks/TaskProgressBlock";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { HarnessContextDiagnostics } from "./HarnessContextDiagnostics";
@@ -49,6 +50,14 @@ export function HarnessDebugPanel({
   historySessions?: HarnessHistorySession[];
   onHistoryChange?: () => void;
 }) {
+  const v3 = import.meta.env.VITE_HAILIANG_SSE_V3 === 'true';
+  const api = v3 ? '/api/v3' : '/api/v2';
+  const v3Cursor = useRef({session: '', cursor: -1});
+  const acceptV3 = (snapshot: V3Snapshot): HarnessSnapshot => {
+    if (v3Cursor.current.session === snapshot.session_id && snapshot.cursor < v3Cursor.current.cursor) return {runtime_mode: snapshot.runtime_mode, cursor: snapshot.cursor, runs: []};
+    v3Cursor.current = {session: snapshot.session_id, cursor: snapshot.cursor};
+    return legacyView(snapshot);
+  };
   const [goal, setGoal] = useState("");
   const [debugId, setDebugId] = useState("");
   const [runs, setRuns] = useState<HarnessRun[]>([]);
@@ -74,6 +83,15 @@ export function HarnessDebugPanel({
 
   const request = async <T,>(path: string, body?: unknown): Promise<T> => {
     let response: Response;
+    const startKey = `${persistenceKey}:submission`;
+    if (v3 && body && path.endsWith('/harness/runs')) {
+      const value = body as Record<string, unknown>;
+      const fingerprint = JSON.stringify({...value, submission_id: undefined});
+      let cached: {fingerprint: string; id: string} | null = null;
+      try { cached = JSON.parse(sessionStorage.getItem(startKey) || 'null'); } catch { /* empty */ }
+      value.submission_id = cached?.fingerprint === fingerprint ? cached.id : crypto.randomUUID();
+      sessionStorage.setItem(startKey, JSON.stringify({fingerprint, id: value.submission_id}));
+    }
     try {
       response = await fetch(`${baseUrl}${path}`, {
         method: body ? "POST" : "GET",
@@ -95,7 +113,8 @@ export function HarnessDebugPanel({
             : "";
       throw new Error(result?.message || detailMessage || result?.code || `HTTP ${response.status}`);
     }
-    return result as T;
+    if (v3 && body && path.endsWith('/harness/runs')) sessionStorage.removeItem(startKey);
+    return (v3 && result.protocol === 'hailiang.sse.v3' && Array.isArray(result.runs) ? acceptV3(result as V3Snapshot) : result) as T;
   };
 
   const rememberSession = (id: string) => {
@@ -143,6 +162,14 @@ export function HarnessDebugPanel({
 
   useEffect(() => {
     if (!debugId) return;
+    if (v3) return subscribeV3(
+      async () => {
+        const response = await fetch(`${baseUrl}${api}/sessions/${sessionId}/harness?user_id=${encodeURIComponent(userId)}`);
+        if (!response.ok) throw new Error('快照读取失败');
+        return response.json() as Promise<V3Snapshot>;
+      },
+      `${baseUrl}${api}/sessions/${sessionId}/harness/events?user_id=${encodeURIComponent(userId)}`,
+      snapshot => mergeRuns(acceptV3(snapshot).runs), setConnection);
     let disposed = false;
     let refreshing = false;
     let pendingRefresh = false;
@@ -151,7 +178,7 @@ export function HarnessDebugPanel({
       if (refreshing) { pendingRefresh = true; return; }
       refreshing = true;
       try {
-        const snapshot = await request<HarnessSnapshot>(`/api/v2/sessions/${sessionId}/harness?${query}`);
+        const snapshot = await request<HarnessSnapshot>(`${api}/sessions/${sessionId}/harness?${query}`);
         if (!disposed) mergeRuns(snapshot.runs);
       } catch (e) { if (!disposed) setError(String(e)); }
       finally { refreshing = false; if (pendingRefresh && !disposed) { pendingRefresh = false; void refresh(); } }
@@ -184,7 +211,7 @@ export function HarnessDebugPanel({
   const loadTrace = async () => {
     if (!runs.length || !debugId) return;
     try {
-      const data = await request(`/api/v2/sessions/${sessionId}/harness/runs/${runs[runs.length - 1].run_id}/trace?user_id=${encodeURIComponent(userId)}`);
+      const data = await request(`${api}/sessions/${sessionId}/harness/runs/${runs[runs.length - 1].run_id}/trace?user_id=${encodeURIComponent(userId)}`);
       setTrace(JSON.stringify(data, null, 2));
     } catch (e) {
       setError(String(e));
@@ -197,20 +224,20 @@ export function HarnessDebugPanel({
     try {
       const id = (!evidenceSaved && debugId) || (await request<{ debug_session_id: string }>("/workbench/v1/revision-tests", { revision_id: revisionId, actor_id: actorId, soul_revision_id: soulRevisionId || null })).debug_session_id;
       if (id !== debugId) setRuns([]);
-      await request(`/api/v2/sessions/harness-${id}/harness/runs`, { goal, context_data: { user_id: userId }, debug_session_id: id });
+      await request(`${api}/sessions/harness-${id}/harness/runs`, { ...(v3 ? {submission_id: crypto.randomUUID()} : {}), goal, context_data: { user_id: userId }, debug_session_id: id });
       setDebugId(id);
       sessionStorage.setItem(persistenceKey, id);
       rememberSession(id);
       setEvidenceSaved(false);
-      const snapshot = await request<HarnessSnapshot>(`/api/v2/sessions/harness-${id}/harness?user_id=${encodeURIComponent(userId)}`);
+      const snapshot = await request<HarnessSnapshot>(`${api}/sessions/harness-${id}/harness?user_id=${encodeURIComponent(userId)}`);
       mergeRuns(snapshot.runs); setGoal("");
       onHistoryChange?.();
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
 
   const submit: SubmitHarnessAnswer = async (input, answers, skipped, submissionId) => {
-    await request(`/api/v2/sessions/${sessionId}/input-requests/${input.id}/answers`, { user_id: userId, profile_id: null, submission_id: submissionId, expected_version: input.version, skipped, answers: skipped ? {} : answers });
-    const snapshot = await request<HarnessSnapshot>(`/api/v2/sessions/${sessionId}/harness?user_id=${encodeURIComponent(userId)}`);
+    await request(`${api}/sessions/${sessionId}/input-requests/${input.id}/answers`, { user_id: userId, profile_id: null, submission_id: submissionId, expected_version: input.version, skipped, answers: skipped ? {} : answers });
+    const snapshot = await request<HarnessSnapshot>(`${api}/sessions/${sessionId}/harness?user_id=${encodeURIComponent(userId)}`);
     mergeRuns(snapshot.runs);
   };
 
@@ -254,7 +281,7 @@ export function HarnessDebugPanel({
           <textarea
             aria-label="Harness 测试目标"
             value={goal}
-            disabled={Boolean(active) || busy || !revisionId}
+            disabled={Boolean(active) && !v3 || busy || !revisionId}
             onChange={(e) => setGoal(e.target.value)}
             className="min-h-[8rem] w-full flex-1 rounded-lg border border-white/10 bg-slate-950 p-3 text-sm outline-none focus:border-cyan-400/40 disabled:opacity-40"
             placeholder={revisionId ? "输入完整任务，测试专家分派、追问与恢复" : "请先选择要测试的修订"}
@@ -264,16 +291,16 @@ export function HarnessDebugPanel({
           <div className="flex shrink-0 flex-wrap gap-3">
             <button
               type="button"
-              disabled={Boolean(active) || busy || !revisionId || !goal.trim()}
+              disabled={Boolean(active) && !v3 || busy || !revisionId || !goal.trim()}
               onClick={() => void start()}
               className="rounded-lg bg-cyan-400/15 px-3 py-2 text-xs text-cyan-100 disabled:opacity-40"
             >
-              开始 Harness 测试
+              {active && v3 ? "发送并终止上一轮" : "开始 Harness 测试"}
             </button>
             {active ? (
               <button
                 type="button"
-                onClick={() => void request(`/api/v2/sessions/${sessionId}/harness/runs/${active.run_id}/cancel`, { user_id: userId, profile_id: null }).catch((e) => setError(String(e)))}
+                onClick={() => void request(`${api}/sessions/${sessionId}/harness/runs/${active.run_id}/cancel`, { user_id: userId, profile_id: null }).catch((e) => setError(String(e)))}
                 className="text-xs text-rose-200"
               >
                 停止任务

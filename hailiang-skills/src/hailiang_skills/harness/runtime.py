@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
+import inspect
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -61,7 +62,8 @@ class HarnessRuntime:
             self._thread.join(timeout=2)
         self._pool.shutdown(wait=False, cancel_futures=True)
 
-    def create(self, session_id, user_id, profile_id, goal, policy, seed_facts=None, history=None):
+    def create(self, session_id, user_id, profile_id, goal, policy, seed_facts=None, history=None, wire_protocol=None, submission=None,
+               supersede_active=False):
         if not session_id or len(session_id) > 80 or not user_id or len(user_id) > 160 or profile_id and len(profile_id) > 80:
             raise HarnessError("INVALID_HARNESS_IDENTITY")
         root = task_node("main", goal)
@@ -76,7 +78,16 @@ class HarnessRuntime:
         if cp.enabled(run):
             run["execution_contract_version"] = "v1"
             root["brief"] = cp.brief_for(run, root)
-        self.store.create(run)
+        run.update(wire_protocol=wire_protocol, submission=submission)
+        def supersede(previous, changes, replacement_run_id):
+            if previous["status"] in TERMINAL:
+                return
+            run["supersedes_run_id"] = previous["run_id"]
+            previous.update(status="cancelled", cancellation_reason="superseded_by_new_run",
+                            superseded_by_run_id=replacement_run_id)
+            self._close_descendants(previous, changes)
+            changes.append({"event": "run_superseded", "node_id": previous["root_task_id"]})
+        self.store.create(run, supersede=supersede if supersede_active else None)
         return run["run_id"]
 
     def specs(self, run, task):
@@ -142,6 +153,8 @@ class HarnessRuntime:
             result = [spec(item.name, item.description, cp.compact_schema(item.parameters_schema)) for item in result]
             if cp.task_phase(run, task) == 'synthesis':
                 result = [item for item in result if item.name in {'read_facts', 'read_evidence', 'request_user_input', 'propose_fact_updates'}]
+        if run.get('wire_protocol') == 'hailiang.sse.v3' and task['kind'] == 'main':
+            result.append(spec('finalize_response', '完成必要分析后单独调用，进入无工具的最终回答流式生成；尚需用户信息时先调用 request_user_input。', object_schema({})))
         return result
 
     def _loop(self):
@@ -245,11 +258,40 @@ class HarnessRuntime:
             except Exception:
                 log.exception("harness heartbeat failed")
 
+    def _stream_final(self, client, run, task, token, messages):
+        from time import monotonic
+        from hailiang_skills.skill_runtime.models import AssistantTurnResult
+        run_id, task_id = run['run_id'], task['id']
+        if not self.store.stream_text(run_id, task_id, token, reset=True):
+            raise HarnessError('EXECUTION_EXPIRED')
+        content, buffer, flushed = '', '', monotonic()
+        def cancelled():
+            return not self._valid(self.store.get(run_id), task_id, token)
+        def publish():
+            nonlocal buffer, flushed
+            if buffer:
+                if self.moderation:
+                    self.moderation.check(content, stage='output', session_id=run['session_id'], turn_id=task_id)
+                if not self.store.stream_text(run_id, task_id, token, buffer):
+                    raise HarnessError('EXECUTION_EXPIRED')
+                buffer, flushed = '', monotonic()
+        for chunk in client.stream_complete(messages, cancel_check=cancelled, request_purpose='harness_main_final',
+                                            max_tokens=run['policy']['settings'].get('max_output_tokens', 8192)):
+            if chunk.content_delta:
+                content += chunk.content_delta
+                buffer += chunk.content_delta
+                if monotonic() - flushed >= .1:
+                    publish()
+        publish()
+        return AssistantTurnResult(final_text=content)
+
     def execute(self, run_id, task_id, token):
         finished = threading.Event()
         heartbeat = threading.Thread(target=self._heartbeat, args=(run_id, task_id, token, finished), daemon=True)
         heartbeat.start()
         response = None
+        metrics = {}
+        client = None
         try:
             run = self.store.get(run_id)
             if not self._valid(run, task_id, token):
@@ -258,7 +300,7 @@ class HarnessRuntime:
             if task["pending_calls"]:
                 self._execute_tools(run_id, task_id, token)
                 return
-            specs = self.specs(run, task)
+            specs = [] if task.get("finalizing") else self.specs(run, task)
             facts = self.facts(run, task)
             if cp.enabled(run) and self._prepare_context_v2(run_id, task_id, token, run, task, facts, specs):
                 return
@@ -287,8 +329,16 @@ class HarnessRuntime:
             if not self.store.mutate(run_id, before):
                 return
             client = self.client_factory(run)
-            response = client.complete_with_tools(messages, specs, request_purpose=f"harness_{task['kind']}",
-                                                  max_tokens=run["policy"]["settings"].get("max_output_tokens", 8192))
+            if task.get('finalizing'):
+                response = self._stream_final(client, run, task, token, messages)
+            else:
+                request_options = {
+                    "request_purpose": f"harness_{task['kind']}",
+                    "max_tokens": run["policy"]["settings"].get("max_output_tokens", 8192),
+                }
+                if "cancel_check" in inspect.signature(client.complete_with_tools).parameters:
+                    request_options["cancel_check"] = lambda: not self._valid(self.store.get(run_id), task_id, token)
+                response = client.complete_with_tools(messages, specs, **request_options)
             metrics = client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {}
             if not response.tool_calls and not response.final_text.strip():
                 raise HarnessError("EMPTY_MODEL_REPLY")
@@ -339,6 +389,14 @@ class HarnessRuntime:
                         changes.append({"event": "tool_created", "node_id": node_id})
                     live["status"] = "queued"
                 else:
+                    if current.get('wire_protocol') == 'hailiang.sse.v3' and live['kind'] == 'main' and not live.get('finalizing'):
+                        if live.get('finalize_retry'):
+                            raise HarnessError('FINALIZE_RESPONSE_REQUIRED')
+                        live['finalize_retry'] = True
+                        live['messages'].append({'role': 'user', 'content': '最终回答必须先单独调用 finalize_response；需要信息则调用 request_user_input。'})
+                        live['status'] = 'queued'
+                        changes.append({'event': 'finalize_retry', 'node_id': task_id})
+                        return
                     if current.get("execution_contract_version") == "v1" and live["kind"] != "main":
                         # Legacy text results remain readable, but new executions
                         # must declare their outcome instead of silently treating
@@ -388,6 +446,14 @@ class HarnessRuntime:
                 self._settle(current, changes, db)
             self.store.mutate(run_id, after)
         except Exception as exc:
+            if client is not None and callable(getattr(client, 'last_request_metrics', None)):
+                metrics = client.last_request_metrics() or {}
+                def account(current, changes, _db):
+                    trace = next((t for t in current['tasks'][task_id]['trace'] if t.get('execution_id') == token), None)
+                    if trace and not trace.get('usage_reconciled'):
+                        self._record_model_usage(current, trace, metrics)
+                        changes.append({'event': 'usage_recorded', 'node_id': task_id})
+                self.store.mutate(run_id, account)
             log.warning("harness execution failed (%s): %s", task_id, type(exc).__name__)
             self._fail(run_id, task_id, token, getattr(exc, "code", type(exc).__name__), response)
         finally:
@@ -609,7 +675,10 @@ class HarnessRuntime:
                     result = self.tool_executor(external["run"], external["task"], external["tool"]) if self.tool_executor else {"error": "TOOL_UNAVAILABLE"}
                     error = result.get("error") if isinstance(result, dict) else None
                 except Exception as exc:
-                    result, error = {"error": type(exc).__name__}, type(exc).__name__
+                    error = getattr(exc, "code", type(exc).__name__)
+                    result = {"error": error}
+                    if error == "ASSET_SOURCE_NOT_FOUND":
+                        result["next_action"] = "调用 read_skill_asset 时省略 source，先获取授权资料目录；使用目录返回的 source，不猜测路径。"
                 def finish(run, changes, _db):
                     if not self._valid(run, task_id, token):
                         return
@@ -732,14 +801,32 @@ class HarnessRuntime:
         elif name == "read_evidence" and cp.enabled(run):
             self._tool_result(tool, cp.read_evidence(run, task, args))
             changes.append({"event": "tool_completed", "node_id": tool["id"]})
+        elif name == 'finalize_response' and run.get('wire_protocol') == 'hailiang.sse.v3':
+            if task['kind'] != 'main' or len(task['pending_calls']) != 1 or any(t['id'] != task['id'] and t['status'] not in TERMINAL for t in run['tasks'].values()):
+                raise HarnessError('RESULT_DEPENDENCIES_UNRESOLVED')
+            if any(t['parent_id'] == task['id'] and t['status'] in {'failed', 'cancelled'} for t in run['tasks'].values()):
+                raise HarnessError('REQUIRED_TASK_FAILED')
+            task['finalizing'] = True
+            self._tool_result(tool, {'accepted': True})
+            changes.append({'event': 'finalizing', 'node_id': task['id']})
         elif name == "submit_result" and cp.enabled(run):
             if task["kind"] == "main" or len(task["pending_calls"]) != 1 or any(t["parent_id"] == task["id"] and t["status"] not in TERMINAL for t in run["tasks"].values()):
                 raise HarnessError("RESULT_DEPENDENCIES_UNRESOLVED")
             result = cp.TaskResult.model_validate(args).model_dump()
-            if result["status"] == "completed" and (result["unresolved"] or any(
-                t["parent_id"] == task["id"] and (t["status"] != "completed" or t.get("structured_result", {}).get("status") == "partial")
-                for t in run["tasks"].values())):
-                raise HarnessError("RESULT_COMPLETION_NOT_SATISFIED")
+            blockers = [t for t in run["tasks"].values() if t["parent_id"] == task["id"] and
+                        (t["status"] != "completed" or t.get("structured_result", {}).get("status") in {"partial", "failed"})]
+            if result["status"] == "completed" and (result["unresolved"] or blockers):
+                self._tool_result(tool, {
+                    "error": "RESULT_COMPLETION_NOT_SATISFIED",
+                    "unresolved": result["unresolved"],
+                    "blocking_tasks": [{"task_id": t["id"], "status": t["status"],
+                        "result_status": t.get("structured_result", {}).get("status"),
+                        "unresolved": t.get("structured_result", {}).get("unresolved", []),
+                        "limitations": t.get("structured_result", {}).get("limitations", [])} for t in blockers],
+                    "next_action": "先检查已有事实及问答状态。当前目标确需且用户可补充的信息，调用 request_user_input 生成表单，回答后继续；已跳过的信息不要重复追问。用户跳过或仅能完成部分时，用 submit_result(status=partial) 保留结论、限制和未解决事项。只影响未请求的后续建议的信息记为 limitations，不必追问。子任务 partial 时保留其限制并提交 partial。工具或模型故障不是用户缺信息，不得虚构追问。"
+                }, "failed")
+                changes.append({"event": "tool_failed", "node_id": tool["id"]})
+                return True
             for ref in result["evidence_refs"]:
                 cp.authorize_evidence(run, task, ref)
             task["pending_result"] = result
@@ -772,7 +859,9 @@ class HarnessRuntime:
                 # Observations and derived artifacts cannot overwrite a user-confirmed
                 # value. Their identities are separate from the canonical fact key.
                 identity = self.store.fact_identity(run, task, update["scope"], f"{update['status']}:{update['key']}:{tool['id']}")
-                results.append(self.store.write_fact(db, identity, {**update, "source": {"tool_call_id": tool["call_id"], "task_id": task["id"]}, "dependencies": task["fact_versions"]}))
+                results.append(self.store.write_fact(db, identity, {**update, "source": {
+                    "run_id": run["run_id"], "tool_call_id": tool["call_id"], "task_id": task["id"]
+                }, "dependencies": task["fact_versions"]}))
             self._tool_result(tool, results)
             changes.append({"event": "facts_updated", "node_id": task["id"]})
         else:
@@ -820,7 +909,9 @@ class HarnessRuntime:
             for field in fields:
                 if field["key"] in answers:
                     try:
-                        validate_answers([field], AnswerSubmission(user_id=run["user_id"], submission_id="reuse", expected_version=1, answers={field["key"]: answers[field["key"]]}))
+                        validated = validate_answers([field], AnswerSubmission(user_id=run["user_id"], submission_id="reuse", expected_version=1, answers={field["key"]: answers[field["key"]]}))
+                        if field["key"] not in validated["answers"]:
+                            answers.pop(field["key"])
                     except HarnessError:
                         answers.pop(field["key"])
         if len(set(identities)) != len(identities):
@@ -838,14 +929,22 @@ class HarnessRuntime:
         while parent:
             ancestors.add(parent)
             parent = run["tasks"][parent].get("parent_id")
+        skipped_identities = set()
         for previous in run["inputs"].values():
-            if previous["status"] != "skipped" or args.clarification_reason or (not cp.enabled(run) and not any(b["task_id"] in ancestors for b in previous["bindings"])):
+            if previous["status"] not in {"skipped", "answered"} or args.clarification_reason or (not cp.enabled(run) and not any(b["task_id"] in ancestors for b in previous["bindings"])):
                 continue
-            same_fields = set(identities) <= set(previous["identities"]) if cp.enabled(run) else {f.get("fact_key") or f["key"] for f in fields} <= {f.get("fact_key") or f["key"] for f in previous["fields"]}
-            if same_fields:
-                self._tool_result(tool, {"skipped": True, "answers": answers, "source_request_id": previous["id"]}, "skipped")
+            skipped_keys = previous.get("answer", {}).get("skipped_fields", [f["key"] for f in previous["fields"]] if previous["status"] == "skipped" else [])
+            skipped_identities.update(identity for field, identity in zip(previous["fields"], previous["identities"]) if field["key"] in skipped_keys)
+        skipped_fields = [f["key"] for f, identity in zip(fields, identities) if identity in skipped_identities]
+        if skipped_fields:
+            tool["existing_skipped_fields"] = skipped_fields
+            remaining = [(f, identity) for f, identity in zip(fields, identities) if identity not in skipped_identities]
+            if not remaining:
+                self._tool_result(tool, {"skipped": not bool(answers), "answers": answers, "skipped_fields": skipped_fields,
+                                         "source": "question_ledger"}, "completed" if answers else "skipped")
                 changes.append({"event": "tool_completed", "node_id": tool["id"]})
                 return
+            fields, identities = map(list, zip(*remaining))
         signature = json.dumps({"fields": sorted([{ "identity": identity, **{k: v for k, v in field.items() if k not in {"key", "label", "fact_key", "scope"}}} for field, identity in zip(fields, identities)], key=lambda f: f["identity"]), "reason": args.clarification_reason}, ensure_ascii=False, sort_keys=True)
         for request in run["inputs"].values():
             if request["signature"] == signature and request["status"] == "skipped":
@@ -885,7 +984,7 @@ class HarnessRuntime:
             if run["status"] in TERMINAL or request["status"] != "pending" or request["version"] != submission.expected_version:
                 raise HarnessError("INPUT_REQUEST_INACTIVE", 409)
             answer = validate_answers(request["fields"], submission)
-            request.update(status="skipped" if submission.skipped else "answered", answer=answer, submission_id=submission.submission_id,
+            request.update(status="skipped" if answer["skipped"] else "answered", answer=answer, submission_id=submission.submission_id,
                            submission=submission.model_dump(), version=request["version"] + 1)
             self._promote_input_request(run, changes)
             task = run["tasks"][request["bindings"][0]["task_id"]]
@@ -910,7 +1009,9 @@ class HarnessRuntime:
                     consumer["fact_versions"].update({identity: r["version"] for identity, r in written_facts.items()})
                 field_map = binding.get("field_map", {})
                 local = {**answer, "answers": {**tool.get("existing_answers", {}), **{field_map.get(key, key): value for key, value in answer["answers"].items()}}}
-                self._tool_result(tool, local, "skipped" if submission.skipped else "completed")
+                local["skipped_fields"] = list(dict.fromkeys(tool.get("existing_skipped_fields", []) + [field_map.get(key, key) for key in answer["skipped_fields"]]))
+                local["skipped"] = not bool(local["answers"])
+                self._tool_result(tool, local, "skipped" if local["skipped"] else "completed")
                 changes.append({"event": "input_answered", "node_id": binding["task_id"]})
             self._settle(run, changes, db)
             return {"request_id": request_id, "status": request["status"], "run_id": run_id}
@@ -1022,6 +1123,8 @@ class HarnessRuntime:
                     task["trace"][-1]["error"] = error
                     if response is not None:
                         task["trace"][-1]["output"] = asdict(response)
+                if error == 'ModerationBlockedError':
+                    run['output_blocked'] = True
                 task.update(status="failed", error=error, ended_at=now())
                 if task["kind"] == "main":
                     run.update(status="failed", error=error)
@@ -1068,7 +1171,8 @@ class HarnessRuntime:
             changes.append({"event": "run_cancelled", "node_id": run["root_task_id"]})
         self.store.mutate(run_id, apply)
 
-    def public(self, run):
+    @staticmethod
+    def public(run):
         labels = {
             "delegate_tasks": "分派专家任务",
             "execute_skill": "执行专项分析",

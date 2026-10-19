@@ -248,6 +248,9 @@ def compose_v2(run, task, facts, specs, platform):
     rules += "\n确认替其他对象询问时，主 agent 必须在分派前调用 set_task_subject(external)，不得沿用当前档案事实。"
     if run.get("execution_contract_version") == "v1":
         rules += "\n专家与 Skill 必须用 submit_result 结束任务，普通文本不构成结果提交；未解决项非空时不能提交 completed。主 agent 汇总时直接给结论，不重述已答问题。"
+        rules += "\n缺信息不等于执行失败：若信息会影响当前任务结论，先检查事实与已答/跳过状态，再调用 request_user_input 生成表单等待回答，不要直接提交缺信息结果或在结论正文追问。回答后继续当前任务；用户跳过时不反复追问，提交 partial 并说明有效结论、限制和未解决事项。仅影响未请求的后续建议的信息放入 limitations，不强行收集。子任务 partial 不等于技术失败，所属专家可提交 partial，主 agent 汇总可完成部分并明确限制，不宣称全部完成。工具异常、模型异常不能伪装成用户缺信息。"
+    if task.get('finalizing'):
+        rules += "\n当前是最终正文生成阶段，直接给用户回答，不调用工具，不暴露内部分析；以有效事实和已完成结果为依据，明确部分完成的限制。"
     if run.get("subject_mode") == "external":
         rules += "\n本任务对象不是当前档案；仅使用当前任务树收集的事实。追问和事实写入只能使用 task 范围。"
     phase = task_phase(run, task)
@@ -264,6 +267,7 @@ def compose_v2(run, task, facts, specs, platform):
     for q in run["inputs"].values():
         if task["kind"] == "main" or any(b["task_id"] in ancestors for b in q["bindings"]):
             ledger.append({"request_id": q["id"], "status": q["status"], "fields": [f.get("fact_key") or f["key"] for f in q["fields"]],
+                           "skipped_fields": [f.get("fact_key") or f["key"] for f in q["fields"] if f["key"] in q.get("answer", {}).get("skipped_fields", [])],
                            "round": q["round"], "answer_location": "tool_message_or_current_facts"})
     data = {"phase": phase, "task": brief, "catalog": {} if phase == 'synthesis' else catalog, "facts": selected, "fact_index": index,
             "fact_index_truncated": len(selected) + len(index) < len(facts),
@@ -300,7 +304,7 @@ def compose_v2(run, task, facts, specs, platform):
             request = next((q for q in run["inputs"].values() if any(
                 b["task_id"] == task["id"] and run["tools"].get(b["tool_id"], {}).get("call_id") == message.get("tool_call_id")
                 for b in q["bindings"])), None)
-            if request and request["status"] == "answered" and all(
+            if request and request["status"] == "answered" and not value.get("skipped_fields") and all(
                 identity in selected
                 for identity in request["identities"]
             ) and not any(run["tools"].get(b["tool_id"], {}).get("existing_answers") for b in request["bindings"]):

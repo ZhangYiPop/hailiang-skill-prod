@@ -49,14 +49,46 @@ class HarnessStore:
                 raise
 
     def _locked(self, db, run_id):
-        row = db.scalar(select(HarnessRunRow).where(HarnessRunRow.run_id == run_id).with_for_update())
+        row = db.get(HarnessRunRow, run_id)
         if row is None:
             raise HarnessError("HARNESS_RUN_NOT_FOUND", 404)
-        return row
+        if row.payload.get('wire_protocol') == 'hailiang.sse.v3' or row.payload.get('public_v3'):
+            from .protocol_v3 import lock_scope
+            lock_scope(db, row.session_id, row.user_id, row.profile_id)
+        return db.scalar(select(HarnessRunRow).where(HarnessRunRow.run_id == run_id)
+                         .with_for_update().execution_options(populate_existing=True))
 
-    def create(self, run: dict):
+    def create(self, run: dict, supersede=None):
         try:
             with self.transaction() as db:
+                if run.get('wire_protocol') == 'hailiang.sse.v3':
+                    from .protocol_v3 import lock_scope
+                    lock_scope(db, run['session_id'], run['user_id'], run['profile_id'])
+                if run.get("submission"):
+                    from .protocol_v3 import lock_scope, Submission
+                    sub = run['submission']
+                    lock_scope(db, run['session_id'], run['user_id'], run['profile_id'])
+                    prior = db.get(Submission, sub['key'])
+                    if prior:
+                        if prior.payload['fingerprint'] != sub['fingerprint']:
+                            raise HarnessError('SUBMISSION_ID_REUSED', 409)
+                        run['run_id'] = prior.payload['run_id']
+                        return
+                    db.add(Submission(key=sub['key'], payload={**sub, 'run_id': run['run_id']}))
+                if supersede is not None:
+                    active = db.scalar(select(HarnessRunRow).where(
+                        HarnessRunRow.active_session == run["session_id"]
+                    ).with_for_update())
+                    if active is not None:
+                        if active.user_id != run["user_id"] or active.profile_id != run["profile_id"]:
+                            raise HarnessError("ACTIVE_RUN_PROFILE_LOCKED", 409)
+                        previous = deepcopy(active.payload)
+                        changes = []
+                        supersede(previous, changes, run["run_id"])
+                        self._save(db, active, previous, changes)
+                        # Release the unique active-session slot before inserting
+                        # the replacement run in this same transaction.
+                        db.flush()
                 row = HarnessRunRow(run_id=run["run_id"], session_id=run["session_id"], user_id=run["user_id"],
                                     profile_id=run["profile_id"], active_session=run["session_id"], payload={}, version=0)
                 db.add(row)
@@ -103,6 +135,9 @@ class HarnessStore:
         for request in run["inputs"].values():
             db.merge(HarnessInputRow(request_id=request["id"], run_id=row.run_id, status=request["status"], payload=deepcopy(request)))
         row.payload = deepcopy(run)
+        if run.get("wire_protocol") == "hailiang.sse.v3" or run.get("public_v3"):
+            from .protocol_v3 import project
+            project(db, run)
         for change in changes:
             node_id = change.get("node_id", run["root_task_id"])
             node = run["tasks"].get(node_id) or run["tools"].get(node_id) or {}
@@ -111,6 +146,83 @@ class HarnessStore:
                 "version": row.version, "timestamp": now(), "status": node.get("status", run["status"]),
                 "execution_id": node.get("execution_id") or node.get("lease_token"),
             }))
+
+    def public_snapshot(self, session_id, user_id, profile_id):
+        from .protocol_v3 import lock_scope, project, snapshot
+        # All v3 writers lock scope before run rows; snapshots use the same order.
+        with self.transaction() as db:
+            scope = lock_scope(db, session_id, user_id, profile_id)
+            rows = list(db.scalars(select(HarnessRunRow).where(HarnessRunRow.session_id == session_id,
+                HarnessRunRow.user_id == user_id, HarnessRunRow.profile_id == profile_id).order_by(HarnessRunRow.run_id).with_for_update()))
+            for row in rows:
+                if not row.payload.get('public_v3'):
+                    run = deepcopy(row.payload)
+                    run['public_v3'] = True
+                    row.payload = run
+                    project(db, run)
+            scope = lock_scope(db, session_id, user_id, profile_id)
+            return snapshot(scope)
+
+    def public_record(self, session_id, user_id, profile_id, run_id):
+        from .protocol_v3 import lock_scope
+        with self.transaction() as db:
+            scope = lock_scope(db, session_id, user_id, profile_id)
+            record = scope.payload.get('_records', {}).get(run_id)
+            if record is None:
+                row = db.get(HarnessRunRow, run_id)
+                if row is None or row.session_id != session_id or row.user_id != user_id or row.profile_id != profile_id:
+                    raise HarnessError('HARNESS_RUN_NOT_FOUND', 404)
+                if row.payload.get('status') not in TERMINAL:
+                    raise HarnessError('HARNESS_RUN_NOT_FINALIZED', 409)
+                from .protocol_v3 import project
+                project(db, deepcopy(row.payload))
+                scope = lock_scope(db, session_id, user_id, profile_id)
+                record = scope.payload.get('_records', {}).get(run_id)
+            return deepcopy(record)
+
+    def public_events(self, session_id, user_id, profile_id, after):
+        from .protocol_v3 import PublicScope, PublicEvent, scope_key
+        with Session(self.engine) as db:
+            key = scope_key(session_id, user_id, profile_id)
+            cursor = db.scalar(select(PublicScope.cursor).where(PublicScope.scope_id == key))
+            if cursor is None or after < 0 or after > cursor:
+                raise HarnessError('INVALID_EVENT_CURSOR', 409)
+            return [deepcopy(row.payload) for row in db.scalars(select(PublicEvent).where(
+                PublicEvent.scope_id == key, PublicEvent.seq > after).order_by(PublicEvent.seq).limit(256))]
+
+    def submission(self, key, fingerprint):
+        from .protocol_v3 import Submission
+        with Session(self.engine) as db:
+            record = db.get(Submission, key)
+            if not record:
+                return None
+            if record.payload['fingerprint'] != fingerprint:
+                raise HarnessError('SUBMISSION_ID_REUSED', 409)
+            return record.payload['run_id']
+
+    def stream_text(self, run_id, task_id, token, text='', reset=False):
+        from .protocol_v3 import lock_scope, upsert, emit
+        with self.transaction() as db:
+            row = self._locked(db, run_id)
+            run = row.payload
+            task = run['tasks'][task_id]
+            if run['status'] in TERMINAL or task['lease_token'] != token or task['status'] != 'running' or task['lease_until'] <= now():
+                return False
+            scope = lock_scope(db, run['session_id'], run['user_id'], run['profile_id'])
+            mid = run_id + ':final'
+            previous = scope.payload['messages'].get(mid, {})
+            if reset:
+                upsert(db, scope, 'messages', 'message.updated', run_id, {'id': mid, 'run_id': run_id,
+                    'kind': 'final', 'content': '', 'status': 'streaming', 'revision': previous.get('revision', 0) + 1})
+            elif text:
+                entity = {**previous, 'content': previous.get('content', '') + text, 'version': previous.get('version', 0) + 1}
+                payload = deepcopy(scope.payload)
+                payload['messages'][mid] = entity
+                scope.payload = payload
+                emit(db, scope, run_id, 'message.delta', {'id': mid, 'version': entity['version'],
+                    'revision': entity['revision'], 'offset': len(previous.get('content', '')), 'text': text})
+            db.info['harness_changed'] = True
+            return True
 
     def get(self, run_id):
         with Session(self.engine) as db:
@@ -207,8 +319,14 @@ class HarnessStore:
                     ancestors.add(parent)
                     parent = run["tasks"][parent].get("parent_id")
                 matches = owner in ancestors if scope == "task" else expected and owner == expected
+                record = deepcopy(row.payload)
+                source_run_id = record.get("source", {}).get("run_id")
+                if source_run_id and source_run_id != run["run_id"] and record.get("status") in {"candidate", "assumption", "derived"}:
+                    source = session.get(HarnessRunRow, source_run_id)
+                    if source is not None and source.payload.get("status") != "completed":
+                        continue
                 if user == run["user_id"] and matches:
-                    result[row.identity] = deepcopy(row.payload)
+                    result[row.identity] = record
             return result
         if db is not None:
             return read(db)

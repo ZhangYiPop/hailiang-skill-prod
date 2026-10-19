@@ -411,3 +411,57 @@ def test_parallel_shared_request_answers_resume_each_binding_once(tmp_path):
     assert len(resumed.store.get(rid)['inputs']) == 1
     resumed.close()
     runtime.close()
+
+
+def test_partial_submission_and_shared_skipped_field(tmp_path):
+    from hailiang_skills.harness.contracts import InputField, validate_answers, AnswerSubmission
+    fields = [InputField(key='grade', label='年级', scope='profile').model_dump(), InputField(key='province', label='省份', scope='profile').model_dump()]
+    answer = validate_answers(fields, AnswerSubmission(user_id='u', submission_id='partial', expected_version=1, answers={'grade': '高二', 'province': '  '}))
+    assert answer == {'answers': {'grade': '高二'}, 'skipped': False, 'skipped_fields': ['province']}
+    assert validate_answers(fields, AnswerSubmission(user_id='u', submission_id='empty', expected_version=1))['skipped']
+    number = InputField(key='score', label='成绩', input_type='integer').model_dump()
+    assert validate_answers([number], AnswerSubmission(user_id='u', submission_id='zero', expected_version=1, answers={'score': 0}))['answers'] == {'score': 0}
+    with pytest.raises(HarnessError, match='INVALID_NUMBER'):
+        validate_answers([number], AnswerSubmission(user_id='u', submission_id='bad', expected_version=1, answers={'score': 'bad'}))
+    runtime, run, root = setup_run(tmp_path)
+    a, b = [task_node('expert', 'goal', root['id'], expert_id=e) for e in ['a', 'b']]
+    run['tasks'].update({a['id']: a, b['id']: b})
+    with runtime.store.transaction() as db:
+        first = {'id': 't1', 'call_id': 'c1', 'name': 'request_user_input', 'arguments': {'title': '信息', 'fields': fields}}
+        runtime._request(run, a, first, [], db)
+        request = next(iter(run['inputs'].values()))
+        request.update(status='answered', answer=answer)
+        second = {'id': 't2', 'call_id': 'c2', 'name': 'request_user_input', 'arguments': {'title': '省份', 'fields': [fields[1]]}}
+        runtime._request(run, b, second, [], db)
+        assert second['status'] == 'skipped'
+        assert second['result']['skipped_fields'] == ['province']
+    runtime.close()
+
+
+def test_partial_answer_persists_and_resumes_with_skip_metadata(tmp_path):
+    from hailiang_skills.harness.contracts import AnswerSubmission
+    def respond(messages, specs, purpose):
+        if any(m.role == 'tool' for m in messages):
+            return AssistantTurnResult(final_text='按已知信息继续，省份本次跳过')
+        return call('request_user_input', {'title': '补充', 'fields': [
+            {'key': 'grade', 'label': '年级', 'scope': 'profile'},
+            {'key': 'province', 'label': '省份', 'scope': 'profile'}]})
+    runtime = make_runtime(tmp_path, respond)
+    rid = runtime.create('s', 'u', 'p', '分析', v2_policy())
+    advance(runtime, rid, 4)
+    request = next(iter(runtime.store.get(rid)['inputs'].values()))
+    submission = AnswerSubmission(user_id='u', profile_id='p', submission_id='partial', expected_version=1, answers={'grade': '高二'})
+    runtime.answer(request['id'], submission)
+    runtime.answer(request['id'], submission)
+    saved = runtime.store.get(rid)
+    assert saved['inputs'][request['id']]['answer']['skipped_fields'] == ['province']
+    tool = saved['tools'][request['bindings'][0]['tool_id']]
+    assert tool['result']['answers'] == {'grade': '高二'}
+    assert tool['result']['skipped_fields'] == ['province']
+    root = saved['tasks'][saved['root_task_id']]
+    facts = runtime.facts(saved, root)
+    assert any(f['key'] == 'grade' and f['value'] == '高二' for f in facts.values())
+    assert not any(f['key'] == 'province' for f in facts.values())
+    advance(runtime, rid, 5)
+    assert runtime.store.get(rid)['status'] == 'completed'
+    runtime.close()

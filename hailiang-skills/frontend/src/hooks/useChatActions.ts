@@ -1,7 +1,7 @@
 import { useCallback, useRef } from "react";
 
 import { useChatStore } from "@/store/useChatStore";
-import { cancelHarness, refreshHarness, sendHarnessIfEnabled, useHarnessState } from "@/hooks/useHarnessConversation";
+import { cancelHarness, harnessV3Enabled, refreshHarness, sendHarnessIfEnabled, useHarnessState } from "@/hooks/useHarnessConversation";
 import {
   clearUserFactsBySource,
   createProfile,
@@ -1068,7 +1068,7 @@ export function useChatActions() {
       if (!trimmed) {
         return;
       }
-      if (useHarnessState.getState().activeRunId) {
+      if (useHarnessState.getState().activeRunId && !harnessV3Enabled) {
         store.setErrorMessage("任务进行中，请回答卡片或停止任务。");
         return;
       }

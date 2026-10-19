@@ -618,6 +618,9 @@ def create_app() -> FastAPI:
     app.include_router(build_harness_router(repository, fact_service, orchestrator, harness,
         snapshot_resolver=lambda: workbench_service.active_deployment_snapshot(deployment_environment()),
         debug_snapshot_resolver=workbench_service.debug_configuration_snapshot), prefix="/api/v2")
+    app.include_router(build_harness_router(repository, fact_service, orchestrator, harness,
+        snapshot_resolver=lambda: workbench_service.active_deployment_snapshot(deployment_environment()),
+        debug_snapshot_resolver=workbench_service.debug_configuration_snapshot, protocol_v3=True), prefix="/api/v3")
 
     @app.middleware("http")
     async def harness_mutation_guard(request: Request, call_next):

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { HarnessRun, HarnessNode, HarnessInput } from "@/types/harness";
 import { isHarnessTerminal } from "@/types/harness";
-import { harnessRequest, refreshHarness, useHarnessState } from "@/hooks/useHarnessConversation";
+import { harnessRequest, refreshHarness, submitHarnessAnswer, useHarnessState } from "@/hooks/useHarnessConversation";
 import { useChatStore } from "@/store/useChatStore";
 
 const labels: Record<string, string> = { queued: "排队中", running: "执行中", waiting_for_dependency: "等待任务结果",
@@ -32,34 +32,34 @@ export function AgentInputRequest({ request, sessionId, onSubmitAnswer }: { requ
     body.submission_id = cached?.body === serialized ? cached.id : crypto.randomUUID();
     sessionStorage.setItem(submissionKey, JSON.stringify({ body: serialized, id: body.submission_id }));
     try {
-      if (onSubmitAnswer) await onSubmitAnswer(request, drafts, skipped, body.submission_id);
+      if (onSubmitAnswer) await onSubmitAnswer(request, skipped ? {} : drafts, skipped, body.submission_id);
       else {
-        await harnessRequest(`/sessions/${encodeURIComponent(sessionId)}/input-requests/${encodeURIComponent(request.id)}/answers`, body);
-        await refreshHarness();
+        await submitHarnessAnswer(sessionId, request.id, body);
       }
     } catch (e) { setError(e instanceof Error ? e.message : "提交失败，请重试"); }
     finally { setSubmitting(false); }
   };
   if (request.status !== "pending") return <div className="mt-2 rounded-xl border border-white/10 p-3 text-xs text-slate-400">
     {request.actor || "主 agent"} · {request.title} · 第 {request.round} 轮 · {request.status === "queued" ? "排队等待提问" : request.status === "answered" ? "已回答" : request.status === "skipped" ? "未补充" : "已失效"}
-    {request.answer && !request.answer.skipped && <dl className="mt-2">{request.fields.map((f) => <div key={f.key}><dt className="inline">{f.label}：</dt><dd className="inline">{String(request.answer?.answers[f.key] ?? "")}</dd></div>)}</dl>}
+    {request.answer && !request.answer.skipped && <dl className="mt-2">{request.fields.map((f) => <div key={f.key}><dt className="inline">{f.label}：</dt><dd className="inline">{String(request.answer?.answers[f.key] ?? "本次跳过")}</dd></div>)}</dl>}
   </div>;
   return <form aria-label={request.title} className="mt-3 space-y-3 rounded-xl border border-amber-300/30 bg-amber-300/5 p-3" onSubmit={(e) => { e.preventDefault(); void submit(false); }}>
     <p className="text-sm text-amber-100">{request.actor || "主 agent"} 向你追问 · {request.title} · 第 {request.round} 轮</p>
+    <p className="text-xs text-slate-400">可只填写部分，未填的问题本次跳过。</p>
     {request.clarification_reason && <p className="text-xs text-slate-300">{request.clarification_reason}</p>}
     {request.fields.map((field) => <div key={field.key} className="block text-sm text-slate-200">
-      {field.label}{field.required ? " *" : ""}
-      {field.input_type === "single_select" ? <select aria-label={field.label} required={field.required} disabled={submitting} value={String(drafts[field.key] ?? "")} onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value })} className="mt-1 block w-full rounded-lg bg-slate-900 p-2">
+      {field.label}
+      {field.input_type === "single_select" ? <select aria-label={field.label} disabled={submitting} value={String(drafts[field.key] ?? "")} onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value })} className="mt-1 block w-full rounded-lg bg-slate-900 p-2">
         <option value="">请选择</option>{field.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select> : field.input_type === "multi_select" ? <div className="mt-1 flex flex-wrap gap-2">{field.options.map((o) => <label key={o.value}>
         <input aria-label={`${field.label}：${o.label}`} type="checkbox" disabled={submitting} checked={Array.isArray(drafts[field.key]) && (drafts[field.key] as string[]).includes(o.value)} onChange={(e) => {
           const current = (drafts[field.key] as string[]) || []; setDrafts({ ...drafts, [field.key]: e.target.checked ? [...current, o.value] : current.filter((v) => v !== o.value) });
-        }} /> {o.label}</label>)}</div> : field.input_type === "text" ? <textarea aria-label={field.label} required={field.required} disabled={submitting} value={String(drafts[field.key] ?? "")} onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value })} className="mt-1 block w-full rounded-lg bg-slate-900 p-2" /> :
-      <input aria-label={field.label} type="number" step={field.input_type === "integer" ? "1" : "any"} min={field.min} max={field.max} required={field.required} disabled={submitting} value={String(drafts[field.key] ?? "")} onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value === "" ? "" : Number(e.target.value) })} className="mt-1 block w-full rounded-lg bg-slate-900 p-2" />}
+        }} /> {o.label}</label>)}</div> : field.input_type === "text" ? <textarea aria-label={field.label} disabled={submitting} value={String(drafts[field.key] ?? "")} onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value })} className="mt-1 block w-full rounded-lg bg-slate-900 p-2" /> :
+      <input aria-label={field.label} type="number" step={field.input_type === "integer" ? "1" : "any"} min={field.min} max={field.max} disabled={submitting} value={String(drafts[field.key] ?? "")} onChange={(e) => setDrafts({ ...drafts, [field.key]: e.target.value === "" ? "" : Number(e.target.value) })} className="mt-1 block w-full rounded-lg bg-slate-900 p-2" />}
     </div>)}
     {error && <p role="alert" className="text-xs text-rose-300">{error}</p>}
-    <div className="flex gap-3"><button disabled={submitting} className="rounded-lg bg-cyan-400/20 px-3 py-2 text-xs">{submitting ? "提交中" : "提交回答"}</button>
-      <button type="button" disabled={submitting} onClick={() => void submit(true)} className="px-3 py-2 text-xs text-slate-300">不知道／不补充</button></div>
+    <div className="flex gap-3"><button disabled={submitting} className="rounded-lg bg-cyan-400/20 px-3 py-2 text-xs">{submitting ? "提交中" : "提交并继续"}</button>
+      <button type="button" disabled={submitting} onClick={() => void submit(true)} className="px-3 py-2 text-xs text-slate-300">全部跳过</button></div>
   </form>;
 }
 

@@ -1,5 +1,10 @@
 # SSE v2：多孩子上下文与专家状态严格契约
 
+> Harness 多 Agent 链路使用独立的 `hailiang.sse.v3`。接入方请阅读
+> [SSE_V3_HARNESS_CONTRACT.md](SSE_V3_HARNESS_CONTRACT.md) 和
+> [SSE_V3_HARNESS_INTEGRATION_GUIDE.md](SSE_V3_HARNESS_INTEGRATION_GUIDE.md)；不要把本文的
+> `state` 快照、`expert_context` 或 `done` 语义套用到 V3。
+
 > 生效日期：2026-09-08
 >
 > 入口：`POST /api/v2/sessions/chat/stream`

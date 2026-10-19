@@ -90,3 +90,6 @@ TABLES = [model.__table__ for model in (
     HarnessRunRow, HarnessTaskRow, HarnessToolRow, HarnessInputRow,
     HarnessCheckpointRow, HarnessJobRow, HarnessEventRow, HarnessAttemptRow, HarnessFactRow,
 )]
+
+from .protocol_v3 import TABLES as PUBLIC_TABLES
+TABLES.extend(PUBLIC_TABLES)
