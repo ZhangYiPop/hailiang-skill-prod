@@ -41,12 +41,16 @@ def lock_scope(db, session_id, user_id, profile_id):
     insert = pg_insert if db.bind.dialect.name == 'postgresql' else sqlite_insert
     db.execute(insert(PublicScope).values(scope_id=key, cursor=0, payload={
         'protocol': PROTOCOL, 'session_id': session_id, 'profile_id': profile_id,
-        'runtime_mode': 'harness_v1', 'runs': {}, 'nodes': {}, 'input_requests': {}, 'messages': {}, '_records': {}}
+        'runtime_mode': 'harness_v1', 'runs': {}, 'nodes': {}, 'input_requests': {}, 'input_groups': {}, 'messages': {}, '_records': {}}
     ).on_conflict_do_nothing(index_elements=['scope_id']))
     scope = db.scalar(select(PublicScope).where(PublicScope.scope_id == key).with_for_update())
     if '_records' not in scope.payload:
         payload = deepcopy(scope.payload)
         payload['_records'] = {}
+        scope.payload = payload
+    elif 'input_groups' not in scope.payload:
+        payload = deepcopy(scope.payload)
+        payload['input_groups'] = {}
         scope.payload = payload
     return scope
 
@@ -96,7 +100,23 @@ def project(db, run):
     scope = lock_scope(db, run['session_id'], run['user_id'], run['profile_id'])
     public = HarnessRuntime.public(run)
     rid = run['run_id']
-    nodes, inputs = public.pop('nodes'), public.pop('inputs')
+    nodes, inputs, groups = public.pop('nodes'), public.pop('inputs'), public.pop('input_groups', [])
+    # Explicit queue projection keeps card scheduling out of BFF/frontend code.
+    ordered_inputs = sorted(inputs, key=lambda item: (item.get('created_at', ''), item['id']))
+    pending_inputs = [item['id'] for item in ordered_inputs if item.get('status') == 'pending']
+    queued_inputs = [item['id'] for item in ordered_inputs if item.get('status') == 'queued']
+    active_group = next((group for group in groups if group.get('status') == 'active'), None)
+    queued_groups = [group for group in groups if group.get('status') == 'queued']
+    public['input_queue'] = {
+        'active_group_id': active_group.get('id') if active_group else None,
+        'queued_group_ids': [group['id'] for group in queued_groups],
+        'active_request_id': (active_group or {}).get('active_request_id') or (pending_inputs[0] if pending_inputs else None),
+        'active_group_total': (active_group or {}).get('total_count', 0),
+        'active_group_completed': (active_group or {}).get('completed_count', 0),
+        'queued_request_ids': queued_inputs,
+        'pending_count': len(pending_inputs),
+        'queued_count': len(queued_inputs),
+    }
     public.pop('version', None)
     # Technical traces and provider error strings never enter the public stream.
     public['error'] = {'code': safe_error(run.get('error')), 'message': '任务未能完成'} if run.get('error') else None
@@ -135,6 +155,9 @@ def project(db, run):
         request['request_version'] = request.pop('version')
         request['run_id'] = rid
         upsert(db, scope, 'input_requests', 'input_request.updated', rid, request)
+    for group in groups:
+        group['run_id'] = rid
+        upsert(db, scope, 'input_groups', 'input_group.updated', rid, group)
     if run.get('phase'):
         upsert(db, scope, 'messages', 'message.updated', rid, {'id': rid + ':phase', 'run_id': rid,
             'kind': 'phase', 'content': run['phase'], 'status': 'completed', 'revision': 1})
@@ -186,4 +209,4 @@ def project(db, run):
 def snapshot(scope):
     public = {key: deepcopy(value) for key, value in scope.payload.items() if not key.startswith('_')}
     return {**public, 'cursor': scope.cursor,
-            **{key: list(deepcopy(scope.payload[key]).values()) for key in ['runs', 'nodes', 'input_requests', 'messages']}}
+            **{key: list(deepcopy(scope.payload.get(key, {})).values()) for key in ['runs', 'nodes', 'input_requests', 'input_groups', 'messages']}}

@@ -8,7 +8,7 @@ const labels: Record<string, string> = { queued: "排队中", running: "执行�
   waiting_for_user: "等待你补充", completed: "已完成", failed: "执行失败", cancelled: "已停止", skipped: "未补充" };
 
 export type SubmitHarnessAnswer = (request: HarnessInput, answers: Record<string, unknown>, skipped: boolean, submissionId: string) => Promise<void>;
-export function AgentInputRequest({ request, sessionId, onSubmitAnswer }: { request: HarnessInput; sessionId: string; onSubmitAnswer?: SubmitHarnessAnswer }) {
+export function AgentInputRequest({ request, sessionId, onSubmitAnswer, groupProgress }: { request: HarnessInput; sessionId: string; onSubmitAnswer?: SubmitHarnessAnswer; groupProgress?: string }) {
   const [drafts, setDrafts] = useState<Record<string, unknown>>(() => {
     try { return JSON.parse(sessionStorage.getItem(`harness-draft:${request.id}`) || "{}"); } catch { return {}; }
   });
@@ -44,7 +44,7 @@ export function AgentInputRequest({ request, sessionId, onSubmitAnswer }: { requ
     {request.answer && !request.answer.skipped && <dl className="mt-2">{request.fields.map((f) => <div key={f.key}><dt className="inline">{f.label}：</dt><dd className="inline">{String(request.answer?.answers[f.key] ?? "本次跳过")}</dd></div>)}</dl>}
   </div>;
   return <form aria-label={request.title} className="mt-3 space-y-3 rounded-xl border border-amber-300/30 bg-amber-300/5 p-3" onSubmit={(e) => { e.preventDefault(); void submit(false); }}>
-    <p className="text-sm text-amber-100">{request.actor || "主 agent"} 向你追问 · {request.title} · 第 {request.round} 轮</p>
+    <p className="text-sm text-amber-100">{request.actor || "主 agent"} 向你追问 · {request.title} · 第 {request.round} 轮{groupProgress ? ` · ${groupProgress}` : ""}</p>
     <p className="text-xs text-slate-400">可只填写部分，未填的问题本次跳过。</p>
     {request.clarification_reason && <p className="text-xs text-slate-300">{request.clarification_reason}</p>}
     {request.fields.map((field) => <div key={field.key} className="block text-sm text-slate-200">
@@ -104,13 +104,18 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
     {sortNodes(run.nodes.filter((n) => !n.parent_id)).map((n) => render(n))}
     {run.inputs.filter((q) => q.status === "pending").map((q) => {
       const owner = run.nodes.find((n) => n.id === q.owner_task_id);
+      const group = run.input_groups?.find((item) => item.id === q.group_id);
+      const progress = group ? `第 ${group.completed_count + 1}/${group.total_count} 题` : undefined;
       return <div key={q.id} className="mt-3">
         <p className="text-xs text-violet-200">{q.actor || owner?.actor || "主 agent"} · {owner?.title || "补充信息"}</p>
-        <AgentInputRequest request={q} sessionId={run.session_id} onSubmitAnswer={onSubmitAnswer} />
+        <AgentInputRequest request={q} sessionId={run.session_id} onSubmitAnswer={onSubmitAnswer} groupProgress={progress} />
       </div>;
     })}
-    {run.inputs.filter((q) => q.status === "queued").map((q, index) => <div key={q.id} className="mt-2 rounded-lg border border-white/10 p-2 text-xs text-slate-400">
-      排队第 {index + 1} 位 · {q.actor || "主 agent"}：{q.title}
+    {(run.input_groups || []).filter((group) => group.status === "active" && group.total_count > group.completed_count + 1).map((group) => <div key={group.id} className="mt-2 rounded-lg border border-white/10 p-2 text-xs text-slate-400">
+      当前组 · 已完成 {group.completed_count}/{group.total_count} 题，下一题将在本题提交后显示
+    </div>)}
+    {(run.input_groups || []).filter((group) => group.status === "queued").map((group, index) => <div key={group.id} className="mt-2 rounded-lg border border-white/10 p-2 text-xs text-slate-400">
+      后续第 {index + 1} 组 · {group.actors.join("、") || "主 agent"} · {group.total_count} 题
     </div>)}
   </section>;
 }

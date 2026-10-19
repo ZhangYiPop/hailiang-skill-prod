@@ -1,6 +1,6 @@
 import type { HarnessRun, HarnessSnapshot } from '@/types/harness';
 export type Entity = { id: string; version: number; run_id?: string; [key: string]: unknown };
-export type V3Snapshot = { protocol: 'hailiang.sse.v3'; session_id: string; profile_id: string | null; cursor: number; runtime_mode: string; runs: Entity[]; nodes: Entity[]; input_requests: Entity[]; messages: Entity[] };
+export type V3Snapshot = { protocol: 'hailiang.sse.v3'; session_id: string; profile_id: string | null; cursor: number; runtime_mode: string; runs: Entity[]; nodes: Entity[]; input_requests: Entity[]; input_groups?: Entity[]; messages: Entity[] };
 /** Public V3 wire frame. Like V2 state, `snapshot` replaces all local state. */
 export type V3Event = { protocol: string; seq: number; session_id: string; profile_id: string | null; run_id: string | null; status: string; outcome?: string | null; reason: string; snapshot: V3Snapshot };
 export function reduceV3(state: V3Snapshot, event: V3Event): V3Snapshot {
@@ -15,6 +15,7 @@ export function legacyView(snapshot: V3Snapshot): HarnessSnapshot {
     return {...entity, run_id: entity.id,
       nodes: snapshot.nodes.filter(n => n.run_id === entity.id),
       inputs: snapshot.input_requests.filter(q => q.run_id === entity.id).map(q => ({...q, version: q.request_version})),
+      input_groups: (snapshot.input_groups || []).filter(group => group.run_id === entity.id),
       result: message?.content || entity.result || '',
       message_status: message?.status,
     } as unknown as HarnessRun;

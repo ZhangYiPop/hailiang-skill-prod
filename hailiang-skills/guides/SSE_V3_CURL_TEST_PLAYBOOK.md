@@ -26,9 +26,23 @@ data: {
     "profile_id": "profile_xxx",
     "runtime_mode": "harness_v1",
     "cursor": 128,
-    "runs": [/* 当前 run */],
+    "runs": [{
+      "id": "run_xxx",
+      "status": "running",
+      "input_queue": {
+        "active_group_id": "input_group_1",
+        "queued_group_ids": ["input_group_2"],
+        "active_request_id": "input_a",
+        "active_group_total": 2,
+        "active_group_completed": 0,
+        "queued_request_ids": ["input_b"],
+        "pending_count": 1,
+        "queued_count": 1
+      }
+    }],
     "nodes": [/* 主任务、专家、Skill、工具 */],
     "input_requests": [/* 卡片及回答状态 */],
+    "input_groups": [/* 当前组与后续组 */],
     "messages": [/* 阶段说明与最终正文 */]
   }
 }
@@ -43,7 +57,9 @@ data: {
 | `reason` | `updated`、`waiting_for_user`、`forwarder_wait_limit`、`completed` 或 `resync_required`。 |
 | `snapshot` | 当前 run 可显示的全部状态；接收到有效帧后整体替换本地 run 气泡。 |
 | `snapshot.nodes` | 只用于展示任务树。工具 `completed` 不表示所属专家已完成。 |
-| `snapshot.input_requests` | 唯一的卡片来源；`pending` 才可填写，`queued` 仍由后端排队。 |
+| `snapshot.runs[0].input_queue` | 队列摘要。`active_group_id`、`queued_group_ids` 决定组顺序；`active_request_id` 是当前唯一可填写卡片。 |
+| `snapshot.input_groups` | 稳定的问题组实体：`active`、`queued`、`completed`，含题数、完成数、当前题和专家摘要。 |
+| `snapshot.input_requests` | 单题字段、归属和绑定。只有活动组的 `active_request_id` 为 `pending` 且可填写；同组其余题和后续组均为 `queued`。 |
 | `snapshot.messages` | 始终使用 final 消息的完整 `content`；不再拼接 token 或正文增量。 |
 
 对外事件只有：
@@ -59,6 +75,33 @@ data: {
 `node.updated`、`message.delta`、`run.finalized` 是内部 outbox/诊断事件，**不再是 BFF 或前端协议**。
 
 ## 2. 前后依赖与主动恢复
+
+### 2.1 先接收问题，再拆分；追问属于子任务队列
+
+一次 run 的业务顺序是：
+
+```text
+用户问题 + 当前档案/会话事实 + 必要近期原话
+  → 主 agent 规划：明确目标、约束、完成条件
+  → delegate_tasks：创建不同专家的 TaskBrief 和依赖图
+  → 专家并行：各自只读取任务书、相关事实和自己授权的 Skill
+  → 专家提交结构化结果
+  → 主 agent 只汇总专家结果与必要证据，生成最终正文
+```
+
+主 agent 不把完整对话、其他专家轨迹或专家内部 Skill 输出复制给子 agent。每个专家只收到自己的 `TaskBrief`、所需事实投影、尚未解决的绑定追问与必要依赖结果。这样专家 A 的追问不会污染专家 B 的上下文，也不会阻塞 B 的独立分析。
+
+追问的队列规则是会话范围内**同时最多一张 `pending` 卡片**，并按持久化问题组推进：首题立即建立单题活动组；活动组存在期间到达的新问题进入同一个后续 queued 组；该组被激活后，新问题只能进入再下一组，不能插入当前组。
+
+| 时刻 | 专家 A | 专家 B | 卡片与 run 行为 |
+| --- | --- | --- | --- |
+| A 首先缺信息 | `waiting_for_user` | 仍可 `running` | A 的卡片为 `pending`，B 继续。run 保持 `running`。 |
+| B/C 随后也缺信息 | `waiting_for_user` | `waiting_for_user` | B、C 进入同一个 queued 组；前端仅显示该组的题数和专家摘要。 |
+| 用户回答/跳过 A | A 的绑定工具完成并重新入队 | B/C 仍等待 | 服务端原子激活下一组，先仅提升 B 为 `pending`；B 提交后才显示 C。答案 POST 的 SSE 立即发出新的完整 `state`。 |
+| A/B 都无独立工作可做 | 等待答案 | 等待答案 | `state` 显示 pending/queued；只有此时流才以 `suspended` 收束。 |
+| 用户回答 B | B 继续或形成 partial 结果 | 其他可运行节点继续 | 不创建新 run；继续同一个任务树，最终交给主 agent 汇总。 |
+
+`queued` 不是失败、也不是“模型没有追问”；它表示问题已经持久化、归属到对应专家及其工具，但为了避免多个专家同时打断用户，尚未提升为唯一可填写的 `pending` 卡片。用户不能提交 `queued` 卡片，前端也不能自己提升它。相同用户、事实字段、对象和适用时间，且输入约束兼容的追问复用同一张卡片和绑定；用户一次回答或跳过会同时恢复所有绑定专家，不再重复提问。
 
 ```mermaid
 sequenceDiagram

@@ -23,6 +23,35 @@ def test_public_events_are_immutable_and_scope_isolated(tmp_path):
     runtime.close()
 
 
+def test_v3_snapshot_projects_grouped_input_queue(tmp_path):
+    from hailiang_skills.harness.contracts import AnswerSubmission
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    rid = runtime.create('s', 'u', 'p', '分析', v2_policy(), wire_protocol='hailiang.sse.v3')
+    def add_questions(run, changes, db):
+        root = run['tasks'][run['root_task_id']]
+        for index, key in enumerate(('province', 'budget')):
+            tool = {'id': f'group-tool-{index}', 'name': 'request_user_input', 'arguments': {
+                'title': key, 'fields': [{'key': key, 'label': key, 'scope': 'profile'}],
+            }, 'task_id': root['id'], 'call_id': f'group-call-{index}', 'status': 'running', 'attempts': 1,
+                'created_at': None, 'started_at': None, 'ended_at': None}
+            run['tools'][tool['id']] = tool
+            runtime._request(run, root, tool, changes, db)
+    runtime.store.mutate(rid, add_questions)
+    snapshot = runtime.store.public_snapshot('s', 'u', 'p')
+    entity = next(item for item in snapshot['runs'] if item['id'] == rid)
+    assert entity['input_queue']['active_group_total'] == 1
+    assert len(entity['input_queue']['queued_group_ids']) == 1
+    groups = [item for item in snapshot['input_groups'] if item['run_id'] == rid]
+    assert [(item['status'], item['total_count']) for item in groups] == [('active', 1), ('queued', 1)]
+    active = next(item for item in snapshot['input_requests'] if item['status'] == 'pending')
+    runtime.answer(active['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='group-answer', expected_version=active['request_version'], text='浙江'))
+    snapshot = runtime.store.public_snapshot('s', 'u', 'p')
+    entity = next(item for item in snapshot['runs'] if item['id'] == rid)
+    assert entity['input_queue']['active_group_total'] == 1
+    assert len([item for item in snapshot['input_requests'] if item['status'] == 'pending']) == 1
+    runtime.close()
+
+
 def test_idempotent_start_and_conflicting_submission(tmp_path):
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
     sub = {'key': 'idempotent', 'fingerprint': 'one'}
