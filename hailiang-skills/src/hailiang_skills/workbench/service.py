@@ -172,6 +172,23 @@ def _normalize_brief(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
+def _script_capability_ids(skill_key: str, scripts: dict[str, Any]) -> list[str]:
+    """Only Python scripts are executable capabilities. requirements.txt stays a file."""
+    return [
+        f"{skill_key}:{path}"
+        for path in sorted(scripts)
+        if PurePosixPath(path).suffix.lower() == ".py"
+    ]
+
+
+def _payload_with_present_brief(payload: dict[str, Any], brief: object) -> dict[str, Any]:
+    """Omit an empty brief so a legacy filesystem package can be imported."""
+    normalized = _normalize_brief(brief)
+    if normalized:
+        payload["brief"] = normalized
+    return payload
+
+
 def _safe_relative_path(value: str) -> str:
     path = PurePosixPath(str(value or "").replace("\\", "/"))
     if not value or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
@@ -3774,7 +3791,7 @@ class WorkbenchService:
                 "runtime_contract": self._json_file(bundle.root_dir / "runtime_contract.json"),
                 "configuration": dict(bundle.runtime_metadata.raw or {}),
                 "source_metadata": copy.deepcopy(bundle.metadata),
-                "capability_ids": [f"{skill_key}:{path}" for path in sorted(bundle.scripts)],
+                "capability_ids": _script_capability_ids(skill_key, bundle.scripts),
                 "source_version": str(bundle.runtime_metadata.version or bundle.metadata.get("version") or "0.0.0"),
                 "_workbench_managed_files": True,
             }
@@ -3799,12 +3816,11 @@ class WorkbenchService:
         experts = getattr(getattr(self.orchestrator, "expert_registry", None), "definitions", {})
         for expert in experts.values():
             locks = [skill_release_by_key[item.skill_id] for item in expert.skills if item.skill_id in skill_release_by_key]
-            payload = {
+            payload = _payload_with_present_brief({
                 "rules_markdown": expert.rules_markdown,
-                "brief": expert.brief,
                 "budget": {"max_iters": expert.max_iters, "max_skill_calls": expert.max_skill_calls},
                 "capabilities": list(expert.capabilities),
-            }
+            }, expert.brief)
             released = self._bootstrap_object("expert", expert.agent_id, expert.name, payload, locks)
             expert_release_by_key[expert.agent_id] = released
             created += 1
@@ -3812,12 +3828,12 @@ class WorkbenchService:
         for team in teams.values():
             locks = [expert_release_by_key[item.expert_id] for item in team.members if item.expert_id in expert_release_by_key]
             coordinator_object_id = next((item["object_id"] for item in locks if item["object_key"] == team.coordinator_expert_id), "")
-            payload = {
+            payload = _payload_with_present_brief({
                 "rules_markdown": team.rules_markdown,
-                "brief": team.brief,
                 "coordinator_expert_id": coordinator_object_id,
                 "consultation_policy": team.consultation_policy.as_dict(),
                 "fallback_expert_id": team.fallback_expert_id,
+                "collaboration_rules": team.collaboration_rules,
                 "members": [
                     {
                         "expert_id": item.expert_id,
@@ -3827,7 +3843,7 @@ class WorkbenchService:
                     }
                     for item in team.members
                 ],
-            }
+            }, team.brief)
             self._bootstrap_object("expert_team", team.team_id, team.name, payload, locks)
             created += 1
         return {"objects": created, "releases": created}
@@ -3946,7 +3962,7 @@ class WorkbenchService:
                 "runtime_contract": self._json_file(Path(bundle.root_dir) / "runtime_contract.json"),
                 "configuration": copy.deepcopy(bundle.runtime_metadata.raw or {}),
                 "source_metadata": copy.deepcopy(bundle.metadata),
-                "capability_ids": [f"{key}:{path}" for path in sorted(bundle.scripts)],
+                "capability_ids": _script_capability_ids(key, bundle.scripts),
                 "source_version": str(bundle.runtime_metadata.version or bundle.metadata.get("version") or "0.0.0"),
                 "_workbench_managed_files": True,
             }
@@ -3955,12 +3971,11 @@ class WorkbenchService:
             entries.append(self._filesystem_entry("skill", key, bundle.runtime_metadata.name or key, payload, [], files, source_id))
         for expert in getattr(getattr(self.orchestrator, "expert_registry", None), "definitions", {}).values():
             locks = [self._filesystem_lock("skill", item.skill_id, source_ids) for item in expert.skills]
-            payload = {
+            payload = _payload_with_present_brief({
                 "rules_markdown": expert.rules_markdown,
-                "brief": expert.brief,
                 "budget": {"max_iters": expert.max_iters, "max_skill_calls": expert.max_skill_calls},
                 "capabilities": list(expert.capabilities),
-            }
+            }, expert.brief)
             source_id = f"filesystem:expert:{expert.agent_id}"
             source_ids[("expert", expert.agent_id)] = source_id
             entries.append(self._filesystem_entry("expert", expert.agent_id, expert.name, payload, locks, [], source_id))
@@ -3968,12 +3983,12 @@ class WorkbenchService:
             locks = [self._filesystem_lock("expert", item.expert_id, source_ids) for item in team.members]
             coordinator_lock = next((item for item in locks if item["object_key"] == team.coordinator_expert_id), None)
             fallback_lock = next((item for item in locks if item["object_key"] == team.fallback_expert_id), None)
-            payload = {
+            payload = _payload_with_present_brief({
                 "rules_markdown": team.rules_markdown,
-                "brief": team.brief,
                 "coordinator_expert_id": str((coordinator_lock or {}).get("object_id") or team.coordinator_expert_id),
                 "consultation_policy": team.consultation_policy.as_dict(),
                 "fallback_expert_id": str((fallback_lock or {}).get("object_id") or team.fallback_expert_id),
+                "collaboration_rules": team.collaboration_rules,
                 "members": [
                     {
                         "expert_id": item.expert_id,
@@ -3983,7 +3998,7 @@ class WorkbenchService:
                     }
                     for item in team.members
                 ],
-            }
+            }, team.brief)
             source_id = f"filesystem:expert_team:{team.team_id}"
             source_ids[("expert_team", team.team_id)] = source_id
             entries.append(self._filesystem_entry("expert_team", team.team_id, team.name, payload, locks, [], source_id))
@@ -4507,7 +4522,7 @@ class WorkbenchService:
             if not str(payload.get("rules_markdown") or "").strip():
                 errors.append("专家规则不能为空")
             if len(locks) < 1:
-                errors.append("专家必须引用至少一个已发布 Skill 版本")
+                warnings.append("未绑定 Skill，专家只按规则回答")
             errors.extend(validate_agent_skill_routing(
                 str(payload.get("rules_markdown") or ""),
                 {str(item.get("object_key") or "") for item in locks if str(item.get("object_key") or "")},
@@ -5080,6 +5095,9 @@ class WorkbenchService:
             coordinator_object_id = str(payload.get("coordinator_expert_id") or "")
             if coordinator_object_id in source_to_local_object_ids:
                 payload["coordinator_expert_id"] = source_to_local_object_ids[coordinator_object_id]
+            fallback_object_id = str(payload.get("fallback_expert_id") or "")
+            if fallback_object_id in source_to_local_object_ids:
+                payload["fallback_expert_id"] = source_to_local_object_ids[fallback_object_id]
         if object_type == "skill":
             payload["_workbench_managed_files"] = True
         obj = db.scalar(
