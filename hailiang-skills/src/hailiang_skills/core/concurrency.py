@@ -60,7 +60,10 @@ class TurnCoordinator:
     def ready(self) -> bool:
         if not self._redis:
             return False
-        return bool(self._redis.ping())
+        try:
+            return bool(self._redis.ping())
+        except Exception:
+            return False
 
     def acquire(self, session_id: str, user_id: str, *, run_id: str | None = None) -> TurnLease:
         started = monotonic()
