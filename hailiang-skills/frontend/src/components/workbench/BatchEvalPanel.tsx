@@ -18,14 +18,31 @@ type BatchCaseResult = BatchCaseDraft & {
   result: string;
   nodes: BatchNode[];
   transcript: BatchTurn[];
+  live_phase?: string;
   error: string;
 };
+
+function caseProgressLabel(item: BatchCaseResult): string {
+  if (item.status !== "running") {
+    if (item.status === "completed") return "完成";
+    if (item.status === "failed") return "失败";
+    if (item.status === "cancelled") return "已停止";
+    return "等待";
+  }
+  const parts = [`第 ${item.rounds || 1} 轮`];
+  if (item.live_phase) parts.push(item.live_phase);
+  if (item.question_count) parts.push(`已追问 ${item.question_count}`);
+  const latest = item.nodes[item.nodes.length - 1];
+  if (latest?.title) parts.push(`${latest.actor || "系统"} · ${latest.title}`);
+  return parts.join(" · ");
+}
 type BatchJob = {
   job_id: string;
   status: string;
   total: number;
   finished: number;
   current_index: number;
+  concurrency?: number;
   error: string;
   cases: BatchCaseResult[];
 };
@@ -37,6 +54,7 @@ const TYPE_LABEL: Record<WorkbenchObjectType, string> = {
 };
 
 const fieldClass = "w-full min-w-0 rounded-lg border border-white/10 bg-slate-950 px-2.5 py-2 text-sm outline-none focus:border-sky-400/50 disabled:opacity-40";
+const BATCH_CONCURRENCY = 6;
 
 function formatRevision(revision: ObjectRevision): string {
   const when = new Date(revision.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -131,6 +149,14 @@ export function BatchEvalPanel({ baseUrl, actorId }: { baseUrl: string; actorId:
     setJob(await response.json() as BatchJob);
   }
 
+  function clearImported() {
+    setPaste("");
+    setCases([]);
+    setImportNote("");
+    setError("");
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
   function importPaste() {
     const parsed = parsePastedCases(paste);
     if (!parsed.length) {
@@ -189,6 +215,7 @@ export function BatchEvalPanel({ baseUrl, actorId }: { baseUrl: string; actorId:
         model: modelId,
         preset_identity: presetIdentity,
         max_rounds: maxRounds,
+        concurrency: BATCH_CONCURRENCY,
         cases: ready.map((item) => ({
           scene: item.scene.trim(),
           opening: item.opening.trim(),
@@ -233,6 +260,22 @@ export function BatchEvalPanel({ baseUrl, actorId }: { baseUrl: string; actorId:
 
   const running = job?.status === "running";
   const progress = job ? Math.round((job.finished / Math.max(job.total, 1)) * 100) : 0;
+  const runningCases = job?.cases.filter((item) => item.status === "running") ?? [];
+  const currentCase = runningCases.find((item) => item.index === job?.current_index) || runningCases[0];
+  const progressDetail = !job
+    ? ""
+    : job.status === "cancelled"
+      ? "已停止"
+      : job.status === "failed"
+        ? "运行失败"
+        : job.status !== "running"
+          ? "已完成"
+          : `并行 ${job.concurrency ?? BATCH_CONCURRENCY} · 正在跑 ${runningCases.length} 条${currentCase ? ` · 第 ${currentCase.index} 条 ${caseProgressLabel(currentCase)}` : ""}`;
+
+  useEffect(() => {
+    if (!running || !currentCase) return;
+    setOpenIndex(currentCase.index);
+  }, [running, currentCase?.index]);
 
   return (
     <section className="p-5 lg:p-8">
@@ -299,6 +342,11 @@ export function BatchEvalPanel({ baseUrl, actorId }: { baseUrl: string; actorId:
               每个用例最多轮数
               <input aria-label="最大轮数" type="number" min={1} max={8} value={maxRounds} disabled={running} onChange={(event) => setMaxRounds(Math.min(8, Math.max(1, Number(event.target.value) || 1)))} className={`mt-1.5 ${fieldClass}`} />
             </label>
+            <label className="text-sm text-slate-400">
+              并行数量
+              <input aria-label="并行数量" type="number" min={1} max={BATCH_CONCURRENCY} value={BATCH_CONCURRENCY} disabled title="暂时固定为 6，不能修改" className={`mt-1.5 ${fieldClass}`} />
+              <span className="mt-1 block text-xs text-slate-500">暂时固定为 6，不能修改。</span>
+            </label>
           </div>
           <p className="mt-2 text-sm leading-6 text-slate-500">画像写的是孩子，发言身份默认家长；选孩子时系统身份记为学生。问答模型和调试台是同一组。</p>
           <label className="mt-4 flex items-start gap-3 text-sm text-slate-300">
@@ -312,6 +360,7 @@ export function BatchEvalPanel({ baseUrl, actorId }: { baseUrl: string; actorId:
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <button type="button" disabled={running || !paste.trim()} onClick={importPaste} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-slate-200 disabled:opacity-40">解析到用例表</button>
             <button type="button" disabled={running} onClick={() => fileRef.current?.click()} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-slate-200 disabled:opacity-40">导入表格</button>
+            <button type="button" disabled={running || (!paste.trim() && !cases.length && !importNote && !error)} onClick={clearImported} className="rounded-xl border border-white/10 px-4 py-2 text-sm text-slate-300 disabled:opacity-40">一键清空</button>
             <input ref={fileRef} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="hidden" onChange={(event) => {
               const file = event.target.files?.[0];
               event.target.value = "";
@@ -350,7 +399,7 @@ export function BatchEvalPanel({ baseUrl, actorId }: { baseUrl: string; actorId:
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-semibold">运行进度</h2>
-                <p className="mt-1 text-sm text-slate-400">{job.finished}/{job.total} · {job.status === "running" ? `正在跑第 ${job.current_index} 条` : job.status === "cancelled" ? "已停止" : job.status === "failed" ? "运行失败" : "已完成"}</p>
+                <p className="mt-1 text-sm text-slate-400">{job.finished}/{job.total} 已完成 · {progressDetail}</p>
               </div>
               <div className="flex gap-2">
                 <button type="button" disabled={!running} onClick={() => void cancel()} className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 px-3 py-2 text-sm text-slate-200 disabled:opacity-40"><Square size={14} />停止</button>
@@ -378,7 +427,12 @@ export function BatchEvalPanel({ baseUrl, actorId }: { baseUrl: string; actorId:
                     <Fragment key={item.index}>
                       <tr className="border-t border-white/10 align-top">
                         <td className="px-2 py-3">{item.scene || item.opening.slice(0, 18)}</td>
-                        <td className="px-2 py-3">{item.status === "running" ? "进行中" : item.status === "completed" ? "完成" : item.status === "failed" ? "失败" : item.status === "cancelled" ? "已停止" : "等待"}</td>
+                        <td className="px-2 py-3">
+                          <span className={item.status === "running" ? "text-sky-200" : undefined}>{caseProgressLabel(item)}</span>
+                          {item.status === "running" && item.nodes.length ? (
+                            <p className="mt-1 text-xs text-slate-500">节点 {item.nodes.length} · 点右侧可看实时过程</p>
+                          ) : null}
+                        </td>
                         <td className="px-2 py-3">{item.rounds}</td>
                         <td className="px-2 py-3">{item.question_count}</td>
                         <td className="px-2 py-3 text-slate-400">{item.stop_reason}</td>

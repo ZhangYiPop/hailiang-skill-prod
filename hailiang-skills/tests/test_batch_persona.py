@@ -100,7 +100,24 @@ def test_decision_json_and_batch_progress():
     done = service.get(job["job_id"])
     assert done["status"] == "completed"
     assert done["finished"] == 1
+    assert done["concurrency"] == 6
     assert done["cases"][0]["result"] == "建议选物理"
     exported = service.export_csv(job["job_id"])
     assert "选科参谋" in exported
     assert "建议选物理" in exported
+
+    wide = service.start({
+        "revision_id": "rev_test",
+        "actor_id": "actor_test",
+        "concurrency": 99,
+        "cases": [
+            {"opening": "怎么选", "persona": SAMPLE},
+            {"opening": "怎么选", "persona": SAMPLE},
+            {"opening": "怎么选", "persona": SAMPLE},
+        ],
+    })
+    service._threads[wide["job_id"]].join(timeout=3)
+    finished = service.get(wide["job_id"])
+    assert finished["concurrency"] == 6
+    assert finished["status"] == "completed"
+    assert finished["finished"] == 3

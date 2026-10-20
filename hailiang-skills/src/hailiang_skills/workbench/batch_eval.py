@@ -13,7 +13,7 @@ import io
 import json
 import time
 import uuid
-from threading import RLock, Thread
+from threading import RLock, Semaphore, Thread
 from typing import Any
 
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
@@ -28,6 +28,9 @@ from hailiang_skills.workbench import WorkbenchError
 from hailiang_skills.workbench.persona import answer_fields, parse_persona
 
 TERMINAL = {"completed", "failed", "cancelled"}
+# Fixed at the harness execution-pool size. The workbench control is locked
+# until pool sizes can be raised without affecting live traffic.
+BATCH_CONCURRENCY = 6
 
 
 class BatchEvalService:
@@ -64,6 +67,7 @@ class BatchEvalService:
                     "result": "",
                     "nodes": [],
                     "transcript": [],
+                    "live_phase": "",
                     "error": "",
                 })
             job = {
@@ -78,6 +82,7 @@ class BatchEvalService:
                 "resolved_model": resolved_model,
                 "preset_identity": bool(payload.get("preset_identity", True)),
                 "max_rounds": int(payload.get("max_rounds") or 4),
+                "concurrency": _bounded_concurrency(payload.get("concurrency")),
                 "round_timeout_s": int(payload.get("round_timeout_s") or 180),
                 "created_at": time.time(),
                 "updated_at": time.time(),
@@ -140,29 +145,65 @@ class BatchEvalService:
 
     def _execute(self, job_id: str) -> None:
         job = self._jobs[job_id]
+        limit = max(1, min(int(job["concurrency"]), len(job["cases"]) or 1))
+        gate = Semaphore(limit)
+        threads: list[Thread] = []
+
+        def run(case: dict[str, Any]) -> None:
+            try:
+                self._execute_case(job, case)
+            finally:
+                gate.release()
+
         try:
             for case in job["cases"]:
+                gate.acquire()
                 if job["cancel"]:
                     case["status"] = "cancelled"
                     case["stop_reason"] = "已停止"
-                    job["finished"] += 1
+                    self._note_finished(job)
+                    gate.release()
                     continue
-                job["current_index"] = case["index"]
-                case["status"] = "running"
-                job["updated_at"] = time.time()
-                try:
-                    self._run_case(job, case)
-                except Exception as exc:  # one case must not stop the batch
-                    case["status"] = "failed"
-                    case["error"] = f"{type(exc).__name__}: {exc}"
-                    case["stop_reason"] = "运行失败"
-                job["finished"] += 1
-                job["updated_at"] = time.time()
-            job["status"] = "cancelled" if job["cancel"] else "completed"
+                thread = Thread(
+                    target=run,
+                    args=(case,),
+                    name=f"batch-case-{job_id}-{case['index']}",
+                    daemon=True,
+                )
+                threads.append(thread)
+                thread.start()
         except Exception as exc:
             job["status"] = "failed"
             job["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            for thread in threads:
+                thread.join()
+        if job["status"] == "running":
+            job["status"] = "cancelled" if job["cancel"] else "completed"
         job["updated_at"] = time.time()
+
+    def _execute_case(self, job: dict[str, Any], case: dict[str, Any]) -> None:
+        if job["cancel"]:
+            case["status"] = "cancelled"
+            case["stop_reason"] = "已停止"
+            self._note_finished(job)
+            return
+        with self._lock:
+            case["status"] = "running"
+            job["current_index"] = case["index"]
+            job["updated_at"] = time.time()
+        try:
+            self._run_case(job, case)
+        except Exception as exc:  # one case must not stop the batch
+            case["status"] = "failed"
+            case["error"] = f"{type(exc).__name__}: {exc}"
+            case["stop_reason"] = "运行失败"
+        self._note_finished(job)
+
+    def _note_finished(self, job: dict[str, Any]) -> None:
+        with self._lock:
+            job["finished"] += 1
+            job["updated_at"] = time.time()
 
     def _run_case(self, job: dict[str, Any], case: dict[str, Any]) -> None:
         started = time.monotonic()
@@ -187,13 +228,16 @@ class BatchEvalService:
                 case["stop_reason"] = "已停止"
                 break
             case["rounds"] = round_no
+            case["live_phase"] = "starting"
+            nodes_before_round = list(case.get("nodes") or [])
             run_id = self._start_round(session_id, user_id, debug_id, utterance, facts if round_no == 1 else {}, job["resolved_model"])
             case["transcript"].append({"role": "user", "content": utterance, "source": "首轮" if round_no == 1 else "模拟用户"})
-            public = self._wait_round(job, case, persona, run_id, user_id)
+            public = self._wait_round(job, case, persona, run_id, user_id, nodes_before_round)
             last_result = str(public.get("result") or "")
             case["result"] = last_result
             case["transcript"].append({"role": "assistant", "content": last_result or f"（{public.get('status')}）"})
-            case["nodes"].extend(_nodes(public, round_no))
+            case["nodes"] = nodes_before_round + _nodes(public, round_no)
+            case["live_phase"] = str(public.get("phase") or "")
             case["experts"] = _experts(case["experts"], public)
             if public.get("status") == "failed":
                 case["status"] = "failed"
@@ -274,9 +318,19 @@ class BatchEvalService:
                 history.append({"role": "assistant", "content": previous["result"]})
         return self.runtime.create(session_id, user_id, None, goal, policy, seed, history)
 
-    def _wait_round(self, job, case, persona, run_id: str, user_id: str) -> dict[str, Any]:
+    def _wait_round(
+        self,
+        job,
+        case,
+        persona,
+        run_id: str,
+        user_id: str,
+        baseline_nodes: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         answered: set[str] = set()
         deadline = time.monotonic() + job["round_timeout_s"]
+        round_no = int(case.get("rounds") or 1)
+        prior_nodes = list(baseline_nodes if baseline_nodes is not None else case.get("nodes") or [])
         while time.monotonic() < deadline:
             if job["cancel"]:
                 self.runtime.cancel(run_id)
@@ -284,6 +338,13 @@ class BatchEvalService:
                 public["status"] = "cancelled"
                 return public
             run = self.runtime.store.get(run_id)
+            # Publish live task-tree progress so the workbench poll can show
+            # more than "running" while a long round is still open.
+            public_live = self.runtime.public(run)
+            case["live_phase"] = str(public_live.get("phase") or "")
+            case["nodes"] = prior_nodes + _nodes(public_live, round_no)
+            case["experts"] = _experts(case.get("experts") or [], public_live)
+            job["updated_at"] = time.time()
             for request in run["inputs"].values():
                 if request["status"] != "pending" or request["id"] in answered:
                     continue
@@ -367,6 +428,14 @@ class BatchEvalService:
         return _heuristic(persona, assistant_text, round_no)
 
 
+def _bounded_concurrency(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = BATCH_CONCURRENCY
+    return min(BATCH_CONCURRENCY, max(1, parsed))
+
+
 def _public(job: dict[str, Any]) -> dict[str, Any]:
     return {
         "job_id": job["job_id"],
@@ -378,6 +447,7 @@ def _public(job: dict[str, Any]) -> dict[str, Any]:
         "model": job["model"],
         "preset_identity": job["preset_identity"],
         "max_rounds": job["max_rounds"],
+        "concurrency": job.get("concurrency") or BATCH_CONCURRENCY,
         "total": job["total"],
         "finished": job["finished"],
         "current_index": job["current_index"],
@@ -398,6 +468,7 @@ def _public(job: dict[str, Any]) -> dict[str, Any]:
                 "result": case["result"],
                 "nodes": list(case["nodes"]),
                 "transcript": list(case["transcript"]),
+                "live_phase": case.get("live_phase") or "",
                 "error": case["error"],
             }
             for case in job["cases"]

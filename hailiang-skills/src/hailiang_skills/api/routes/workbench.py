@@ -36,6 +36,7 @@ class BatchEvalInput(StrictModel):
     model: str = Field(default="flash", max_length=80)
     preset_identity: bool = True
     max_rounds: int = Field(default=4, ge=1, le=8)
+    concurrency: int = Field(default=6, ge=1, le=6)
     round_timeout_s: int = Field(default=180, ge=30, le=600)
     cases: list[BatchEvalCaseInput] = Field(min_length=1, max_length=200)
 
