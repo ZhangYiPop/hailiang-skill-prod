@@ -1,5 +1,7 @@
 # SSE v2 前端对齐协议
 
+> Harness 多 agent 新接入请见 [SSE v3 联调协议](SSE_V3_INTEGRATION_GUIDE.md)。本文仅描述旧 SSE v2，不适用于 v3 的任务订阅和独立回答接口。
+
 > 权威范围：`POST /api/v2/sessions/chat/stream` 的**成功 SSE 响应**。请求体、建流前
 > HTTP 错误见 [API_DOCUMENTATION.md](API_DOCUMENTATION.md)。前端只需按本文件渲染聊天。
 > 前端与 BFF 的完整接入顺序见 [SSE_V2_INTEGRATION_GUIDE.md](SSE_V2_INTEGRATION_GUIDE.md)。

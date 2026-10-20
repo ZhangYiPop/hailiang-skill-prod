@@ -4,6 +4,7 @@ import pytest
 
 from hailiang_skills.harness import context_policy as cp
 from hailiang_skills.harness.contracts import HarnessError
+from hailiang_skills.harness.contracts import AnswerSubmission
 from hailiang_skills.skill_runtime.models import AssistantTurnResult
 from test_harness import make_runtime, advance, call, postgres_test_backend  # noqa: F401
 from hailiang_skills.harness.runtime import task_node
@@ -109,4 +110,59 @@ def test_synthesis_tools_are_narrow_and_child_question_status_is_visible(tmp_pat
     assert 'answered' in messages[1].content
     child['status'] = 'queued'
     assert cp.task_phase(run, root) == 'planning'
+    runtime.close()
+
+
+@pytest.mark.parametrize('skip', [False, True])
+def test_rejected_completion_can_ask_then_resume_or_finish_partial(tmp_path, skip):
+    expert_calls = 0
+    def respond(messages, specs, purpose):
+        nonlocal expert_calls
+        if purpose == 'harness_main':
+            if not any(m.role == 'tool' for m in messages):
+                return call('delegate_tasks', {'tasks': [{'key': 'a', 'expert_id': 'a', 'goal': '省份相关建议'}]})
+            return AssistantTurnResult(final_text='通用建议；省份未知，省内政策未核实。' if skip else '依据补充的省份完成建议。')
+        expert_calls += 1
+        if expert_calls == 1:
+            return call('submit_result', {'status': 'completed', 'conclusion': '初步建议', 'unresolved': ['省份未知']}, 'premature')
+        if expert_calls == 2:
+            feedback = next(json.loads(m.content) for m in messages if m.role == 'tool' and m.name == 'submit_result')
+            assert feedback['error'] == 'RESULT_COMPLETION_NOT_SATISFIED'
+            assert feedback['unresolved'] == ['省份未知']
+            assert 'request_user_input' in feedback['next_action']
+            return call('request_user_input', {'title': '补充省份', 'fields': [{'key': 'province', 'label': '省份', 'scope': 'task'}]}, 'province')
+        return call('submit_result', {'status': 'partial' if skip else 'completed', 'conclusion': '有效建议',
+                    'limitations': ['省内政策未核实'] if skip else [], 'unresolved': ['省份未提供'] if skip else []}, 'finish')
+    runtime = make_runtime(tmp_path, respond)
+    rid = runtime.create('s', 'u', 'p', '规划', v2_policy())
+    advance(runtime, rid, 15)
+    run = runtime.store.get(rid)
+    expert = next(t for t in run['tasks'].values() if t['kind'] == 'expert')
+    assert expert['status'] == 'waiting_for_user'
+    request = next(q for q in run['inputs'].values() if q['status'] == 'pending')
+    assert any(b['task_id'] == expert['id'] for b in request['bindings'])
+    runtime.answer(request['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='province-answer',
+                   expected_version=1, skipped=skip, **({} if skip else {'text': '浙江'})))
+    advance(runtime, rid, 15)
+    run = runtime.store.get(rid)
+    assert run['status'] == 'completed'
+    assert run['tasks'][expert['id']]['structured_result']['status'] == ('partial' if skip else 'completed')
+    assert len(run['inputs']) == 1
+    runtime.close()
+
+
+def test_partial_child_feedback_identifies_limits_and_allows_partial_parent(tmp_path):
+    runtime, run, root = setup_run(tmp_path)
+    parent = task_node('expert', '规划', root['id'], expert_id='a')
+    child = task_node('skill', '分析', parent['id'], skill_id='internal', expert_id='a')
+    child.update(status='completed', structured_result={'status': 'partial', 'unresolved': ['省份已跳过'], 'limitations': ['仅通用建议']})
+    run['tasks'].update({parent['id']: parent, child['id']: child})
+    parent['pending_calls'] = ['submit']
+    tool = {'id': 'submit', 'name': 'submit_result', 'arguments': {'status': 'completed', 'conclusion': '建议'}}
+    runtime._internal(run, parent, tool, [], None)
+    assert tool['result']['blocking_tasks'][0]['task_id'] == child['id']
+    assert tool['result']['blocking_tasks'][0]['limitations'] == ['仅通用建议']
+    tool['arguments'].update(status='partial', limitations=['仅通用建议'], unresolved=['省份已跳过'])
+    runtime._internal(run, parent, tool, [], None)
+    assert tool['result']['accepted'] is True
     runtime.close()

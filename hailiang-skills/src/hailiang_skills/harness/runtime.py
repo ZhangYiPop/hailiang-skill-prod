@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
+import inspect
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +43,88 @@ def identity_form_fields(missing, has_profile):
     return fields
 
 
+_PUBLIC_CARD_FIELDS = ("intent", "object_type", "sub_type", "reason", "title", "description")
+_PUBLIC_FILTER_KEYS = ("region", "grade", "keyword", "category")
+_EXPERT_RUNNING = {"running", "waiting_for_user", "waiting_for_dependency"}
+_EXPERT_FAILED = {"failed", "cancelled"}
+
+
+def public_round_experts(run):
+    """Project expert tasks into the V2 round_experts shape.
+
+    The value of each id is the expert agent id. One expert keeps the status of
+    its latest task, so a later retry does not leave the same id in two buckets.
+    """
+    tasks = sorted(
+        (
+            task for task in run.get("tasks", {}).values()
+            if task.get("kind") == "expert" and str(task.get("expert_id") or "").strip()
+        ),
+        key=lambda task: (task.get("created_at") or "", task.get("id") or ""),
+    )
+    latest = {}
+    order = []
+    for task in tasks:
+        expert_id = str(task["expert_id"]).strip()
+        if expert_id not in latest:
+            order.append(expert_id)
+        latest[expert_id] = task
+    assigned, running, completed, failed = [], [], [], []
+    queued = False
+    for expert_id in order:
+        assigned.append(expert_id)
+        status = latest[expert_id].get("status")
+        if status == "completed":
+            completed.append(expert_id)
+        elif status in _EXPERT_FAILED:
+            failed.append(expert_id)
+        elif status in _EXPERT_RUNNING:
+            running.append(expert_id)
+        else:
+            queued = True
+    if not assigned:
+        round_status = "idle"
+    elif running:
+        round_status = "running"
+    elif queued:
+        round_status = "assigned"
+    elif completed and failed:
+        round_status = "partial"
+    elif failed:
+        round_status = "failed"
+    else:
+        round_status = "completed"
+    return {
+        "assigned_expert_ids": assigned,
+        "running_expert_ids": running,
+        "completed_expert_ids": completed,
+        "failed_expert_ids": failed,
+        "status": round_status,
+    }
+
+
+def public_jump_cards(run):
+    """Copy already validated recommendation cards into the public snapshot."""
+    raw = run.get("jump_cards") or []
+    if isinstance(raw, dict):
+        raw = raw.get("jump_cards") or raw.get("cards") or []
+    cards = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        intent = str(item.get("intent") or "").strip()
+        object_type = str(item.get("object_type") or "").strip()
+        if not intent or not object_type:
+            continue
+        source_filter = item.get("filter") if isinstance(item.get("filter"), dict) else {}
+        card = {key: str(item.get(key) or "") for key in _PUBLIC_CARD_FIELDS}
+        card["intent"] = intent
+        card["object_type"] = object_type
+        card["filter"] = {key: "" if source_filter.get(key) is None else str(source_filter.get(key) or "") for key in _PUBLIC_FILTER_KEYS}
+        cards.append(card)
+    return cards
+
+
 def task_node(kind, goal, parent_id=None, expert_id=None, skill_id=None, completion="完成指定任务", depends_on=()):
     return {"id": identifier("task"), "parent_id": parent_id, "kind": kind, "expert_id": expert_id, "skill_id": skill_id,
             "goal": goal, "completion": completion, "depends_on": list(depends_on), "status": "queued", "messages": [{"role": "user", "content": goal}],
@@ -75,7 +158,8 @@ class HarnessRuntime:
             self._thread.join(timeout=2)
         self._pool.shutdown(wait=False, cancel_futures=True)
 
-    def create(self, session_id, user_id, profile_id, goal, policy, seed_facts=None, history=None):
+    def create(self, session_id, user_id, profile_id, goal, policy, seed_facts=None, history=None, wire_protocol=None, submission=None,
+               supersede_active=False):
         if not session_id or len(session_id) > 80 or not user_id or len(user_id) > 160 or profile_id and len(profile_id) > 80:
             raise HarnessError("INVALID_HARNESS_IDENTITY")
         root = task_node("main", goal)
@@ -90,7 +174,16 @@ class HarnessRuntime:
         if cp.enabled(run):
             run["execution_contract_version"] = "v1"
             root["brief"] = cp.brief_for(run, root)
-        self.store.create(run)
+        run.update(wire_protocol=wire_protocol, submission=submission)
+        def supersede(previous, changes, replacement_run_id):
+            if previous["status"] in TERMINAL:
+                return
+            run["supersedes_run_id"] = previous["run_id"]
+            previous.update(status="cancelled", cancellation_reason="superseded_by_new_run",
+                            superseded_by_run_id=replacement_run_id)
+            self._close_descendants(previous, changes)
+            changes.append({"event": "run_superseded", "node_id": previous["root_task_id"]})
+        self.store.create(run, supersede=supersede if supersede_active else None)
         return run["run_id"]
 
     def specs(self, run, task):
@@ -156,6 +249,8 @@ class HarnessRuntime:
             result = [spec(item.name, item.description, cp.compact_schema(item.parameters_schema)) for item in result]
             if cp.task_phase(run, task) == 'synthesis':
                 result = [item for item in result if item.name in {'read_facts', 'read_evidence', 'request_user_input', 'propose_fact_updates'}]
+        if run.get('wire_protocol') == 'hailiang.sse.v3' and task['kind'] == 'main':
+            result.append(spec('finalize_response', '完成必要分析后单独调用，进入无工具的最终回答流式生成；尚需用户信息时先调用 request_user_input。', object_schema({})))
         return result
 
     def _loop(self):
@@ -259,11 +354,40 @@ class HarnessRuntime:
             except Exception:
                 log.exception("harness heartbeat failed")
 
+    def _stream_final(self, client, run, task, token, messages):
+        from time import monotonic
+        from hailiang_skills.skill_runtime.models import AssistantTurnResult
+        run_id, task_id = run['run_id'], task['id']
+        if not self.store.stream_text(run_id, task_id, token, reset=True):
+            raise HarnessError('EXECUTION_EXPIRED')
+        content, buffer, flushed = '', '', monotonic()
+        def cancelled():
+            return not self._valid(self.store.get(run_id), task_id, token)
+        def publish():
+            nonlocal buffer, flushed
+            if buffer:
+                if self.moderation:
+                    self.moderation.check(content, stage='output', session_id=run['session_id'], turn_id=task_id)
+                if not self.store.stream_text(run_id, task_id, token, buffer):
+                    raise HarnessError('EXECUTION_EXPIRED')
+                buffer, flushed = '', monotonic()
+        for chunk in client.stream_complete(messages, cancel_check=cancelled, request_purpose='harness_main_final',
+                                            max_tokens=run['policy']['settings'].get('max_output_tokens', 8192)):
+            if chunk.content_delta:
+                content += chunk.content_delta
+                buffer += chunk.content_delta
+                if monotonic() - flushed >= .1:
+                    publish()
+        publish()
+        return AssistantTurnResult(final_text=content)
+
     def execute(self, run_id, task_id, token):
         finished = threading.Event()
         heartbeat = threading.Thread(target=self._heartbeat, args=(run_id, task_id, token, finished), daemon=True)
         heartbeat.start()
         response = None
+        metrics = {}
+        client = None
         try:
             run = self.store.get(run_id)
             if not self._valid(run, task_id, token):
@@ -276,7 +400,7 @@ class HarnessRuntime:
             if phase:
                 self._execute_orchestration(run_id, task_id, token, run, task, phase)
                 return
-            specs = self.specs(run, task)
+            specs = [] if task.get("finalizing") else self.specs(run, task)
             facts = self.facts(run, task)
             if cp.enabled(run) and self._prepare_context_v2(run_id, task_id, token, run, task, facts, specs):
                 return
@@ -305,8 +429,16 @@ class HarnessRuntime:
             if not self.store.mutate(run_id, before):
                 return
             client = self.client_factory(run)
-            response = client.complete_with_tools(messages, specs, request_purpose=f"harness_{task['kind']}",
-                                                  max_tokens=run["policy"]["settings"].get("max_output_tokens", 8192))
+            if task.get('finalizing'):
+                response = self._stream_final(client, run, task, token, messages)
+            else:
+                request_options = {
+                    "request_purpose": f"harness_{task['kind']}",
+                    "max_tokens": run["policy"]["settings"].get("max_output_tokens", 8192),
+                }
+                if "cancel_check" in inspect.signature(client.complete_with_tools).parameters:
+                    request_options["cancel_check"] = lambda: not self._valid(self.store.get(run_id), task_id, token)
+                response = client.complete_with_tools(messages, specs, **request_options)
             metrics = client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {}
             if not response.tool_calls and not response.final_text.strip():
                 raise HarnessError("EMPTY_MODEL_REPLY")
@@ -357,6 +489,14 @@ class HarnessRuntime:
                         changes.append({"event": "tool_created", "node_id": node_id})
                     live["status"] = "queued"
                 else:
+                    if current.get('wire_protocol') == 'hailiang.sse.v3' and live['kind'] == 'main' and not live.get('finalizing'):
+                        if live.get('finalize_retry'):
+                            raise HarnessError('FINALIZE_RESPONSE_REQUIRED')
+                        live['finalize_retry'] = True
+                        live['messages'].append({'role': 'user', 'content': '最终回答必须先单独调用 finalize_response；需要信息则调用 request_user_input。'})
+                        live['status'] = 'queued'
+                        changes.append({'event': 'finalize_retry', 'node_id': task_id})
+                        return
                     if current.get("execution_contract_version") == "v1" and live["kind"] != "main":
                         # Legacy text results remain readable, but new executions
                         # must declare their outcome instead of silently treating
@@ -405,10 +545,20 @@ class HarnessRuntime:
                         live["structured_result"] = cp.TaskResult(status="completed", conclusion=response.final_text).model_dump()
                     if live["kind"] == "main":
                         current.update(status="completed", result=response.final_text)
+                        if not current.get("jump_cards"):
+                            current["jump_cards"] = self._recommend_cards(current, response.final_text)
                     changes.append({"event": "task_completed", "node_id": task_id})
                 self._settle(current, changes, db)
             self.store.mutate(run_id, after)
         except Exception as exc:
+            if client is not None and callable(getattr(client, 'last_request_metrics', None)):
+                metrics = client.last_request_metrics() or {}
+                def account(current, changes, _db):
+                    trace = next((t for t in current['tasks'][task_id]['trace'] if t.get('execution_id') == token), None)
+                    if trace and not trace.get('usage_reconciled'):
+                        self._record_model_usage(current, trace, metrics)
+                        changes.append({'event': 'usage_recorded', 'node_id': task_id})
+                self.store.mutate(run_id, account)
             log.warning("harness execution failed (%s): %s", task_id, type(exc).__name__)
             self._fail(run_id, task_id, token, getattr(exc, "code", type(exc).__name__), response)
         finally:
@@ -866,7 +1016,10 @@ class HarnessRuntime:
                     result = self.tool_executor(external["run"], external["task"], external["tool"]) if self.tool_executor else {"error": "TOOL_UNAVAILABLE"}
                     error = result.get("error") if isinstance(result, dict) else None
                 except Exception as exc:
-                    result, error = {"error": type(exc).__name__}, type(exc).__name__
+                    error = getattr(exc, "code", type(exc).__name__)
+                    result = {"error": error}
+                    if error == "ASSET_SOURCE_NOT_FOUND":
+                        result["next_action"] = "调用 read_skill_asset 时省略 source，先获取授权资料目录；使用目录返回的 source，不猜测路径。"
                 def finish(run, changes, _db):
                     if not self._valid(run, task_id, token):
                         return
@@ -989,14 +1142,32 @@ class HarnessRuntime:
         elif name == "read_evidence" and cp.enabled(run):
             self._tool_result(tool, cp.read_evidence(run, task, args))
             changes.append({"event": "tool_completed", "node_id": tool["id"]})
+        elif name == 'finalize_response' and run.get('wire_protocol') == 'hailiang.sse.v3':
+            if task['kind'] != 'main' or len(task['pending_calls']) != 1 or any(t['id'] != task['id'] and t['status'] not in TERMINAL for t in run['tasks'].values()):
+                raise HarnessError('RESULT_DEPENDENCIES_UNRESOLVED')
+            if any(t['parent_id'] == task['id'] and t['status'] in {'failed', 'cancelled'} for t in run['tasks'].values()):
+                raise HarnessError('REQUIRED_TASK_FAILED')
+            task['finalizing'] = True
+            self._tool_result(tool, {'accepted': True})
+            changes.append({'event': 'finalizing', 'node_id': task['id']})
         elif name == "submit_result" and cp.enabled(run):
             if task["kind"] == "main" or len(task["pending_calls"]) != 1 or any(t["parent_id"] == task["id"] and t["status"] not in TERMINAL for t in run["tasks"].values()):
                 raise HarnessError("RESULT_DEPENDENCIES_UNRESOLVED")
             result = cp.TaskResult.model_validate(args).model_dump()
-            if result["status"] == "completed" and (result["unresolved"] or any(
-                t["parent_id"] == task["id"] and (t["status"] != "completed" or t.get("structured_result", {}).get("status") == "partial")
-                for t in run["tasks"].values())):
-                raise HarnessError("RESULT_COMPLETION_NOT_SATISFIED")
+            blockers = [t for t in run["tasks"].values() if t["parent_id"] == task["id"] and
+                        (t["status"] != "completed" or t.get("structured_result", {}).get("status") in {"partial", "failed"})]
+            if result["status"] == "completed" and (result["unresolved"] or blockers):
+                self._tool_result(tool, {
+                    "error": "RESULT_COMPLETION_NOT_SATISFIED",
+                    "unresolved": result["unresolved"],
+                    "blocking_tasks": [{"task_id": t["id"], "status": t["status"],
+                        "result_status": t.get("structured_result", {}).get("status"),
+                        "unresolved": t.get("structured_result", {}).get("unresolved", []),
+                        "limitations": t.get("structured_result", {}).get("limitations", [])} for t in blockers],
+                    "next_action": "先检查已有事实及问答状态。当前目标确需且用户可补充的信息，调用 request_user_input 生成表单，回答后继续；已跳过的信息不要重复追问。用户跳过或仅能完成部分时，用 submit_result(status=partial) 保留结论、限制和未解决事项。只影响未请求的后续建议的信息记为 limitations，不必追问。子任务 partial 时保留其限制并提交 partial。工具或模型故障不是用户缺信息，不得虚构追问。"
+                }, "failed")
+                changes.append({"event": "tool_failed", "node_id": tool["id"]})
+                return True
             for ref in result["evidence_refs"]:
                 cp.authorize_evidence(run, task, ref)
             task["pending_result"] = result
@@ -1029,12 +1200,140 @@ class HarnessRuntime:
                 # Observations and derived artifacts cannot overwrite a user-confirmed
                 # value. Their identities are separate from the canonical fact key.
                 identity = self.store.fact_identity(run, task, update["scope"], f"{update['status']}:{update['key']}:{tool['id']}")
-                results.append(self.store.write_fact(db, identity, {**update, "source": {"tool_call_id": tool["call_id"], "task_id": task["id"]}, "dependencies": task["fact_versions"]}))
+                results.append(self.store.write_fact(db, identity, {**update, "source": {
+                    "run_id": run["run_id"], "tool_call_id": tool["call_id"], "task_id": task["id"]
+                }, "dependencies": task["fact_versions"]}))
             self._tool_result(tool, results)
             changes.append({"event": "facts_updated", "node_id": task["id"]})
         else:
             return False
         return True
+
+    @staticmethod
+    def _question_identity(run, task, field):
+        """Stable cross-expert identity; task-only facts remain task-local."""
+        key = cp.question_key(field) if cp.enabled(run) else field.get("fact_key") or field["key"]
+        scope = field["scope"]
+        subject, applicable_time = field.get("subject", ""), field.get("applicable_time", "")
+        if scope == "task" and not (subject or applicable_time):
+            owner = task["id"]
+        else:
+            owner = {"session": run["session_id"], "profile": run["profile_id"], "user": run["user_id"]}.get(scope)
+            # Qualified task facts describe an external subject, not the task that
+            # happened to ask first; use the profile/session boundary instead.
+            if owner is None:
+                owner = run["profile_id"] or run["session_id"]
+        return json.dumps({"user": run["user_id"], "scope": scope, "owner": owner,
+                           "key": key, "subject": subject, "applicable_time": applicable_time},
+                          ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _compatible_question_fields(left, right):
+        if left["input_type"] != right["input_type"]:
+            return False
+        if left.get("min") != right.get("min") or left.get("max") != right.get("max"):
+            return False
+        if left["input_type"] in {"single_select", "multi_select"}:
+            return {item["value"] for item in left.get("options", [])} == {item["value"] for item in right.get("options", [])}
+        return True
+
+    @staticmethod
+    def _groups(run):
+        groups = run.setdefault("input_groups", {})
+        # Checkpoints created before grouped input scheduling remain resumable.
+        if not groups and run.get("inputs"):
+            open_requests = sorted((item for item in run["inputs"].values() if item.get("status") in {"pending", "queued"}),
+                                   key=lambda item: (item.get("created_at", ""), item["id"]))
+            if open_requests:
+                first = next((item for item in open_requests if item.get("status") == "pending"), open_requests[0])
+                active = {"id": identifier("input_group"), "status": "active", "created_at": first.get("created_at") or now(),
+                          "request_ids": [first["id"]], "active_request_id": first["id"], "completed_request_ids": []}
+                groups[active["id"]] = active
+                first.update(status="pending", group_id=active["id"], group_position=1)
+                remaining = [item for item in open_requests if item["id"] != first["id"]]
+                if remaining:
+                    queued = {"id": identifier("input_group"), "status": "queued", "created_at": remaining[0].get("created_at") or now(),
+                              "request_ids": [item["id"] for item in remaining], "active_request_id": None, "completed_request_ids": []}
+                    groups[queued["id"]] = queued
+                    for position, item in enumerate(remaining, 1):
+                        item.update(status="queued", group_id=queued["id"], group_position=position)
+        return groups
+
+    def _place_input_in_group(self, run, request):
+        """First question is active; later questions join the next frozen batch."""
+        groups = self._groups(run)
+        active = next((group for group in groups.values() if group["status"] == "active"), None)
+        if active is None:
+            group = {"id": identifier("input_group"), "status": "active", "created_at": now(),
+                     "request_ids": [request["id"]], "active_request_id": request["id"],
+                     "completed_request_ids": []}
+            groups[group["id"]] = group
+            request.update(status="pending", group_id=group["id"], group_position=1)
+            return group
+        group = next((item for item in groups.values() if item["status"] == "queued"), None)
+        if group is None:
+            group = {"id": identifier("input_group"), "status": "queued", "created_at": now(),
+                     "request_ids": [], "active_request_id": None, "completed_request_ids": []}
+            groups[group["id"]] = group
+        group["request_ids"].append(request["id"])
+        request.update(status="queued", group_id=group["id"], group_position=len(group["request_ids"]))
+        return group
+
+    @staticmethod
+    def _advance_input_groups(run, changes):
+        groups = HarnessRuntime._groups(run)
+        if run["status"] in TERMINAL:
+            return
+        active = next((group for group in groups.values() if group["status"] == "active"), None)
+        if active:
+            terminal = {"answered", "skipped", "expired"}
+            completed = [rid for rid in active["request_ids"] if run["inputs"].get(rid, {}).get("status") in terminal]
+            active["completed_request_ids"] = completed
+            waiting = next((rid for rid in active["request_ids"] if rid not in completed), None)
+            if waiting:
+                active["active_request_id"] = waiting
+                request = run["inputs"][waiting]
+                if request["status"] != "pending":
+                    request.update(status="pending", version=request["version"] + 1)
+                    changes.append({"event": "input_requested", "node_id": request["owner_task_id"]})
+                return
+            active.update(status="completed", active_request_id=None)
+            changes.append({"event": "input_group_completed", "node_id": run["root_task_id"]})
+        queued = sorted((group for group in groups.values() if group["status"] == "queued"), key=lambda item: (item["created_at"], item["id"]))
+        if queued:
+            group = queued[0]
+            group["status"] = "active"
+            group["active_request_id"] = group["request_ids"][0]
+            request = run["inputs"][group["active_request_id"]]
+            request.update(status="pending", version=request["version"] + 1)
+            changes.append({"event": "input_group_activated", "node_id": request["owner_task_id"]})
+
+    @staticmethod
+    def _binding_answer(request, binding, answer):
+        """Translate a shared card answer back to the consumer's field names."""
+        field_map = binding.get("field_map", {})
+        local = {**answer, "answers": {**request.get("existing_answers", {}), **{
+            field_map.get(key, key): value for key, value in answer.get("answers", {}).items()
+        }}}
+        local["skipped_fields"] = list(dict.fromkeys(
+            request.get("existing_skipped_fields", []) + [field_map.get(key, key) for key in answer.get("skipped_fields", [])]
+        ))
+        local["skipped"] = not bool(local["answers"])
+        return local
+
+    def _complete_input_bindings(self, run, request, answer, changes, written_facts=None):
+        """Resolve every tool bound to a single logical question exactly once."""
+        for binding in request["bindings"]:
+            tool = run["tools"][binding["tool_id"]]
+            if tool["status"] in TOOL_TERMINAL or run["tasks"][binding["task_id"]]["status"] in {"failed", "cancelled"}:
+                continue
+            consumer = run["tasks"][binding["task_id"]]
+            if cp.enabled(run) and written_facts:
+                consumer["read_fact_keys"] = sorted(set(consumer.get("read_fact_keys", []) + [r["key"] for r in written_facts.values()]))
+                consumer["fact_versions"].update({identity: r["version"] for identity, r in written_facts.items()})
+            local = self._binding_answer(request, binding, answer)
+            self._tool_result(tool, local, "skipped" if local["skipped"] else "completed")
+            changes.append({"event": "input_answered", "node_id": binding["task_id"]})
 
     def _request(self, run, task, tool, changes, db):
         args = InputArguments.model_validate(tool["arguments"])
@@ -1046,10 +1345,12 @@ class HarnessRuntime:
         facts = self.facts(run, task, db)
         answers = {}
         identities = []
+        question_identities = []
         for field in fields:
             key = cp.question_key(field) if cp.enabled(run) else field.get("fact_key") or field["key"]
             identity = self.store.fact_identity(run, task, field["scope"], key)
             identities.append(identity)
+            question_identities.append(self._question_identity(run, task, field))
             record = facts.get(identity)
             if record is None and cp.enabled(run) and field["scope"] == "task" and not field.get("subject") and not field.get("applicable_time"):
                 # Canonical identity fields may be reused from the current
@@ -1077,7 +1378,9 @@ class HarnessRuntime:
             for field in fields:
                 if field["key"] in answers:
                     try:
-                        validate_answers([field], AnswerSubmission(user_id=run["user_id"], submission_id="reuse", expected_version=1, answers={field["key"]: answers[field["key"]]}))
+                        validated = validate_answers([field], AnswerSubmission(user_id=run["user_id"], submission_id="reuse", expected_version=1, answers={field["key"]: answers[field["key"]]}))
+                        if field["key"] not in validated["answers"]:
+                            answers.pop(field["key"])
                     except HarnessError:
                         answers.pop(field["key"])
         if len(set(identities)) != len(identities):
@@ -1090,44 +1393,87 @@ class HarnessRuntime:
             tool["existing_answers"] = answers
             remaining = [(field, identity) for field, identity in zip(fields, identities) if field["key"] not in answers]
             fields, identities = map(list, zip(*remaining))
+            question_identities = [self._question_identity(run, task, field) for field in fields]
         ancestors = {task["id"]}
         parent = task.get("parent_id")
         while parent:
             ancestors.add(parent)
             parent = run["tasks"][parent].get("parent_id")
+        skipped_identities = set()
         for previous in run["inputs"].values():
-            if previous["status"] != "skipped" or args.clarification_reason or (not cp.enabled(run) and not any(b["task_id"] in ancestors for b in previous["bindings"])):
+            if previous["status"] not in {"skipped", "answered"} or args.clarification_reason or (not cp.enabled(run) and not any(b["task_id"] in ancestors for b in previous["bindings"])):
                 continue
-            same_fields = set(identities) <= set(previous["identities"]) if cp.enabled(run) else {f.get("fact_key") or f["key"] for f in fields} <= {f.get("fact_key") or f["key"] for f in previous["fields"]}
-            if same_fields:
-                self._tool_result(tool, {"skipped": True, "answers": answers, "source_request_id": previous["id"]}, "skipped")
+            skipped_keys = previous.get("answer", {}).get("skipped_fields", [f["key"] for f in previous["fields"]] if previous["status"] == "skipped" else [])
+            skipped_identities.update(identity for field, identity in zip(previous["fields"], previous["identities"]) if field["key"] in skipped_keys)
+        skipped_fields = [f["key"] for f, identity in zip(fields, identities) if identity in skipped_identities]
+        if skipped_fields:
+            tool["existing_skipped_fields"] = skipped_fields
+            remaining = [(f, identity) for f, identity in zip(fields, identities) if identity not in skipped_identities]
+            if not remaining:
+                self._tool_result(tool, {"skipped": not bool(answers), "answers": answers, "skipped_fields": skipped_fields,
+                                         "source": "question_ledger"}, "completed" if answers else "skipped")
                 changes.append({"event": "tool_completed", "node_id": tool["id"]})
                 return
+            fields, identities = map(list, zip(*remaining))
+            question_identities = [self._question_identity(run, task, field) for field in fields]
         signature = json.dumps({"fields": sorted([{ "identity": identity, **{k: v for k, v in field.items() if k not in {"key", "label", "fact_key", "scope"}}} for field, identity in zip(fields, identities)], key=lambda f: f["identity"]), "reason": args.clarification_reason}, ensure_ascii=False, sort_keys=True)
         for request in run["inputs"].values():
             if request["signature"] == signature and request["status"] == "skipped":
                 self._tool_result(tool, request["answer"], "skipped")
                 changes.append({"event": "tool_completed", "node_id": tool["id"]})
                 return
-            if request["signature"] == signature and request["status"] in {"pending", "queued"}:
+            same_questions = (request.get("question_identities", request.get("identities", [])) == question_identities
+                              and len(request["fields"]) == len(fields)
+                              and all(self._compatible_question_fields(a, b) for a, b in zip(request["fields"], fields)))
+            if (request["signature"] == signature or same_questions) and request["status"] in {"pending", "queued"}:
                 local_keys = {identity: field["key"] for field, identity in zip(fields, identities)}
                 field_map = {field["key"]: local_keys[identity] for field, identity in zip(request["fields"], request["identities"])}
                 request["bindings"].append({"task_id": task["id"], "tool_id": tool["id"], "field_map": field_map})
                 tool.update(status="waiting_for_user", input_request_id=request["id"])
                 changes.append({"event": "input_requested" if request["status"] == "pending" else "input_queued", "node_id": task["id"]})
                 return
+        # A form may overlap a card already waiting for the user without being
+        # identical to it. Keep only its genuinely new fields visible; when the
+        # shared card is answered/ignored its value is injected into this tool.
+        shared_dependencies = []
+        remaining = []
+        for field, identity, question_identity in zip(fields, identities, question_identities):
+            match = next((previous for previous in run["inputs"].values()
+                          if previous["status"] in {"pending", "queued"}
+                          for prior_field, prior_identity in zip(previous["fields"], previous.get("question_identities", previous.get("identities", [])))
+                          if prior_identity == question_identity and self._compatible_question_fields(prior_field, field)), None)
+            if match is None:
+                remaining.append((field, identity, question_identity))
+                continue
+            source_key = next(prior_field["key"] for prior_field, prior_identity in zip(match["fields"], match.get("question_identities", match.get("identities", [])))
+                              if prior_identity == question_identity and self._compatible_question_fields(prior_field, field))
+            shared_dependencies.append({"request_id": match["id"], "source_field_key": source_key, "target_field_key": field["key"]})
+        if shared_dependencies:
+            if not remaining:
+                # The exact-card path above normally handles this. Keep this
+                # fallback for old checkpoint cards whose legacy signatures did
+                # not compare equal.
+                source = run["inputs"][shared_dependencies[0]["request_id"]]
+                source["bindings"].append({"task_id": task["id"], "tool_id": tool["id"], "field_map": {
+                    item["source_field_key"]: item["target_field_key"] for item in shared_dependencies}})
+                tool.update(status="waiting_for_user", input_request_id=source["id"])
+                changes.append({"event": "input_requested" if source["status"] == "pending" else "input_queued", "node_id": task["id"]})
+                return
+            fields, identities, question_identities = map(list, zip(*remaining))
         owner = task
         while owner["kind"] == "skill":
             owner = run["tasks"][owner["parent_id"]]
         round_no = 1 + sum(q.get("owner_task_id", q["bindings"][0]["task_id"]) == owner["id"] for q in run["inputs"].values())
-        request_status = "queued" if any(q["status"] == "pending" for q in run["inputs"].values()) else "pending"
-        request = {"id": identifier("input"), "title": args.title, "fields": fields, "status": request_status, "version": 1,
+        request = {"id": identifier("input"), "title": args.title, "fields": fields, "status": "queued", "version": 1,
                    "round": round_no, "signature": signature, "identities": identities, "created_at": now(),
+                   "question_identities": question_identities,
                    "owner_task_id": owner["id"], "actor": run["policy"]["experts"].get(owner.get("expert_id"), {}).get("name", "主 agent"),
-                   "bindings": [{"task_id": task["id"], "tool_id": tool["id"]}], "clarification_reason": args.clarification_reason}
+                   "bindings": [{"task_id": task["id"], "tool_id": tool["id"]}], "clarification_reason": args.clarification_reason,
+                   "shared_dependencies": shared_dependencies}
+        self._place_input_in_group(run, request)
         run["inputs"][request["id"]] = request
         tool.update(status="waiting_for_user", input_request_id=request["id"])
-        changes.append({"event": "input_requested" if request_status == "pending" else "input_queued", "node_id": task["id"]})
+        changes.append({"event": "input_requested" if request["status"] == "pending" else "input_queued", "node_id": task["id"]})
 
     def answer(self, request_id, submission):
         run_id = self.store.request_run(request_id)
@@ -1142,33 +1488,36 @@ class HarnessRuntime:
             if run["status"] in TERMINAL or request["status"] != "pending" or request["version"] != submission.expected_version:
                 raise HarnessError("INPUT_REQUEST_INACTIVE", 409)
             answer = validate_answers(request["fields"], submission)
-            request.update(status="skipped" if submission.skipped else "answered", answer=answer, submission_id=submission.submission_id,
+            request.update(status="skipped" if answer["skipped"] else "answered", answer=answer, submission_id=submission.submission_id,
                            submission=submission.model_dump(), version=request["version"] + 1)
-            self._promote_input_request(run, changes)
             task = run["tasks"][request["bindings"][0]["task_id"]]
             written_facts = {}
-            for field in sorted(request["fields"], key=lambda f: request["identities"][request["fields"].index(f)]):
+            for index, field in sorted(enumerate(request["fields"]), key=lambda item: request["identities"][item[0]]):
                 if field["key"] not in answer["answers"]:
                     continue
                 key = cp.question_key(field) if cp.enabled(run) else field.get("fact_key") or field["key"]
-                identity = self.store.fact_identity(run, task, field["scope"], key)
+                identity = request["identities"][index]
                 record = self.store.write_fact(db, identity, {"key": key, "scope": field["scope"], "value": answer["answers"][field["key"]],
                     "status": "confirmed", "source": {"input_request_id": request_id, "submission_id": submission.submission_id}})
                 written_facts[identity] = record
                 run["seed_facts"].pop(identity, None)
                 self._invalidate_fact_version(run, identity, record["version"], changes)
-            for binding in request["bindings"]:
-                tool = run["tools"][binding["tool_id"]]
-                if run["tasks"][binding["task_id"]]["status"] in {"failed", "cancelled"}:
+            # Deliver shared fields to forms which still have different fields
+            # outstanding. Their own card remains queued/pending, but it no
+            # longer asks for this value a second time.
+            for target in run["inputs"].values():
+                dependencies = [item for item in target.get("shared_dependencies", []) if item["request_id"] == request_id]
+                if not dependencies or target["status"] not in {"pending", "queued"}:
                     continue
-                if cp.enabled(run):
-                    consumer = run["tasks"][binding["task_id"]]
-                    consumer["read_fact_keys"] = sorted(set(consumer.get("read_fact_keys", []) + [r["key"] for r in written_facts.values()]))
-                    consumer["fact_versions"].update({identity: r["version"] for identity, r in written_facts.items()})
-                field_map = binding.get("field_map", {})
-                local = {**answer, "answers": {**tool.get("existing_answers", {}), **{field_map.get(key, key): value for key, value in answer["answers"].items()}}}
-                self._tool_result(tool, local, "skipped" if submission.skipped else "completed")
-                changes.append({"event": "input_answered", "node_id": binding["task_id"]})
+                for dependency in dependencies:
+                    source_key, target_key = dependency["source_field_key"], dependency["target_field_key"]
+                    if source_key in answer["answers"]:
+                        target.setdefault("existing_answers", {})[target_key] = answer["answers"][source_key]
+                    elif source_key in answer.get("skipped_fields", []):
+                        target.setdefault("existing_skipped_fields", []).append(target_key)
+                target["existing_skipped_fields"] = list(dict.fromkeys(target.get("existing_skipped_fields", [])))
+            self._complete_input_bindings(run, request, answer, changes, written_facts)
+            self._advance_input_groups(run, changes)
             self._settle(run, changes, db)
             return {"request_id": request_id, "status": request["status"], "run_id": run_id}
         return self.store.mutate(run_id, apply)
@@ -1279,6 +1628,8 @@ class HarnessRuntime:
                     task["trace"][-1]["error"] = error
                     if response is not None:
                         task["trace"][-1]["output"] = asdict(response)
+                if error == 'ModerationBlockedError':
+                    run['output_blocked'] = True
                 task.update(status="failed", error=error, ended_at=now())
                 if task["kind"] == "main":
                     run.update(status="failed", error=error)
@@ -1305,16 +1656,12 @@ class HarnessRuntime:
         for request in run["inputs"].values():
             if request["status"] in {"pending", "queued"} and all(b["task_id"] in closed or run["tasks"][b["task_id"]]["status"] in TERMINAL for b in request["bindings"]):
                 request.update(status="expired", version=request["version"] + 1)
-        self._promote_input_request(run, changes)
+        self._advance_input_groups(run, changes)
 
     @staticmethod
     def _promote_input_request(run, changes):
-        if run["status"] in TERMINAL or any(q["status"] == "pending" for q in run["inputs"].values()):
-            return
-        next_request = next((q for q in run["inputs"].values() if q["status"] == "queued"), None)
-        if next_request is not None:
-            next_request["status"] = "pending"
-            changes.append({"event": "input_requested", "node_id": next_request["owner_task_id"]})
+        # Compatibility entry point for old recovery paths.
+        return HarnessRuntime._advance_input_groups(run, changes)
 
     def cancel(self, run_id):
         def apply(run, changes, _db):
@@ -1325,7 +1672,8 @@ class HarnessRuntime:
             changes.append({"event": "run_cancelled", "node_id": run["root_task_id"]})
         self.store.mutate(run_id, apply)
 
-    def public(self, run):
+    @staticmethod
+    def public(run):
         labels = {
             "delegate_tasks": "分派专家任务",
             "platform_gate": "身份学段检查",
@@ -1346,15 +1694,20 @@ class HarnessRuntime:
         for task in run["tasks"].values():
             actor = "主 agent" if task["kind"] == "main" else run["policy"]["experts"].get(task.get("expert_id"), {}).get("name", "主 agent")
             title = run["policy"]["skills"][task["skill_id"]]["name"] if task["kind"] == "skill" else task["goal"]
+            expert_id = str(task.get("expert_id") or "").strip() or None
             nodes.append({
                 "id": task["id"], "parent_id": task["parent_id"], "kind": task["kind"], "title": title, "actor": actor,
+                "expert_id": expert_id,
                 "status": task["status"], "created_at": task.get("created_at"), "started_at": task["started_at"],
                 "ended_at": task["ended_at"], "error": task.get("error"), "stale": task.get("stale", False),
             })
+        tasks_by_id = run["tasks"]
         for tool in run["tools"].values():
             error = tool.get("error") or (tool.get("result", {}).get("error") if isinstance(tool.get("result"), dict) else None)
+            parent = tasks_by_id.get(tool.get("task_id")) or {}
             nodes.append({
                 "id": tool["id"], "parent_id": tool["task_id"], "kind": "tool",
+                "expert_id": str(parent.get("expert_id") or "").strip() or None,
                 "title": labels.get(tool["name"], "执行专项工具"), "status": tool["status"],
                 "created_at": tool.get("created_at"), "started_at": tool["started_at"], "ended_at": tool["ended_at"],
                 "attempts": tool["attempts"], "error": error,
@@ -1362,11 +1715,46 @@ class HarnessRuntime:
         # Tasks were previously appended before all tools, so "分派专家任务" appeared
         # under its expert children. Sort siblings by timeline instead.
         nodes.sort(key=lambda n: (n.get("created_at") or n.get("started_at") or "", n["id"]))
-        requests = [{k: deepcopy(v) for k, v in q.items() if k in {"id", "title", "fields", "status", "version", "round", "answer", "bindings", "clarification_reason", "owner_task_id", "actor"}} for q in run["inputs"].values()]
+        requests = [{k: deepcopy(v) for k, v in q.items() if k in {"id", "title", "fields", "status", "version", "round", "answer", "bindings", "clarification_reason", "owner_task_id", "actor", "group_id", "group_position"}} for q in run["inputs"].values()]
+        groups = []
+        for group in sorted(run.get("input_groups", {}).values(), key=lambda item: (item.get("created_at", ""), item["id"])):
+            request_ids = [rid for rid in group.get("request_ids", []) if rid in run["inputs"]]
+            members = [run["inputs"][rid] for rid in request_ids]
+            groups.append({"id": group["id"], "status": group["status"], "created_at": group["created_at"],
+                           "request_ids": request_ids, "active_request_id": group.get("active_request_id"),
+                           "total_count": len(request_ids), "completed_count": sum(item["status"] in {"answered", "skipped", "expired"} for item in members),
+                           "actors": list(dict.fromkeys(item.get("actor", "主 agent") for item in members))})
         return {"run_id": run["run_id"], "session_id": run["session_id"], "profile_id": run["profile_id"], "goal": run["goal"], "status": run["status"], "version": run["version"], "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
+                "input_groups": groups,
                 "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "result": run.get("result", ""), "error": run.get("error"),
-                "orchestrated": bool(run["policy"].get("orchestrated")), "orchestration": run.get("orchestration"), "jump_cards": run.get("jump_cards", []),
+                "orchestrated": bool(run["policy"].get("orchestrated")), "orchestration": run.get("orchestration"),
+                "round_experts": public_round_experts(run), "jump_cards": public_jump_cards(run),
                 "input_tokens_estimated": run.get("input_tokens_estimated", 0), "input_tokens_actual": run.get("input_tokens_actual") if run.get("input_token_measurements") else None,
                 "input_token_limit": run["policy"]["settings"].get("max_run_input_tokens", 300000),
                 "completed_count": sum(t["status"] == "completed" for t in run["tasks"].values() if t["kind"] != "main"), "task_count": sum(t["kind"] != "main" for t in run["tasks"].values()),
                 "waiting_count": sum(q["status"] in {"pending", "queued"} for q in run["inputs"].values())}
+
+    def _recommend_cards(self, run, reply):
+        """Fill jump_cards from the frozen recommend catalog when the main reply is done.
+
+        Runs that already stored cards, or policies without a catalog, stay unchanged.
+        A recommend failure leaves an empty list and does not fail the reply.
+        """
+        view = (run.get("policy") or {}).get("orchestrator") or {}
+        catalog = view.get("recommend_catalog") or view.get("recommendations")
+        if not catalog:
+            return []
+        try:
+            from hailiang_skills.runtime_bridge.recommendation_extractor import extract_jump_cards
+            client = self.client_factory(run)
+            return extract_jump_cards(
+                client,
+                catalog,
+                recommendation_rules=str(view.get("recommendation_rules") or ""),
+                user_question=str(run.get("goal") or ""),
+                assistant_reply=str(reply or ""),
+                max_cards=1,
+            )
+        except Exception:
+            log.warning("harness recommend step failed", exc_info=True)
+            return []

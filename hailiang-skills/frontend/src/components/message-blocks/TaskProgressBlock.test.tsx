@@ -26,6 +26,23 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("Harness task bubble", () => {
+  it("submits filled fields without requiring the rest, and discards drafts on full skip", async () => {
+    const run = fixture();
+    run.inputs[0].fields.push({ key: "province", label: "省份", input_type: "text", required: true, options: [] });
+    const submit = vi.fn().mockResolvedValue(undefined);
+    render(<TaskProgressBlock run={run} onSubmitAnswer={submit} />);
+    const form = screen.getByRole("form", { name: "A 的问题" });
+    expect(within(form).getByRole("textbox", { name: "省份" })).not.toBeRequired();
+    fireEvent.change(within(form).getByRole("textbox", { name: "年级" }), { target: { value: "高二" } });
+    fireEvent.click(within(form).getByRole("button", { name: "提交并继续" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    expect(submit.mock.calls[0][1]).toEqual({ grade: "高二" });
+    await waitFor(() => expect(within(form).getByRole("button", { name: "全部跳过" })).not.toBeDisabled());
+    fireEvent.click(within(form).getByRole("button", { name: "全部跳过" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+    expect(submit.mock.calls[1][1]).toEqual({});
+    expect(submit.mock.calls[1][2]).toBe(true);
+  });
   it("keeps expert cards accessible when task details are collapsed and submits independently", async () => {
     const submit = vi.fn().mockResolvedValue(undefined);
     render(<TaskProgressBlock run={fixture()} onSubmitAnswer={submit} />);
@@ -33,11 +50,11 @@ describe("Harness task bubble", () => {
     const a = screen.getByRole("form", { name: "A 的问题" });
     const b = screen.getByRole("form", { name: "B 的问题" });
     fireEvent.change(within(a).getByRole("textbox", { name: "年级" }), { target: { value: "高二" } });
-    fireEvent.click(within(a).getByRole("button", { name: "提交回答" }));
+    fireEvent.click(within(a).getByRole("button", { name: "提交并继续" }));
     await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
     expect(submit.mock.calls[0][0].id).toBe("q1");
     expect(submit.mock.calls[0][1]).toEqual({ grade: "高二" });
-    fireEvent.click(within(b).getByRole("button", { name: "不知道／不补充" }));
+    fireEvent.click(within(b).getByRole("button", { name: "全部跳过" }));
     await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
     expect(submit.mock.calls[1][0].id).toBe("q2");
     expect(submit.mock.calls[1][2]).toBe(true);
@@ -48,14 +65,14 @@ describe("Harness task bubble", () => {
     const { unmount } = render(<TaskProgressBlock run={fixture()} onSubmitAnswer={submit} />);
     const a = screen.getByRole("form", { name: "A 的问题" });
     fireEvent.change(within(a).getByRole("textbox"), { target: { value: "高二" } });
-    fireEvent.click(within(a).getByRole("button", { name: "提交回答" }));
+    fireEvent.click(within(a).getByRole("button", { name: "提交并继续" }));
     await screen.findByRole("alert");
     const submission = submit.mock.calls[0][3];
     unmount();
     render(<TaskProgressBlock run={fixture()} onSubmitAnswer={submit} />);
     const restored = screen.getByRole("form", { name: "A 的问题" });
     expect(within(restored).getByRole("textbox")).toHaveValue("高二");
-    fireEvent.click(within(restored).getByRole("button", { name: "提交回答" }));
+    fireEvent.click(within(restored).getByRole("button", { name: "提交并继续" }));
     await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
     expect(submit.mock.calls[1][3]).toBe(submission);
   });

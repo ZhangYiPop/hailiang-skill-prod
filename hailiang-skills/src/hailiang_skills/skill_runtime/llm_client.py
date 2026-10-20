@@ -74,7 +74,9 @@ class OpenAICompatibleChatClient:
         logger: RuntimeLogger | None = None,
         request_purpose: str = "unspecified",
         max_tokens: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> AssistantTurnResult:
+        self._request_metrics.value = {}
         if not messages:
             raise LLMRequestError("模型请求消息不能为空")
 
@@ -86,6 +88,7 @@ class OpenAICompatibleChatClient:
                 logger=logger,
                 request_purpose=request_purpose,
                 max_tokens=max_tokens,
+                cancel_check=cancel_check,
             )
             if logger:
                 logger.log("llm.response.none", raw_body_preview=preview_text(raw_body, limit=800))
@@ -100,6 +103,7 @@ class OpenAICompatibleChatClient:
                     logger=logger,
                     request_purpose=request_purpose,
                     max_tokens=max_tokens,
+                    cancel_check=cancel_check,
                 )
                 if logger:
                     logger.log("llm.response.native", raw_body_preview=preview_text(raw_body, limit=800))
@@ -128,6 +132,7 @@ class OpenAICompatibleChatClient:
             logger=logger,
             request_purpose=request_purpose,
             max_tokens=max_tokens,
+            cancel_check=cancel_check,
         )
         if logger:
             logger.log("llm.response.json_action", raw_body_preview=preview_text(raw_body, limit=800))
@@ -152,6 +157,7 @@ class OpenAICompatibleChatClient:
         logger: RuntimeLogger | None = None,
         request_purpose: str = "unspecified",
         max_tokens: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> str:
         get_llm_rate_limiter().acquire()
         endpoint = f"{self._config.base_url}/chat/completions"
@@ -184,6 +190,8 @@ class OpenAICompatibleChatClient:
                 "Accept": "application/json",
                 "Content-Type": "application/json",
         }
+        if cancel_check and cancel_check():
+            raise LLMRequestError("模型调用已取消")
         try:
             started = perf_counter()
             with span(
@@ -196,9 +204,25 @@ class OpenAICompatibleChatClient:
                     "mode": tool_mode,
                 },
             ):
-                response = self._http.post(endpoint, content=body, headers=headers)
-                response.raise_for_status()
-                raw_response = response.text
+                with self._http.stream("POST", endpoint, content=body, headers=headers) as response:
+                    response.raise_for_status()
+                    watcher_stop = threading.Event()
+                    if cancel_check:
+                        def close_on_cancel() -> None:
+                            while not watcher_stop.wait(0.05):
+                                if cancel_check():
+                                    try:
+                                        response.close()
+                                    except Exception:
+                                        pass
+                                    return
+                        threading.Thread(target=close_on_cancel, daemon=True).start()
+                    try:
+                        raw_response = response.read().decode(response.encoding or "utf-8")
+                    finally:
+                        watcher_stop.set()
+                if cancel_check and cancel_check():
+                    raise LLMRequestError("模型调用已取消")
                 usage = _extract_usage(raw_response)
                 finish_reason = _extract_finish_reason(raw_response)
                 metrics = {
@@ -227,6 +251,8 @@ class OpenAICompatibleChatClient:
             details = _extract_http_error_details(exc.response)
             raise LLMHTTPError(f"模型调用失败: HTTP {exc.response.status_code}: {details}") from exc
         except httpx.HTTPError as exc:
+            if cancel_check and cancel_check():
+                raise LLMRequestError("模型调用已取消") from exc
             raise LLMConnectionError(f"模型调用失败: {exc}") from exc
 
     def stream_complete(
@@ -236,7 +262,9 @@ class OpenAICompatibleChatClient:
         logger: RuntimeLogger | None = None,
         cancel_check: Callable[[], bool] | None = None,
         request_purpose: str = "unspecified",
+        max_tokens: int | None = None,
     ) -> Iterator[ChatStreamChunk]:
+        self._request_metrics.value = {}
         if not messages:
             raise LLMRequestError("模型请求消息不能为空")
 
@@ -245,7 +273,7 @@ class OpenAICompatibleChatClient:
         payload = _build_chat_payload(
             self._config.model,
             self._config.temperature,
-            self._config.max_tokens,
+            max_tokens if max_tokens is not None else self._config.max_tokens,
             messages,
             tool_specs=(),
             tool_mode="none",

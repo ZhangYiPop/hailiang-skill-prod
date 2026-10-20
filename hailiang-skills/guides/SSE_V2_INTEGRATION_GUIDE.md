@@ -1,5 +1,7 @@
 # SSE v2 前端与转发后端联调指南
 
+> Harness 多 agent 新接入请见 [SSE v3 联调协议](SSE_V3_INTEGRATION_GUIDE.md)。本文仅描述旧 SSE v2，不适用于 v3 的任务订阅和独立回答接口。
+
 > 文档状态：当前实现（2026-09-01）
 >
 > 协议名称：`hailiang.sse.v2`

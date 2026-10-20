@@ -319,7 +319,8 @@ export default function Home() {
           <ChatMessageList messages={messages} activeSkill={activeSkill} activeProfileId={activeProfileId} showCitations={!isChatMode} />
         </div>
         <Composer
-          disabled={!sessionId || harnessActive}
+          disabled={!sessionId}
+          selectionDisabled={harnessActive}
           showQuickPrompts={showQuickPrompts}
           onSubmit={handleSendMessage}
           expertCatalog={expertCatalog}

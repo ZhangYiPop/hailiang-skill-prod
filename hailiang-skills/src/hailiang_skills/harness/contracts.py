@@ -120,7 +120,7 @@ def validate_answers(fields: list[dict], submission: AnswerSubmission) -> dict:
     if submission.skipped:
         if submission.answers or submission.text:
             raise HarnessError("SKIP_WITH_ANSWERS")
-        return {"skipped": True, "answers": {}}
+        return {"skipped": True, "answers": {}, "skipped_fields": [f["key"] for f in fields]}
     values = dict(submission.answers)
     if submission.text is not None:
         if len(fields) != 1 or fields[0]["input_type"] != "text" or values:
@@ -131,8 +131,6 @@ def validate_answers(fields: list[dict], submission: AnswerSubmission) -> dict:
     for f in fields:
         value = values.get(f["key"])
         if value is None or value == "" or value == [] or isinstance(value, str) and not value.strip():
-            if f["required"]:
-                raise HarnessError("REQUIRED_ANSWER_MISSING")
             values.pop(f["key"], None)
             continue
         kind = f["input_type"]
@@ -151,4 +149,5 @@ def validate_answers(fields: list[dict], submission: AnswerSubmission) -> dict:
                 raise HarnessError("INVALID_INTEGER")
             if f["min"] is not None and value < f["min"] or f["max"] is not None and value > f["max"]:
                 raise HarnessError("NUMBER_OUT_OF_RANGE")
-    return {"skipped": False, "answers": values}
+    return {"skipped": not bool(values), "answers": values,
+            "skipped_fields": [f["key"] for f in fields if f["key"] not in values]}

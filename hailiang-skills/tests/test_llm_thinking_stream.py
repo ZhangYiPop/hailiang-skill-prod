@@ -7,6 +7,7 @@ import unittest
 import httpx
 
 from hailiang_skills.skill_runtime.llm_client import OpenAICompatibleChatClient
+from hailiang_skills.skill_runtime.errors import LLMRequestError
 from hailiang_skills.skill_runtime.models import ChatMessage, LLMConfig
 
 
@@ -68,6 +69,17 @@ class BlockingStreamResponse(FakeStreamResponse):
     def close(self) -> None:
         super().close()
         self.closed_event.set()
+
+
+class BlockingReadResponse(BlockingStreamResponse):
+    encoding = "utf-8"
+
+    def read(self) -> bytes:
+        self.started.set()
+        self.closed_event.wait(timeout=2)
+        if self.closed:
+            raise httpx.ReadError("response closed by cancellation")
+        return b'{}'
 
 
 def make_client() -> OpenAICompatibleChatClient:
@@ -219,6 +231,34 @@ class RuntimeThinkingStreamTest(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertTrue(response.closed)
         self.assertEqual(result, [])
+
+    def test_cancel_closes_blocked_tool_aware_request(self) -> None:
+        client = make_client()
+        response = BlockingReadResponse()
+        client._http = FakeHttpClient(response)  # type: ignore[assignment]
+        cancelled = threading.Event()
+        errors: list[Exception] = []
+
+        def request() -> None:
+            try:
+                client.complete_with_tools(
+                    [ChatMessage(role="user", content="请分派任务")],
+                    [],
+                    cancel_check=cancelled.is_set,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=request)
+        worker.start()
+        self.assertTrue(response.started.wait(timeout=1))
+        cancelled.set()
+        worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(response.closed)
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], LLMRequestError)
 
 
 if __name__ == "__main__":

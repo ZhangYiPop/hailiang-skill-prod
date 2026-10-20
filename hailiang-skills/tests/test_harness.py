@@ -296,9 +296,57 @@ def test_two_expert_cards_resume_only_the_answered_node(tmp_path):
     assert waiting['tasks'][queued['bindings'][0]['task_id']]['status'] == 'waiting_for_user'
     assert waiting['inputs'][queued['id']]['status'] == 'pending'
     assert waiting['status'] not in {'completed', 'failed'}
-    runtime.answer(queued['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='second-answer', expected_version=1, skipped=True))
+    runtime.answer(queued['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='second-answer', expected_version=waiting['inputs'][queued['id']]['version'], skipped=True))
     advance(runtime, rid, 12)
     assert runtime.store.get(rid)['status'] == 'completed'
+    runtime.close()
+
+
+def test_input_groups_freeze_current_batch_and_promote_next(tmp_path):
+    """The first question is immediately usable; concurrent later questions batch."""
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    rid = runtime.create('s', 'u', 'p', '分析', policy())
+    def request(run, changes, db):
+        root = run['tasks'][run['root_task_id']]
+        for index, key in enumerate(('province', 'subject', 'budget')):
+            tool = {'id': f'q{index}', 'name': 'request_user_input', 'arguments': {
+                'title': key, 'fields': [{'key': key, 'label': key, 'scope': 'profile'}]}}
+            run['tools'][tool['id']] = {**tool, 'task_id': root['id'], 'call_id': tool['id'], 'status': 'running', 'attempts': 1}
+            runtime._request(run, root, run['tools'][tool['id']], changes, db)
+    runtime.store.mutate(rid, request)
+    run = runtime.store.get(rid)
+    groups = sorted(run['input_groups'].values(), key=lambda group: group['created_at'])
+    assert [(g['status'], len(g['request_ids'])) for g in groups] == [('active', 1), ('queued', 2)]
+    first = run['inputs'][groups[0]['active_request_id']]
+    runtime.answer(first['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='first', expected_version=first['version'], text='浙江'))
+    run = runtime.store.get(rid)
+    assert groups[0]['id'] and run['input_groups'][groups[0]['id']]['status'] == 'completed'
+    active = next(group for group in run['input_groups'].values() if group['status'] == 'active')
+    assert len(active['request_ids']) == 2
+    assert run['inputs'][active['active_request_id']]['status'] == 'pending'
+    runtime.close()
+
+
+def test_cross_expert_compatible_question_reuses_one_card_and_answer(tmp_path):
+    def respond(messages, specs, purpose):
+        if purpose == 'harness_main':
+            if not any(m.role == 'tool' for m in messages):
+                return call('delegate_tasks', {'tasks': [{'key': 'a', 'expert_id': 'a', 'goal': '分析 A'}, {'key': 'b', 'expert_id': 'b', 'goal': '分析 B'}]})
+            return AssistantTurnResult(final_text='汇总')
+        if not any(m.role == 'tool' for m in messages):
+            return call('request_user_input', {'title': '补充省份', 'fields': [{'key': 'province', 'label': '省份', 'scope': 'profile'}]})
+        return AssistantTurnResult(final_text='专家结论')
+    runtime = make_runtime(tmp_path, respond)
+    rid = runtime.create('s', 'u', 'p', '共同分析', policy())
+    advance(runtime, rid, 12)
+    run = runtime.store.get(rid)
+    assert len(run['inputs']) == 1
+    request = next(iter(run['inputs'].values()))
+    assert request['status'] == 'pending' and len(request['bindings']) == 2
+    runtime.answer(request['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='province', expected_version=request['version'], text='浙江'))
+    run = runtime.store.get(rid)
+    assert all(run['tools'][binding['tool_id']]['status'] == 'completed' for binding in request['bindings'])
+    assert run['inputs'][request['id']]['answer']['answers'] == {'province': '浙江'}
     runtime.close()
 
 

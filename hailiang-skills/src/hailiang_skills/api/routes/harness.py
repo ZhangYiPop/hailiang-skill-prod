@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import hashlib
+from time import monotonic
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -17,6 +20,7 @@ from hailiang_skills.skills.common import extract_grade
 
 class StartRun(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    submission_id: str | None = Field(default=None, min_length=1, max_length=100)
     goal: str = Field(min_length=1, max_length=120000)
     context_data: ContextData
     debug_session_id: str | None = None
@@ -34,10 +38,16 @@ def harness_enabled():
     return os.getenv("HAILIANG_HARNESS_NEW_SESSIONS", "true").lower() not in {"0", "false", "off"}
 
 
-def build_harness_router(repository, fact_service, orchestrator, runtime, snapshot_resolver=None, debug_snapshot_resolver=None):
+def build_harness_router(repository, fact_service, orchestrator, runtime, snapshot_resolver=None, debug_snapshot_resolver=None, protocol_v3=False):
     router = APIRouter()
 
+    def v3_ready():
+        if protocol_v3 and os.getenv('HAILIANG_SSE_V3', 'false').lower() not in {'true', '1', 'on'}:
+            raise HTTPException(404, 'SSE_V3_DISABLED')
+
+
     def access(session_id, user_id, profile_id=None):
+        v3_ready()
         try:
             context = repository.get(session_id)
         except KeyError:
@@ -57,10 +67,21 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
         except HarnessError as exc:
             raise HTTPException(exc.status, {"code": exc.code, "message": exc.code}) from exc
 
+    @router.get('/sessions/{session_id}/harness/capabilities')
+    def capabilities(session_id: str):
+        enabled = protocol_v3 and os.getenv('HAILIANG_SSE_V3', 'false').lower() in {'true', '1', 'on'}
+        return {'protocols': ['hailiang.sse.v3'] if enabled else [], 'streaming_text': enabled,
+                'replay': enabled, 'partial_answers': True, 'finite_run_stream': enabled,
+                'finite_run_stream_default_seconds': 290 if enabled else None}
+
     @router.get("/sessions/{session_id}/harness")
     def state(session_id: str, user_id: str, profile_id: str | None = None):
         context = access(session_id, user_id, profile_id)
         mode = context.session_meta.get("runtime_mode", "legacy") if context else ("harness_v1" if harness_enabled() else "legacy")
+        if protocol_v3:
+            snapshot = runtime.store.public_snapshot(session_id, user_id, profile_id)
+            snapshot['runtime_mode'] = mode
+            return snapshot
         # Reading cursor first ensures replay can only duplicate, never lose an update.
         cursor = runtime.store.cursor(session_id)
         runs = [runtime.public(run) for run in runtime.store.runs(session_id) if run["profile_id"] == profile_id and run["user_id"] == user_id]
@@ -70,7 +91,21 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
     def start(session_id: str, request: StartRun):
         data = request.context_data
         context = access(session_id, data.user_id, data.profile_id)
-        if runtime.store.active(session_id):
+        submission = None
+        if protocol_v3:
+            if not request.submission_id:
+                raise HTTPException(422, 'SUBMISSION_ID_REQUIRED')
+            from hailiang_skills.harness.protocol_v3 import scope_key
+            # Submission identity includes session+user; profile is in fingerprint.
+            key = scope_key(session_id, data.user_id, request.submission_id)
+            fingerprint = hashlib.sha256(json.dumps(request.model_dump(), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            prior = operation(lambda: runtime.store.submission(key, fingerprint))
+            if prior:
+                saved = runtime.store.get(prior)
+                return {'run_id': prior, 'runtime_mode': 'harness_v1', 'status': saved['status'],
+                        'superseded_run_id': saved.get('supersedes_run_id')}
+            submission = {'key': key, 'fingerprint': fingerprint}
+        if runtime.store.active(session_id) and not protocol_v3:
             raise HTTPException(409, "ACTIVE_HARNESS_RUN_EXISTS")
         if context and context.session_meta.get("runtime_mode", "legacy") != "harness_v1":
             raise HTTPException(409, "LEGACY_SESSION_REQUIRES_LEGACY_API")
@@ -156,12 +191,20 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
         previous = runtime.store.runs(session_id)
         history = []
         for run in sorted(previous, key=lambda r: r["created_at"])[-10:]:
-            if run["profile_id"] == data.profile_id:
+            # A superseded/failed/in-flight run is retained for audit and its
+            # final record, but its drafts and intermediate conclusions must not
+            # become conversational history for the replacement run.
+            eligible = run["status"] == "completed" if protocol_v3 else bool(run.get("result"))
+            if run["profile_id"] == data.profile_id and eligible:
                 history.append({"role": "user", "content": run["goal"]})
                 if run.get("result"):
                     history.append({"role": "assistant", "content": run["result"]})
-        run_id = operation(lambda: runtime.create(session_id, data.user_id, data.profile_id, request.goal, policy, seed, history))
-        return {"run_id": run_id, "runtime_mode": "harness_v1", "status": "running"}
+        run_id = operation(lambda: runtime.create(session_id, data.user_id, data.profile_id, request.goal, policy, seed, history,
+            wire_protocol="hailiang.sse.v3" if protocol_v3 else None, submission=submission,
+            supersede_active=protocol_v3))
+        created_run = runtime.store.get(run_id)
+        return {"run_id": run_id, "runtime_mode": "harness_v1", "status": "running",
+                "superseded_run_id": created_run.get("supersedes_run_id")}
 
     @router.get("/sessions/{session_id}/harness/runs/{run_id}/trace")
     def trace(session_id: str, run_id: str, user_id: str, profile_id: str | None = None):
@@ -184,17 +227,161 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
         run = operation(lambda: runtime.store.get(run_id))
         if run["session_id"] != session_id or run["user_id"] != user_id or run["profile_id"] != profile_id:
             raise HTTPException(403, "HARNESS_ACCESS_DENIED")
+        if protocol_v3:
+            return runtime.store.public_snapshot(session_id, user_id, profile_id)
         return runtime.public(run)
 
+    @router.get("/sessions/{session_id}/harness/runs/{run_id}/record")
+    def get_record(session_id: str, run_id: str, user_id: str, profile_id: str | None = None):
+        access(session_id, user_id, profile_id)
+        if not protocol_v3:
+            raise HTTPException(404, "SSE_V3_RECORD_NOT_AVAILABLE")
+        return operation(lambda: runtime.store.public_record(session_id, user_id, profile_id, run_id))
+
+    @router.get("/sessions/{session_id}/harness/runs/{run_id}/events")
+    async def run_events(session_id: str, run_id: str, request: Request, user_id: str,
+                         profile_id: str | None = None, after: int = 0):
+        """Finite per-run SSE for forwarders with bounded request lifetimes."""
+        access(session_id, user_id, profile_id)
+        if not protocol_v3:
+            raise HTTPException(404, "SSE_V3_RUN_STREAM_NOT_AVAILABLE")
+        run = operation(lambda: runtime.store.get(run_id))
+        if run["session_id"] != session_id or run["user_id"] != user_id or run["profile_id"] != profile_id:
+            raise HTTPException(403, "HARNESS_ACCESS_DENIED")
+        try:
+            cursor = max(after, int(request.headers.get("Last-Event-ID", "0")))
+        except ValueError:
+            raise HTTPException(400, "INVALID_EVENT_CURSOR")
+        try:
+            wait_seconds = float(os.getenv("HAILIANG_SSE_V3_RUN_STREAM_SECONDS", "290"))
+        except ValueError:
+            wait_seconds = 290.0
+        wait_seconds = min(295.0, max(0.1, wait_seconds))
+        initial_snapshot = "after" not in request.query_params and not request.headers.get("Last-Event-ID")
+
+        def filtered_snapshot(snapshot):
+            return {
+                **snapshot,
+                "runs": [item for item in snapshot["runs"] if item["id"] == run_id],
+                "nodes": [item for item in snapshot["nodes"] if item.get("run_id") == run_id],
+                "input_requests": [item for item in snapshot["input_requests"] if item.get("run_id") == run_id],
+                "messages": [item for item in snapshot["messages"] if item.get("run_id") == run_id],
+            }
+
+        def wire_state(snapshot, kind='state', reason='updated', extra=None):
+            """V2-style public frame: every non-ping frame contains a whole snapshot."""
+            filtered = filtered_snapshot(snapshot)
+            public_run = next((item for item in filtered['runs'] if item['id'] == run_id), {})
+            payload = {
+                'protocol': 'hailiang.sse.v3', 'run_id': run_id, 'seq': filtered['cursor'],
+                'session_id': session_id, 'profile_id': profile_id,
+                'status': public_run.get('status', 'running'), 'outcome': public_run.get('outcome'),
+                'reason': reason, 'timestamp': datetime.now(timezone.utc).isoformat(),
+                'snapshot': filtered,
+            }
+            if extra:
+                payload.update(extra)
+            return payload
+
+        def filtered_wire_event(item):
+            # State/done snapshots are persisted with all entities so a replay is
+            # immutable. A run stream exposes only its own public subtree.
+            payload = dict(item)
+            if 'snapshot' in payload:
+                payload['snapshot'] = filtered_snapshot(payload['snapshot'])
+            return payload
+
+        async def finite_stream():
+            nonlocal cursor
+            started = monotonic()
+            public_run = None
+            if initial_snapshot:
+                snapshot = filtered_snapshot(await asyncio.to_thread(
+                    runtime.store.public_snapshot, session_id, user_id, profile_id))
+                cursor = snapshot["cursor"]
+                public_run = next((item for item in snapshot["runs"] if item["id"] == run_id), None)
+                envelope = wire_state(snapshot)
+                yield f"id: {cursor}\nevent: state\ndata: {json.dumps(envelope, ensure_ascii=False)}\n\n"
+                if public_run and public_run["status"] in {"completed", "failed", "cancelled"}:
+                    record = await asyncio.to_thread(runtime.store.public_record, session_id, user_id, profile_id, run_id)
+                    event = wire_state(snapshot, 'done', 'completed', {
+                        'record_version': record['record_version'],
+                        'record_url': f'/api/v3/sessions/{session_id}/harness/runs/{run_id}/record',
+                        'final_message_id': record['assistant_message']['id'],
+                        'final_message_version': record['assistant_message'].get('version', 0),
+                    })
+                    yield f"id: {cursor}\nevent: done\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    return
+                if public_run and public_run["status"] == "waiting_for_user":
+                    pending = [item["id"] for item in snapshot["input_requests"] if item["status"] == "pending"]
+                    event = wire_state(snapshot, 'suspended', 'waiting_for_user', {
+                        'resume_after': cursor, 'pending_request_ids': pending,
+                    })
+                    yield f"id: {cursor}\nevent: suspended\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    return
+            last_heartbeat = monotonic()
+            while not await request.is_disconnected():
+                try:
+                    batch = await asyncio.to_thread(
+                        runtime.store.public_events, session_id, user_id, profile_id, cursor)
+                except HarnessError:
+                    snapshot = filtered_snapshot(await asyncio.to_thread(runtime.store.public_snapshot, session_id, user_id, profile_id))
+                    event = wire_state(snapshot, 'state', 'resync_required')
+                    yield f"id: {event['seq']}\nevent: state\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    return
+                for item in batch:
+                    cursor = item["seq"]
+                    if item.get("run_id") != run_id:
+                        continue
+                    if item['type'] not in {'state', 'done'}:
+                        continue
+                    event = filtered_wire_event(item)
+                    public_run = next((row for row in event['snapshot']['runs'] if row['id'] == run_id), public_run)
+                    yield f"id: {cursor}\nevent: {item['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    if item['type'] == 'done':
+                        return
+                if monotonic() - started >= wait_seconds:
+                    snapshot = filtered_snapshot(await asyncio.to_thread(runtime.store.public_snapshot, session_id, user_id, profile_id))
+                    event = wire_state(snapshot, 'timeout', 'forwarder_wait_limit', {'resume_after': cursor})
+                    yield f"id: {cursor}\nevent: timeout\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    return
+                if not batch:
+                    snapshot = filtered_snapshot(await asyncio.to_thread(
+                        runtime.store.public_snapshot, session_id, user_id, profile_id))
+                    public_run = next((item for item in snapshot["runs"] if item["id"] == run_id), public_run)
+                    if public_run and public_run["status"] == "waiting_for_user":
+                        pending = [item["id"] for item in snapshot["input_requests"] if item["status"] == "pending"]
+                        event = wire_state(snapshot, 'suspended', 'waiting_for_user', {
+                            'resume_after': cursor, 'pending_request_ids': pending,
+                        })
+                        yield f"id: {cursor}\nevent: suspended\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        return
+                    if monotonic() - last_heartbeat >= 15:
+                        yield ": heartbeat\n\n"
+                        last_heartbeat = monotonic()
+                    await asyncio.sleep(.1)
+
+        return StreamingResponse(finite_stream(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+            "X-SSE-Protocol": "hailiang.sse.v3", "X-SSE-Mode": "run",
+        })
+
     @router.post("/sessions/{session_id}/input-requests/{request_id}/answers", status_code=202)
-    def answer(session_id: str, request_id: str, submission: AnswerSubmission):
+    async def answer(session_id: str, request_id: str, submission: AnswerSubmission, request: Request):
+        """Answer a card and, when requested, continue the same turn as SSE."""
         access(session_id, submission.user_id, submission.profile_id)
         run = operation(lambda: runtime.store.get(runtime.store.request_run(request_id)))
         if run["session_id"] != session_id:
             raise HTTPException(403, "HARNESS_ACCESS_DENIED")
         if runtime.moderation and not submission.skipped:
             runtime.moderation.check(json.dumps(submission.answers, ensure_ascii=False) + (submission.text or ""), stage="input", session_id=session_id)
-        return operation(lambda: runtime.answer(request_id, submission))
+        result = operation(lambda: runtime.answer(request_id, submission))
+        # The card submit itself becomes the continuation stream. This keeps
+        # resume cursor handling inside the BFF instead of exposing it to UI.
+        if protocol_v3 and 'text/event-stream' in request.headers.get('accept', ''):
+            resumed = runtime.store.get(run['run_id'])
+            return await run_events(session_id, resumed['run_id'], request, submission.user_id, submission.profile_id, 0)
+        return result
 
     @router.post("/sessions/{session_id}/harness/runs/{run_id}/cancel")
     def cancel(session_id: str, run_id: str, identity: Identity):
@@ -208,6 +395,41 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
     @router.get("/sessions/{session_id}/harness/events")
     async def events(session_id: str, request: Request, user_id: str, profile_id: str | None = None, after: int = 0):
         access(session_id, user_id, profile_id)
+        if protocol_v3:
+            from hailiang_skills.harness.protocol_v3 import PROTOCOL
+            try:
+                cursor = max(after, int(request.headers.get('Last-Event-ID', '0')))
+            except ValueError:
+                raise HTTPException(400, 'INVALID_EVENT_CURSOR')
+            async def v3_stream():
+                nonlocal cursor
+                last_heartbeat = 0.0
+                if 'after' not in request.query_params and not request.headers.get('Last-Event-ID'):
+                    snap = await asyncio.to_thread(runtime.store.public_snapshot, session_id, user_id, profile_id)
+                    cursor = snap['cursor']
+                    event = {'protocol': PROTOCOL, 'seq': cursor, 'session_id': session_id,
+                             'profile_id': profile_id, 'run_id': None, 'status': 'running', 'outcome': None,
+                             'reason': 'updated', 'timestamp': datetime.now(timezone.utc).isoformat(), 'snapshot': snap}
+                    yield f"id: {cursor}\nevent: state\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                while not await request.is_disconnected():
+                    try:
+                        batch = await asyncio.to_thread(runtime.store.public_events, session_id, user_id, profile_id, cursor)
+                    except HarnessError:
+                        yield 'event: resync_required\ndata: ' + json.dumps({'protocol': PROTOCOL, 'type': 'resync_required', 'seq': max(0, cursor), 'event_id': f'resync:{cursor}', 'run_id': None, 'entity_id': None, 'entity_version': 0, 'timestamp': datetime.now(timezone.utc).isoformat(), 'session_id': session_id, 'profile_id': profile_id, 'data': {'reason': 'INVALID_EVENT_CURSOR'}}) + '\n\n'
+                        return
+                    for item in batch:
+                        cursor = item['seq']
+                        # Internal entity events are not part of the V3 public
+                        # compatibility contract. Every exposed frame is a full state.
+                        if item['type'] not in {'state', 'done'}:
+                            continue
+                        yield f"id: {cursor}\nevent: {item['type']}\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
+                    if not batch:
+                        if monotonic() - last_heartbeat >= 15:
+                            yield ': heartbeat\n\n'
+                            last_heartbeat = monotonic()
+                        await asyncio.sleep(.1)
+            return StreamingResponse(v3_stream(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no', 'X-SSE-Protocol': PROTOCOL})
         try:
             after = max(0, after, int(request.headers.get("Last-Event-ID", "0")))
         except ValueError:
