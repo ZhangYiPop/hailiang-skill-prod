@@ -1,47 +1,49 @@
 #!/usr/bin/env bash
-# Isolated 8011/5178 smoke deployment for the current local Harness setup.
-# It layers on the server's existing private 8010 credentials/configuration,
-# then overrides every resource that must not be shared with 8010.
+# Copy this file to env.8011.sh, fill every REPLACE_* value, then chmod 600.
+# env.8011.sh is intentionally ignored and must never be committed.
 #
-# Optional override when the base private file is stored elsewhere:
-#   HAILIANG_8011_BASE_ENV=/secure/env.8010.sh ./deploy-smoke.sh --env ./env.8011.sh ...
-
-BASE_ENV="${HAILIANG_8011_BASE_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env.8010.sh}"
-if [ ! -r "$BASE_ENV" ]; then
-  echo "env.8011.sh requires the existing private base environment: $BASE_ENV" >&2
-  return 2 2>/dev/null || exit 2
-fi
-# shellcheck disable=SC1090
-source "$BASE_ENV"
+# Optional: if a private base environment already contains credentials, source
+# it here, then keep only the 8011-specific overrides below.
+# BASE_ENV="${HAILIANG_8011_BASE_ENV:-REPLACE_PRIVATE_BASE_ENV_PATH}"
+# [ -r "$BASE_ENV" ] && source "$BASE_ENV"
 
 export HAILIANG_DEPLOY_ENV=test
-export HAILIANG_RELEASE_VERSION=4.11.0.1-smoke-8011
-export HAILIANG_BIND_HOST=10.30.6.45
+export HAILIANG_RELEASE_VERSION='REPLACE_RELEASE_VERSION'
+export HAILIANG_BIND_HOST='REPLACE_SERVER_BIND_HOST'
 export BACKEND_PORT=8011
 export WORKBENCH_PORT=8021
-export HAILIANG_FRONTEND_BIND_HOST=10.30.6.45
+export HAILIANG_FRONTEND_BIND_HOST='REPLACE_SERVER_FRONTEND_HOST'
 export FRONTEND_PORT=5178
-export HAILIANG_PUBLIC_API_BASE_URL=http://10.30.6.45:8011
-# deploy-smoke.sh appends the 5178 origin when --with-frontend is used.
+export HAILIANG_PUBLIC_API_BASE_URL='http://REPLACE_SERVER_BIND_HOST:8011'
 export HAILIANG_CORS_ORIGINS=
 
-# Dedicated PostgreSQL database and Redis namespace. The database is created
-# by deploy-smoke.sh when absent; never point this file at the 8010 database.
-export HAILIANG_SMOKE_DATABASE_NAME=hailiang_skills_test_multi_profile_v1_smoke_8011
-export HAILIANG_DATABASE_URL="${HAILIANG_DATABASE_URL%/*}/$HAILIANG_SMOKE_DATABASE_NAME"
-export HAILIANG_REDIS_URL="${HAILIANG_REDIS_URL%/*}/4"
-export HAILIANG_REDIS_KEY_PREFIX='hailiang:smoke:8011:'
+# Use a database and Redis namespace that are not used by any other instance.
+export HAILIANG_SMOKE_DATABASE_NAME='REPLACE_DEDICATED_SMOKE_DATABASE_NAME'
+export HAILIANG_DATABASE_URL='postgresql+psycopg://REPLACE_DB_USER:REPLACE_DB_PASSWORD@REPLACE_DB_HOST:5432/REPLACE_DEDICATED_SMOKE_DATABASE_NAME'
+export HAILIANG_DATABASE_ADMIN_URL='postgresql+psycopg://REPLACE_ADMIN_USER:REPLACE_ADMIN_PASSWORD@REPLACE_DB_HOST:5432/postgres'
+export HAILIANG_STORAGE_BACKEND=postgres
+export HAILIANG_REDIS_URL='redis://REPLACE_REDIS_HOST:6379/REPLACE_REDIS_DB'
+export HAILIANG_REDIS_KEY_PREFIX='REPLACE_REDIS_PREFIX'
+
+# Required security/model/runtime settings. Copy their values from the private
+# environment used by the existing test service; never commit those values.
+export HAILIANG_AUDIT_ENCRYPTION_KEY='REPLACE_AUDIT_ENCRYPTION_KEY'
 export HAILIANG_AUDIT_KEY_ID='smoke-8011'
+export HAILIANG_SECURITY_QUARANTINE_KEY='REPLACE_SECURITY_QUARANTINE_KEY'
+export HAILIANG_SECURITY_ADMIN_TOKEN='REPLACE_SECURITY_ADMIN_TOKEN'
+export DASHSCOPE_API_KEY='REPLACE_DASHSCOPE_API_KEY'
+export AGENT_SKILL_RUNTIME_CORE_PATH='REPLACE_RUNTIME_CORE_PATH'
+export HAILIANG_SMOKE_VENV_DIR='REPLACE_PROJECT_PATH/.venv-smoke-8011'
+export HAILIANG_RUNTIME_DIR='REPLACE_PROJECT_PATH/runtime-smoke-8011'
+export HAILIANG_LOG_DIR='REPLACE_PROJECT_PATH/logs-smoke-8011'
+export HAILIANG_SMOKE_LOG_FILE='REPLACE_PROJECT_PATH/smoke-8011.log'
+export HAILIANG_SMOKE_FRONTEND_LOG_FILE='REPLACE_PROJECT_PATH/smoke-frontend-5178.log'
 
-# Keep runtime artifacts, Python dependencies, and logs separate from 8010.
-export HAILIANG_SMOKE_VENV_DIR='/home/hljy/Project/for_930/hailiang-skill_sensitive_v02121_base/hailiang-skills/.venv-smoke-8011'
-export HAILIANG_RUNTIME_DIR='/home/hljy/Project/for_930/hailiang-skill_sensitive_v02121_base/hailiang-skills/runtime-smoke-8011'
-export HAILIANG_LOG_DIR='/home/hljy/Project/for_930/hailiang-skill_sensitive_v02121_base/hailiang-skills/logs-smoke-8011'
-export HAILIANG_SMOKE_LOG_FILE='/home/hljy/Project/for_930/hailiang-skill_sensitive_v02121_base/hailiang-skills/smoke-8011.log'
-export HAILIANG_SMOKE_FRONTEND_LOG_FILE='/home/hljy/Project/for_930/hailiang-skill_sensitive_v02121_base/hailiang-skills/smoke-frontend-5178.log'
-
-# Mirror the local run.sh Harness configuration used for SSE v3 validation.
+# Match the local run.sh Harness/SSE v3 test behavior.
 export HAILIANG_TEST_LLM_ENABLED=true
+export HAILIANG_TEST_LLM_BASE_URL='REPLACE_TEST_LLM_BASE_URL'
+export HAILIANG_TEST_LLM_API_KEY='REPLACE_TEST_LLM_API_KEY'
+export HAILIANG_TEST_LLM_MODEL='REPLACE_TEST_LLM_MODEL'
 export HAILIANG_TEST_LLM_TIMEOUT_S=120
 export HAILIANG_TEST_LLM_TEMPERATURE=0
 export HAILIANG_TEST_LLM_MAX_TOKENS=8000

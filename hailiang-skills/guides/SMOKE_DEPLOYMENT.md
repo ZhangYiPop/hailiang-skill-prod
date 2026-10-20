@@ -50,20 +50,22 @@ python3.11 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.tok
 
 ### 并行 8011 / 5178 Harness SSE v3 烟测
 
-`env.8011.sh` 在已有私有 `env.8010.sh` 基础上覆盖端口、运行目录、Redis DB/前缀和 PostgreSQL 数据库，避免与 8010 实例共享状态。它同时启用本地 `run.sh` 的 Harness v2 上下文策略和 SSE v3 开关。
+仓库中的 `env-8011.example.sh` 只有变量骨架和 `REPLACE_*` 占位符，不含任何服务器地址、路径、账号或密钥。服务器首次部署时复制为忽略的私有文件，再填写实际值：
+
+```bash
+cp env-8011.example.sh env.8011.sh
+chmod 600 env.8011.sh
+# 编辑 env.8011.sh：填写所有 REPLACE_*，并确保数据库与 Redis 命名空间独立于 8010。
+```
+
+`env.8011.sh` 使用后端 `8011` 与前端 `5178`；它应启用本地 `run.sh` 的 Harness v2 上下文策略和 SSE v3 开关。若已有私有 `env.8010.sh`，可在私有文件中 source 它，再仅覆盖 8011 的端口、数据库、Redis、运行目录和日志目录。
 
 ```bash
 ./deploy-smoke.sh --env ./env.8011.sh --replace-port --with-frontend
-curl --fail http://10.30.6.45:8011/health/ready
-curl --fail -I http://10.30.6.45:5178/
+curl --fail http://REPLACE_SERVER_BIND_HOST:8011/health/ready
+curl --fail -I http://REPLACE_SERVER_FRONTEND_HOST:5178/
 ```
 
-如果服务器上的私有 8010 环境文件不在项目目录，先指定其路径：
-
-```bash
-HAILIANG_8011_BASE_ENV=/secure/env.8010.sh \
-  ./deploy-smoke.sh --env ./env.8011.sh --replace-port --with-frontend
-```
 
 脚本会将浏览器运行时 API 地址写入 `frontend/dist/runtime-config.js`，并自动把前端 Origin 追加到 `HAILIANG_CORS_ORIGINS`。带 `--replace-port` 时，脚本也会向监听 `FRONTEND_PORT` 的既有 `scripts/static_frontend_server.py` 发送 `SIGTERM` 后再启动新前端；若该端口属于其他程序，脚本仍会拒绝停止，避免误杀服务。
 
