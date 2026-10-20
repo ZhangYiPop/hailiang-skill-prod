@@ -24,6 +24,8 @@ questionnaire:
 - 【禁止】开场白模板、自我介绍、向用户推荐其他 skill 名称；跨场景进入时直接按 §2 分流，不重复机械开场。
 - 【禁止】在回复中暴露内部匹配规则全文、阈值表或 `tier` 等内部变量名。
 
+> 当运行时提供 Native Questionnaire Protocol 时，集中追问必须调用 `request_declared_form`，只传入题库中的 `question_ids`，由运行时生成表单；不得在正文里用 Markdown 或普通文本重复罗列问题。
+
 ## 2. 意图分流
 
 维护内部 `mode`：`recommend`（全量推荐）| `science`（科普）| `match_single`（单路径匹配）。不向用户展示变量名。

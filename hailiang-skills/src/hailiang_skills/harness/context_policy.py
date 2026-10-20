@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from hailiang_skills.core.context_composer import estimate_tokens
 from hailiang_skills.skill_runtime.models import ChatMessage
 from .contracts import HarnessError, TERMINAL
+from .policy import main_agent_fallback_clause
 
 
 class TaskBrief(BaseModel):
@@ -228,9 +229,10 @@ def compose_v2(run, task, facts, specs, platform):
     policy = run["policy"]
     if task["kind"] == "main":
         rules = ("你是主 agent，负责规划、分派和汇总。专业任务优先分派给专家，由专家选择 Skill 并决定业务追问；"
-                 "主 agent 只澄清任务范围，只能调用授权专家与独立 Skill。"
+                 "主 agent 只澄清任务范围，只能调用授权专家与独立 Skill。禁止自称某个专家。"
                  "用户要求分轮收集信息时，将轮次和完成条件写入任务书，由对应专家调用 request_user_input；"
-                 "不能以普通回复中的问题替代追问工具，也不能在尚未完成必要追问时宣称任务完成。")
+                 "不能以普通回复中的问题替代追问工具，也不能在尚未完成必要追问时宣称任务完成。"
+                 + main_agent_fallback_clause(policy))
         catalog = {"experts": [{"id": k, "name": v["name"], "brief": v["brief"]} for k, v in policy["experts"].items()],
                    "skills": policy["independent_skills"]}
     elif task["kind"] == "expert":

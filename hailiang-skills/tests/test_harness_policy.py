@@ -43,3 +43,67 @@ def test_candidate_internal_skill_stays_expert_owned_and_model_is_frozen(tmp_pat
     client = HarnessIntegration(orchestrator).client({'policy': frozen})
     assert client._config.model == 'frozen-model'
     assert client._config.api_key == 'current-secret'
+
+
+def _team_orchestrator(monkeypatch):
+    expert = SimpleNamespace(name='专家 A', brief='分析 A', rules_markdown='规则', authorized_skill_ids=[], max_skill_calls=3)
+    experts = SimpleNamespace(definitions={'a': expert}, get=lambda key: expert if key == 'a' else None)
+    member = SimpleNamespace(expert_id='a', mention_name='专家 A', routing_brief='分析 A', applicable_stages=())
+    team = SimpleNamespace(member_expert_ids=('a',), members=(member,), consultation_policy=None, fallback_expert_id='a',
+                           coordinator_expert_id='a', collaboration_rules='')
+    teams = SimpleNamespace(get=lambda key: team if key == 'team' else None)
+    skills = SimpleNamespace(get=lambda _: None)
+    monkeypatch.setattr(policy, 'load_settings', lambda: {'independent_skill_ids': []})
+    return SimpleNamespace(runtime_registry=skills, expert_registry=experts, expert_team_registry=teams,
+                           _configured_bundle=lambda _, bundle: bundle, _soul_context=lambda _: {},
+                           _runtime_client_for_context=lambda _: None)
+
+
+def _formal_context(**meta):
+    snapshot = {'root': {'object_type': 'expert_team', 'object_key': 'team'}, 'entries': [],
+                'orchestration_rules': {'head_rules': '编排首规则', 'tail_rules': '编排尾规则'}}
+    return SessionContext(session_id='s', user_id='u', session_meta={'expert_team_id': 'team', 'configuration_snapshot': snapshot, **meta})
+
+
+def test_formal_session_runs_team_orchestration_with_form_gate(monkeypatch):
+    monkeypatch.delenv('HAILIANG_HARNESS_FORMAL_ORCHESTRATION', raising=False)
+    frozen = policy.capture_policy(_team_orchestrator(monkeypatch), _formal_context())
+    assert frozen['orchestrated'] is True
+    assert frozen['orchestrator']['enabled'] is True
+    assert frozen['identity_gate'] == 'form'
+    assert frozen['direct_expert_id'] == ''
+
+
+def test_formal_session_with_selected_expert_skips_orchestration(monkeypatch):
+    frozen = policy.capture_policy(_team_orchestrator(monkeypatch), _formal_context(expert_id='a'))
+    assert frozen['orchestrated'] is False
+
+
+def test_formal_session_without_published_head_rules_skips_orchestration(monkeypatch):
+    context = _formal_context()
+    context.session_meta['configuration_snapshot']['orchestration_rules'] = {}
+    assert policy.capture_policy(_team_orchestrator(monkeypatch), context)['orchestrated'] is False
+
+
+def test_formal_session_orchestration_switch_can_turn_it_off(monkeypatch):
+    monkeypatch.setenv('HAILIANG_HARNESS_FORMAL_ORCHESTRATION', 'false')
+    assert policy.capture_policy(_team_orchestrator(monkeypatch), _formal_context())['orchestrated'] is False
+
+
+def test_experts_disabled_formal_session_skips_orchestration(monkeypatch):
+    frozen = policy.capture_policy(_team_orchestrator(monkeypatch), _formal_context(harness_experts_disabled=True))
+    assert frozen['orchestrated'] is False
+
+
+def test_debug_team_session_keeps_text_identity_gate(monkeypatch):
+    frozen = policy.capture_policy(_team_orchestrator(monkeypatch), _formal_context(workbench_debug_session_id='debug'))
+    assert frozen['orchestrated'] is True
+    assert frozen['identity_gate'] == 'text'
+
+
+def test_debug_single_expert_session_is_not_orchestrated(monkeypatch):
+    context = _formal_context(workbench_debug_session_id='debug')
+    context.session_meta['configuration_snapshot']['root'] = {'object_type': 'expert', 'object_key': 'a'}
+    frozen = policy.capture_policy(_team_orchestrator(monkeypatch), context)
+    assert frozen['orchestrated'] is False
+    assert frozen['direct_expert_id'] == 'a'

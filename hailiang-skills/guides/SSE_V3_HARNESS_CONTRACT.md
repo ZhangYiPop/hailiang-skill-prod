@@ -64,9 +64,11 @@ data: {
 `snapshot` 至少包含 `runs`、`nodes`、`input_requests`、`input_groups`、`messages` 和 `cursor`。
 
 - `runs[].input_queue`：`active_group_id`、`queued_group_ids`、`active_request_id`、活动组总题数/完成数及旧兼容计数。
+- `runs[].round_experts`：当前轮专家 ID 的 `assigned/running/completed/failed` 列表与汇总状态；同一专家只保留最近任务状态。
+- `runs[].jump_cards`：服务端校验过的推荐卡片，仅含 intent、对象类型、筛选条件、标题、说明和推荐原因；没有推荐时为 `[]`。
 - `input_groups[]`：稳定组 ID、`active | queued | completed`、创建时间、题目 ID、当前题、题数、完成数和专家摘要。
 - `input_requests[]`：单题字段、`request_version`、状态、回答、绑定、专家和所属组。只有 `input_queue.active_request_id` 对应且状态为 `pending` 的卡片可填写。
-- `nodes[]`：主任务、专家、Skill 和工具树。工具完成不等于所属专家完成。
+- `nodes[]`：主任务、专家、Skill 和工具树。专家、Skill 与其工具节点含稳定 `expert_id`；`actor` 仅为展示名称。工具完成不等于所属专家完成。
 - `messages[]`：阶段说明与主 agent 最终正文；前端直接使用 final 消息当前完整 `content`。
 
 公开数据不含专家内部推理、完整提示词、原始工具参数、完整事实库或 trace。

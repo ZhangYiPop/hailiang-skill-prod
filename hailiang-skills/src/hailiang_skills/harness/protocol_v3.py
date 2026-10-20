@@ -183,9 +183,14 @@ def project(db, run):
                           'completed_at': run['updated_at'], 'cancellation_reason': run.get('cancellation_reason'),
                           'superseded_by_run_id': run.get('superseded_by_run_id')},
             'agent_summary': [
-                {k: node.get(k) for k in ('id', 'parent_id', 'kind', 'actor', 'title', 'status', 'outcome')}
+                {k: node.get(k) for k in ('id', 'parent_id', 'kind', 'actor', 'expert_id', 'title', 'status', 'outcome')}
                 for node in payload['nodes'].values() if node.get('run_id') == rid and node.get('kind') in {'main', 'expert', 'skill'}
             ],
+            'round_experts': run_entity.get('round_experts') or {
+                'assigned_expert_ids': [], 'running_expert_ids': [], 'completed_expert_ids': [],
+                'failed_expert_ids': [], 'status': 'idle',
+            },
+            'jump_cards': list(run_entity.get('jump_cards') or []),
             'input_summary': [
                 {'id': item.get('id'), 'actor': item.get('actor'), 'round': item.get('round'),
                  'status': item.get('status'), 'answer': item.get('answer')}

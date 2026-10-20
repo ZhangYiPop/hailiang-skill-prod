@@ -50,12 +50,13 @@ from hailiang_skills.runtime_bridge.native_questionnaire import (
     begin_questionnaire_turn,
     consume_pending_questionnaire_answer,
     decode_questionnaire_reply,
-    deterministic_questionnaire_fallback,
+    declared_form_tool_spec,
     flush_deferred_questionnaire_promotions,
     questionnaire_continuation_context,
     questionnaire_enabled,
     questionnaire_plan_summary,
     questionnaire_reply_is_valid,
+    resolve_declared_form_request,
     resolve_questionnaire_continuation,
     stage_questionnaire_form,
     unwrap_questionnaire_assistant_message,
@@ -931,8 +932,8 @@ class _RuntimePlannerLLM:
             "等待服务端加载或执行后再生成正文；完全不需要依赖和工具时才直接生成完整 assistant_message。\n\n"
             "assistant_message 必须是面向用户的最终正文，不要包含内部规划、JSON 或文件名。\n"
             f"{response_style_instruction()}\n"
-            "如果当前 Skill 启用了 Native Questionnaire Protocol，额外返回 questionnaire_response 对象，"
-            "其内容必须严格遵循该协议；普通回答时 questionnaire_response 返回 null。\n\n"
+            "如果当前 Skill 启用了 Native Questionnaire Protocol，需要提问时调用 request_declared_form，"
+            "question_ids 只能来自题库。questionnaire_response 返回 null，不要把用户可见回复写成 question_ids JSON。\n\n"
             "skill_progress 是内部诊断对象，格式为"
             '{"stage_label":"...","confirmed_facts":{},"resolved_topics":[],"pending_topics":[],"next_action":"..."}。'
             "它不是面向用户的内容：事实键和 topic 名称必须沿用当前 SKILL.md。"
@@ -1933,6 +1934,24 @@ def _questionnaire_decision_table_context(bundle) -> dict[str, Any] | None:
             continue
         if isinstance(payload, dict) and isinstance(payload.get("cases"), list):
             return payload
+    return None
+
+
+def _reply_is_json_object(value: str) -> bool:
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(value or "").strip(), flags=re.I)
+    if not text:
+        return False
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict)
+
+
+def _declared_form_tool_call(turn_result: Any) -> Any | None:
+    for item in getattr(turn_result, "tool_calls", ()) or ():
+        if getattr(item, "name", "") == "request_declared_form":
+            return item
     return None
 
 
@@ -3780,6 +3799,7 @@ class MainPlannerOrchestrator:
         continuation: dict[str, Any],
         *,
         recovery_reason: str = "",
+        transport: str = "json",
     ) -> list[ChatMessage]:
         metadata = bundle.runtime_metadata
         memory = state.conversation_memory if isinstance(state.conversation_memory, dict) else {}
@@ -3844,6 +3864,50 @@ class MainPlannerOrchestrator:
                     "不要为了填满表单而选择条件不适用的问题。"
                 ),
             }
+        if transport == "tool":
+            output_contract = (
+                "从 question_catalog 里选择完成当前目标所必需的问题，调用 request_declared_form。"
+                "不调用该工具就不会展示表单，服务端不会改用其他题目。"
+                "已有明确答案时不要再次复述；不需要表单时直接回答。"
+                "若已有信息足以完成当前 goal，直接写出最终结论，不要再提问。"
+                f"{response_style_instruction()}"
+                "面向用户的说明直接写在正文里，不要输出 JSON 代码块。"
+                "question_ids 只能来自 question_catalog，数量不得超过 max_fields_per_form。"
+                "调用成功后立即停止，不要在正文里重复题目。"
+                "不需要表单时不要调用该工具。题库之外的 id 会被拒绝，不会改成其他题目。"
+                "不得再问“信息是否准确”、不得承诺稍后给结果。"
+            )
+        else:
+            output_contract = (
+                "空 question_ids 仅允许 action=complete 或 action=answer_directly：前者必须给出最终结论，"
+                "后者仅用于本轮确实无需表单的解释或科普。仍处于收集阶段时必须返回至少一个 question_id，"
+                "否则服务端会按当前 Case 回退展示下一批必要字段。"
+                "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题。"
+                "assistant_message 应直接推进当前对话：已有明确答案时不要再次复述或确认，"
+                "除非该答案存在矛盾、时间变化或确有必要消歧；不需要表单时直接回答，不要添加历史事实摘要。"
+                f"{response_style_instruction()}"
+                "不得虚构、改写或直接在正文中提问。表单提交即表示用户确认，若已有信息足以"
+                "完成当前 goal，必须返回 action=complete、question_ids=[] 和可展示的最终结论，"
+                "不得再问“信息是否准确”、不得承诺稍后给结果。"
+                "只返回一个 JSON 对象，字段必须严格按以下顺序："
+                '{"assistant_message":"面向用户的阶段性说明和引导",'
+                '"resolved_answers":[{"question_id":"合法问题ID","value":"答案",'
+                '"source_id":"给定来源ID","evidence":"用户原话或空字符串","confidence":0.95}],'
+                '"state_patch":{"mode":"当前模式","stage":"下一阶段","tier":"已确定档位",'
+                '"flags":{},"context":{},"sub_state":""},'
+                '"questionnaire_plan":{"goal":"当前目标","mode":"模式","target":"可选目标",'
+                '"status":"collecting|completed","completion_action":"可选白名单动作"},'
+                '"action":"ask|complete|answer_directly","question_ids":["合法问题ID"],'
+                '"collection_complete":false}。'
+                "不启用答案对齐或没有可靠答案时 resolved_answers 必须为 []。"
+                "state_patch 只在你能依据 Skill 规则确定状态变化时填写；不能确定的字段不要写。"
+                "question_ids 只能来自 question_catalog，数量不得超过 max_fields_per_form。"
+                "question_ids 不得包含 resolved_answers 中的项目。未答字段并不等于必须收集："
+                "只收集完成当前 goal 的必要字段；action=complete/answer_directly 时可保留未答字段。"
+                "若收到 recovery_request，必须重新评估条件渲染和 Skill 正文，不得复用上一次空计划；"
+                "只有当前 Case 仍有必要字段时才返回 action=ask。"
+                "不要输出 Markdown 代码块。"
+            )
         return [
             ChatMessage(
                 role="system",
@@ -3867,38 +3931,49 @@ class MainPlannerOrchestrator:
                     "question_ids；action=complete 时写出最终结论，不得追加问题。"
                     "服务端已按其当前可确定的 Case 将 question_catalog 收窄为本轮允许的字段；"
                     "你仍须结合本轮输入与会话状态判断下一阶段和 state_patch，不能请求目录外字段。"
-                    "空 question_ids 仅允许 action=complete 或 action=answer_directly：前者必须给出最终结论，"
-                    "后者仅用于本轮确实无需表单的解释或科普。仍处于收集阶段时必须返回至少一个 question_id，"
-                    "否则服务端会按当前 Case 回退展示下一批必要字段。"
-                    "从排除 resolved_answers 后剩余的 question_catalog 中选择最合适的下一批问题。"
-                    "assistant_message 应直接推进当前对话：已有明确答案时不要再次复述或确认，"
-                    "除非该答案存在矛盾、时间变化或确有必要消歧；不需要表单时直接回答，不要添加历史事实摘要。"
-                    f"{response_style_instruction()}"
-                    "不得虚构、改写或直接在正文中提问。表单提交即表示用户确认，若已有信息足以"
-                    "完成当前 goal，必须返回 action=complete、question_ids=[] 和可展示的最终结论，"
-                    "不得再问“信息是否准确”、不得承诺稍后给结果。"
-                    "只返回一个 JSON 对象，字段必须严格按以下顺序："
-                    '{"assistant_message":"面向用户的阶段性说明和引导",'
-                    '"resolved_answers":[{"question_id":"合法问题ID","value":"答案",'
-                    '"source_id":"给定来源ID","evidence":"用户原话或空字符串","confidence":0.95}],'
-                    '"state_patch":{"mode":"当前模式","stage":"下一阶段","tier":"已确定档位",'
-                    '"flags":{},"context":{},"sub_state":""},'
-                    '"questionnaire_plan":{"goal":"当前目标","mode":"模式","target":"可选目标",'
-                    '"status":"collecting|completed","completion_action":"可选白名单动作"},'
-                    '"action":"ask|complete|answer_directly","question_ids":["合法问题ID"],'
-                    '"collection_complete":false}。'
-                    "不启用答案对齐或没有可靠答案时 resolved_answers 必须为 []。"
-                    "state_patch 只在你能依据 Skill 规则确定状态变化时填写；不能确定的字段不要写。"
-                    "question_ids 只能来自 question_catalog，数量不得超过 max_fields_per_form。"
-                    "question_ids 不得包含 resolved_answers 中的项目。未答字段并不等于必须收集："
-                    "只收集完成当前 goal 的必要字段；action=complete/answer_directly 时可保留未答字段。"
-                    "若收到 recovery_request，必须重新评估条件渲染和 Skill 正文，不得复用上一次空计划；"
-                    "只有当前 Case 仍有必要字段时才返回 action=ask。"
-                    "不要输出 Markdown 代码块。"
+                    + output_contract
                 ),
             ),
             ChatMessage(role="user", content=json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
         ]
+
+    def _resolve_expert_declared_form(
+        self,
+        bundle,
+        state: SessionState,
+        context,
+        declared_form: dict[str, Any],
+    ) -> tuple[str, str]:
+        """Render the form an expert already requested and stop this turn."""
+        reply, block, decision = resolve_declared_form_request(
+            bundle,
+            state,
+            {"question_ids": declared_form.get("question_ids") or []},
+            prose=str(declared_form.get("lead_in") or ""),
+        )
+        reply = _sanitize_assistant_reply(
+            reply,
+            response_policy=bundle.runtime_metadata.response_policy,
+        )
+        stage_questionnaire_form(state, bundle, block)
+        self._emit_reply_delta(context, reply)
+        self._record_events(
+            context,
+            [
+                make_event(
+                    "native_questionnaire_response",
+                    {
+                        "skill_id": bundle.contract.skill_id or bundle.root_name,
+                        "form_emitted": bool(block),
+                        "form_source": "request_declared_form",
+                        "question_ids": decision.get("selected_question_ids", []),
+                        "rejected_question_ids": decision.get("rejected_question_ids", []),
+                        "fallback_used": False,
+                    },
+                )
+            ],
+        )
+        return reply, ""
 
     def _resolve_lightweight_questionnaire(
         self,
@@ -3915,22 +3990,48 @@ class MainPlannerOrchestrator:
         script_reply = self._questionnaire_decision_script_reply(
             bundle, state, context, user_message, continuation
         )
-        messages = self._questionnaire_continuation_messages(bundle, state, user_message, continuation)
-        self._emit_runtime_status(context, "response", "正在生成回复")
-        started = time.perf_counter()
-        first_delta_ms: int | None = None
-        raw_parts: list[str] = []
-        streamed = False
         client = self._auxiliary_client_for_context(
             context,
             self.questionnaire_client,
             {"enable_thinking": False, "return_reasoning": False, "temperature": 0.2, "max_tokens": 600},
         )
+        use_declared_form_tool = (
+            script_reply is None
+            and client is not None
+            and callable(getattr(client, "complete_with_tools", None))
+        )
+        messages = self._questionnaire_continuation_messages(
+            bundle,
+            state,
+            user_message,
+            continuation,
+            transport="tool" if use_declared_form_tool else "json",
+        )
+        self._emit_runtime_status(context, "response", "正在生成回复")
+        started = time.perf_counter()
+        first_delta_ms: int | None = None
+        raw_parts: list[str] = []
+        streamed = False
+        declared_form_call = None
         try:
             if script_reply is not None:
                 raw_reply = script_reply
             elif client is None:
                 raw_reply = ""
+            elif use_declared_form_tool:
+                complete_kwargs: dict[str, Any] = {
+                    "preferred_mode": "native",
+                    "logger": logger,
+                }
+                if "request_purpose" in inspect.signature(client.complete_with_tools).parameters:
+                    complete_kwargs["request_purpose"] = "questionnaire_continuation"
+                turn_result = client.complete_with_tools(
+                    messages,
+                    (declared_form_tool_spec(),),
+                    **complete_kwargs,
+                )
+                raw_reply = str(getattr(turn_result, "final_text", "") or "")
+                declared_form_call = _declared_form_tool_call(turn_result)
             elif callable(getattr(client, "stream_complete", None)):
                 extractor = _QuestionnaireContinuationExtractor(
                     {
@@ -3966,7 +4067,30 @@ class MainPlannerOrchestrator:
             logger.log("questionnaire.continuation.failed", error=f"{type(exc).__name__}: {exc}")
             raw_reply = ""
 
-        reply, block, decision = resolve_questionnaire_continuation(bundle, state, raw_reply)
+        if declared_form_call is not None:
+            reply, block, decision = resolve_declared_form_request(
+                bundle,
+                state,
+                getattr(declared_form_call, "arguments", {}),
+                prose=raw_reply,
+            )
+        elif use_declared_form_tool and not _reply_is_json_object(raw_reply):
+            # A tool-capable turn that neither called the form tool nor returned
+            # the legacy envelope is a direct answer. Do not invent a form.
+            reply, block, decision = raw_reply.strip() or "好的，我按已有信息继续。", None, {
+                "valid": True,
+                "fallback_used": False,
+                "action": "answer_directly",
+                "selected_question_ids": [],
+                "allowed_question_ids": [],
+                "decision_table_applied": False,
+                "resolved_answers": [],
+                "rejected_resolved_answers": [],
+                "no_progress_reason": "",
+                "questionnaire_plan": questionnaire_plan_summary(bundle, state),
+            }
+        else:
+            reply, block, decision = resolve_questionnaire_continuation(bundle, state, raw_reply)
         if decision.get("no_progress_reason") == "empty_question_ids_while_collecting":
             recovery = self._recover_empty_questionnaire_plan(
                 bundle=bundle,
@@ -4409,43 +4533,43 @@ class MainPlannerOrchestrator:
         )
         started = time.perf_counter()
         combined_response = raw_reply is not None
-        if raw_reply is None:
-            turn_result = client.complete_with_tools(messages, (), preferred_mode="none", logger=logger)
-            raw_reply = str(turn_result.final_text or "")
+        form_tool = declared_form_tool_spec()
+        declared_form_call = None
         invalid_replies: list[str] = []
         retry_count = 0
-        if not questionnaire_reply_is_valid(raw_reply):
+        if raw_reply is None:
+            turn_result = client.complete_with_tools(
+                messages,
+                (form_tool,),
+                preferred_mode="native",
+                logger=logger,
+            )
+            raw_reply = str(turn_result.final_text or "")
+            declared_form_call = _declared_form_tool_call(turn_result)
+        if declared_form_call is None and not questionnaire_reply_is_valid(raw_reply) and combined_response:
             invalid_replies.append(raw_reply)
-            if not combined_response:
-                retry_count = 1
-                retry_messages = [
-                    *messages,
-                    ChatMessage(role="assistant", content=raw_reply),
-                    ChatMessage(
-                        role="user",
-                        content=(
-                            "Your previous response did not follow the Native Questionnaire Protocol. "
-                            "Return exactly one JSON object now with assistant_message, state_patch, and "
-                            "question_ids. Use only question_id values from question_catalog. For a "
-                            "multi_path_planning matching/output conclusion, put canonical path_id values "
-                            "from path_catalog in state_patch.matched_paths; use [] when no path option "
-                            "should be shown. Use [] question_ids when no form is needed. Do not include "
-                            "Markdown fences or any text outside JSON."
-                        ),
-                    ),
-                ]
-                retry_result = client.complete_with_tools(
-                    retry_messages,
-                    (),
-                    preferred_mode="none",
-                    logger=logger,
-                )
-                raw_reply = str(retry_result.final_text or "")
-        if questionnaire_reply_is_valid(raw_reply):
+            retry_count = 1
+            retry_result = client.complete_with_tools(
+                messages,
+                (form_tool,),
+                preferred_mode="native",
+                logger=logger,
+            )
+            raw_reply = str(retry_result.final_text or "")
+            declared_form_call = _declared_form_tool_call(retry_result)
+        if declared_form_call is not None:
+            reply, block, _declared_decision = resolve_declared_form_request(
+                bundle,
+                state,
+                getattr(declared_form_call, "arguments", {}),
+                prose=raw_reply,
+            )
+        elif questionnaire_reply_is_valid(raw_reply):
             reply, block = decode_questionnaire_reply(bundle, state, raw_reply)
         else:
             invalid_replies.append(raw_reply)
-            reply, block = deterministic_questionnaire_fallback(bundle, state, *invalid_replies)
+            reply = unwrap_questionnaire_assistant_message(raw_reply).strip() or "我先按现有信息继续。"
+            block = None
         reply = _sanitize_assistant_reply(
             reply,
             response_policy=bundle.runtime_metadata.response_policy,
@@ -5709,7 +5833,19 @@ class MainPlannerOrchestrator:
         )
         questionnaire_result: tuple[str, str] | None = None
         entry_result: tuple[str, str] | None = None
-        if questionnaire_enabled(current_bundle) and (
+        declared_form = context.session_meta.pop("expert_declared_form", None)
+        if (
+            isinstance(declared_form, dict)
+            and questionnaire_enabled(current_bundle)
+            and str(declared_form.get("skill_id") or "") == str(runtime_state.active_skill_id or "")
+        ):
+            questionnaire_result = self._resolve_expert_declared_form(
+                current_bundle,
+                runtime_state,
+                context,
+                declared_form,
+            )
+        elif questionnaire_enabled(current_bundle) and (
             submitted_answer is not None or not isinstance(pending_questionnaire, dict)
         ):
             questionnaire_result = self._resolve_lightweight_questionnaire(

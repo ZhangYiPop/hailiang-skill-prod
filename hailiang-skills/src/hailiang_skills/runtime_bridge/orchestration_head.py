@@ -133,7 +133,7 @@ def build_orchestrator_head_prompt(
                 "subtasks": [
                     {
                         "subtask_id": "st_1",
-                        "question": "交给专家的子问题",
+                        "question": "1. 用户原话中的问题一\n2. 用户原话中的问题二",
                         "target_expert_id": "expert_id",
                         "priority": 1,
                         "depends_on": [],

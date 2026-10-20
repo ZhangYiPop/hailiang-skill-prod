@@ -205,6 +205,13 @@ export type RecommendationItem = {
   match_terms?: string[];
 };
 
+export type OrchestrationRulePackageStatus = {
+  version: string;
+  source_version: string;
+  body_matches: boolean;
+  state: "current" | "body_current" | "stale" | "unknown";
+};
+
 export type OrchestrationRuleRevision = {
   orchestration_revision_id: string;
   revision_no: number;
@@ -216,6 +223,7 @@ export type OrchestrationRuleRevision = {
   published: boolean;
   created_by: string;
   created_at: string;
+  rule_versions?: Partial<Record<"orchestrate_head" | "orchestrate_tail" | "recommend", OrchestrationRulePackageStatus>>;
 };
 
 export type StandardSkillConversion = {

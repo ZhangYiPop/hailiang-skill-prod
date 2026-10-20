@@ -77,6 +77,177 @@ def test_expert_parallel_wait_and_multi_round_resume(tmp_path):
     runtime.close()
 
 
+def test_unmatched_reply_is_delegated_to_fallback(tmp_path):
+    def respond(messages, _specs, purpose):
+        if purpose == 'harness_expert':
+            return AssistantTurnResult(final_text='你好。下一步：告诉我你的年级。')
+        if any(m.role == 'tool' for m in messages):
+            return AssistantTurnResult(final_text='你好。下一步：告诉我你的年级。')
+        return AssistantTurnResult(final_text='我是e生涯规划助手')
+    frozen = policy()
+    frozen['harness_fallback_expert_id'] = 'b'
+    runtime = make_runtime(tmp_path, respond)
+    run_id = runtime.create('s', 'u', 'p', '你好', frozen)
+    advance(runtime, run_id, 8)
+    final = runtime.store.get(run_id)
+    experts = [task for task in final['tasks'].values() if task['kind'] == 'expert']
+    assert final['status'] == 'completed', final.get('error')
+    assert len(experts) == 1
+    assert experts[0]['expert_id'] == 'b'
+    assert experts[0]['status'] == 'completed'
+    assert '我是e生涯规划助手' not in (final.get('result') or '')
+    runtime.close()
+
+
+def orchestrated_policy():
+    frozen = policy()
+    frozen['orchestrated'] = True
+    frozen['harness_fallback_expert_id'] = 'b'
+    frozen['soul'] = '安全约束'
+    frozen['orchestrator'] = {
+        'enabled': True, 'head_rules': '编排首规则', 'tail_rules': '编排尾规则', 'collaboration_rules': '',
+        'recommendation_rules': '', 'recommend_catalog': None, 'recommendations': [],
+        'consultation_policy': {'max_subtasks': 2, 'max_parallel': 2, 'max_depth': 1}, 'fallback_expert_id': 'b',
+        'members': [{'expert_id': 'a', 'mention_name': '专家 A', 'routing_brief': '分析 A', 'applicable_stages': []},
+                    {'expert_id': 'b', 'mention_name': '专家 B', 'routing_brief': '分析 B', 'applicable_stages': []}],
+    }
+    return frozen
+
+
+def identity_seed():
+    return {f'seed:{key}': {'key': key, 'value': value, 'scope': 'profile', 'status': 'confirmed', 'version': 1, 'source': {}}
+            for key, value in (('user_role', '家长'), ('school_stage', '高中'))}
+
+
+def run_orchestrated(tmp_path, head_json, expert_text='专家 B 原文', tail_text='出站正文'):
+    seen = {'purposes': []}
+    class Client:
+        def complete(self, messages, request_purpose='', max_tokens=None, **_):
+            seen['purposes'].append(request_purpose)
+            return head_json if request_purpose == 'orchestrator_head' else tail_text
+        def complete_with_tools(self, messages, specs, request_purpose, max_tokens=None):
+            seen['purposes'].append(request_purpose)
+            return AssistantTurnResult(final_text=expert_text)
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / 'harness.sqlite3'), lambda _run: Client())
+    run_id = runtime.create('s', 'u', 'p', '你好', orchestrated_policy(), identity_seed())
+    advance(runtime, run_id, 10)
+    return runtime, runtime.store.get(run_id), seen
+
+
+def test_team_flow_runs_head_expert_and_tail(tmp_path):
+    head = json.dumps({'action': 'consult', 'subtasks': [{'subtask_id': 'st_1', 'question': '你好', 'target_expert_id': 'b', 'priority': 1}], 'reason': '寒暄'})
+    runtime, run, seen = run_orchestrated(tmp_path, head)
+    assert run['status'] == 'completed', run.get('error')
+    assert run['result'] == '出站正文'
+    experts = [t for t in run['tasks'].values() if t['kind'] == 'expert']
+    assert [t['expert_id'] for t in experts] == ['b']
+    assert seen['purposes'].index('orchestrator_head') < seen['purposes'].index('harness_expert') < seen['purposes'].index('orchestrator_tail')
+    names = {t['name'] for t in run['tools'].values()}
+    assert {'orchestrate_head', 'delegate_tasks', 'orchestrate_tail'} <= names
+    runtime.close()
+
+
+def test_team_flow_clarify_skips_experts(tmp_path):
+    head = json.dumps({'action': 'clarify', 'clarification_question': '你想了解哪方面？', 'reason': '信息不足'})
+    runtime, run, seen = run_orchestrated(tmp_path, head)
+    assert run['status'] == 'completed'
+    assert run['result'] == '你想了解哪方面？'
+    assert not [t for t in run['tasks'].values() if t['kind'] == 'expert']
+    assert 'orchestrator_tail' not in seen['purposes']
+    runtime.close()
+
+
+def test_team_flow_without_identity_asks_first(tmp_path):
+    class Client:
+        def complete(self, *_a, **_k):
+            raise AssertionError('model must not run before the identity gate')
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / 'harness.sqlite3'), lambda _run: Client())
+    run_id = runtime.create('s', 'u', 'p', '你好', orchestrated_policy())
+    advance(runtime, run_id, 4)
+    run = runtime.store.get(run_id)
+    assert run['status'] == 'completed'
+    assert '身份' in run['result']
+    runtime.close()
+
+
+def formal_gate_runtime(tmp_path, head_json):
+    class Client:
+        def complete(self, messages, request_purpose='', max_tokens=None, **_):
+            return head_json if request_purpose == 'orchestrator_head' else '出站正文'
+        def complete_with_tools(self, messages, specs, request_purpose, max_tokens=None):
+            return AssistantTurnResult(final_text='专家 B 原文')
+    frozen = orchestrated_policy()
+    frozen['identity_gate'] = 'form'
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / 'harness.sqlite3'), lambda _run: Client())
+    return runtime, runtime.create('s', 'u', 'p', '你好', frozen)
+
+
+FORMAL_HEAD = json.dumps({'action': 'consult', 'subtasks': [{'subtask_id': 'st_1', 'question': '你好', 'target_expert_id': 'b', 'priority': 1}], 'reason': '寒暄'})
+
+
+def test_formal_session_identity_gate_asks_with_form_then_continues(tmp_path):
+    runtime, run_id = formal_gate_runtime(tmp_path, FORMAL_HEAD)
+    advance(runtime, run_id, 4)
+    run = runtime.store.get(run_id)
+    assert run['status'] not in {'completed', 'failed'}
+    request = next(q for q in run['inputs'].values() if q['status'] == 'pending')
+    assert [(f['key'], f['scope']) for f in request['fields']] == [('user_role', 'user'), ('school_stage', 'profile')]
+    runtime.answer(request['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='identity', expected_version=1,
+                                                   answers={'user_role': '家长', 'school_stage': '高中'}))
+    advance(runtime, run_id, 12)
+    final = runtime.store.get(run_id)
+    assert final['status'] == 'completed', final.get('error')
+    assert final['result'] == '出站正文'
+    assert len(final['inputs']) == 1
+    names = {t['name'] for t in final['tools'].values()}
+    assert {'platform_gate', 'orchestrate_head', 'orchestrate_tail'} <= names
+    runtime.close()
+
+
+def test_formal_session_identity_form_skipped_ends_with_text_prompt(tmp_path):
+    runtime, run_id = formal_gate_runtime(tmp_path, FORMAL_HEAD)
+    advance(runtime, run_id, 4)
+    request = next(q for q in runtime.store.get(run_id)['inputs'].values() if q['status'] == 'pending')
+    runtime.answer(request['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='skip', expected_version=1, skipped=True))
+    advance(runtime, run_id, 12)
+    final = runtime.store.get(run_id)
+    assert final['status'] == 'completed'
+    assert '身份' in final['result']
+    assert len(final['inputs']) == 1
+    assert not [t for t in final['tasks'].values() if t['kind'] == 'expert']
+    runtime.close()
+
+
+def test_single_expert_test_goes_straight_to_the_expert(tmp_path):
+    seen = {'purposes': []}
+    class Client:
+        def complete(self, *_a, **_k):
+            raise AssertionError('single expert tests must not call head or tail')
+        def complete_with_tools(self, messages, specs, request_purpose, max_tokens=None):
+            seen['purposes'].append(request_purpose)
+            return AssistantTurnResult(final_text='专家原文')
+    frozen = policy()
+    frozen['direct_expert_id'] = 'b'
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / 'harness.sqlite3'), lambda _run: Client())
+    run_id = runtime.create('s', 'u', 'p', '你好', frozen)
+    advance(runtime, run_id, 8)
+    run = runtime.store.get(run_id)
+    assert run['status'] == 'completed', run.get('error')
+    assert run['result'] == '专家原文'
+    assert seen['purposes'] == ['harness_expert']
+    assert [t['expert_id'] for t in run['tasks'].values() if t['kind'] == 'expert'] == ['b']
+    runtime.close()
+
+
+def test_candidate_revision_root_resolves_object_type():
+    from hailiang_skills.harness.policy import snapshot_root
+    snapshot = {'root': {'kind': 'revision', 'object_id': 'o1', 'revision_id': 'r1'},
+                'entries': [{'object_id': 'o1', 'object_type': 'expert_team', 'object_key': 'team'}]}
+    assert snapshot_root(snapshot)['object_type'] == 'expert_team'
+    assert snapshot_root(snapshot)['object_key'] == 'team'
+    assert snapshot_root({'root': {'object_type': 'skill', 'object_key': 'k'}})['object_key'] == 'k'
+
+
 def test_main_cannot_bypass_expert(tmp_path):
     def respond(messages, specs, purpose):
         if not any(m.role == 'tool' for m in messages):

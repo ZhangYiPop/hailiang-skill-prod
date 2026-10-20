@@ -7,6 +7,9 @@ export HAILIANG_UNIFIED_CONTEXT_ENABLED="true"
 export HAILIANG_HARNESS_NEW_SESSIONS="true"
 # Local development embeds a worker; production uses the separate systemd worker.
 export HAILIANG_HARNESS_EMBEDDED_WORKER="true"
+# Formal sessions run the team orchestration (identity gate, head, experts, tail,
+# recommend) when a published team has head rules. false = main-agent delegation.
+export HAILIANG_HARNESS_FORMAL_ORCHESTRATION="true"
 export DASHSCOPE_API_KEY=""
 export HAILIANG_EXTERNAL_API_KEY=""
 

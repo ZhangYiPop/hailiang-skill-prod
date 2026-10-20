@@ -165,13 +165,12 @@ def build_questionnaire_protocol(bundle: Any, state: Any) -> str:
     ]
     protocol = (
         "# Native Questionnaire Protocol\n"
-        "Always return JSON only, including when no follow-up is needed: "
-        '{"assistant_message":"...","state_patch":{"mode":"...","stage":"..."},'
-        '"question_ids":["catalog item"]}. '
-        "Use only catalog question_id values and return at most "
-        f"{_max_fields_per_form(bundle)} question_ids. Never invent a question type, option, or condition. "
-        "Use an empty question_ids array when no follow-up is needed. Do not write follow-up questions "
-        "as Markdown or plain text; the runtime renders all selected questions as a form. "
+        "Write the user-visible reply as ordinary text. To ask declared questions, call "
+        "request_declared_form with question_ids taken only from question_catalog, at most "
+        f"{_max_fields_per_form(bundle)} ids. Never invent a question type, option, or condition. "
+        "Do not call the tool when no follow-up is needed. Do not write follow-up questions "
+        "as Markdown or plain text; the runtime renders the selected questions as a form. "
+        "Unknown question_ids are rejected and are not replaced with other catalog items. "
         "For multi_path_planning, when the response is a matching/output conclusion, also put the "
         "canonical path_id values from path_catalog into state_patch.matched_paths; use [] when no "
         "path option should be shown. The runtime, not the model, builds UI cards from those IDs.\n"
@@ -186,6 +185,32 @@ def build_questionnaire_protocol(bundle: Any, state: Any) -> str:
         ]
         protocol += f"path_catalog={json.dumps(path_items, ensure_ascii=False)}\n"
     return protocol
+
+
+def declared_form_tool_spec() -> Any:
+    """Tool the model calls when a declared questionnaire form should be shown."""
+    from hailiang_skills.skill_runtime.models import ToolSpec
+
+    return ToolSpec(
+        name="request_declared_form",
+        description=(
+            "展示当前 Skill 题库中已声明的提问表单。"
+            "question_ids 只能来自 question_catalog，不能编造题面或选项。"
+            "调用成功后立即停止，不要在正文里重复这些问题。"
+        ),
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "question_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "题库 question_id，按展示顺序排列",
+                }
+            },
+            "required": ["question_ids"],
+        },
+        enabled=True,
+    )
 
 
 def question_specs(bundle: Any) -> list[dict[str, Any]]:
@@ -1066,6 +1091,68 @@ def decode_questionnaire_reply(bundle: Any, state: Any, reply: str) -> tuple[str
     if not selected:
         return text, None
     return text, _form_block(skill_id, selected)
+
+
+def resolve_declared_form_request(
+    bundle: Any,
+    state: Any,
+    arguments: Any,
+    *,
+    prose: str = "",
+) -> tuple[str, dict[str, Any] | None, dict[str, Any]]:
+    """Build a fact_form from a request_declared_form call.
+
+    Unknown ids are rejected. Already-answered ids are skipped. This path does
+    not substitute another catalog question when the requested ids cannot be shown.
+    """
+    raw_ids = arguments.get("question_ids") if isinstance(arguments, dict) else None
+    requested = [
+        str(item).strip()
+        for item in (raw_ids if isinstance(raw_ids, list) else [])
+        if str(item).strip()
+    ]
+    skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
+    continuation = questionnaire_continuation_context(bundle, state)
+    if isinstance(continuation, dict):
+        _apply_explicit_message_answers(bundle, state, continuation.get("answer_reconciliation"))
+    declared_ids = {str(item.get("question_id") or "") for item in question_specs(bundle)}
+    unknown = [item for item in requested if item not in declared_ids]
+    text = unwrap_questionnaire_assistant_message(prose).strip()
+    if unknown:
+        return text or "这些题不在题库里，我先不展示表单。", None, {
+            "valid": False,
+            "fallback_used": False,
+            "form_source": "request_declared_form",
+            "selected_question_ids": [],
+            "rejected_question_ids": unknown,
+            "error": "unknown_question_ids",
+        }
+    answers = _answers(state, skill_id)
+    available = {
+        str(item["question_id"]): item
+        for item in available_question_specs(bundle, state)
+    }
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for question_id in requested:
+        spec = available.get(question_id)
+        if spec is None or question_id in answers or question_id in seen:
+            continue
+        seen.add(question_id)
+        selected.append(spec)
+        if len(selected) >= _max_fields_per_form(bundle):
+            break
+    block = _form_block(skill_id, selected) if selected else None
+    if not text:
+        text = "请填写下面的信息，我再继续。" if block else "好的，我按已有信息继续。"
+    return text, block, {
+        "valid": True,
+        "fallback_used": False,
+        "form_source": "request_declared_form",
+        "selected_question_ids": [str(item["question_id"]) for item in selected],
+        "rejected_question_ids": [],
+        "error": "",
+    }
 
 
 def questionnaire_reply_is_valid(reply: str) -> bool:

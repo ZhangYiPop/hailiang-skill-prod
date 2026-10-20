@@ -69,6 +69,7 @@ import {
   type EvaluationRun,
   type ObjectRelease,
   type ObjectRevision,
+  type OrchestrationRulePackageStatus,
   type OrchestrationRuleRevision,
   type RevisionTestSession,
   type SoulRevision,
@@ -294,6 +295,29 @@ export const HistoryEvidence = memo(function HistoryEvidence({ value }: { value:
     </details>
   );
 });
+
+const ORCHESTRATION_RULE_VERSIONS = [
+  { purpose: "orchestrate_head" as const, label: "编排首" },
+  { purpose: "orchestrate_tail" as const, label: "编排尾" },
+  { purpose: "recommend" as const, label: "推荐" },
+];
+
+export function orchestrationRuleVersionLabel(status: OrchestrationRulePackageStatus | undefined): string {
+  if (!status || status.state === "unknown") return "读不到仓库版本";
+  if (status.state === "current") return `v${status.version} · 已是仓库最新`;
+  if (status.state === "body_current") return `正文与仓库 v${status.source_version} 一致，修订未记录版本号`;
+  if (status.version && status.source_version && status.version !== status.source_version) {
+    return `当前 v${status.version} · 仓库已是 v${status.source_version}`;
+  }
+  if (status.source_version) return `不是仓库最新 · 文件 v${status.source_version}`;
+  return "无法对比仓库版本";
+}
+
+function orchestrationRuleVersionBadge(status: OrchestrationRulePackageStatus | undefined): string {
+  if (status?.state === "current" || (status?.state === "stale" && status.version)) return `v${status.version}`;
+  if (status?.state === "body_current" && status.source_version) return `v${status.source_version}`;
+  return "";
+}
 
 function traceEntityLabel(entity: CandidateTraceEntity | null | undefined, empty = "本轮未经过") {
   if (!entity?.object_key) return empty;
@@ -826,6 +850,11 @@ export default function Workbench() {
     setRecommendationRulesDraft(published.recommendation_rules);
     setRecommendationsDraft(JSON.stringify(published.recommendations ?? [], null, 2));
   }, [headRulesDraft, orchestrationRevisions, recommendationRulesDraft, recommendationsDraft, tailRulesDraft]);
+
+  const loadedOrchestrationRevision = useMemo(
+    () => orchestrationRevisions.find((item) => item.published) ?? orchestrationRevisions[0],
+    [orchestrationRevisions],
+  );
 
   const openObject = useCallback(
     async (objectId: string) => {
@@ -3369,14 +3398,31 @@ export default function Workbench() {
                   <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-4">
                     <p className="text-sm font-medium text-amber-100">编排规则</p>
                     <p className="mt-1 text-xs text-slate-400">编排首、编排尾和推荐分开保存版本。发布后重新激活部署，只影响新会话。推荐由模型输出 jump_cards 语义字段，枚举以 catalog 为准；match_terms 已废弃。</p>
+                    {loadedOrchestrationRevision ? (
+                      <div className="mt-3 space-y-1 text-xs" aria-label="编排规则版本">
+                        <p className="text-slate-400">工作台修订 r{loadedOrchestrationRevision.revision_no}{loadedOrchestrationRevision.published ? " · 已发布" : " · 未发布"}</p>
+                        {ORCHESTRATION_RULE_VERSIONS.map((item) => {
+                          const status = loadedOrchestrationRevision.rule_versions?.[item.purpose];
+                          const latest = status?.state === "current" || status?.state === "body_current";
+                          return (
+                            <p key={item.purpose} className={latest ? "text-emerald-200" : "text-amber-100"}>
+                              {item.label} {orchestrationRuleVersionLabel(status)}
+                            </p>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                     <div className="mt-3 flex flex-wrap gap-1.5" role="tablist" aria-label="编排规则分区">
                       {([
-                        { id: "head" as const, label: "编排首" },
-                        { id: "tail" as const, label: "编排尾" },
-                        { id: "recommend" as const, label: "推荐规则" },
-                        { id: "catalog" as const, label: "推荐清单" },
+                        { id: "head" as const, label: "编排首", purpose: "orchestrate_head" as const },
+                        { id: "tail" as const, label: "编排尾", purpose: "orchestrate_tail" as const },
+                        { id: "recommend" as const, label: "推荐规则", purpose: "recommend" as const },
+                        { id: "catalog" as const, label: "推荐清单", purpose: null },
                       ]).map((tab) => {
                         const active = orchestrationRulesTab === tab.id;
+                        const badge = tab.purpose
+                          ? orchestrationRuleVersionBadge(loadedOrchestrationRevision?.rule_versions?.[tab.purpose])
+                          : "";
                         return (
                           <button
                             key={tab.id}
@@ -3390,7 +3436,7 @@ export default function Workbench() {
                                 : "border border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/20 hover:text-slate-200"
                             }`}
                           >
-                            {tab.label}
+                            {badge ? `${tab.label} ${badge}` : tab.label}
                           </button>
                         );
                       })}
@@ -3452,259 +3498,32 @@ export default function Workbench() {
                     >
                       <span aria-hidden="true" className="text-sm leading-none">⋮</span>
                     </button>
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.18em] text-sky-300">Debug Zone</p>
-                        <h2 className="mt-1 text-lg font-semibold">候选修订手动测试</h2>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {debugZoneTab === "chat" && busy && candidateConversationState?.status === "streaming" ? (
-                          <button
-                            type="button"
-                            onClick={() => void stopCandidateRevisionTest()}
-                            className="inline-flex items-center gap-1 rounded-lg border border-rose-300/30 px-2 py-1 text-xs text-rose-100"
-                          >
-                            <X size={13} /> 停止
-                          </button>
-                        ) : null}
-                        {debugZoneTab === "chat" ? (
-                          <StatusBadge tone={revisionTestSession?.status === "active" ? "green" : "slate"}>
-                            {candidateConversationState?.status === "stopped"
-                              ? "已停止"
-                              : revisionTestSession?.status === "active" ? "会话进行中" : "等待测试"}
-                          </StatusBadge>
-                        ) : null}
-                      </div>
+                    <div className="shrink-0">
+                      <p className="text-xs uppercase tracking-[0.18em] text-sky-300">Debug Zone</p>
+                      <h2 className="mt-1 text-lg font-semibold">候选修订手动测试</h2>
                     </div>
-                    <div className="mt-3 flex gap-1 rounded-xl border border-white/10 bg-slate-950/40 p-1">
-                      <button
-                        type="button"
-                        onClick={() => setDebugZoneTab("chat")}
-                        className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${debugZoneTab === "chat" ? "bg-sky-400/15 text-sky-100" : "text-slate-400 hover:text-slate-200"}`}
-                      >
-                        问答测试
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDebugZoneTab("harness")}
-                        className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${debugZoneTab === "harness" ? "bg-cyan-400/15 text-cyan-100" : "text-slate-400 hover:text-slate-200"}`}
-                      >
-                        Harness 专项
-                      </button>
-                    </div>
-                    <div className={debugZoneTab === "chat" ? "mt-3 flex min-h-0 flex-1 flex-col gap-3" : "hidden"}>
-                      <label className="block shrink-0 text-xs text-slate-400">
-                        历史会话
-                        <select
-                          value={revisionTestSession?.debug_session_id || ""}
-                          onChange={(event) => selectChatDebugSession(event.target.value)}
-                          className="mt-1 w-full rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-400/40"
-                        >
-                          <option value="">新建问答会话</option>
-                          {revisionTestSession
-                            && !debugHistory.some((item) => item.debug_session_id === revisionTestSession.debug_session_id)
-                            ? (
-                              <option value={revisionTestSession.debug_session_id}>
-                                {chatSessionOptionLabel(revisionTestSession)}
-                              </option>
-                            ) : null}
-                          {debugHistory.map((item) => (
-                            <option key={item.debug_session_id} value={item.debug_session_id}>
-                              {chatSessionOptionLabel(item)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <div className="flex min-h-0 flex-1 gap-3">
-                        <div className="flex w-[42%] min-w-[200px] shrink-0 flex-col gap-3 overflow-auto">
-                          <p className="text-sm text-slate-500">
-                            直接测试所选候选快照；回复在右侧完整展示。
-                          </p>
-                          <div className="rounded-xl border border-sky-300/15 bg-sky-300/[0.05] px-3 py-2 text-xs leading-5 text-slate-300">
-                            <span className="text-slate-500">专家团：</span>{candidateTeamName}
-                            <span className="mx-2 text-slate-600">·</span>
-                            <span className="text-slate-500">专家：</span>{candidateExpertName}
-                            <span className="mx-2 text-slate-600">·</span>
-                            <span className="text-slate-500">Skill：</span>{candidateSkillName}
-                          </div>
-                          {(revisionTestSession?.transcript?.length && (revisionTestSession.status === "active" || selectedTestRevision)) ? (
-                            <div className="flex flex-wrap gap-2">
-                              {revisionTestSession.status === "active" ? (
-                                <button
-                                  type="button"
-                                  onClick={() => void completeRevisionTest()}
-                                  className="rounded-lg border border-emerald-400/25 bg-emerald-400/10 px-3 py-1.5 text-xs text-emerald-200"
-                                  title="把本会话记成发布候选修订所需的测试证据"
-                                >
-                                  记为测试证据
-                                </button>
-                              ) : null}
-                              {selectedTestRevision ? (
-                                <button
-                                  type="button"
-                                  onClick={() => downloadTranscript(
-                                    selectedTestRevision.revision_id,
-                                    revisionTestSession.transcript,
-                                    revisionTestSession.trace,
-                                    candidateConversationState?.session_id || `revision_test_${revisionTestSession.debug_session_id}`,
-                                    revisionTestSession.debug_session_id,
-                                  )}
-                                  className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-sky-200"
-                                  title="下载本会话对话与轨迹 JSON，便于留档或对照"
-                                >
-                                  导出对话 JSON
-                                </button>
-                              ) : null}
-                            </div>
-                          ) : null}
-                          {activeCandidateHandoff ? (
-                            <p className="shrink-0 text-[11px] leading-5 text-violet-100/80">
-                              专家转交卡片仍待确认；文字仍由当前主协调处理。
-                            </p>
-                          ) : null}
-                          <div className="mt-auto shrink-0 border-t border-white/10 pt-3">
-                            <CandidateTestComposer
-                              disabled={!selectedTestRevision || busy || revisionTestSession?.status === "completed"}
-                              placeholder={
-                                revisionTestSession?.status === "completed"
-                                  ? "该历史会话已完成，请新建会话继续测试"
-                                  : selectedTestRevision
-                                    ? `向 r${selectedTestRevision.revision_no} 输入测试问题…`
-                                    : "请先选择要测试的修订"
-                              }
-                              prefill={candidateInputPrefill}
-                              prefillKey={candidateInputPrefillKey}
-                              resetKey={candidateInputResetKey}
-                              expertMenu={candidateTeamMembers.length ? {
-                                members: candidateTeamMembers,
-                                selectedId: candidateTargetExpertId,
-                                disabled: busy || activeCandidateHandoff,
-                                onSelect: setCandidateTargetExpertId,
-                              } : undefined}
-                              onSubmit={(message) => runRevisionTestTurn(
-                                message,
-                                undefined,
-                                undefined,
-                                candidateTargetExpert ? { target_expert_id: candidateTargetExpert.expert_id } : undefined,
-                              )}
-                            />
-                            <p className="mt-2 text-[11px] leading-5 text-slate-500">
-                              匿名会话：保留对话/表单/Facts；不读写孩子档案。
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-2xl border border-sky-300/15 bg-slate-950/50">
-                          <div className="flex shrink-0 gap-1 border-b border-white/10 p-1">
-                            <button
-                              type="button"
-                              onClick={() => setChatRightPane("chat")}
-                              className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${chatRightPane === "chat" ? "bg-sky-400/15 text-sky-100" : "text-slate-400 hover:text-slate-200"}`}
-                            >
-                              对话
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setChatRightPane("trace")}
-                              className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${chatRightPane === "trace" ? "bg-sky-400/15 text-sky-100" : "text-slate-400 hover:text-slate-200"}`}
-                            >
-                              轨迹过程
-                              {revisionTestSession?.trace?.length ? ` · ${revisionTestSession.trace.length}` : ""}
-                            </button>
-                          </div>
-                          <div className="min-h-0 flex-1 space-y-3 overflow-auto p-4">
-                            {chatRightPane === "chat" ? (
-                              revisionTestSession?.transcript?.length ? (
-                                revisionTestSession.transcript.map((item, index) => {
-                                  const isAssistant = item.role === "assistant";
-                                  const blocks = item.blocks ?? [];
-                                  const handoffBlock = blocks.find((block) => block.type === "team_handoff");
-                                  const handoff = item.team_handoff ?? (handoffBlock?.payload as TeamHandoff | undefined);
-                                  const interactionStates = item.interaction_states ?? {};
-                                  const presentation = item.presentation as MessagePresentation | undefined;
-                                  const isTransition = item.message_type === "skill_transition";
-                                  const isTeamHandoffConfirmation = item.message_type === "team_handoff_confirmation";
-                                  const transition = presentation?.skill_transition as { action?: string } | undefined;
-                                  return (
-                                    <div key={item.message_id || `${item.role}-${index}`} className={item.role === "user" ? "text-right" : "text-left"}>
-                                      {isTeamHandoffConfirmation ? (
-                                        <div className="my-1 text-center text-xs text-violet-200/80">
-                                          <span className="rounded-full border border-violet-300/25 bg-violet-300/[0.08] px-3 py-1.5">
-                                            已确认由 {item.content.replace(/^@/, "")} 专家接管
-                                          </span>
-                                        </div>
-                                      ) : isAssistant && isTransition ? (
-                                        <div className="inline-block max-w-[95%] rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-xs text-slate-300">
-                                          {transition?.action === "exit"
-                                            ? "已退出当前 Skill"
-                                            : `已进入 ${(presentation?.session?.active_skill as { title?: string } | undefined)?.title || "当前 Skill"}`}
-                                        </div>
-                                      ) : (
-                                        <div className={`inline-block max-w-[95%] rounded-2xl px-3 py-2 text-sm leading-6 ${item.role === "user" ? "bg-sky-400 text-slate-950" : "bg-white/10 text-slate-200"}`}>
-                                          {isAssistant ? <CandidateMarkdown content={item.content} className="text-slate-200" /> : item.content}
-                                          {isAssistant ? (
-                                            <div className="mt-3 text-left">
-                                              <MessageBlocksRenderer
-                                                messageId={item.message_id || `${revisionTestSession.debug_session_id}-${index}`}
-                                                blocks={blocks.filter((block) => block.type !== "team_handoff") as MessageBlock[]}
-                                                onPathAction={(pathName, description) => {
-                                                  setCandidateInputPrefill(description || pathName);
-                                                  setCandidateInputPrefillKey((current) => current + 1);
-                                                }}
-                                                onSubmitFactForm={submitCandidateFactForm}
-                                                interactionStates={interactionStates as Record<string, MessageInteractionState>}
-                                              />
-                                            </div>
-                                          ) : null}
-                                          {isAssistant && handoff?.candidates?.length ? (
-                                            <div className="mt-3 text-left">
-                                              <TeamHandoffCard
-                                                handoff={handoff}
-                                                interactionState={interactionStates.team_handoff as MessageInteractionState | undefined}
-                                                disabled={busy || !item.message_id || revisionTestSession.status === "completed"}
-                                                onConfirm={(candidate) => confirmCandidateTeamHandoff(item.message_id || "", handoff, candidate.expert_id)}
-                                              />
-                                            </div>
-                                          ) : null}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })
-                              ) : (
-                                <p className="py-10 text-center text-sm text-slate-600">选择修订并提问后，回复会出现在这里。</p>
-                              )
-                            ) : revisionTestSession?.trace?.length ? (
-                              <div className="space-y-4">
-                                {revisionTestSession.trace.map((turn, index) => (
-                                  <div key={`trace-${index}`} className="rounded-xl border border-white/10 bg-black/20 p-3">
-                                    <p className="mb-2 text-xs font-medium text-slate-300">第 {index + 1} 轮轨迹</p>
-                                    <CandidateTurnTrace turn={turn} />
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="py-10 text-center text-sm text-slate-600">尚无调用轨迹；完成一轮问答后可在此查看。</p>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    <div className={debugZoneTab === "harness" ? "mt-3 flex min-h-0 flex-1 flex-col" : "hidden"}>
+                    <div className="mt-3 flex min-h-0 flex-1 flex-col">
                       {selectedTestRevision ? (
                         <HarnessDebugPanel
                           baseUrl={apiBaseUrl}
                           revisionId={selectedTestRevision.revision_id}
                           actorId={actor.actor_id}
                           soulRevisionId={soulRevisionId}
+                          objectType={debugObject?.object_type}
                           historySessions={debugHistory}
                           onHistoryChange={() => {
                             if (debugObject && selectedTestRevision) {
                               void loadDebugHistory(debugObject.object_id, selectedTestRevision.revision_id);
                             }
                           }}
+                          onEvidenceSaved={(debugSessionId) => {
+                            setDebugEvidenceId(debugSessionId);
+                            setDebugComplete(true);
+                            setNotice({ tone: "ok", text: "候选修订测试已记录，可作为发布证据。" });
+                          }}
                         />
                       ) : (
-                        <p className="mt-6 py-8 text-center text-sm text-slate-600">请先选择要测试的修订，再进入 Harness 专项。</p>
+                        <p className="mt-6 py-8 text-center text-sm text-slate-600">请先选择要测试的修订，再开始测试。</p>
                       )}
                     </div>
                   </div>

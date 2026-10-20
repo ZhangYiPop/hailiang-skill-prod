@@ -1,6 +1,16 @@
+export type HarnessJumpCard = {
+  intent: string; object_type: string; sub_type: string; reason: string;
+  title: string; description: string;
+  filter: { region: string; grade: string; keyword: string; category: string };
+};
+export type HarnessRoundExperts = {
+  assigned_expert_ids: string[]; running_expert_ids: string[];
+  completed_expert_ids: string[]; failed_expert_ids: string[];
+  status: "idle" | "assigned" | "running" | "completed" | "failed" | "partial";
+};
 export type HarnessNode = {
   id: string; parent_id: string | null; kind: "main" | "expert" | "skill" | "tool";
-  title: string; actor?: string; status: string;
+  title: string; actor?: string; expert_id?: string | null; status: string;
   created_at?: string | null; started_at: string | null; ended_at: string | null;
   error?: string; attempts?: number; stale?: boolean;
 };
@@ -31,6 +41,9 @@ export type HarnessRun = {
   cancellation_reason?: string; superseded_by_run_id?: string;
   input_tokens_estimated?: number; input_tokens_actual?: number | null; input_token_limit?: number;
   completed_count: number; task_count: number; waiting_count: number;
+  orchestrated?: boolean;
+  round_experts?: HarnessRoundExperts;
+  jump_cards?: HarnessJumpCard[];
 };
 export type HarnessSnapshot = { runtime_mode: string; cursor: number; runs: HarnessRun[] };
 export const isHarnessTerminal = (status: string) => ["completed", "failed", "cancelled"].includes(status);

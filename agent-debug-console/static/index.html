@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>逻辑调试台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --muted: #6d645b;
+      --line: #e4ddd4;
+      --paper: #f6f3ee;
+      --card: #fffdf9;
+      --accent: #0f6e56;
+      --accent-soft: #e5f4ef;
+      --warn: #8a4b08;
+      --warn-soft: #fff1df;
+      --danger: #8d2b2b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.5 "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    header, main { width: min(1180px, calc(100% - 32px)); margin: 0 auto; }
+    header { padding: 28px 0 8px; }
+    h1 { margin: 0 0 6px; font-size: 28px; font-weight: 650; letter-spacing: 0; }
+    p.lead { margin: 0; color: var(--muted); }
+    .controls {
+      display: grid;
+      grid-template-columns: 160px 1fr 1fr auto;
+      gap: 10px;
+      margin: 18px 0;
+    }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    select, textarea, button, input[type="text"] {
+      font: inherit;
+      color: inherit;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    select, button { height: 40px; padding: 0 12px; }
+    select[multiple] { height: auto; padding: 6px; }
+    textarea { width: 100%; min-height: 92px; padding: 12px; resize: vertical; }
+    button {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+      cursor: pointer;
+    }
+    button.ghost { background: transparent; color: var(--ink); }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    .ask-row { display: grid; grid-template-columns: 1fr 120px; gap: 10px; align-items: end; }
+    .layout { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 16px; padding-bottom: 40px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px;
+    }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    .chip {
+      font-size: 13px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+    .chip.warn { background: var(--warn-soft); color: var(--warn); }
+    .reply { white-space: pre-wrap; margin: 0 0 12px; }
+    .form-field { margin: 10px 0; }
+    .form-field strong { display: block; margin-bottom: 4px; }
+    .steps { display: flex; flex-direction: column; gap: 8px; }
+    .step {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: #fff;
+    }
+    .step summary { cursor: pointer; }
+    .step .type { color: var(--muted); font-size: 12px; margin-left: 6px; }
+    .step .detail { margin: 6px 0 0; color: var(--ink); }
+    pre {
+      margin: 8px 0 0;
+      padding: 10px;
+      overflow: auto;
+      max-height: 280px;
+      background: #221f1b;
+      color: #f4efe8;
+      border-radius: 10px;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .error { color: var(--danger); white-space: pre-wrap; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .check { font-size: 13px; color: var(--muted); }
+    @media (max-width: 860px) {
+      .controls, .layout, .ask-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>逻辑调试台</h1>
+    <p class="lead">直接跑当前这套 agent。提问后看这一轮实际走了哪几步、返回了什么。同一会话会接着上一轮，方便看表单提交后有没有再问同一题。</p>
+  </header>
+  <main>
+    <div class="controls">
+      <div>
+        <label>入口</label>
+        <select id="mode">
+          <option value="team">专家团</option>
+          <option value="expert">单个专家</option>
+          <option value="legacy">不进专家</option>
+        </select>
+      </div>
+      <div>
+        <label>专家团</label>
+        <select id="team"></select>
+      </div>
+      <div>
+        <label>专家</label>
+        <select id="expert"></select>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="reset" class="ghost" type="button">新开会话</button>
+      </div>
+    </div>
+    <div class="ask-row">
+      <div>
+        <label>要问的话</label>
+        <textarea id="message" placeholder="例如：帮我看看现在的条件能不能报军校"></textarea>
+      </div>
+      <button id="send" type="button">提问</button>
+    </div>
+    <p id="status" class="lead"></p>
+    <div class="layout">
+      <section class="card">
+        <div class="toolbar"><strong>这一轮返回</strong><span id="session" class="check"></span></div>
+        <div id="summary" class="meta"></div>
+        <div id="reply"></div>
+        <div id="form"></div>
+      </section>
+      <section class="card">
+        <div class="toolbar">
+          <strong>运行步骤</strong>
+          <label class="check"><input id="key-only" type="checkbox" checked /> 只看关键步骤</label>
+        </div>
+        <div id="steps" class="steps"></div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const modeEl = document.querySelector("#mode");
+    const teamEl = document.querySelector("#team");
+    const expertEl = document.querySelector("#expert");
+    const messageEl = document.querySelector("#message");
+    const statusEl = document.querySelector("#status");
+    const summaryEl = document.querySelector("#summary");
+    const replyEl = document.querySelector("#reply");
+    const formEl = document.querySelector("#form");
+    const stepsEl = document.querySelector("#steps");
+    const sessionEl = document.querySelector("#session");
+    const keyOnlyEl = document.querySelector("#key-only");
+    let catalog = { teams: [], experts: [], default_team_id: "" };
+    let sessionId = "";
+    let lastEvents = [];
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[char]));
+    }
+
+    function expertName(id) {
+      const found = catalog.experts.find((item) => item.expert_id === id);
+      return found ? found.name : id;
+    }
+
+    function fillExperts() {
+      const mode = modeEl.value;
+      let ids = catalog.experts.map((item) => item.expert_id);
+      if (mode === "team") {
+        const team = catalog.teams.find((item) => item.team_id === teamEl.value);
+        ids = team ? team.members.map((item) => item.expert_id) : [];
+      }
+      expertEl.innerHTML = ids.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(expertName(id))}</option>`).join("");
+      teamEl.disabled = mode !== "team";
+      expertEl.disabled = mode === "legacy";
+    }
+
+    function renderSteps() {
+      const events = keyOnlyEl.checked ? lastEvents.filter((item) => item.key) : lastEvents;
+      if (!events.length) {
+        stepsEl.innerHTML = "<p class='lead'>这一轮还没有可显示的步骤。</p>";
+        return;
+      }
+        stepsEl.innerHTML = events.map((item, index) => `
+        <details class="step">
+          <summary>${index + 1}. ${escapeHtml(item.label)}<span class="type">${escapeHtml(item.event_type)}</span></summary>
+          ${item.detail ? `<p class="detail">${escapeHtml(item.detail)}</p>` : ""}
+          <pre>${escapeHtml(JSON.stringify(item.payload, null, 2))}</pre>
+        </details>
+      `).join("");
+    }
+
+    function renderForm(forms) {
+      if (!forms.length) {
+        formEl.innerHTML = "";
+        return;
+      }
+      formEl.innerHTML = forms.map((form, formIndex) => {
+        const fields = Array.isArray(form.fields) ? form.fields : [];
+        const inputs = fields.map((field, fieldIndex) => {
+          const name = `f-${formIndex}-${fieldIndex}`;
+          const options = Array.isArray(field.options) ? field.options : [];
+          let control = `<input id="${name}" type="text" />`;
+          if ((field.input_type === "single_select" || field.input_type === "multi_select") && options.length) {
+            const many = field.input_type === "multi_select" ? "multiple size='4'" : "";
+            control = `<select id="${name}" ${many}>${options.map((option) => {
+              const value = typeof option === "string" ? option : (option.value || option.label || "");
+              return `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`;
+            }).join("")}</select>`;
+          }
+          return `<div class="form-field"><strong>${escapeHtml(field.label || field.question_id)}</strong>${control}</div>`;
+        }).join("");
+        return `<div data-form="${formIndex}"><p class="chip">表单 ${escapeHtml(form.form_id || "")}</p>${inputs}<button type="button" data-submit="${formIndex}">按这个表单继续</button></div>`;
+      }).join("");
+      formEl.querySelectorAll("button[data-submit]").forEach((button) => {
+        button.addEventListener("click", () => submitForm(forms[Number(button.dataset.submit)], Number(button.dataset.submit)));
+      });
+    }
+
+    function fieldValue(formIndex, fieldIndex, field) {
+      const node = document.querySelector(`#f-${formIndex}-${fieldIndex}`);
+      if (!node) return "";
+      if (field.input_type === "multi_select") {
+        return Array.from(node.selectedOptions).map((option) => option.value).join("、");
+      }
+      return node.value.trim();
+    }
+
+    async function submitForm(form, formIndex) {
+      const fields = Array.isArray(form.fields) ? form.fields : [];
+      const text = fields.map((field, index) => {
+        const value = fieldValue(formIndex, index, field);
+        return value ? `${field.label || field.question_id}：${value}` : "";
+      }).filter(Boolean).join("；");
+      if (!text) return;
+      messageEl.value = text;
+      await ask();
+    }
+
+    function renderResult(data) {
+      sessionId = data.session_id || sessionId;
+      sessionEl.textContent = sessionId;
+      const chips = [
+        data.team_id ? `专家团 ${data.team_id}` : "未进专家团",
+        data.expert_name ? `专家 ${data.expert_name}` : "无专家",
+        data.active_skill ? `Skill ${data.active_skill}` : "无活动 Skill",
+        `${data.elapsed_ms} ms`,
+        data.forms && data.forms.length ? "本轮出了表单" : "本轮没有表单",
+      ];
+      summaryEl.innerHTML = chips.map((text) => `<span class="chip${text.includes("没有") ? " warn" : ""}">${escapeHtml(text)}</span>`).join("");
+      replyEl.innerHTML = `<p class="reply">${escapeHtml(data.reply || "（没有可见回复）")}</p>`;
+      if (data.state_patch && Object.keys(data.state_patch).length) {
+        replyEl.insertAdjacentHTML("beforeend", `<details class="step"><summary>state_patch</summary><pre>${escapeHtml(JSON.stringify(data.state_patch, null, 2))}</pre></details>`);
+      }
+      lastEvents = data.events || [];
+      renderSteps();
+      renderForm(data.forms || []);
+    }
+
+    async function ask() {
+      const message = messageEl.value.trim();
+      if (!message) return;
+      statusEl.textContent = "正在跑这一轮。第一次会先加载运行时，可能要等一会儿。";
+      document.querySelector("#send").disabled = true;
+      try {
+        const response = await fetch("/api/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: sessionId,
+            message,
+            mode: modeEl.value,
+            team_id: teamEl.value,
+            expert_id: expertEl.value,
+          }),
+        });
+        const data = await response.json();
+        if (!data.ok) throw new Error(data.trace || data.error || "请求失败");
+        statusEl.textContent = `完成，${data.event_count} 个事件。`;
+        renderResult(data);
+      } catch (error) {
+        statusEl.textContent = "";
+        replyEl.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
+      } finally {
+        document.querySelector("#send").disabled = false;
+      }
+    }
+
+    modeEl.addEventListener("change", fillExperts);
+    teamEl.addEventListener("change", fillExperts);
+    keyOnlyEl.addEventListener("change", renderSteps);
+    document.querySelector("#send").addEventListener("click", ask);
+    document.querySelector("#reset").addEventListener("click", async () => {
+      if (sessionId) {
+        await fetch("/api/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+      }
+      sessionId = "";
+      sessionEl.textContent = "";
+      summaryEl.innerHTML = "";
+      replyEl.innerHTML = "";
+      formEl.innerHTML = "";
+      lastEvents = [];
+      renderSteps();
+      statusEl.textContent = "已新开会话。下一次提问从空上下文开始。";
+    });
+
+    fetch("/api/catalog").then((response) => response.json()).then((data) => {
+      if (!data.ok) throw new Error(data.trace || data.error);
+      catalog = data;
+      teamEl.innerHTML = data.teams.map((team) => `<option value="${escapeHtml(team.team_id)}">${escapeHtml(team.name)}</option>`).join("");
+      if (data.default_team_id) teamEl.value = data.default_team_id;
+      fillExperts();
+      statusEl.textContent = "运行时已加载，可以提问。";
+    }).catch((error) => {
+      statusEl.textContent = "";
+      replyEl.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
+    });
+  </script>
+</body>
+</html>

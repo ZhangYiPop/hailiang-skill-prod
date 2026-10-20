@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
 
-import { groupReleasesByObject, HistoryEvidence } from "@/pages/Workbench";
+import { groupReleasesByObject, HistoryEvidence, orchestrationRuleVersionLabel } from "@/pages/Workbench";
 import type { ObjectRelease } from "@/utils/workbenchApi";
 
 function release(overrides: Partial<ObjectRelease>): ObjectRelease {
@@ -42,6 +42,24 @@ describe("HistoryEvidence", () => {
     details.open = false;
     fireEvent(details, new Event("toggle"));
     await waitFor(() => expect(container.querySelector("pre")).toBeNull());
+  });
+});
+
+describe("orchestrationRuleVersionLabel", () => {
+  it("says whether the loaded rule matches the package on disk", () => {
+    expect(orchestrationRuleVersionLabel({
+      version: "1.1",
+      source_version: "1.1",
+      body_matches: true,
+      state: "current",
+    })).toBe("v1.1 · 已是仓库最新");
+    expect(orchestrationRuleVersionLabel({
+      version: "1.0",
+      source_version: "1.1",
+      body_matches: false,
+      state: "stale",
+    })).toBe("当前 v1.0 · 仓库已是 v1.1");
+    expect(orchestrationRuleVersionLabel(undefined)).toBe("读不到仓库版本");
   });
 });
 

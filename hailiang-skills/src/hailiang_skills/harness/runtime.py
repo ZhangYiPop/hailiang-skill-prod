@@ -15,7 +15,7 @@ from jsonschema import validate, ValidationError as SchemaError
 from hailiang_skills.skill_runtime.models import ChatMessage, ToolCallRequest, ToolSpec
 from .context import compose, serialize_message
 from .contracts import AnswerSubmission, HarnessError, InputArguments, LEGACY_RAG_SEARCH_TOOL, SEARCH_TOOL_NAMES, SKILL_ASSET_SEARCH_TOOL, TERMINAL, TOOL_TERMINAL, identifier, now, normalize_input_arguments, validate_answers
-from .policy import allowed_skills, check_skill, normalize_skill
+from .policy import allowed_skills, check_skill, harness_fallback_expert_id, normalize_skill
 from .wakeup import Wakeup
 from .reply import reply_violations, repair_instruction
 from .evidence import project_evidence
@@ -27,6 +27,102 @@ log = logging.getLogger(__name__)
 
 def object_schema(properties, required=()):
     return {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
+
+
+def identity_form_fields(missing, has_profile):
+    """Input fields for the platform identity gate (role / school stage)."""
+    from hailiang_skills.runtime_bridge.platform_gate import SCHOOL_STAGE_VALUES, USER_ROLE_VALUES
+    fields = []
+    if "user_role" in missing:
+        fields.append({"key": "user_role", "label": "您的身份", "input_type": "single_select", "required": True,
+                       "options": [{"label": v, "value": v} for v in USER_ROLE_VALUES], "scope": "user", "fact_key": "user_role"})
+    if "school_stage" in missing:
+        fields.append({"key": "school_stage", "label": "学段", "input_type": "single_select", "required": True,
+                       "options": [{"label": v, "value": v} for v in SCHOOL_STAGE_VALUES],
+                       "scope": "profile" if has_profile else "session", "fact_key": "school_stage"})
+    return fields
+
+
+_PUBLIC_CARD_FIELDS = ("intent", "object_type", "sub_type", "reason", "title", "description")
+_PUBLIC_FILTER_KEYS = ("region", "grade", "keyword", "category")
+_EXPERT_RUNNING = {"running", "waiting_for_user", "waiting_for_dependency"}
+_EXPERT_FAILED = {"failed", "cancelled"}
+
+
+def public_round_experts(run):
+    """Project expert tasks into the V2 round_experts shape.
+
+    The value of each id is the expert agent id. One expert keeps the status of
+    its latest task, so a later retry does not leave the same id in two buckets.
+    """
+    tasks = sorted(
+        (
+            task for task in run.get("tasks", {}).values()
+            if task.get("kind") == "expert" and str(task.get("expert_id") or "").strip()
+        ),
+        key=lambda task: (task.get("created_at") or "", task.get("id") or ""),
+    )
+    latest = {}
+    order = []
+    for task in tasks:
+        expert_id = str(task["expert_id"]).strip()
+        if expert_id not in latest:
+            order.append(expert_id)
+        latest[expert_id] = task
+    assigned, running, completed, failed = [], [], [], []
+    queued = False
+    for expert_id in order:
+        assigned.append(expert_id)
+        status = latest[expert_id].get("status")
+        if status == "completed":
+            completed.append(expert_id)
+        elif status in _EXPERT_FAILED:
+            failed.append(expert_id)
+        elif status in _EXPERT_RUNNING:
+            running.append(expert_id)
+        else:
+            queued = True
+    if not assigned:
+        round_status = "idle"
+    elif running:
+        round_status = "running"
+    elif queued:
+        round_status = "assigned"
+    elif completed and failed:
+        round_status = "partial"
+    elif failed:
+        round_status = "failed"
+    else:
+        round_status = "completed"
+    return {
+        "assigned_expert_ids": assigned,
+        "running_expert_ids": running,
+        "completed_expert_ids": completed,
+        "failed_expert_ids": failed,
+        "status": round_status,
+    }
+
+
+def public_jump_cards(run):
+    """Copy already validated recommendation cards into the public snapshot."""
+    raw = run.get("jump_cards") or []
+    if isinstance(raw, dict):
+        raw = raw.get("jump_cards") or raw.get("cards") or []
+    cards = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        intent = str(item.get("intent") or "").strip()
+        object_type = str(item.get("object_type") or "").strip()
+        if not intent or not object_type:
+            continue
+        source_filter = item.get("filter") if isinstance(item.get("filter"), dict) else {}
+        card = {key: str(item.get(key) or "") for key in _PUBLIC_CARD_FIELDS}
+        card["intent"] = intent
+        card["object_type"] = object_type
+        card["filter"] = {key: "" if source_filter.get(key) is None else str(source_filter.get(key) or "") for key in _PUBLIC_FILTER_KEYS}
+        cards.append(card)
+    return cards
 
 
 def task_node(kind, goal, parent_id=None, expert_id=None, skill_id=None, completion="完成指定任务", depends_on=()):
@@ -300,6 +396,10 @@ class HarnessRuntime:
             if task["pending_calls"]:
                 self._execute_tools(run_id, task_id, token)
                 return
+            phase = self._orchestration_phase(run, task)
+            if phase:
+                self._execute_orchestration(run_id, task_id, token, run, task, phase)
+                return
             specs = [] if task.get("finalizing") else self.specs(run, task)
             facts = self.facts(run, task)
             if cp.enabled(run) and self._prepare_context_v2(run_id, task_id, token, run, task, facts, specs):
@@ -432,6 +532,9 @@ class HarnessRuntime:
                             live["status"] = "queued"
                             changes.append({"event": "reply_validation_retry", "node_id": task_id})
                             return
+                    if live["kind"] == "main" and self._delegate_fallback(current, live, changes):
+                        self._settle(current, changes, db)
+                        return
                     unresolved = [t["id"] for t in current["tasks"].values() if t["id"] != task_id and t["status"] not in TERMINAL] if live["kind"] == "main" else []
                     if unresolved:
                         live.update(status="waiting_for_dependency", review_dependencies=unresolved)
@@ -442,6 +545,8 @@ class HarnessRuntime:
                         live["structured_result"] = cp.TaskResult(status="completed", conclusion=response.final_text).model_dump()
                     if live["kind"] == "main":
                         current.update(status="completed", result=response.final_text)
+                        if not current.get("jump_cards"):
+                            current["jump_cards"] = self._recommend_cards(current, response.final_text)
                     changes.append({"event": "task_completed", "node_id": task_id})
                 self._settle(current, changes, db)
             self.store.mutate(run_id, after)
@@ -458,6 +563,242 @@ class HarnessRuntime:
             self._fail(run_id, task_id, token, getattr(exc, "code", type(exc).__name__), response)
         finally:
             finished.set()
+
+    @staticmethod
+    def _orchestration_phase(run, task):
+        """Which formal orchestration step the main task must run next."""
+        policy = run["policy"]
+        if task["kind"] != "main" or not (policy.get("orchestrated") or policy.get("direct_expert_id")):
+            return ""
+        if not task.get("head_done"):
+            return "direct" if policy.get("direct_expert_id") else "head"
+        return "" if task["pending_calls"] else "tail"
+
+    @staticmethod
+    def _record_node(run, task, name, arguments, result, changes):
+        """Show a platform step (head / tail / recommend) in the task tree."""
+        node_id, stamp = identifier("tool"), now()
+        run["tools"][node_id] = {
+            "id": node_id, "call_id": identifier("call"), "task_id": task["id"], "parent_id": task["id"],
+            "name": name, "arguments": arguments, "status": "completed", "attempts": 1,
+            "created_at": stamp, "started_at": stamp, "ended_at": stamp, "result": result,
+        }
+        changes.append({"event": "tool_completed", "node_id": node_id})
+
+    def _execute_orchestration(self, run_id, task_id, token, run, task, phase):
+        """Formal team flow: identity gate, orchestrator head, experts, tail, recommend.
+
+        Experts still run as ordinary harness tasks. Only the main task's two
+        model steps are replaced by the platform head and tail.
+        """
+        from hailiang_skills.runtime_bridge.orchestration_head import build_orchestrator_head_prompt, run_orchestrator_head
+        from hailiang_skills.runtime_bridge.orchestration_tail import build_tail_prompt
+        from hailiang_skills.runtime_bridge.consultation_outcome import select_final_reply
+        from hailiang_skills.runtime_bridge.platform_gate import missing_identity_fields
+        from hailiang_skills.runtime_bridge.recommendation_extractor import extract_jump_cards
+
+        policy = run["policy"]
+        view = policy.get("orchestrator") or {}
+        facts = {record.get("key"): record.get("value") for record in self.facts(run, task).values() if record.get("key")}
+        history = [{"role": m["role"], "content": m["content"]} for m in task["messages"]
+                   if m.get("role") in {"user", "assistant"} and m.get("content") and not m.get("tool_calls")]
+        members = [m for m in view.get("members", []) if m.get("expert_id") in policy["experts"]]
+        consult_policy = view.get("consultation_policy") or {}
+        fallback = harness_fallback_expert_id(policy)
+
+        def stamp_call(prompt, output_key):
+            def before(current, changes, _db):
+                if not self._valid(current, task_id, token):
+                    return False
+                if sum(t["model_calls"] for t in current["tasks"].values()) >= current["policy"]["settings"].get("max_run_model_calls", 96):
+                    raise HarnessError("RUN_MODEL_BUDGET_EXCEEDED")
+                live = current["tasks"][task_id]
+                live["model_calls"] += 1
+                live["trace"].append({"execution_id": token, "input": [serialize_message(m) for m in prompt], "tools": [],
+                                      "diagnostics": {"phase": output_key, "estimated_tokens": 0, "fact_versions": {}}})
+                changes.append({"event": "model_started", "node_id": task_id})
+                return True
+            return self.store.mutate(run_id, before)
+
+        def finish_run(current, live, changes, text):
+            live.update(status="completed", result=text, ended_at=now())
+            current.update(status="completed", result=text)
+            changes.append({"event": "task_completed", "node_id": task_id})
+
+        direct_id = str(policy.get("direct_expert_id") or "")
+        if phase == "direct":
+            # Single-expert test: hand the user's words to that expert as they are.
+            def hand_over(current, changes, db):
+                if not self._valid(current, task_id, token):
+                    return
+                live = current["tasks"][task_id]
+                arguments = {"tasks": [{"key": "direct", "expert_id": direct_id, "goal": current["goal"]}]}
+                call_id, node_id = identifier("call"), identifier("tool")
+                current["tools"][node_id] = {"id": node_id, "call_id": call_id, "task_id": task_id, "parent_id": task_id,
+                                             "name": "delegate_tasks", "arguments": arguments, "status": "queued", "attempts": 0,
+                                             "created_at": now(), "started_at": None, "ended_at": None}
+                live["head_done"] = True
+                live["pending_calls"].append(node_id)
+                live["messages"].append(serialize_message(ChatMessage(role="assistant", content="", tool_calls=(ToolCallRequest(call_id, "delegate_tasks", arguments),))))
+                live["status"] = "queued"
+                changes.append({"event": "tool_created", "node_id": node_id})
+                self._settle(current, changes, db)
+            self.store.mutate(run_id, hand_over)
+            return
+
+        if phase == "head":
+            missing = missing_identity_fields(facts)
+            if missing:
+                text = "请先补充身份与学段信息，再继续咨询。"
+                # Formal sessions ask once through a form card. If the card was
+                # skipped (or the answer is still missing) end with the text
+                # prompt instead of asking forever.
+                ask_form = policy.get("identity_gate") == "form" and not task.get("identity_asked")
+                def gate(current, changes, db):
+                    if not self._valid(current, task_id, token):
+                        return
+                    live = current["tasks"][task_id]
+                    self._record_node(current, live, "platform_gate", {"missing": missing}, {"missing": missing}, changes)
+                    if not ask_form:
+                        live["head_done"] = True
+                        finish_run(current, live, changes, text)
+                        self._settle(current, changes, db)
+                        return
+                    arguments = {"title": "补充身份信息", "fields": identity_form_fields(missing, bool(current["profile_id"]))}
+                    call_id, node_id = identifier("call"), identifier("tool")
+                    current["tools"][node_id] = {"id": node_id, "call_id": call_id, "task_id": task_id, "parent_id": task_id,
+                                                 "name": "request_user_input", "arguments": arguments, "status": "queued", "attempts": 0,
+                                                 "created_at": now(), "started_at": None, "ended_at": None}
+                    live["identity_asked"] = True
+                    live["pending_calls"].append(node_id)
+                    live["messages"].append(serialize_message(ChatMessage(role="assistant", content="", tool_calls=(ToolCallRequest(call_id, "request_user_input", arguments),))))
+                    live["status"] = "queued"
+                    changes.append({"event": "tool_created", "node_id": node_id})
+                    self._settle(current, changes, db)
+                self.store.mutate(run_id, gate)
+                return
+            prompt = build_orchestrator_head_prompt(policy.get("soul", ""), view.get("head_rules", ""), members,
+                                                    consult_policy, {"facts": facts, **facts}, history)
+            if not stamp_call(prompt, "orchestrate_head"):
+                return
+            client = self.client_factory(run)
+            plan = run_orchestrator_head(client, soul=policy.get("soul", ""), head_rules=view.get("head_rules", ""),
+                                         members=members, policy=consult_policy, profile={"facts": facts, **facts},
+                                         messages=history, fallback_expert_id=fallback)
+            plan_json = plan.model_dump()
+            def apply_head(current, changes, db):
+                if not self._valid(current, task_id, token):
+                    return
+                live = current["tasks"][task_id]
+                live["trace"][-1]["output"] = {"final_text": json.dumps(plan_json, ensure_ascii=False)}
+                live["head_done"] = True
+                current["orchestration"] = {"action": plan.action, "reason": plan.reason, "subtasks": plan_json["subtasks"]}
+                self._record_node(current, live, "orchestrate_head", {"action": plan.action}, plan_json, changes)
+                if plan.action != "consult":
+                    finish_run(current, live, changes, plan.clarification_question or "请再具体说明一下你的问题。")
+                else:
+                    arguments = {"tasks": [{"key": s.subtask_id, "expert_id": s.target_expert_id, "goal": s.question,
+                                            "depends_on": list(s.depends_on)} for s in plan.subtasks]}
+                    call_id, node_id = identifier("call"), identifier("tool")
+                    current["tools"][node_id] = {"id": node_id, "call_id": call_id, "task_id": task_id, "parent_id": task_id,
+                                                 "name": "delegate_tasks", "arguments": arguments, "status": "queued", "attempts": 0,
+                                                 "created_at": now(), "started_at": None, "ended_at": None}
+                    live["pending_calls"].append(node_id)
+                    live["messages"].append(serialize_message(ChatMessage(role="assistant", content="", tool_calls=(ToolCallRequest(call_id, "delegate_tasks", arguments),))))
+                    live["status"] = "queued"
+                    changes.append({"event": "tool_created", "node_id": node_id})
+                self._settle(current, changes, db)
+            self.store.mutate(run_id, apply_head)
+            return
+
+        rows = []
+        for item in sorted((t for t in run["tasks"].values() if t["kind"] == "expert"), key=lambda t: t["created_at"]):
+            text = str(item.get("result") or "").strip() if item["status"] == "completed" else ""
+            rows.append({"expert_id": item["expert_id"], "mention_name": policy["experts"].get(item["expert_id"], {}).get("name") or item["expert_id"],
+                         "status": "completed" if text else "failed", "text": text})
+        goal = run["goal"]
+        stamped = True
+        if direct_id:
+            # Single expert: no tail. The expert's own answer is the reply.
+            stamped = False
+            done = [row for row in rows if row["status"] == "completed"]
+            text = done[0]["text"] if done else "本次分析尚未完成，暂时无法提供有充分依据的完整结论。"
+            cards = []
+        elif any(row["status"] == "completed" for row in rows):
+            prompt = build_tail_prompt(tail_rules=view.get("tail_rules", ""), expert_results=rows, user_question=goal,
+                                       collaboration_rules=view.get("collaboration_rules", ""))
+            if not stamp_call(prompt, "orchestrate_tail"):
+                return
+            client = self.client_factory(run)
+            final = select_final_reply(rows, client=client, tail_rules=view.get("tail_rules", ""), user_question=goal,
+                                       collaboration_rules=view.get("collaboration_rules", ""))
+            text = str(final.get("text") or "").strip()
+            catalog = view.get("recommend_catalog") or view.get("recommendations")
+            cards = []
+            if text and catalog:
+                try:
+                    cards = extract_jump_cards(client, catalog, recommendation_rules=view.get("recommendation_rules", ""),
+                                               user_question=goal, assistant_reply=text)
+                except Exception:
+                    log.warning("harness recommend step failed", exc_info=True)
+        else:
+            text = "本次分析尚未完成，暂时无法提供有充分依据的完整结论。"
+            cards = []
+            if not stamp_call([ChatMessage(role="system", content="编排尾：没有专家成功作答。")], "orchestrate_tail"):
+                return
+        if not text:
+            raise HarnessError("EMPTY_MODEL_REPLY")
+        def apply_tail(current, changes, db):
+            if not self._valid(current, task_id, token):
+                return
+            live = current["tasks"][task_id]
+            if stamped:
+                live["trace"][-1]["output"] = {"final_text": text}
+                self._record_node(current, live, "orchestrate_tail", {"experts": [r["expert_id"] for r in rows]},
+                                  {"mode": "direct" if sum(r["status"] == "completed" for r in rows) == 1 else "merge", "experts": rows}, changes)
+            if cards:
+                current["jump_cards"] = cards
+                self._record_node(current, live, "recommend", {}, {"jump_cards": cards}, changes)
+            live["tail_done"] = True
+            finish_run(current, live, changes, text)
+            self._settle(current, changes, db)
+        self.store.mutate(run_id, apply_tail)
+
+    def _delegate_fallback(self, run, task, changes):
+        """Send an unmatched main-agent reply to the team fallback expert.
+
+        The model is instructed to call delegate_tasks itself. This runs when it
+        answers directly instead, so greetings and out-of-scope questions still
+        appear as an expert task in the trace.
+        """
+        if task.get("fallback_delegated") or run["policy"].get("orchestrated"):
+            return False
+        if any(item["kind"] == "expert" for item in run["tasks"].values()):
+            return False
+        expert_id = harness_fallback_expert_id(run["policy"])
+        if not expert_id or len(run["tasks"]) >= run["policy"]["settings"].get("max_tasks", 64):
+            return False
+        call_id = identifier("call")
+        node_id = identifier("tool")
+        child = task_node("expert", run["goal"], task["id"], expert_id=expert_id, completion="直接回答用户，最后一句给出下一步动作")
+        if cp.enabled(run):
+            child["brief"] = cp.brief_for(run, child)
+        arguments = {"tasks": [{"key": "fallback", "expert_id": expert_id, "goal": run["goal"]}]}
+        run["tasks"][child["id"]] = child
+        run["tools"][node_id] = {
+            "id": node_id, "call_id": call_id, "task_id": task["id"], "parent_id": task["id"],
+            "name": "delegate_tasks", "arguments": arguments, "status": "waiting_for_dependency",
+            "attempts": 0, "created_at": now(), "started_at": now(), "ended_at": None, "children": [child["id"]],
+        }
+        task["pending_calls"].append(node_id)
+        task["messages"].append(serialize_message(ChatMessage(
+            role="assistant", content="", tool_calls=(ToolCallRequest(call_id, "delegate_tasks", arguments),),
+        )))
+        task.update(fallback_delegated=True, status="queued")
+        changes.append({"event": "task_created", "node_id": child["id"]})
+        changes.append({"event": "tool_created", "node_id": node_id})
+        changes.append({"event": "plan_updated", "node_id": task["id"]})
+        return True
 
     def facts(self, run, task, db=None):
         result = deepcopy(run["seed_facts"])
@@ -1335,6 +1676,10 @@ class HarnessRuntime:
     def public(run):
         labels = {
             "delegate_tasks": "分派专家任务",
+            "platform_gate": "身份学段检查",
+            "orchestrate_head": "编排首：选专家",
+            "orchestrate_tail": "编排尾：出站收口",
+            "recommend": "推荐",
             "execute_skill": "执行专项分析",
             "request_user_input": "补充信息",
             SKILL_ASSET_SEARCH_TOOL: "检索 Skill 资料",
@@ -1349,15 +1694,20 @@ class HarnessRuntime:
         for task in run["tasks"].values():
             actor = "主 agent" if task["kind"] == "main" else run["policy"]["experts"].get(task.get("expert_id"), {}).get("name", "主 agent")
             title = run["policy"]["skills"][task["skill_id"]]["name"] if task["kind"] == "skill" else task["goal"]
+            expert_id = str(task.get("expert_id") or "").strip() or None
             nodes.append({
                 "id": task["id"], "parent_id": task["parent_id"], "kind": task["kind"], "title": title, "actor": actor,
+                "expert_id": expert_id,
                 "status": task["status"], "created_at": task.get("created_at"), "started_at": task["started_at"],
                 "ended_at": task["ended_at"], "error": task.get("error"), "stale": task.get("stale", False),
             })
+        tasks_by_id = run["tasks"]
         for tool in run["tools"].values():
             error = tool.get("error") or (tool.get("result", {}).get("error") if isinstance(tool.get("result"), dict) else None)
+            parent = tasks_by_id.get(tool.get("task_id")) or {}
             nodes.append({
                 "id": tool["id"], "parent_id": tool["task_id"], "kind": "tool",
+                "expert_id": str(parent.get("expert_id") or "").strip() or None,
                 "title": labels.get(tool["name"], "执行专项工具"), "status": tool["status"],
                 "created_at": tool.get("created_at"), "started_at": tool["started_at"], "ended_at": tool["ended_at"],
                 "attempts": tool["attempts"], "error": error,
@@ -1377,7 +1727,34 @@ class HarnessRuntime:
         return {"run_id": run["run_id"], "session_id": run["session_id"], "profile_id": run["profile_id"], "goal": run["goal"], "status": run["status"], "version": run["version"], "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "input_groups": groups,
                 "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "result": run.get("result", ""), "error": run.get("error"),
+                "orchestrated": bool(run["policy"].get("orchestrated")), "orchestration": run.get("orchestration"),
+                "round_experts": public_round_experts(run), "jump_cards": public_jump_cards(run),
                 "input_tokens_estimated": run.get("input_tokens_estimated", 0), "input_tokens_actual": run.get("input_tokens_actual") if run.get("input_token_measurements") else None,
                 "input_token_limit": run["policy"]["settings"].get("max_run_input_tokens", 300000),
                 "completed_count": sum(t["status"] == "completed" for t in run["tasks"].values() if t["kind"] != "main"), "task_count": sum(t["kind"] != "main" for t in run["tasks"].values()),
                 "waiting_count": sum(q["status"] in {"pending", "queued"} for q in run["inputs"].values())}
+
+    def _recommend_cards(self, run, reply):
+        """Fill jump_cards from the frozen recommend catalog when the main reply is done.
+
+        Runs that already stored cards, or policies without a catalog, stay unchanged.
+        A recommend failure leaves an empty list and does not fail the reply.
+        """
+        view = (run.get("policy") or {}).get("orchestrator") or {}
+        catalog = view.get("recommend_catalog") or view.get("recommendations")
+        if not catalog:
+            return []
+        try:
+            from hailiang_skills.runtime_bridge.recommendation_extractor import extract_jump_cards
+            client = self.client_factory(run)
+            return extract_jump_cards(
+                client,
+                catalog,
+                recommendation_rules=str(view.get("recommendation_rules") or ""),
+                user_question=str(run.get("goal") or ""),
+                assistant_reply=str(reply or ""),
+                max_cards=1,
+            )
+        except Exception:
+            log.warning("harness recommend step failed", exc_info=True)
+            return []

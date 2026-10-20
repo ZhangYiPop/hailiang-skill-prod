@@ -36,11 +36,48 @@ WEB_SEARCH_TOOL_NAME = "web_search"
 MCP_TOOL_NAME = "mcp"
 USER_PROFILE_TOOL_NAME = "user_profile"
 SUBJECT_REQUIREMENTS_TOOL_NAME = "subject_requirements"
+QUERY_TRAINING_PLAN_TOOL_NAME = "query_training_plan"
+QUERY_SELECTION_REQUIREMENTS_TOOL_NAME = "query_selection_requirements"
+QUERY_SCORE_LINES_TOOL_NAME = "query_score_lines"
+QUERY_POLICY_TOOL_NAME = "query_policy"
+QUERY_COMPETITION_CATALOG_TOOL_NAME = "query_competition_catalog"
+QUERY_DIAGNOSIS_CARDS_TOOL_NAME = "query_diagnosis_cards"
+QUERY_ACTION_METHODS_TOOL_NAME = "query_action_methods"
+DATABASE_QUERY_TOOLS = (
+    QUERY_TRAINING_PLAN_TOOL_NAME,
+    QUERY_SELECTION_REQUIREMENTS_TOOL_NAME,
+    QUERY_SCORE_LINES_TOOL_NAME,
+    QUERY_POLICY_TOOL_NAME,
+    QUERY_COMPETITION_CATALOG_TOOL_NAME,
+    QUERY_DIAGNOSIS_CARDS_TOOL_NAME,
+    QUERY_ACTION_METHODS_TOOL_NAME,
+)
+DEFAULT_DATABASE_QUERY_LIMIT = 5
+MAX_DATABASE_QUERY_LIMIT = 20
+# 线上只读库尚未接入。connection / connection_env 留空时注册表保持关闭。
+# allowed_views 在表结构确定前保持 {}。填写示例：
+# {
+#   "view_name": {
+#     "purpose": "这个视图回答什么问题",
+#     "columns": ["col_a", "col_b"],
+#     "filterable": ["col_a"],
+#     "filters": {"col_a": "exact"},  # exact 或 like，缺省 exact
+#     "required": ["col_a"],
+#   }
+# }
+DATABASE_CONNECTION_NOTE = (
+    "线上只读库尚未接入，connection 与 connection_env 请留空；留空时工具不会启用。"
+    "接入时填写 SQLAlchemy URL（如 postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME），"
+    "或只填写 connection_env 为环境变量名，由环境变量提供连接串。环境变量优先，不要把账号密码写入仓库。"
+    "allowed_views 等线上表结构确定后再填：视图名对应 purpose、columns、filterable、filters(exact|like)、required。"
+    "在此之前不要写入查询字段。"
+)
 REQUEST_DECLARED_FORM_TOOL_NAME = "request_declared_form"
 RETURN_TO_MAIN_ROUTER_TOOL_NAME = "return_to_main_router"
 TOOL_ORDER = (
     WEB_SEARCH_TOOL_NAME,
     SUBJECT_REQUIREMENTS_TOOL_NAME,
+    *DATABASE_QUERY_TOOLS,
     RAG_TOOL_NAME,
     STATUS_TRACK_TOOL_NAME,
     MCP_TOOL_NAME,
@@ -48,6 +85,26 @@ TOOL_ORDER = (
     REQUEST_DECLARED_FORM_TOOL_NAME,
     RETURN_TO_MAIN_ROUTER_TOOL_NAME,
 )
+
+def _database_query_tool_config(*, description: str) -> dict[str, Any]:
+    """线上只读库查询工具的默认配置。连接和查询字段都留空，表结构确定后再填。"""
+
+    return {
+        "enabled": True,
+        "description": description,
+        "provider": "sql_readonly",
+        # 线上库 SQLAlchemy URL。留空，例如 postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME。
+        "connection": "",
+        # 可选。非空时从该环境变量读取连接串，优先于 connection。不要把账号密码写入仓库。
+        "connection_env": "",
+        "connection_note": DATABASE_CONNECTION_NOTE,
+        "read_only": True,
+        "default_limit": DEFAULT_DATABASE_QUERY_LIMIT,
+        "max_limit": MAX_DATABASE_QUERY_LIMIT,
+        # 线上表结构确定后再填，格式见 DATABASE_CONNECTION_NOTE 上方注释。
+        "allowed_views": {},
+    }
+
 
 DEFAULT_TOOL_REGISTRY_SETTINGS: dict[str, Any] = {
     "tools": {
@@ -88,6 +145,27 @@ DEFAULT_TOOL_REGISTRY_SETTINGS: dict[str, Any] = {
             "enabled": True,
             "description": "选科要求结构化检索：按专业、职业目标或选科组合查询本 skill 的专业选科要求资产。",
         },
+        QUERY_TRAINING_PLAN_TOOL_NAME: _database_query_tool_config(
+            description="按方向与学段查询培养方案和起步建议。查询字段等线上库表结构确定后再配置。",
+        ),
+        QUERY_SELECTION_REQUIREMENTS_TOOL_NAME: _database_query_tool_config(
+            description="查询专业选科要求或省份选科模式。查询字段等线上库表结构确定后再配置。",
+        ),
+        QUERY_SCORE_LINES_TOOL_NAME: _database_query_tool_config(
+            description="查询各省高考分数线。查询字段等线上库表结构确定后再配置。",
+        ),
+        QUERY_POLICY_TOOL_NAME: _database_query_tool_config(
+            description="按省份、年份或类型筛选升学政策。查询字段等线上库表结构确定后再配置。",
+        ),
+        QUERY_COMPETITION_CATALOG_TOOL_NAME: _database_query_tool_config(
+            description="按特长方向、学段或赛事类型查询赛事。查询字段等线上库表结构确定后再配置。",
+        ),
+        QUERY_DIAGNOSIS_CARDS_TOOL_NAME: _database_query_tool_config(
+            description="按行为信号定位学习问题条目。查询字段等线上库表结构确定后再配置。",
+        ),
+        QUERY_ACTION_METHODS_TOOL_NAME: _database_query_tool_config(
+            description="按方法或问题类型查询行动建议。查询字段等线上库表结构确定后再配置。",
+        ),
         STATUS_TRACK_TOOL_NAME: {
             "enabled": True,
             "description": "技能状态跟踪：读取并更新当前对话阶段与已采集信息。",
@@ -171,6 +249,8 @@ def default_tool_registry(config: dict[str, Any] | None = None) -> ToolRegistry:
             enabled = enabled and _is_web_search_http_config_available(settings)
         if tool_name == MCP_TOOL_NAME:
             enabled = enabled and bool(_get_available_mcp_servers_from_settings(settings))
+        if tool_name in DATABASE_QUERY_TOOLS:
+            enabled = enabled and _database_connection_configured(item if isinstance(item, dict) else {})
         description = str(item.get("description") or _default_tool_description(tool_name)).strip()
         capabilities.append(
             ToolCapability(
@@ -284,6 +364,18 @@ def build_tool_specs(
                     "additionalProperties": False,
                 },
                 enabled=subject_requirements_enabled,
+            )
+        )
+    for database_tool in DATABASE_QUERY_TOOLS:
+        if not _has_capability(bundle, database_tool) or not _skill_declares_tool(bundle, database_tool):
+            continue
+        database_settings = _database_query_config(bundle, database_tool)
+        specs.append(
+            ToolSpec(
+                name=database_tool,
+                description=str(database_settings.get("description") or _default_tool_description(database_tool)),
+                parameters_schema=_database_query_parameters_schema(database_settings),
+                enabled=_database_query_callable(bundle, database_tool),
             )
         )
     status_track_capable = _has_capability(bundle, STATUS_TRACK_TOOL_NAME)
@@ -492,6 +584,23 @@ def execute_tool_call(
             ok=True,
             content=json.dumps(response, ensure_ascii=False),
             sources=("subject_selection/subject_requirements.json",),
+        )
+        _log_tool_result(logger, tool_result)
+        return tool_result
+
+    if call.name in DATABASE_QUERY_TOOLS:
+        try:
+            response = run_database_query(bundle, call.name, call.arguments)
+        except Exception as exc:  # noqa: BLE001
+            result = ToolCallResult(id=call.id, name=call.name, ok=False, content="", error=str(exc))
+            _log_tool_result(logger, result)
+            return result
+        tool_result = ToolCallResult(
+            id=call.id,
+            name=call.name,
+            ok=True,
+            content=json.dumps(response, ensure_ascii=False),
+            sources=(f"database:{call.name}",),
         )
         _log_tool_result(logger, tool_result)
         return tool_result
@@ -1426,3 +1535,322 @@ def _build_snippet(content: str, terms: list[str]) -> str:
     if end < len(content):
         snippet += "..."
     return snippet
+
+
+_DATABASE_IDENT_PART = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def run_database_query(bundle: SkillBundle, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """按 allowed_views 对线上只读库做参数化查询。连接或字段未配置时拒绝执行。"""
+
+    if tool_name not in DATABASE_QUERY_TOOLS:
+        raise RuntimeError(f"工具 {tool_name} 不是数据库查询工具。")
+    settings = _database_query_config(bundle, tool_name)
+    if not settings or not bool(settings.get("enabled", False)):
+        raise RuntimeError(f"{tool_name} 未启用。")
+    if not _skill_declares_tool(bundle, tool_name):
+        raise PermissionError(f"当前 Skill 未声明使用 {tool_name} 工具。")
+    if str(settings.get("provider") or "sql_readonly") != "sql_readonly":
+        raise RuntimeError(f"{tool_name} 的 provider 当前仅支持 sql_readonly。")
+    if not _database_connection_configured(settings):
+        raise RuntimeError(f"{tool_name} 的线上库连接未配置。")
+    if not _database_views_ready(settings):
+        raise RuntimeError(f"{tool_name} 的查询字段尚未配置，等线上库表结构确定后再填写 allowed_views。")
+
+    views = settings["allowed_views"]
+    view_name, view = _select_database_view(arguments, views)
+    columns = list(view["columns"])
+    selected = _select_database_columns(arguments.get("fields"), columns)
+    conditions = _database_filter_values(arguments, view)
+    row_limit = _normalize_database_limit(settings, arguments.get("limit"))
+    rows = _execute_readonly_select(
+        _resolve_database_url(settings),
+        view_name=view_name,
+        columns=selected,
+        conditions=conditions,
+        row_limit=row_limit,
+    )
+    response: dict[str, Any] = {
+        "view": view_name,
+        "limit": row_limit,
+        "row_count": len(rows),
+        "rows": rows,
+    }
+    if not rows:
+        response["note"] = "未命中匹配记录。"
+    return response
+
+
+def _database_query_callable(bundle: SkillBundle, tool_name: str) -> bool:
+    settings = _database_query_config(bundle, tool_name)
+    return bool(
+        _is_capability_enabled(bundle, tool_name)
+        and _skill_declares_tool(bundle, tool_name)
+        and settings.get("enabled", False)
+        and _database_views_ready(settings)
+    )
+
+
+def _database_query_config(bundle: SkillBundle, tool_name: str) -> dict[str, Any]:
+    tools = bundle.tool_registry.settings.get("tools", {})
+    if not isinstance(tools, dict):
+        return {}
+    config = tools.get(tool_name, {})
+    return config if isinstance(config, dict) else {}
+
+
+def _database_connection_configured(settings: dict[str, Any]) -> bool:
+    return bool(_resolve_database_url(settings))
+
+
+def _resolve_database_url(settings: dict[str, Any]) -> str:
+    """connection_env 优先。环境变量名已填写但值为空时，不回退到仓库里的 connection。"""
+
+    env_name = str(settings.get("connection_env") or "").strip()
+    if env_name:
+        return os.getenv(env_name, "").strip()
+    return str(settings.get("connection") or "").strip()
+
+
+def _database_views_ready(settings: dict[str, Any]) -> bool:
+    views = settings.get("allowed_views")
+    if not isinstance(views, dict) or not views:
+        return False
+    for view_name, view in views.items():
+        if not isinstance(view_name, str) or not _database_ident_ok(view_name) or not isinstance(view, dict):
+            return False
+        columns = view.get("columns")
+        if not isinstance(columns, list) or not columns or not all(isinstance(item, str) and _database_ident_ok(item) for item in columns):
+            return False
+        filterable = view.get("filterable", [])
+        if not isinstance(filterable, list) or any(not isinstance(item, str) or item not in columns for item in filterable):
+            return False
+        filters = view.get("filters", {})
+        if not isinstance(filters, dict) or any(
+            column not in filterable or mode not in {"exact", "like"} for column, mode in filters.items()
+        ):
+            return False
+        required = view.get("required", [])
+        if not isinstance(required, list) or any(not isinstance(item, str) or item not in filterable for item in required):
+            return False
+    return True
+
+
+def _database_query_parameters_schema(settings: dict[str, Any]) -> dict[str, Any]:
+    if not _database_views_ready(settings):
+        return {"type": "object", "properties": {}, "additionalProperties": False}
+    views = settings["allowed_views"]
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    if len(views) > 1:
+        properties["view"] = {
+            "type": "string",
+            "enum": list(views),
+            "description": "要查询的视图。",
+        }
+        required.append("view")
+    else:
+        required.extend(str(item) for item in next(iter(views.values())).get("required", []))
+    filterable: list[str] = []
+    for view in views.values():
+        for column in view.get("filterable", []):
+            if column not in filterable:
+                filterable.append(column)
+    for column in filterable:
+        modes = {
+            str((view.get("filters") or {}).get(column, "exact"))
+            for view in views.values()
+            if column in (view.get("filterable") or [])
+        }
+        mode_text = next(iter(modes)) if len(modes) == 1 else "exact 或 like"
+        properties[column] = {"type": "string", "description": f"过滤条件，匹配方式 {mode_text}。"}
+    default_limit = settings.get("default_limit", DEFAULT_DATABASE_QUERY_LIMIT)
+    max_limit = settings.get("max_limit", MAX_DATABASE_QUERY_LIMIT)
+    properties["fields"] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "返回列白名单，不传则返回该视图 columns 中的全部列。",
+    }
+    properties["limit"] = {
+        "type": "integer",
+        "description": f"最大返回条数，默认 {default_limit}，上限 {max_limit}。",
+    }
+    schema: dict[str, Any] = {"type": "object", "properties": properties, "additionalProperties": False}
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _select_database_view(arguments: dict[str, Any], views: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    requested = _query_argument_text(arguments, "view")
+    if len(views) == 1:
+        view_name = next(iter(views))
+        if requested and requested != view_name:
+            raise ValueError(f"视图 {requested} 不在允许范围内。")
+        view = views[view_name]
+        return view_name, view if isinstance(view, dict) else {}
+    if requested not in views:
+        allowed = ", ".join(views)
+        raise ValueError(f"参数 view 必填，可选: {allowed}。")
+    view = views[requested]
+    return requested, view if isinstance(view, dict) else {}
+
+
+def _select_database_columns(fields: Any, columns: list[str]) -> list[str]:
+    if fields is None:
+        return list(columns)
+    if not isinstance(fields, list) or not all(isinstance(item, str) for item in fields):
+        raise ValueError("参数 fields 必须是字符串数组。")
+    selected: list[str] = []
+    for item in fields:
+        column = item.strip()
+        if column not in columns:
+            allowed = ", ".join(columns)
+            raise ValueError(f"不支持的返回字段: {column}；可选字段: {allowed}。")
+        if column not in selected:
+            selected.append(column)
+    if not selected:
+        raise ValueError("参数 fields 不能为空。")
+    return selected
+
+
+def _database_filter_values(arguments: dict[str, Any], view: dict[str, Any]) -> list[tuple[str, str, str]]:
+    filterable = [str(item) for item in view.get("filterable", [])]
+    filters = view.get("filters") if isinstance(view.get("filters"), dict) else {}
+    required = [str(item) for item in view.get("required", [])]
+    missing = [column for column in required if not _query_argument_text(arguments, column)]
+    if missing:
+        raise ValueError(f"参数 {', '.join(missing)} 必填。")
+    conditions: list[tuple[str, str, str]] = []
+    for column in filterable:
+        value = _query_argument_text(arguments, column)
+        if not value:
+            continue
+        mode = str(filters.get(column) or "exact")
+        if mode not in {"exact", "like"}:
+            raise ValueError(f"字段 {column} 的匹配方式 {mode} 不受支持。")
+        conditions.append((column, mode, value))
+    return conditions
+
+
+def _normalize_database_limit(settings: dict[str, Any], raw: Any) -> int:
+    try:
+        max_limit = int(settings.get("max_limit", MAX_DATABASE_QUERY_LIMIT))
+    except (TypeError, ValueError):
+        max_limit = MAX_DATABASE_QUERY_LIMIT
+    max_limit = max(1, max_limit)
+    try:
+        default = int(settings.get("default_limit", DEFAULT_DATABASE_QUERY_LIMIT))
+    except (TypeError, ValueError):
+        default = DEFAULT_DATABASE_QUERY_LIMIT
+    default = max(1, min(default, max_limit))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, max_limit))
+
+
+def _execute_readonly_select(
+    url: str,
+    *,
+    view_name: str,
+    columns: list[str],
+    conditions: list[tuple[str, str, str]],
+    row_limit: int,
+) -> list[dict[str, Any]]:
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    engine = create_engine(url, pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            _enforce_database_read_only(conn)
+            statement, params = _compile_readonly_select(
+                conn,
+                view_name=view_name,
+                columns=columns,
+                conditions=conditions,
+                row_limit=row_limit,
+            )
+            fetched = conn.execute(text(statement), params).all()
+            conn.rollback()
+    except SQLAlchemyError as exc:
+        raise RuntimeError(f"线上库查询失败: {type(exc).__name__}") from exc
+    finally:
+        engine.dispose()
+    return [dict(zip(columns, row)) for row in fetched]
+
+
+def _enforce_database_read_only(conn: Any) -> None:
+    if conn.dialect.name == "sqlite":
+        conn.exec_driver_sql("PRAGMA query_only = ON")
+        return
+    conn.exec_driver_sql("SET TRANSACTION READ ONLY")
+
+
+def _compile_readonly_select(
+    conn: Any,
+    *,
+    view_name: str,
+    columns: list[str],
+    conditions: list[tuple[str, str, str]],
+    row_limit: int,
+) -> tuple[str, dict[str, Any]]:
+    preparer = conn.dialect.identifier_preparer
+    selected_sql = ", ".join(preparer.quote(column) for column in columns)
+    view_sql = ".".join(preparer.quote(part) for part in _database_ident_parts(view_name))
+    clauses: list[str] = []
+    params: dict[str, Any] = {"row_limit": row_limit}
+    for index, (column, mode, value) in enumerate(conditions):
+        key = f"p{index}"
+        quoted = preparer.quote(column)
+        if mode == "like":
+            clauses.append(f"CAST({quoted} AS TEXT) LIKE :{key} ESCAPE '\\'")
+            params[key] = _like_pattern(value)
+        else:
+            clauses.append(f"CAST({quoted} AS TEXT) = :{key}")
+            params[key] = value
+    statement = f"SELECT {selected_sql} FROM {view_sql}"
+    if clauses:
+        statement += " WHERE " + " AND ".join(clauses)
+    statement += " LIMIT :row_limit"
+    return statement, params
+
+
+def _database_ident_ok(name: str) -> bool:
+    try:
+        _database_ident_parts(name)
+    except ValueError:
+        return False
+    return True
+
+
+def _database_ident_parts(name: str) -> list[str]:
+    parts = name.split(".")
+    if not 1 <= len(parts) <= 2 or any(not _DATABASE_IDENT_PART.fullmatch(part) for part in parts):
+        raise ValueError(f"非法数据库标识符: {name}")
+    return parts
+
+
+def _like_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _query_argument_text(arguments: dict[str, Any], key: str) -> str:
+    value = arguments.get(key, "")
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value).strip()
+    return ""
+
+
+def _skill_declares_tool(bundle: SkillBundle, name: str) -> bool:
+    deps = bundle.metadata.get("tool_dependency")
+    if isinstance(deps, str):
+        return deps.strip() == name
+    if isinstance(deps, list):
+        return any(str(item).strip() == name for item in deps)
+    return False

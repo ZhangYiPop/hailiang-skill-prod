@@ -20,6 +20,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from hailiang_skills.runtime_bridge.consultation_policy import (
     ConsultationPolicy,
     OrchestrationConfigError,
@@ -36,6 +38,11 @@ from hailiang_skills.runtime_bridge.system_skill import (
 ORCHESTRATOR_V2_ENV = "HAILIANG_ORCHESTRATOR_V2"
 SEED_DIR = Path(__file__).resolve().parents[3] / "config" / "orchestration"
 SYSTEM_SKILLS_DIR = default_system_skills_root()
+RULE_PACKAGE_BODIES = (
+    ("orchestrate_head", "head_rules"),
+    ("orchestrate_tail", "tail_rules"),
+    ("recommend", "recommendation_rules"),
+)
 
 
 def orchestrator_v2_enabled() -> bool:
@@ -229,6 +236,69 @@ def load_system_skill_seed() -> dict[str, Any]:
     for purpose, definition in by_purpose.items():
         payload["system_skills"][purpose] = definition.as_snapshot()
     return payload
+
+
+def _stored_rule_text(text: str) -> tuple[str, str]:
+    """Split an optional SKILL.md header from a saved rule body.
+
+    Publishing the whole file keeps the version header in the text box. Comparison
+    uses the body under that header, and reads ``version`` from it when the
+    revision did not store a package version separately.
+    """
+    raw = str(text or "").strip()
+    lines = raw.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return "", raw
+    end = next((index for index in range(1, len(lines)) if lines[index].strip() == "---"), None)
+    if end is None:
+        return "", raw
+    try:
+        loaded = yaml.safe_load("\n".join(lines[1:end])) or {}
+    except yaml.YAMLError:
+        return "", raw
+    if not isinstance(loaded, dict):
+        return "", raw
+    body = "\n".join(lines[end + 1 :]).strip()
+    return str(loaded.get("version") or "").strip(), body
+
+
+def rule_package_status(payload: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Compare one stored revision with the rule packages currently on disk.
+
+    ``current`` means the stored package version and body both match the file.
+    ``body_current`` means the text matches but this revision never recorded a version.
+    ``stale`` means the file has moved on. ``unknown`` means the package could not be read.
+    """
+    stored = payload if isinstance(payload, dict) else {}
+    try:
+        by_purpose = load_system_skills_by_purpose(SYSTEM_SKILLS_DIR)
+    except SystemSkillError:
+        by_purpose = {}
+    skills = stored.get("system_skills") if isinstance(stored.get("system_skills"), dict) else {}
+    status: dict[str, dict[str, Any]] = {}
+    for purpose, body_key in RULE_PACKAGE_BODIES:
+        definition = by_purpose.get(purpose)
+        skill = skills.get(purpose) if isinstance(skills.get(purpose), dict) else {}
+        header_version, comparable_body = _stored_rule_text(str(stored.get(body_key) or ""))
+        version = str(skill.get("version") or "").strip() or header_version
+        source_version = str(getattr(definition, "version", "") or "").strip()
+        source_body = str(getattr(definition, "body", "") or "").strip()
+        body_matches = bool(source_body) and comparable_body == source_body
+        if definition is None:
+            state = "unknown"
+        elif version and source_version and version == source_version and body_matches:
+            state = "current"
+        elif not version and body_matches:
+            state = "body_current"
+        else:
+            state = "stale"
+        status[purpose] = {
+            "version": version,
+            "source_version": source_version,
+            "body_matches": body_matches,
+            "state": state,
+        }
+    return status
 
 
 def load_seed_rules() -> dict[str, Any]:
