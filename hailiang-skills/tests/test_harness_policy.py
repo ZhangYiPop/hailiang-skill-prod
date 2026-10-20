@@ -74,8 +74,20 @@ def test_formal_session_runs_team_orchestration_with_form_gate(monkeypatch):
     assert frozen['direct_expert_id'] == ''
 
 
+def test_formal_session_with_default_coordinator_still_runs_team_orchestration(monkeypatch):
+    frozen = policy.capture_policy(
+        _team_orchestrator(monkeypatch),
+        _formal_context(expert_id='a', active_expert_id='a', expert_selection_source='deployment_snapshot'),
+    )
+    assert frozen['orchestrated'] is True
+    assert tuple(frozen['experts']) == ('a',)
+
+
 def test_formal_session_with_selected_expert_skips_orchestration(monkeypatch):
-    frozen = policy.capture_policy(_team_orchestrator(monkeypatch), _formal_context(expert_id='a'))
+    frozen = policy.capture_policy(
+        _team_orchestrator(monkeypatch),
+        _formal_context(expert_id='a', expert_selection_source='manual'),
+    )
     assert frozen['orchestrated'] is False
 
 

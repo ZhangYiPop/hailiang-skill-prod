@@ -40,6 +40,23 @@ def validate_skill_boundary(independent, experts):
     return sorted(independent)
 
 
+def has_explicit_expert_selection(context):
+    """Whether the user intentionally narrowed this run to one expert.
+
+    New Harness sessions bind the deployment team coordinator into session
+    metadata for legacy runtime compatibility.  That coordinator is an entry
+    marker, not a user choice: formal team orchestration must still receive
+    the full authorised team and run its head/tail.
+    """
+    meta = context.session_meta if isinstance(context.session_meta, dict) else {}
+    if not str(meta.get("expert_id") or "").strip():
+        return False
+    return str(meta.get("expert_selection_source") or "").strip() not in {
+        "default_coordinator",
+        "deployment_snapshot",
+    }
+
+
 def snapshot_root(snapshot):
     """Resolve the tested object's type and key; candidate revisions only store ids."""
     snapshot = snapshot if isinstance(snapshot, dict) else {}
@@ -68,7 +85,8 @@ def capture_policy(orchestrator, context):
     if context.session_meta.get("expert_team_id") and team is None:
         raise HarnessError("EXPERT_TEAM_NOT_AUTHORIZED", 403)
     allowed_experts = team.member_expert_ids if team else tuple(experts.definitions)
-    if context.session_meta.get("expert_id"):
+    explicit_expert_selection = has_explicit_expert_selection(context)
+    if explicit_expert_selection:
         expert_id = context.session_meta["expert_id"]
         if experts.get(expert_id) is None or (context.session_meta.get("expert_team_id") and expert_id not in allowed_experts):
             raise HarnessError("EXPERT_NOT_AUTHORIZED", 403)
@@ -139,8 +157,8 @@ def capture_policy(orchestrator, context):
     #   * Workbench debug session: the tested object (from the candidate
     #     snapshot) decides — only an expert_team is orchestrated.
     #   * Formal session: the published deployment snapshot carries the team and
-    #     the published orchestration rules. A user who picked one specific
-    #     expert (session expert_id) bypasses orchestration.
+    #     the published orchestration rules. A user who explicitly picked one
+    #     specific expert bypasses orchestration; the default coordinator does not.
     debug_session = bool(context.session_meta.get("workbench_debug_session_id"))
     tested = snapshot_root(context.session_meta.get("configuration_snapshot")) if debug_session else {}
     root_type = tested.get("object_type")
@@ -148,7 +166,7 @@ def capture_policy(orchestrator, context):
     if debug_session:
         scope_allows = root_type == "expert_team"
     else:
-        scope_allows = formal_orchestration_enabled() and team is not None and not context.session_meta.get("expert_id")
+        scope_allows = formal_orchestration_enabled() and team is not None and not explicit_expert_selection
     orchestrated = bool(
         scope_allows
         and not context.session_meta.get("harness_experts_disabled")
