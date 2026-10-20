@@ -69,6 +69,7 @@ import {
   type EvaluationRun,
   type ObjectRelease,
   type ObjectRevision,
+  type OrchestrationRulePackageStatus,
   type OrchestrationRuleRevision,
   type RevisionTestSession,
   type SoulRevision,
@@ -294,6 +295,29 @@ export const HistoryEvidence = memo(function HistoryEvidence({ value }: { value:
     </details>
   );
 });
+
+const ORCHESTRATION_RULE_VERSIONS = [
+  { purpose: "orchestrate_head" as const, label: "编排首" },
+  { purpose: "orchestrate_tail" as const, label: "编排尾" },
+  { purpose: "recommend" as const, label: "推荐" },
+];
+
+export function orchestrationRuleVersionLabel(status: OrchestrationRulePackageStatus | undefined): string {
+  if (!status || status.state === "unknown") return "读不到仓库版本";
+  if (status.state === "current") return `v${status.version} · 已是仓库最新`;
+  if (status.state === "body_current") return `正文与仓库 v${status.source_version} 一致，修订未记录版本号`;
+  if (status.version && status.source_version && status.version !== status.source_version) {
+    return `当前 v${status.version} · 仓库已是 v${status.source_version}`;
+  }
+  if (status.source_version) return `不是仓库最新 · 文件 v${status.source_version}`;
+  return "无法对比仓库版本";
+}
+
+function orchestrationRuleVersionBadge(status: OrchestrationRulePackageStatus | undefined): string {
+  if (status?.state === "current" || (status?.state === "stale" && status.version)) return `v${status.version}`;
+  if (status?.state === "body_current" && status.source_version) return `v${status.source_version}`;
+  return "";
+}
 
 function traceEntityLabel(entity: CandidateTraceEntity | null | undefined, empty = "本轮未经过") {
   if (!entity?.object_key) return empty;
@@ -826,6 +850,11 @@ export default function Workbench() {
     setRecommendationRulesDraft(published.recommendation_rules);
     setRecommendationsDraft(JSON.stringify(published.recommendations ?? [], null, 2));
   }, [headRulesDraft, orchestrationRevisions, recommendationRulesDraft, recommendationsDraft, tailRulesDraft]);
+
+  const loadedOrchestrationRevision = useMemo(
+    () => orchestrationRevisions.find((item) => item.published) ?? orchestrationRevisions[0],
+    [orchestrationRevisions],
+  );
 
   const openObject = useCallback(
     async (objectId: string) => {
@@ -3369,14 +3398,31 @@ export default function Workbench() {
                   <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-4">
                     <p className="text-sm font-medium text-amber-100">编排规则</p>
                     <p className="mt-1 text-xs text-slate-400">编排首、编排尾和推荐分开保存版本。发布后重新激活部署，只影响新会话。推荐由模型输出 jump_cards 语义字段，枚举以 catalog 为准；match_terms 已废弃。</p>
+                    {loadedOrchestrationRevision ? (
+                      <div className="mt-3 space-y-1 text-xs" aria-label="编排规则版本">
+                        <p className="text-slate-400">工作台修订 r{loadedOrchestrationRevision.revision_no}{loadedOrchestrationRevision.published ? " · 已发布" : " · 未发布"}</p>
+                        {ORCHESTRATION_RULE_VERSIONS.map((item) => {
+                          const status = loadedOrchestrationRevision.rule_versions?.[item.purpose];
+                          const latest = status?.state === "current" || status?.state === "body_current";
+                          return (
+                            <p key={item.purpose} className={latest ? "text-emerald-200" : "text-amber-100"}>
+                              {item.label} {orchestrationRuleVersionLabel(status)}
+                            </p>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                     <div className="mt-3 flex flex-wrap gap-1.5" role="tablist" aria-label="编排规则分区">
                       {([
-                        { id: "head" as const, label: "编排首" },
-                        { id: "tail" as const, label: "编排尾" },
-                        { id: "recommend" as const, label: "推荐规则" },
-                        { id: "catalog" as const, label: "推荐清单" },
+                        { id: "head" as const, label: "编排首", purpose: "orchestrate_head" as const },
+                        { id: "tail" as const, label: "编排尾", purpose: "orchestrate_tail" as const },
+                        { id: "recommend" as const, label: "推荐规则", purpose: "recommend" as const },
+                        { id: "catalog" as const, label: "推荐清单", purpose: null },
                       ]).map((tab) => {
                         const active = orchestrationRulesTab === tab.id;
+                        const badge = tab.purpose
+                          ? orchestrationRuleVersionBadge(loadedOrchestrationRevision?.rule_versions?.[tab.purpose])
+                          : "";
                         return (
                           <button
                             key={tab.id}
@@ -3390,7 +3436,7 @@ export default function Workbench() {
                                 : "border border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/20 hover:text-slate-200"
                             }`}
                           >
-                            {tab.label}
+                            {badge ? `${tab.label} ${badge}` : tab.label}
                           </button>
                         );
                       })}

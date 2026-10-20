@@ -6,17 +6,21 @@ from hailiang_skills.api.configuration_sync import synchronize_configuration
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.harness import policy
 from hailiang_skills.runtime_bridge.consultation_policy import parse_consultation_policy
-from hailiang_skills.runtime_bridge.expert_bundle import load_local_expert_registry
+from hailiang_skills.runtime_bridge.expert_bundle import (
+    ExpertDefinition,
+    ExpertRegistry,
+    load_local_expert_registry,
+)
 from hailiang_skills.runtime_bridge.expert_team_bundle import (
     ExpertTeamBundleError,
     load_expert_team_bundle,
-    load_local_expert_team_registry,
 )
 from hailiang_skills.skill_runtime.skill_registry import load_local_skill_registry
 from hailiang_skills.workbench.domain import ConsultationPolicy
 from hailiang_skills.workbench.orchestration import (
     load_seed_rules,
     preserve_orchestrator_binding,
+    rule_package_status,
     validate_expert_team_orchestration,
 )
 
@@ -28,13 +32,36 @@ def _experts():
     return load_local_expert_registry(ROOT / "runtime_agents", load_local_skill_registry(ROOT / "runtime_skills"))
 
 
+def _registry_for_team_file(team_dir: Path) -> ExpertRegistry:
+    """Cover the seed roster even when those expert packages are not in this checkout."""
+    raw = yaml.safe_load((team_dir / "team.yaml").read_text(encoding="utf-8"))
+    definitions = dict(_experts().definitions)
+    for member in raw["members"]:
+        expert_id = str(member["expert_id"])
+        definitions.setdefault(
+            expert_id,
+            ExpertDefinition(expert_id, str(member.get("mention_name") or expert_id), "# 规则", ()),
+        )
+    return ExpertRegistry(definitions)
+
+
 def test_student_growth_team_publishes_consultation_policy():
-    team = load_local_expert_team_registry(ROOT / "runtime_agent_teams", _experts()).require("student_growth_expert_team")
+    team_dir = ROOT / "runtime_agent_teams" / "student_growth_expert_team"
+    team = load_expert_team_bundle(team_dir, _registry_for_team_file(team_dir))
 
     assert team.consultation_policy == ConsultationPolicy(max_subtasks=3, max_parallel=3, max_depth=1)
-    assert team.fallback_expert_id == "career_plan_expert"
+    assert team.coordinator_expert_id == "e_career_planner"
+    assert team.fallback_expert_id == "e_career_planner"
     assert "depends_on" in team.collaboration_rules
-    assert team.member_for_expert("family_education_expert").applicable_stages == ("小学", "初中", "高中")
+    assert [member.expert_id for member in team.members] == [
+        "e_career_planner",
+        "talent_dev_specialist",
+        "career_explore_mentor",
+        "study_abroad_consultant",
+        "academic_coach",
+        "admission_specialist",
+    ]
+    assert team.member_for_expert("admission_specialist").mention_name == "升学指导专家"
 
 
 def test_parse_consultation_policy_migrates_allow_parallel():
@@ -50,8 +77,8 @@ def test_parse_consultation_policy_migrates_allow_parallel():
 
 
 def test_team_yaml_rejects_foreign_fallback_and_unknown_stage(tmp_path: Path):
-    experts = _experts()
     source = ROOT / "runtime_agent_teams" / "student_growth_expert_team"
+    experts = _registry_for_team_file(source)
     target = tmp_path / "team"
     target.mkdir()
     (target / "TEAM.md").write_text((source / "TEAM.md").read_text(encoding="utf-8"), encoding="utf-8")
@@ -64,7 +91,7 @@ def test_team_yaml_rejects_foreign_fallback_and_unknown_stage(tmp_path: Path):
     except ExpertTeamBundleError as exc:
         assert "fallback_expert_id" in str(exc)
 
-    raw["fallback_expert_id"] = "career_plan_expert"
+    raw["fallback_expert_id"] = "e_career_planner"
     raw["members"][0]["applicable_stages"] = ["大学"]
     (target / "team.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     try:
@@ -239,3 +266,35 @@ def test_seed_rules_include_system_skill_bodies_and_catalog():
     assert seed["recommend_catalog"]["items"]
     assert "orchestrate_head" in seed["system_skills"]
     assert seed["system_skills"]["recommend"]["catalog"]["items"]
+
+
+def test_seed_rules_match_package_versions():
+    status = rule_package_status(load_seed_rules())
+    assert status["orchestrate_head"]["state"] == "current"
+    assert status["orchestrate_head"]["source_version"] == "1.1"
+    assert status["orchestrate_tail"]["source_version"] == "1.2"
+    assert status["recommend"]["state"] == "current"
+
+
+def test_pasted_skill_file_with_header_counts_as_current():
+    seed = load_seed_rules()
+    seed["head_rules"] = (ROOT / "runtime_system_skills/orchestrate_head_default/SKILL.md").read_text(encoding="utf-8")
+    seed["system_skills"] = {}
+    status = rule_package_status(seed)
+    assert status["orchestrate_head"]["body_matches"] is True
+    assert status["orchestrate_head"]["version"] == "1.1"
+    assert status["orchestrate_head"]["state"] == "current"
+
+
+def test_rule_package_status_marks_older_snapshot_stale():
+    seed = load_seed_rules()
+    seed["system_skills"]["orchestrate_head"]["version"] = "1.0"
+    seed["head_rules"] = "旧编排首正文"
+    status = rule_package_status(seed)
+    assert status["orchestrate_head"] == {
+        "version": "1.0",
+        "source_version": "1.1",
+        "body_matches": False,
+        "state": "stale",
+    }
+    assert status["orchestrate_tail"]["state"] == "current"

@@ -21,6 +21,8 @@
 
 串并行由本轮 `depends_on` 决定：无依赖则在 `max_parallel` 内并行；有依赖则等待上游。旧字段 `allow_parallel` 仅兼容读取：true→max_parallel=max_subtasks，false→1。
 
+按专家负责范围归并，不按 skill 归并。同一位专家范围内的多个问题放进同一个子任务，在 `question` 里逐条保留；这些条数不计入 `max_subtasks`。作答顺序、skill 选择和回答格式由专家自己的规则决定，本步不写。只有需要不同成员分别交付时才拆成多个子任务。
+
 澄清只用于“不补就选不出专家，或不知道该拆成几件事”。拒答时不拆子任务。
 
 ## 4. 输出要求
@@ -32,7 +34,7 @@
   "subtasks": [
     {
       "subtask_id": "st_1",
-      "question": "交给专家的子问题",
+      "question": "1. 用户原话中的问题一\n2. 用户原话中的问题二",
       "target_expert_id": "本轮已发布成员的 expert_id",
       "priority": 1,
       "depends_on": []
@@ -46,4 +48,4 @@
 
 ## 5. 禁止
 
-维护固定专家名单、直接回答业务结论、超过 max_subtasks、选用名册外专家、让专家再次编排。
+维护固定专家名单、直接回答业务结论、超过 max_subtasks、选用名册外专家、让专家再次编排、因 skill 不同拆开同一专家的问题、在子任务里规定问答规则。

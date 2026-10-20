@@ -19,6 +19,8 @@ def test_default_system_skills_load():
     assert by_purpose["recommend"].catalog is not None
     assert by_purpose["recommend"].catalog["items"]
     assert "职责" in by_purpose["orchestrate_head"].body
+    assert "不按 skill 归并" in by_purpose["orchestrate_head"].body
+    assert "逐条保留原问题" in by_purpose["orchestrate_head"].body
     assert by_purpose["orchestrate_head"].frontmatter["skill_type"] == "system"
 
 

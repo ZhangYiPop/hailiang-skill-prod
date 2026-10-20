@@ -5503,6 +5503,9 @@ class WorkbenchService:
             result["recommend_catalog"] = payload["recommend_catalog"]
         if isinstance(payload.get("system_skills"), dict) and payload["system_skills"]:
             result["system_skills"] = payload["system_skills"]
+        from hailiang_skills.workbench.orchestration import rule_package_status
+
+        result["rule_versions"] = rule_package_status(payload)
         return result
 
     @staticmethod
