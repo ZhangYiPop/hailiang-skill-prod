@@ -4325,7 +4325,7 @@ class WorkbenchService:
                 skills=tuple(LockedSkill(str(item.get("object_key") or ""), f"v{int(item.get('release_no') or 0)}") for item in locks),
                 brief=str(payload.get("brief") or ""),
                 max_iters=max(1, min(int(budget.get("max_iters", 4)), 4)),
-                max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 3)),
+                max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 8)),
                 capabilities=tuple(str(item) for item in payload.get("capabilities", []) if str(item)) or (
                     "execute_skill", "request_declared_form", "read_effective_facts",
                 ),
@@ -4528,7 +4528,7 @@ class WorkbenchService:
                 {str(item.get("object_key") or "") for item in locks if str(item.get("object_key") or "")},
             ))
             budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
-            for key, maximum in (("max_iters", 4), ("max_skill_calls", 3)):
+            for key, maximum in (("max_iters", 4), ("max_skill_calls", 8)):
                 value = int(budget.get(key, maximum) or maximum)
                 if value < 1 or value > maximum:
                     errors.append(f"{key} 必须在 1-{maximum} 之间")

@@ -776,7 +776,7 @@ class AgentScopeExpertRuntime:
             rules_markdown=str(payload.get("rules_markdown") or definition.rules_markdown),
             skills=locks or definition.skills,
             max_iters=max(1, min(int(budget.get("max_iters", definition.max_iters)), 4)),
-            max_skill_calls=max(1, min(int(budget.get("max_skill_calls", definition.max_skill_calls)), 3)),
+            max_skill_calls=max(1, min(int(budget.get("max_skill_calls", definition.max_skill_calls)), 8)),
             capabilities=capabilities or definition.capabilities,
         )
 
@@ -798,7 +798,7 @@ class AgentScopeExpertRuntime:
             skills=locks,
             brief=str(payload.get("brief") or "").strip(),
             max_iters=max(1, min(int(budget.get("max_iters", 4)), 4)),
-            max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 3)),
+            max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 8)),
             capabilities=tuple(str(item) for item in payload.get("capabilities", []) if str(item)) or (
                 "execute_skill", "request_declared_form", "read_effective_facts",
             ),

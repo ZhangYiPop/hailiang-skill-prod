@@ -1493,3 +1493,95 @@ def test_expert_prompt_includes_active_profile_facts_and_forbids_reasking_them()
     assert "当前孩子的有效事实" in prompt
     assert "不得重复询问" in prompt
     assert "初中" in prompt
+
+
+# --- M-02: 同一专家一轮内调用两个 Skill（串行 / 并行 / 预算上限） ---
+
+def _multi_skill_runtime(skill_registry):
+    """挂两个已授权 Skill 的调试专家：多元路径规划 + 学科参谋。"""
+    definition = ExpertDefinition(
+        agent_id="path_subject_expert",
+        name="路径与学科专家",
+        rules_markdown="先做选科判断，再按结论匹配升学路径；两类信息独立时可分别调用。",
+        skills=(LockedSkill("multi_path_planning", "v1"), LockedSkill("subject_advisor", "v1")),
+        max_skill_calls=8,
+    )
+    runtime = AgentScopeExpertRuntime(
+        ExpertRegistry(definitions={definition.agent_id: definition}),
+        skill_registry,
+    )
+    return definition, runtime
+
+
+def test_expert_serial_skill_calls_bill_both_and_record_handoff():
+    """串行：先收回 Skill A 的结论，再用该结论作为任务调 Skill B。"""
+    skill_registry = _runtime_registry()
+    definition, runtime = _multi_skill_runtime(skill_registry)
+    context = SessionContext()
+    state = runtime._state(context, definition)
+    state["budget"] = {"max_iters": 4, "max_skill_calls": 8, "skill_calls": 0}
+
+    first = runtime._execute_skill(
+        definition, state, context, "multi_path_planning",
+        "孩子初二，想知道适合走哪条升学路径，给推荐方向。", None)
+    assert first["status"] == "scheduled"
+    assert state["budget"]["skill_calls"] == 1
+
+    # 串行第二步：以第一个 Skill 的结论为输入调第二个 Skill
+    second_task = f"基于上述路径结论（{state['handoff_summary'][:80]}），看选科该怎么定。"
+    second = runtime._execute_skill(
+        definition, state, context, "subject_advisor", second_task, None)
+    assert second["status"] == "scheduled"
+    assert state["budget"]["skill_calls"] == 2
+
+    trace = state["call_trace"]
+    assert [item["skill_id"] for item in trace] == ["multi_path_planning", "subject_advisor"]
+    assert trace[1]["task"].startswith("基于上述路径结论")
+    # 串行第二步以第一个 Skill 的结论作为输入，两次调用都计费
+    assert sum(1 for e in context.event_trace if e["event_type"] == "expert_skill_executed") == 2
+    assert context.session_meta["expert_requested_skill_id"] == "subject_advisor"
+
+
+def test_expert_parallel_independent_skill_calls_bill_both():
+    """并行：两个互不依赖的 Skill 在同一轮内分别调用，各自计费。"""
+    skill_registry = _runtime_registry()
+    definition, runtime = _multi_skill_runtime(skill_registry)
+    context = SessionContext()
+    state = runtime._state(context, definition)
+    state["budget"] = {"max_iters": 4, "max_skill_calls": 8, "skill_calls": 0}
+
+    a = runtime._execute_skill(
+        definition, state, context, "multi_path_planning",
+        "孩子适合走哪条升学路径？", None)
+    b = runtime._execute_skill(
+        definition, state, context, "subject_advisor",
+        "数学这个学科一般怎么规划？", None)
+
+    assert a["status"] == "scheduled" and b["status"] == "scheduled"
+    assert state["budget"]["skill_calls"] == 2
+    trace = state["call_trace"]
+    assert [item["skill_id"] for item in trace] == ["multi_path_planning", "subject_advisor"]
+    # 并行两步互不引用对方结论
+    assert "基于上述" not in trace[0]["task"]
+    assert "基于上述" not in trace[1]["task"]
+    assert sum(1 for e in context.event_trace if e["event_type"] == "expert_skill_executed") == 2
+
+
+def test_expert_skill_calls_stop_at_budget_ceiling():
+    """预算上限：本轮预算 max_skill_calls=2，第三次调用必须被拒。"""
+    skill_registry = _runtime_registry()
+    definition, runtime = _multi_skill_runtime(skill_registry)
+    context = SessionContext()
+    state = runtime._state(context, definition)
+    state["budget"] = {"max_iters": 4, "max_skill_calls": 2, "skill_calls": 0}
+
+    runtime._execute_skill(definition, state, context, "multi_path_planning", "路径推荐", None)
+    runtime._execute_skill(definition, state, context, "subject_advisor", "选科判断", None)
+    assert state["budget"]["skill_calls"] == 2
+
+    with pytest.raises(ValueError, match="已达到本轮 Skill 调用上限"):
+        runtime._execute_skill(definition, state, context, "multi_path_planning", "再要一次路径推荐", None)
+
+    # 未授权 Skill 仍然先被拒，不看预算
+    with pytest.raises(ValueError, match="未授权 Skill"):
+        runtime._execute_skill(definition, state, context, "score_improve", "提分", None)
