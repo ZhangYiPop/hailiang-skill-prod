@@ -81,6 +81,29 @@ data: {
 
 公开数据不含专家内部推理、完整提示词、原始工具参数、完整事实库或 trace。
 
+### 4.1 每个完整帧的展示规则
+
+前端在收到任意 `state`、`done_suspended`、`done_timeout` 或 `done` 后，先用 `assistant_message_id` 找到同一个助手气泡，再以整个 `data.snapshot` 替换该气泡的任务状态。**事件名只表示本次连接应如何处理；具体展示内容只依据当前快照字段。**
+
+| 当前快照条件 | 可立即展示 | 不应提前展示 |
+| --- | --- | --- |
+| `run.phase=planning`，`dispatch=null` | “正在理解问题并拆分任务”、主任务 `action` | 专家列表、专家结论、推荐卡。 |
+| `run.dispatch` 非空，或帧 `reason=dispatch_completed` | “已拆分 N 个专家任务”、每位专家的名称、业务 `brief`、本次 `task_brief`、完成条件、依赖和可执行/阻塞数量 | 将 `plan_status=assigned` 解释为该专家已经开始执行。实际状态看 `execution_status` 和 `nodes`。 |
+| `run.phase=experts_running`，存在专家/Skill/工具节点 | 专家树、节点 `phase`、`action`、重试次数、失败原因；`waiting_on` 非空时显示具体等待对象 | 工具节点完成时显示“专家已完成”。只有专家节点有合法 `result` 且进入 `completed` 或 `partial` 才算专家完成。 |
+| 专家节点 `result` 非空 | 该专家的结论、关键依据、限制与未解决事项；同时仍显示“等待编排器汇总”，直到 `synthesis_status=completed` | 专家内部推理、完整工具输入输出或未校验的中间文本。 |
+| `input_queue.active_request_id` 指向状态为 `pending` 的 `input_request` | 该请求的表单，标明 `actor` 与所属专家；活动组的“第 N/M 题” | 同组其他请求或后续 queued 组的输入控件。它们只显示题数和专家摘要。 |
+| 有 `input_groups`，但 `active_request_id=null` 或请求为 `queued` | “后续待回答问题组”及每组题数、专家摘要 | 任何可填写表单。前端不能自行激活下一题或下一组。 |
+| `run.status=waiting_for_user` 且事件为 `done_suspended` | 当前表单和“等待你补充信息”；按 `persistence` 保存为可继续记录 | “任务失败”或“任务已结束”。其他专家停止前可能只收到 `state`，不会有 `done_suspended`。 |
+| `synthesis_status=running` 或 `run.phase=synthesizing` | “编排器正在汇总专家结论” | 最终正文已完成。 |
+| `recommendations_status=running` 或 `run.phase=recommending` | “正在生成相关推荐” | 推荐卡或“已生成推荐”。 |
+| `recommendations_status=completed` 且 `jump_cards` 非空 | 推荐卡；以 `jump_cards[].id` 作为稳定渲染 key | 在 `empty`、`unavailable`、`failed` 状态渲染空白推荐卡。 |
+| `recommendations_status=empty` / `unavailable` / `failed` | 分别显示“本轮无匹配推荐”／“当前未配置推荐”／“推荐暂不可用，专家结论已保留” | 将推荐问题升级为整轮失败。 |
+| `messages[]` 中 final 消息 `status=completed`，或收到终态 `done` | 最终正文；`done` 依 `persistence` 覆盖同一气泡并写入历史 | 为最终正文新建第二个助手气泡。 |
+| `done_timeout` | 已有完整快照与“仍在处理中”；按 `persistence` 保存可续接记录 | 将运行中任务标记失败或本地推进任务。 |
+| `done` 且 `outcome=cancelled` | 结束本地加载状态，并依 `should_discard_staged` 清理暂存 | 写入用户历史或继续显示未完成最终回复。 |
+
+当快照不含某个可选字段时，前端应隐藏对应区域，不用旧帧残留内容补齐。断线重连、答案提交后的续流和重复帧都遵循同一规则：按 `seq` 去重后整体替换，不做本地状态机推断。
+
 ## 5. 问题组、部分回答与去重
 
 首个追问立即创建活动单题组。活动组存在时到达的新问题进入一个后续 `queued` 组；该组激活后，再到达的问题只能进入新的后续组，不能插入或改变当前组。每次只展示活动组的 `active_request_id` 一张卡片；本组剩余题和后续组只显示进度摘要。
