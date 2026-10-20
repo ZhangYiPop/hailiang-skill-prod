@@ -9,8 +9,8 @@ SSE v3 使用 V2 风格的**完整状态帧**。除 `ping` 外，所有帧的 `d
 | event | 语义 | 连接行为 |
 | --- | --- | --- |
 | `state` | 任一公开状态改变 | 保持连接 |
-| `suspended` | 无可运行节点且活动问题组等待用户 | 关闭本次有限流 |
-| `timeout` | 有限流达到等待边界，run 仍在后台运行 | 关闭本次有限流 |
+| `done_suspended` | 无可运行节点且活动问题组等待用户，保存可续接记录 | 关闭本次有限流 |
+| `done_timeout` | 有限流达到等待边界、run 仍在后台运行，保存可续接记录 | 关闭本次有限流 |
 | `done` | run 已终态，公开记录已可落库 | 关闭本次有限流 |
 | `ping` | SSE 注释保活 | 忽略 |
 
@@ -57,7 +57,12 @@ data: {
 
 `seq` 与 SSE `id` 相同。断线后使用最后一个有效 `id` 作为 `after` 或 `Last-Event-ID` 续传；同一会话范围中其他 run 被过滤后，序号可以不连续。游标无效时服务端发送 `resync_required` 并关闭，客户端重新获取 `/harness` 快照。
 
-`done` 额外含 `record_version`、`record_url` 和最终消息版本。转发端以 `run_id + record_version` 幂等保存历史消息。`suspended` 和 `timeout` 只是传输边界，绝不表示任务失败。
+`done` 额外含 `record_version`、`record_url` 和最终消息版本。每帧另含 `client_run_id`、稳定的 `assistant_message_id` 与 `persistence`：转发端以它明确决定只暂存、写/覆盖同一对话记录或丢弃停止任务的暂存。`done_suspended` 和 `done_timeout` 不是任务失败。
+
+
+### BFF 保存指令
+
+每个事件的 `persistence` 包含 `should_store_snapshot`、`should_save_history`、`replace_staged`、`should_discard_staged`、`terminal` 与 `record_kind`。`state` 只暂存；`done_suspended` 保存“等待回答”记录；`done_timeout` 保存“仍在处理”记录；`done` 在完成、受限完成或失败时保存最终记录，`outcome=cancelled` 时丢弃暂存且不写历史。所有任务进度、表单、专家结论和最终正文使用相同的 `assistant_message_id` 更新一个助手气泡。
 
 ## 4. 公开快照
 
@@ -94,7 +99,7 @@ Accept: text/event-stream
 Content-Type: application/json
 ```
 
-同一个 `submission_id` 和相同内容幂等；旧版本或非活动卡片返回 `409`。带 `Accept: text/event-stream` 的成功响应不是普通 JSON：它先持久化答案，再在**同一 HTTP 响应**中继续发送 `state → … → suspended/timeout/done`。前端和 BFF 不得本地改卡片状态，也不需要额外调用“恢复”接口。
+同一个 `submission_id` 和相同内容幂等；旧版本或非活动卡片返回 `409`。带 `Accept: text/event-stream` 的成功响应不是普通 JSON：它先持久化答案，再在**同一 HTTP 响应**中继续发送 `state → … → done_suspended/done_timeout/done`。前端和 BFF 不得本地改卡片状态，也不需要额外调用“恢复”接口。
 
 ## 7. 状态规则
 
@@ -107,7 +112,7 @@ Content-Type: application/json
 | input request | `queued → pending → answered/skipped`；取消或失效后为 `expired` |
 | message | `streaming → completed/interrupted/blocked` |
 
-`outcome=partial` 是受限业务结论，不是技术错误。只有没有可运行节点、且活动组等待用户时才发送 `suspended`。
+`outcome=partial` 是受限业务结论，不是技术错误。只有没有可运行节点、且活动组等待用户时才发送 `done_suspended`。
 
 编排首成功返回 `consult` 后，服务端先发送 `state(reason=dispatch_completed)`，前端应立即显示已规划的专家列表和任务 brief；随后再根据 `nodes[]` 显示实际启动、Skill/工具和专家结论。`clarify` 或 `reject_out_of_scope` 不产生专家分派摘要。
 

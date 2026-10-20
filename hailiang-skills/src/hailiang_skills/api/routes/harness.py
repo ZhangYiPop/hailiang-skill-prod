@@ -253,10 +253,10 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
         except ValueError:
             raise HTTPException(400, "INVALID_EVENT_CURSOR")
         try:
-            wait_seconds = float(os.getenv("HAILIANG_SSE_V3_RUN_STREAM_SECONDS", "290"))
+            wait_seconds = float(os.getenv("HAILIANG_SSE_V3_RUN_STREAM_SECONDS", "600"))
         except ValueError:
-            wait_seconds = 290.0
-        wait_seconds = min(295.0, max(0.1, wait_seconds))
+            wait_seconds = 600.0
+        wait_seconds = min(600.0, max(0.1, wait_seconds))
         initial_snapshot = "after" not in request.query_params and not request.headers.get("Last-Event-ID")
 
         def filtered_snapshot(snapshot):
@@ -268,16 +268,36 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                 "messages": [item for item in snapshot["messages"] if item.get("run_id") == run_id],
             }
 
+        def persistence(kind, public_run):
+            if kind == 'state':
+                return {'should_store_snapshot': True, 'should_save_history': False, 'replace_staged': False,
+                        'should_discard_staged': False, 'terminal': False, 'record_kind': 'progress'}
+            if kind == 'done_suspended':
+                return {'should_store_snapshot': True, 'should_save_history': True, 'replace_staged': True,
+                        'should_discard_staged': False, 'terminal': False, 'record_kind': 'waiting_for_user'}
+            if kind == 'done_timeout':
+                return {'should_store_snapshot': True, 'should_save_history': True, 'replace_staged': True,
+                        'should_discard_staged': False, 'terminal': False, 'record_kind': 'running'}
+            if public_run.get('status') == 'cancelled':
+                return {'should_store_snapshot': False, 'should_save_history': False, 'replace_staged': False,
+                        'should_discard_staged': True, 'terminal': True, 'record_kind': 'cancelled'}
+            return {'should_store_snapshot': True, 'should_save_history': True, 'replace_staged': True,
+                    'should_discard_staged': False, 'terminal': True, 'record_kind': 'final'}
+
         def wire_state(snapshot, kind='state', reason='updated', extra=None):
-            """V2-style public frame: every non-ping frame contains a whole snapshot."""
+            """V2-shaped full snapshot plus explicit BFF persistence instruction."""
             filtered = filtered_snapshot(snapshot)
             public_run = next((item for item in filtered['runs'] if item['id'] == run_id), {})
             payload = {
-                'protocol': 'hailiang.sse.v3', 'run_id': run_id, 'seq': filtered['cursor'],
-                'session_id': session_id, 'profile_id': profile_id,
+                'protocol': 'hailiang.sse.v3', 'run_id': run_id, 'harness_run_id': run_id,
+                'client_run_id': public_run.get('client_run_id'),
+                'assistant_message_id': public_run.get('assistant_message_id') or f'msg_harness_{run_id}',
+                'record_version': public_run.get('record_version', public_run.get('version', 0)),
+                'seq': filtered['cursor'], 'session_id': session_id, 'profile_id': profile_id,
                 'status': public_run.get('status', 'running'), 'outcome': public_run.get('outcome'),
+                'stream_status': 'waiting_for_user' if kind == 'done_suspended' else ('running' if kind == 'done_timeout' else public_run.get('status', 'running')),
                 'reason': reason, 'timestamp': datetime.now(timezone.utc).isoformat(),
-                'snapshot': filtered,
+                'persistence': persistence(kind, public_run), 'snapshot': filtered,
             }
             if extra:
                 payload.update(extra)
@@ -289,6 +309,15 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
             payload = dict(item)
             if 'snapshot' in payload:
                 payload['snapshot'] = filtered_snapshot(payload['snapshot'])
+            public_run = next((row for row in payload.get('snapshot', {}).get('runs', []) if row['id'] == run_id), {})
+            kind = 'done' if payload.get('type') == 'done' else 'state'
+            payload.update({
+                'harness_run_id': run_id, 'client_run_id': public_run.get('client_run_id'),
+                'assistant_message_id': public_run.get('assistant_message_id') or f'msg_harness_{run_id}',
+                'record_version': public_run.get('record_version', public_run.get('version', 0)),
+                'stream_status': public_run.get('status', 'running'),
+                'persistence': persistence(kind, public_run),
+            })
             return payload
 
         async def finite_stream():
@@ -314,10 +343,10 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                     return
                 if public_run and public_run["status"] == "waiting_for_user":
                     pending = [item["id"] for item in snapshot["input_requests"] if item["status"] == "pending"]
-                    event = wire_state(snapshot, 'suspended', 'waiting_for_user', {
+                    event = wire_state(snapshot, 'done_suspended', 'waiting_for_user', {
                         'resume_after': cursor, 'pending_request_ids': pending,
                     })
-                    yield f"id: {cursor}\nevent: suspended\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    yield f"id: {cursor}\nevent: done_suspended\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                     return
             last_heartbeat = monotonic()
             while not await request.is_disconnected():
@@ -342,8 +371,8 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                         return
                 if monotonic() - started >= wait_seconds:
                     snapshot = filtered_snapshot(await asyncio.to_thread(runtime.store.public_snapshot, session_id, user_id, profile_id))
-                    event = wire_state(snapshot, 'timeout', 'forwarder_wait_limit', {'resume_after': cursor})
-                    yield f"id: {cursor}\nevent: timeout\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    event = wire_state(snapshot, 'done_timeout', 'forwarder_wait_limit', {'resume_after': cursor})
+                    yield f"id: {cursor}\nevent: done_timeout\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                     return
                 if not batch:
                     snapshot = filtered_snapshot(await asyncio.to_thread(
@@ -351,10 +380,10 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                     public_run = next((item for item in snapshot["runs"] if item["id"] == run_id), public_run)
                     if public_run and public_run["status"] == "waiting_for_user":
                         pending = [item["id"] for item in snapshot["input_requests"] if item["status"] == "pending"]
-                        event = wire_state(snapshot, 'suspended', 'waiting_for_user', {
+                        event = wire_state(snapshot, 'done_suspended', 'waiting_for_user', {
                             'resume_after': cursor, 'pending_request_ids': pending,
                         })
-                        yield f"id: {cursor}\nevent: suspended\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        yield f"id: {cursor}\nevent: done_suspended\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                         return
                     if monotonic() - last_heartbeat >= 15:
                         yield ": heartbeat\n\n"

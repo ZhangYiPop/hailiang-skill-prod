@@ -48,7 +48,8 @@ export type HarnessInputGroup = {
   total_count: number; completed_count: number; actors: string[];
 };
 export type HarnessRun = {
-  run_id: string; session_id: string; profile_id: string | null; goal: string; status: string; version: number;
+  run_id: string; client_run_id?: string | null; assistant_message_id?: string; record_version?: number;
+  session_id: string; profile_id: string | null; goal: string; status: string; outcome?: "completed" | "partial" | "failed" | "cancelled" | null; version: number;
   root_task_id: string; nodes: HarnessNode[]; inputs: HarnessInput[];
   input_groups?: HarnessInputGroup[];
   input_queue?: { active_group_id: string | null; queued_group_ids: string[]; active_request_id: string | null; active_group_total: number; active_group_completed: number };

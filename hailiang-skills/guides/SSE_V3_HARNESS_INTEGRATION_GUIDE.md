@@ -8,7 +8,7 @@
 GET /harness（完整快照）
 → POST /harness/runs（202，得到 run_id）
 → GET /harness/runs/{run_id}/events（有限 SSE 流）
-→ 每个 state/suspended/timeout/done 整体替换快照
+→ 每个 state/done_suspended/done_timeout/done 整体替换快照
 → pending 卡片 POST /answers + Accept: text/event-stream
 → 同一回答响应继续接收完整帧
 → done 后 GET /record 并按 run_id + record_version 落库
@@ -18,11 +18,11 @@ BFF 负责可信身份、档案授权和原样转发。它不得缓冲、重排�
 
 ## 2. 有限流规则
 
-生产转发端使用单 run 流，而非会话级长连接。`state` 保持连接；`suspended`、`timeout`、`done` 结束本次连接。
+生产转发端使用单 run 流，而非会话级长连接。`state` 保持连接；`done_suspended`、`done_timeout`、`done` 结束本次连接。
 
-- `suspended`：活动卡片正在等待用户且没有其他节点可继续；显示当前卡片即可。
-- `timeout`：后台任务仍在运行；用最后 SSE `id` 续连同一 run，不能显示为失败。
-- `done`：终态且可落库；停止续连并读取 `/record`。
+- `done_suspended`：活动卡片正在等待用户且没有其他节点可继续；按 `persistence` 保存并显示当前卡片。
+- `done_timeout`：后台任务仍在运行；按 `persistence` 保存“处理中”记录，用最后 SSE `id` 续连同一 run，不能显示为失败。
+- `done`：终态；依照 `persistence` 落库。完成、受限完成和失败保存最终记录，已停止丢弃暂存。
 - 回答成功：答案 POST 的响应本身就是下一段流，不需要先 GET 事件流。
 
 ## 3. 快照 reducer
@@ -60,7 +60,7 @@ BFF 负责可信身份、档案授权和原样转发。它不得缓冲、重排�
 ```bash
 export HAILIANG_SSE_V3=true
 export VITE_HAILIANG_SSE_V3=true
-export HAILIANG_SSE_V3_RUN_STREAM_SECONDS=290
+export HAILIANG_SSE_V3_RUN_STREAM_SECONDS=600
 ./run.sh
 ```
 

@@ -26,7 +26,7 @@ export function subscribeV3(load: () => Promise<V3Snapshot>, url: string,
   let stopped = false, syncing = false;
   let current: V3Snapshot | undefined, source: EventSource | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const types = ['state', 'suspended', 'timeout', 'done'];
+  const types = ['state', 'done_suspended', 'done_timeout', 'done'];
   const synchronize = async () => {
     if (stopped || syncing) return;
     syncing = true; source?.close();

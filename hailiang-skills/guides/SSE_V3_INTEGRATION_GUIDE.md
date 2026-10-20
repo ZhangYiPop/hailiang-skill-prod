@@ -4,11 +4,11 @@ SSE v3 是 Harness 多 agent 的公开传输协议，与 `context_policy_version
 
 ## 当前公开协议
 
-对外使用单 run 有限 SSE 流。除 `ping` 外，`state`、`suspended`、`timeout`、`done` 的每一帧都携带完整 `snapshot`；前端整体替换状态。`done` 是唯一可写入对话历史的终态信号。回答请求带 `Accept: text/event-stream` 后，同一 HTTP 响应会继续推送状态，无需单独恢复接口。
+对外使用单 run 有限 SSE 流。除 `ping` 外，`state`、`done_suspended`、`done_timeout`、`done` 的每一帧都携带完整 `snapshot`；前端整体替换状态。`persistence` 是 BFF 保存对话历史的唯一指令：`state` 只暂存，`done_suspended`、`done_timeout` 保存可续接记录，`done` 按 outcome 保存最终记录或在取消时丢弃暂存。回答请求带 `Accept: text/event-stream` 后，同一 HTTP 响应会继续推送状态，无需单独恢复接口。
 
 公开快照包含：`runs`、`nodes`、`input_requests`、`input_groups`、`messages`。问题队列由 `run.input_queue` 和 `input_groups` 表示；只允许 `active_request_id` 对应的 pending 卡片提交。相同事实身份且输入约束兼容的问题由服务端复用答案和绑定，不由前端推断。
 
-编排首返回 `consult` 后，第一帧 `state` 会携带 `runs[].dispatch`，前端应立即展示“已分派 N 位专家”和每个专家的 `brief`。随后按 `nodes[]` 渲染“专家 → Skill/工具”树；专家节点的 `result` 摘要包含 `conclusion`、`findings`、`limitations` 和 `unresolved`。`runs[].synthesis_status` 表示编排器汇总阶段，`runs[].recommendations_status` 表示推荐阶段。只有 `done` 才表示最终正文可以写入对话历史。
+编排首返回 `consult` 后，第一帧 `state` 会携带 `runs[].dispatch`，前端应立即展示“已分派 N 位专家”和每个专家的 `brief`。随后按 `nodes[]` 渲染“专家 → Skill/工具”树；专家节点的 `result` 摘要包含 `conclusion`、`findings`、`limitations` 和 `unresolved`。`runs[].synthesis_status` 表示编排器汇总阶段，`runs[].recommendations_status` 表示推荐阶段。最终正文在 `done` 的非 cancelled outcome 下写入对话历史；同一任务始终使用 `assistant_message_id` 更新一个助手气泡。
 
 | 文档 | 用途 |
 | --- | --- |
@@ -26,7 +26,7 @@ SSE v3 是 Harness 多 agent 的公开传输协议，与 `context_policy_version
 ```bash
 export HAILIANG_SSE_V3=true
 export VITE_HAILIANG_SSE_V3=true
-export HAILIANG_SSE_V3_RUN_STREAM_SECONDS=290
+export HAILIANG_SSE_V3_RUN_STREAM_SECONDS=600
 ./run.sh
 ```
 

@@ -203,7 +203,8 @@ def test_v3_http_start_retry_and_capability_gate(tmp_path, monkeypatch):
         monkeypatch.setenv('HAILIANG_SSE_V3_RUN_STREAM_SECONDS', '0.1')
         timed = client.get(path + f"/runs/{replacement.json()['run_id']}/events?user_id=u")
         assert timed.status_code == 200
-        assert 'event: timeout' in timed.text
+        assert 'event: done_timeout' in timed.text
+        assert '"should_save_history": true' in timed.text
         active_id = replacement.json()['run_id']
         def suspend(run, changes, _db):
             root = run['tasks'][run['root_task_id']]
@@ -216,7 +217,8 @@ def test_v3_http_start_retry_and_capability_gate(tmp_path, monkeypatch):
         runtime.store.mutate(active_id, suspend)
         suspended = client.get(path + f"/runs/{active_id}/events?user_id=u")
         assert suspended.status_code == 200
-        assert 'event: suspended' in suspended.text
+        assert 'event: done_suspended' in suspended.text
+        assert '"record_kind": "waiting_for_user"' in suspended.text
         assert client.get(path + '?user_id=other').status_code == 403
         snap = client.get(path + '?user_id=u').json()
         assert snap['protocol'] == 'hailiang.sse.v3'

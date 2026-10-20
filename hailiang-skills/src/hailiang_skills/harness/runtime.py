@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
 import inspect
+import hashlib
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -1428,6 +1429,10 @@ class HarnessRuntime:
                 consumer["read_fact_keys"] = sorted(set(consumer.get("read_fact_keys", []) + [r["key"] for r in written_facts.values()]))
                 consumer["fact_versions"].update({identity: r["version"] for identity, r in written_facts.items()})
             local = self._binding_answer(request, binding, answer)
+            # A card may contain only unknown fields while the tool already
+            # carries confirmed facts selected before the card was displayed.
+            local["answers"] = {**tool.get("existing_answers", {}), **local["answers"]}
+            local["skipped"] = not bool(local["answers"])
             self._tool_result(tool, local, "skipped" if local["skipped"] else "completed")
             changes.append({"event": "input_answered", "node_id": binding["task_id"]})
 
@@ -1571,36 +1576,50 @@ class HarnessRuntime:
         tool.update(status="waiting_for_user", input_request_id=request["id"])
         changes.append({"event": "input_requested" if request["status"] == "pending" else "input_queued", "node_id": task["id"]})
 
-    def answer(self, request_id, submission):
+    def answer(self, request_id, submission, *, allow_partial=False, allow_correction=False):
+        """Resolve grouped cards while allowing the minimal V3 adapter to hide IDs.
+
+        The group placement, shared-field fan-out and tool completion below stay
+        cj-10's implementation.  Only identity, partial submission and correction
+        policy differ for the trusted V3 adapter.
+        """
         run_id = self.store.request_run(request_id)
         def apply(run, changes, db):
             if run["user_id"] != submission.user_id or run["profile_id"] != submission.profile_id:
                 raise HarnessError("HARNESS_ACCESS_DENIED", 403)
             request = run["inputs"][request_id]
-            if request.get("submission_id") == submission.submission_id:
-                if request.get("submission") != submission.model_dump():
+            answer = validate_answers(request["fields"], submission, allow_partial=allow_partial)
+            canonical = json.dumps(answer, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            submission_id = submission.submission_id or "server_" + hashlib.sha256(
+                f"{request_id}:{canonical}".encode("utf-8")
+            ).hexdigest()[:32]
+            if request.get("submission_id") == submission_id:
+                if request.get("submission_canonical") not in {None, canonical}:
                     raise HarnessError("SUBMISSION_ID_REUSED", 409)
                 return {"request_id": request_id, "status": request["status"], "run_id": run_id}
-            if run["status"] in TERMINAL or request["status"] != "pending" or request["version"] != submission.expected_version:
+            if request["status"] == "answered" and allow_correction and run["status"] not in TERMINAL:
+                if request.get("submission_canonical") == canonical:
+                    return {"request_id": request_id, "status": request["status"], "run_id": run_id}
+                request.update(answer=answer, submission_id=submission_id, submission_canonical=canonical,
+                               version=request["version"] + 1, corrected_at=now())
+                written_facts = self._write_grouped_answer_facts(run, request, answer, submission_id, changes, db)
+                for binding in request["bindings"]:
+                    task = run["tasks"][binding["task_id"]]
+                    if task["status"] not in {"failed", "cancelled"}:
+                        task.update(status="queued", stale=True, ended_at=None, lease_token="", lease_until="")
+                        task["messages"].append({"role": "user", "content": "用户已更正此前补充信息，请使用最新事实重新分析。"})
+                        changes.append({"event": "input_corrected", "node_id": task["id"]})
+                        self._invalidate_consumers(run, task["id"], changes)
+                self._settle(run, changes, db)
+                return {"request_id": request_id, "status": request["status"], "run_id": run_id, "corrected": True}
+            if run["status"] in TERMINAL or request["status"] != "pending" or (
+                submission.expected_version is not None and request["version"] != submission.expected_version
+            ):
                 raise HarnessError("INPUT_REQUEST_INACTIVE", 409)
-            answer = validate_answers(request["fields"], submission)
-            request.update(status="skipped" if answer["skipped"] else "answered", answer=answer, submission_id=submission.submission_id,
-                           submission=submission.model_dump(), version=request["version"] + 1)
-            task = run["tasks"][request["bindings"][0]["task_id"]]
-            written_facts = {}
-            for index, field in sorted(enumerate(request["fields"]), key=lambda item: request["identities"][item[0]]):
-                if field["key"] not in answer["answers"]:
-                    continue
-                key = cp.question_key(field) if cp.enabled(run) else field.get("fact_key") or field["key"]
-                identity = request["identities"][index]
-                record = self.store.write_fact(db, identity, {"key": key, "scope": field["scope"], "value": answer["answers"][field["key"]],
-                    "status": "confirmed", "source": {"input_request_id": request_id, "submission_id": submission.submission_id}})
-                written_facts[identity] = record
-                run["seed_facts"].pop(identity, None)
-                self._invalidate_fact_version(run, identity, record["version"], changes)
-            # Deliver shared fields to forms which still have different fields
-            # outstanding. Their own card remains queued/pending, but it no
-            # longer asks for this value a second time.
+            request.update(status="skipped" if answer["skipped"] else "answered", answer=answer,
+                           submission_id=submission_id, submission_canonical=canonical,
+                           version=request["version"] + 1)
+            written_facts = self._write_grouped_answer_facts(run, request, answer, submission_id, changes, db)
             for target in run["inputs"].values():
                 dependencies = [item for item in target.get("shared_dependencies", []) if item["request_id"] == request_id]
                 if not dependencies or target["status"] not in {"pending", "queued"}:
@@ -1617,6 +1636,22 @@ class HarnessRuntime:
             self._settle(run, changes, db)
             return {"request_id": request_id, "status": request["status"], "run_id": run_id}
         return self.store.mutate(run_id, apply)
+
+    def _write_grouped_answer_facts(self, run, request, answer, submission_id, changes, db):
+        """Keep cj-10's canonical question identities for cross-expert reuse."""
+        written_facts = {}
+        for index, field in sorted(enumerate(request["fields"]), key=lambda item: request["identities"][item[0]]):
+            if field["key"] not in answer["answers"]:
+                continue
+            key = cp.question_key(field) if cp.enabled(run) else field.get("fact_key") or field["key"]
+            identity = request["identities"][index]
+            record = self.store.write_fact(db, identity, {"key": key, "scope": field["scope"],
+                "value": answer["answers"][field["key"]], "status": "confirmed",
+                "source": {"input_request_id": request["id"], "submission_id": submission_id}})
+            written_facts[identity] = record
+            run["seed_facts"].pop(identity, None)
+            self._invalidate_fact_version(run, identity, record["version"], changes)
+        return written_facts
 
     def _invalidate_fact_version(self, run, identity, version, changes):
         if cp.enabled(run):
@@ -1831,7 +1866,11 @@ class HarnessRuntime:
                            "request_ids": request_ids, "active_request_id": group.get("active_request_id"),
                            "total_count": len(request_ids), "completed_count": sum(item["status"] in {"answered", "skipped", "expired"} for item in members),
                            "actors": list(dict.fromkeys(item.get("actor", "主 agent") for item in members))})
-        return {"run_id": run["run_id"], "session_id": run["session_id"], "profile_id": run["profile_id"], "goal": run["goal"], "status": run["status"], "version": run["version"], "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
+        return {"run_id": run["run_id"], "client_run_id": run.get("client_run_id"),
+                "assistant_message_id": run.get("assistant_message_id") or f"msg_harness_{run['run_id']}",
+                "record_version": run["version"], "session_id": run["session_id"], "profile_id": run["profile_id"],
+                "goal": run["goal"], "status": run["status"], "outcome": run.get("outcome"), "version": run["version"],
+                "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "input_groups": groups,
                 "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "action": run.get("action", ""),
                 "dispatch": public_dispatch(run),

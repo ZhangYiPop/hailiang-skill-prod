@@ -116,7 +116,19 @@ class AnswerSubmission(BaseModel):
     skipped: bool = False
 
 
-def validate_answers(fields: list[dict], submission: AnswerSubmission) -> dict:
+class InternalAnswerSubmission(BaseModel):
+    """Trusted V3 adapter input; the public V2 answer contract remains strict."""
+    model_config = ConfigDict(extra="forbid")
+    user_id: str = Field(min_length=1)
+    profile_id: str | None = None
+    submission_id: str | None = Field(default=None, max_length=100)
+    expected_version: int | None = Field(default=None, ge=1)
+    answers: dict[str, Any] = Field(default_factory=dict)
+    text: str | None = Field(default=None, max_length=120000)
+    skipped: bool = False
+
+
+def validate_answers(fields: list[dict], submission: AnswerSubmission | InternalAnswerSubmission, *, allow_partial: bool = False) -> dict:
     if submission.skipped:
         if submission.answers or submission.text:
             raise HarnessError("SKIP_WITH_ANSWERS")
@@ -131,6 +143,8 @@ def validate_answers(fields: list[dict], submission: AnswerSubmission) -> dict:
     for f in fields:
         value = values.get(f["key"])
         if value is None or value == "" or value == [] or isinstance(value, str) and not value.strip():
+            if f["required"] and not allow_partial:
+                raise HarnessError("REQUIRED_ANSWER_MISSING")
             values.pop(f["key"], None)
             continue
         kind = f["input_type"]

@@ -606,6 +606,7 @@ def create_app() -> FastAPI:
     from hailiang_skills.harness.runtime import HarnessRuntime
     from hailiang_skills.harness.integration import HarnessIntegration
     from hailiang_skills.api.routes.harness import build_harness_router
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import build_harness_chat_stream_v3_router
 
     harness_store = HarnessStore(storage.engine) if storage.engine is not None else HarnessStore.local(state_root() / "harness.sqlite3")
     fact_service.harness_store = harness_store
@@ -621,6 +622,8 @@ def create_app() -> FastAPI:
     app.include_router(build_harness_router(repository, fact_service, orchestrator, harness,
         snapshot_resolver=lambda: workbench_service.active_deployment_snapshot(deployment_environment()),
         debug_snapshot_resolver=workbench_service.debug_configuration_snapshot, protocol_v3=True), prefix="/api/v3")
+    app.include_router(build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, harness,
+        snapshot_resolver=lambda: workbench_service.active_deployment_snapshot(deployment_environment())), prefix="/api/v3")
 
     @app.middleware("http")
     async def harness_mutation_guard(request: Request, call_next):
@@ -650,7 +653,7 @@ def create_app() -> FastAPI:
                 if (
                     not orchestrator_v2
                     and ((context and context.session_meta.get("runtime_mode") == "harness_v1") or (context is None and harness_enabled()))
-                    and (path.endswith("/messages") or path.endswith("/chat/stream"))
+                    and (path.endswith("/messages") or (path.endswith("/chat/stream") and not path.startswith("/api/v3/sessions/chat/stream")))
                 ):
                     return JSONResponse(status_code=409, content={"code": "HARNESS_ENDPOINT_REQUIRED", "message": "请使用 harness 任务接口。"})
         return await call_next(request)
