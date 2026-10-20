@@ -3,11 +3,15 @@
 > 协议：`hailiang.sse.v3`
 > 入口：`POST /api/v3/sessions/chat/stream`
 
-业务前端只发送用户问题、当前追问卡答案或停止指令，以及每次动作对应的 `expert_team_id`。团队内的专家选择、Skill 选择、任务恢复、问题组推进和任务编排均由算法服务完成。
+浏览器只发送用户问题、当前追问卡答案或停止指令，以及每次动作对应的 `expert_team_id`。团队内的专家选择、Skill 选择、任务恢复、问题组推进和任务编排均由算法服务完成。
 
-## 请求
+## 调用层次
 
-请求外层与 v2 一致，`input` 必须是 JSON 字符串：
+浏览器只能调用 BFF 的同路径入口：`POST {BFF_BASE}/api/v3/sessions/chat/stream`。它的 body 只有 `session_id`、`run_id` 与 `input` 三项；不能信任浏览器提交的身份或画像。BFF 从登录态和档案服务注入 `context_data`，再将下面的完整请求转发到算法服务。
+
+## 算法服务请求
+
+BFF 到算法服务的请求外层与 v2 一致，`input` 必须是 JSON 字符串：
 
 ```json
 {
@@ -27,7 +31,7 @@
 }
 ```
 
-`context_data.user_id` 由 BFF 从登录态注入；`profile_id` 可在泛聊时省略。`profile_data` 是可选的增量画像字典，可随 `chat` 或表单答案提交：服务端保留原始结构、为叶子字段建立版本化 `profile.*` 事实投影，并仅在任务需要时交给模型。不存在的档案会自动创建；档案属于其他用户时请求被拒绝。`null` 不删除已有画像字段，删除应使用档案或事实接口。
+`context_data.user_id` 由 BFF 从登录态注入；浏览器不得直接提交它。`profile_id` 可在泛聊时省略。`profile_data` 是可选的增量画像字典，可随 `chat` 或表单答案提交：服务端保留原始结构、为叶子字段建立版本化 `profile.*` 事实投影，并仅在任务需要时交给模型。不存在的档案会自动创建；档案属于其他用户时请求被拒绝。`null` 不删除已有画像字段，删除应使用档案或事实接口。
 
 支持的 `input.action` 只有：
 
@@ -130,3 +134,5 @@ V3 的默认等待上限为 **600 秒（10 分钟）**，可由算法服务环�
 本期 BFF 不需要、也不要求调用 Harness 快照读取接口。BFF 在收到每个 `state` 后保留最新完整快照，同时保存原始 `chat` 启动请求和 `client_run_id`。用户回到 App 且记录为 `running` 时，BFF 用相同的启动请求重试本入口；服务端按 `session_id + user_id + profile_id + client_run_id` 返回既有任务并先发送新的完整 `state`，不会重复分派专家。若记录为 `waiting_for_user`，前端直接展示该快照中的活动卡片；提交答案仍调用同一入口。
 
 请求中的 `run_id` 是 BFF 的客户端关联与幂等键；服务端另行生成 `harness_run_id`，不接受客户端指定真实任务 ID。响应为兼容既有 V2 外层仍保留 `run_id`（服务端 Harness ID），同时提供不歧义的 `client_run_id` 与 `harness_run_id`。
+
+前端到 BFF 的完整 cURL 场景（新问题、部分回答、跳过、超时续接、新问题打断和停止）见 [SSE_V3_CURL_TEST_PLAYBOOK.md](SSE_V3_CURL_TEST_PLAYBOOK.md)。

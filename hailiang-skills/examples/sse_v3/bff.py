@@ -11,7 +11,26 @@ from fastapi.responses import Response, StreamingResponse
 
 app = FastAPI()
 UPSTREAM = os.getenv('BFF_UPSTREAM', 'http://127.0.0.1:8016')
-PATH = re.compile(r'sessions/[^/]+/(harness(?:/runs(?:/[^/]+/(?:cancel|record|events))?|/events|/capabilities)?|input-requests/[^/]+/answers)$')
+PATH = re.compile(r'(?:sessions/chat/stream|sessions/[^/]+/(harness(?:/runs(?:/[^/]+/(?:cancel|record|events))?|/events|/capabilities)?|input-requests/[^/]+/answers))$')
+
+
+def trusted_context() -> dict:
+    """Build the upstream context from BFF-owned identity and profile data."""
+    user_id = os.getenv('BFF_DEMO_USER', 'demo')
+    profile_id = os.getenv('BFF_DEMO_PROFILE') or None
+    context = {'user_id': user_id}
+    if profile_id:
+        context['profile_id'] = profile_id
+    raw_portrait = os.getenv('BFF_DEMO_PROFILE_DATA', '')
+    if raw_portrait:
+        try:
+            portrait = json.loads(raw_portrait)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(500, 'BFF_DEMO_PROFILE_DATA_INVALID') from exc
+        if not isinstance(portrait, dict):
+            raise HTTPException(500, 'BFF_DEMO_PROFILE_DATA_INVALID')
+        context['profile_data'] = portrait
+    return context
 
 async def raw_stream(response, client):
     try:
@@ -30,18 +49,26 @@ async def proxy(path: str, request: Request):
         raise HTTPException(404)
     if request.method == 'POST' and request.headers.get('origin') != str(request.base_url).rstrip('/'):
         raise HTTPException(403, 'SAME_ORIGIN_REQUIRED')
-    user_id, profile_id = os.getenv('BFF_DEMO_USER', 'demo'), os.getenv('BFF_DEMO_PROFILE') or None
+    context = trusted_context()
+    user_id, profile_id = context['user_id'], context.get('profile_id')
     query = dict(request.query_params)
     query.pop('user_id', None)
     query.pop('profile_id', None)
     if request.method == 'GET':
         query.update(user_id=user_id)
-        if profile_id: query['profile_id'] = profile_id
+        if profile_id:
+            query['profile_id'] = profile_id
     body = None
     if request.method == 'POST':
         body = await request.json()
-        target = body.setdefault('context_data', {}) if path.endswith('/harness/runs') else body
-        target.update(user_id=user_id, profile_id=profile_id)
+        if path == 'sessions/chat/stream':
+            # The product request never trusts browser-provided context_data.
+            # Production BFFs obtain the equivalent data from their profile API.
+            body.pop('context_data', None)
+            body['context_data'] = context
+        else:
+            target = body.setdefault('context_data', {}) if path.endswith('/harness/runs') else body
+            target.update(user_id=user_id, profile_id=profile_id)
     client = httpx.AsyncClient(timeout=httpx.Timeout(30, read=None), follow_redirects=False)
     headers = {'accept-encoding': 'identity'}
     if request.headers.get('accept'): headers['accept'] = request.headers['accept']

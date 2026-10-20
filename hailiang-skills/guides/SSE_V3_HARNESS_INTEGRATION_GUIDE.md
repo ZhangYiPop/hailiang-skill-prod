@@ -2,32 +2,33 @@
 
 字段权威定义见 [SSE_V3_HARNESS_CONTRACT.md](SSE_V3_HARNESS_CONTRACT.md)。本指南只说明接入方式。
 
-## 1. 最小流程
+## 1. 产品最小流程
 
 ```text
-GET /harness（完整快照）
-→ POST /harness/runs（202，得到 run_id）
-→ GET /harness/runs/{run_id}/events（有限 SSE 流）
-→ 每个 state/done_suspended/done_timeout/done 整体替换快照
-→ pending 卡片 POST /answers + Accept: text/event-stream
-→ 同一回答响应继续接收完整帧
-→ done 后 GET /record 并按 run_id + record_version 落库
+前端 POST BFF /api/v3/sessions/chat/stream
+  body: session_id + run_id + input(JSON 字符串)
+→ BFF 校验登录态和孩子归属，注入 context_data
+→ BFF POST 算法服务同路径，逐字节转发有限 SSE
+→ 每个 state/done_suspended/done_timeout/done 整体替换同一 assistant_message_id 气泡
+→ pending 卡片仍 POST BFF 同一路径；其响应主动继续推流
 ```
 
-BFF 负责可信身份、档案授权和原样转发。它不得缓冲、重排、改写 SSE、关闭浏览器订阅时取消 run，或自动重试启动请求。浏览器只显示服务端快照，不推断任务推进。
+前端不得调用 `/harness/*`、`/events`、`/answers` 或 `/record`。这些细粒度接口只供算法工作台和排障使用。BFF 负责可信身份、档案授权和原样转发；它不得缓冲、重排、改写 SSE、关闭浏览器订阅时取消 run，或自动重试新的聊天请求。
+
+浏览器 body 中只允许 `session_id`、`run_id`、`input`。`user_id`、`profile_id`、`profile_data` 必须由 BFF 注入；专家成员、Skill、任务树、卡片版本和恢复指令都不是前端参数。具体 cURL 见 [SSE_V3_CURL_TEST_PLAYBOOK.md](SSE_V3_CURL_TEST_PLAYBOOK.md)。
 
 ## 2. 有限流规则
 
 生产转发端使用单 run 流，而非会话级长连接。`state` 保持连接；`done_suspended`、`done_timeout`、`done` 结束本次连接。
 
 - `done_suspended`：活动卡片正在等待用户且没有其他节点可继续；按 `persistence` 保存并显示当前卡片。
-- `done_timeout`：后台任务仍在运行；按 `persistence` 保存“处理中”记录，用最后 SSE `id` 续连同一 run，不能显示为失败。
+- `done_timeout`：后台任务仍在运行；按 `persistence` 保存“处理中”记录。用户返回 App 后，BFF 用已保存的相同 `session_id`、`run_id` 和原始 `chat` input 重发同一最小入口，服务端附着既有 run，不能显示为失败或创建新任务。
 - `done`：终态；依照 `persistence` 落库。完成、受限完成和失败保存最终记录，已停止丢弃暂存。
 - 回答成功：答案 POST 的响应本身就是下一段流，不需要先 GET 事件流。
 
 ## 3. 快照 reducer
 
-每个有效帧携带完整 `snapshot`。客户端只做：校验 `protocol/session_id/profile_id`，丢弃 `seq <= cursor` 的重复帧，将状态替换为 `snapshot`。出现 `resync_required`、范围不匹配或解析失败时重新 GET `/harness`。
+每个有效帧携带完整 `snapshot`。客户端只做：校验 `protocol/session_id/profile_id`，丢弃 `seq <= cursor` 的重复帧，将状态替换为 `snapshot`。出现 `resync_required`、范围不匹配或解析失败时保留最近可用快照；下次 BFF 重发同一最小 `chat` 请求即可取得服务端当前完整状态，不调用 `/harness`。
 
 不要实现实体 upsert、delta 文本拼接、`message.delta` offset 校验或 `run.finalized` 消费；这些是内部 outbox 的行为，不是公开协议。
 
@@ -47,13 +48,13 @@ BFF 负责可信身份、档案授权和原样转发。它不得缓冲、重排�
 - 收到完整帧后整体替换；前端不能本地把下一题/下一组设为 pending。
 - 相同事实的跨专家复用由服务端 bindings、事实投影和工具结果分发处理；前端无需也不得做语义去重。
 
-提交使用当前 `request_version`。普通“提交”允许部分填写，空白字段由服务端记为跳过；“全部跳过”只跳过当前卡片。409 后重新加载快照。
+提交不传 `request_version` 或 `submission_id`。普通“提交”允许部分填写，空白字段由服务端记为跳过；“全部跳过”只跳过当前卡片。409 后由 BFF 返回当前错误，前端保留最近完整快照。
 
 ## 5. 新问题与终态记录
 
-活动 run 中用户发送新问题时，服务端会终止旧 run 并创建新 run；旧 run 的已发布正文为 `interrupted`，其专家中间态不能带入新 run 的上下文。档案与专家切换由 `allowed_actions` 控制。
+活动 run 中用户发送新问题时，服务端会终止旧 run 并创建新 run；旧 run 的已发布正文为 `interrupted`，其专家中间态不能带入新 run 的上下文。档案切换由 BFF 的已授权档案上下文控制；专家团队只能由当前 `input.expert_team_id` 指定，前端不选择团队成员。
 
-收到 `done` 后，BFF 读取 `/record`。保存 `user_message`、`assistant_message`、`execution`、`agent_summary`、`input_summary`；不要把公开任务树当作下一轮模型上下文。
+收到 `done` 后，BFF 依照该帧的 `persistence` 与 `record_version` 覆盖同一 `assistant_message_id` 的历史记录；本期不要求 BFF 调用 `/record` 或 `/harness` 拉取快照。不要把公开任务树当作下一轮模型上下文。
 
 ## 6. 本地联调
 
