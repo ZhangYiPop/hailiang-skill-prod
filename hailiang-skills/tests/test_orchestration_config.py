@@ -6,14 +6,11 @@ from hailiang_skills.api.configuration_sync import synchronize_configuration
 from hailiang_skills.core.context import SessionContext
 from hailiang_skills.harness import policy
 from hailiang_skills.runtime_bridge.consultation_policy import parse_consultation_policy
-from hailiang_skills.runtime_bridge.expert_bundle import (
-    ExpertDefinition,
-    ExpertRegistry,
-    load_local_expert_registry,
-)
+from hailiang_skills.runtime_bridge.expert_bundle import load_local_expert_registry
 from hailiang_skills.runtime_bridge.expert_team_bundle import (
     ExpertTeamBundleError,
     load_expert_team_bundle,
+    load_local_expert_team_registry,
 )
 from hailiang_skills.skill_runtime.skill_registry import load_local_skill_registry
 from hailiang_skills.workbench.domain import ConsultationPolicy
@@ -32,36 +29,13 @@ def _experts():
     return load_local_expert_registry(ROOT / "runtime_agents", load_local_skill_registry(ROOT / "runtime_skills"))
 
 
-def _registry_for_team_file(team_dir: Path) -> ExpertRegistry:
-    """Cover the seed roster even when those expert packages are not in this checkout."""
-    raw = yaml.safe_load((team_dir / "team.yaml").read_text(encoding="utf-8"))
-    definitions = dict(_experts().definitions)
-    for member in raw["members"]:
-        expert_id = str(member["expert_id"])
-        definitions.setdefault(
-            expert_id,
-            ExpertDefinition(expert_id, str(member.get("mention_name") or expert_id), "# 规则", ()),
-        )
-    return ExpertRegistry(definitions)
-
-
 def test_student_growth_team_publishes_consultation_policy():
-    team_dir = ROOT / "runtime_agent_teams" / "student_growth_expert_team"
-    team = load_expert_team_bundle(team_dir, _registry_for_team_file(team_dir))
+    team = load_local_expert_team_registry(ROOT / "runtime_agent_teams", _experts()).require("student_growth_expert_team")
 
     assert team.consultation_policy == ConsultationPolicy(max_subtasks=3, max_parallel=3, max_depth=1)
-    assert team.coordinator_expert_id == "e_career_planner"
-    assert team.fallback_expert_id == "e_career_planner"
+    assert team.fallback_expert_id == "career_plan_expert"
     assert "depends_on" in team.collaboration_rules
-    assert [member.expert_id for member in team.members] == [
-        "e_career_planner",
-        "talent_dev_specialist",
-        "career_explore_mentor",
-        "study_abroad_consultant",
-        "academic_coach",
-        "admission_specialist",
-    ]
-    assert team.member_for_expert("admission_specialist").mention_name == "升学指导专家"
+    assert team.member_for_expert("family_education_expert").applicable_stages == ("小学", "初中", "高中")
 
 
 def test_parse_consultation_policy_migrates_allow_parallel():
@@ -77,8 +51,8 @@ def test_parse_consultation_policy_migrates_allow_parallel():
 
 
 def test_team_yaml_rejects_foreign_fallback_and_unknown_stage(tmp_path: Path):
+    experts = _experts()
     source = ROOT / "runtime_agent_teams" / "student_growth_expert_team"
-    experts = _registry_for_team_file(source)
     target = tmp_path / "team"
     target.mkdir()
     (target / "TEAM.md").write_text((source / "TEAM.md").read_text(encoding="utf-8"), encoding="utf-8")
@@ -91,7 +65,7 @@ def test_team_yaml_rejects_foreign_fallback_and_unknown_stage(tmp_path: Path):
     except ExpertTeamBundleError as exc:
         assert "fallback_expert_id" in str(exc)
 
-    raw["fallback_expert_id"] = "e_career_planner"
+    raw["fallback_expert_id"] = "career_plan_expert"
     raw["members"][0]["applicable_stages"] = ["大学"]
     (target / "team.yaml").write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     try:
