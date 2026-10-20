@@ -35,7 +35,9 @@ BFF 负责可信身份、档案授权和原样转发。它不得缓冲、重排�
 
 ## 4. 任务气泡与问题组
 
-渲染 `nodes` 为“主任务 → 专家 → Skill/工具”树，显示服务端给出的 actor、title、status、attempts、outcome 和安全错误码。
+渲染顺序固定为“任务拆解 → 主任务/专家/Skill/工具树 → 专家结论 → 汇总与推荐”。编排首完成后，先读取 `runs[].dispatch` 显示已分派的专家数量、业务 brief、具体 `task_brief`、并行关系和依赖；再读取 `nodes` 展示实际执行。节点可显示 `phase`、`action`、`waiting_on`、`outcome`、`result` 和安全错误码。`round_experts` 只用于快速汇总，不替代节点树。
+
+主任务阶段使用 `runs[].phase` 和 `runs[].action`：`planning` 表示拆题，`dispatching_completed` 表示已经知道专家计划，`experts_running` 表示专家执行中，`synthesizing` 表示编排尾汇总，`recommending` 表示推荐生成。专家 `result` 只包含结论、依据、限制和未解决事项，不包含内部提示词或思考。
 
 追问以 `runs[].input_queue` 与 `input_groups` 驱动：
 

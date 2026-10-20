@@ -18,17 +18,17 @@ SSE v3 使用 V2 风格的**完整状态帧**。除 `ping` 外，所有帧的 `d
 
 ## 2. 接口
 
-前缀：`/api/v3/sessions/{session_id}`。
+所有接口的完整前缀为：`/api/v3/sessions/{session_id}`。资源标识放在 URL 路径；POST 的业务数据放在 JSON 请求体；读取身份、档案和游标放在 query 参数。POST 参数不应全部拼到 URL 中。
 
-| 接口 | 行为 |
-| --- | --- |
-| `POST /harness/runs` | 启动 run，返回 `202` 和 `run_id`；`submission_id` 幂等 |
-| `GET /harness` | 获取订阅范围的一致完整快照 |
-| `GET /harness/runs/{run_id}/events` | 单 run 有限 SSE 流，供不支持长连接的 BFF 使用 |
-| `GET /harness/events` | 会话级调试/订阅入口；生产 BFF 默认使用单 run 流 |
-| `POST /input-requests/{request_id}/answers` | 提交部分答案或全部跳过；`Accept: text/event-stream` 时直接返回后续有限流 |
-| `POST /harness/runs/{run_id}/cancel` | 幂等取消 run 和后代 |
-| `GET /harness/runs/{run_id}/record` | 在 `done` 后读取不可变对话记录 |
+| 方法和完整路径 | 参数位置 | 行为 |
+| --- | --- | --- |
+| `POST /api/v3/sessions/{session_id}/harness/runs` | body：`submission_id`、`goal`、`context_data`，可选 `debug_session_id`、`expert_team_id`、`expert_id`、`clear_experts` | 启动 run，返回 `202` 和 `run_id`；`submission_id` 用于幂等 |
+| `GET /api/v3/sessions/{session_id}/harness` | query：`user_id`、可选 `profile_id` | 获取订阅范围的一致完整快照 |
+| `GET /api/v3/sessions/{session_id}/harness/runs/{run_id}/events` | path：`run_id`；query：`user_id`、可选 `profile_id`、`after`；也支持 `Last-Event-ID` | 单 run 有限 SSE 流，供不支持长连接的 BFF 使用 |
+| `GET /api/v3/sessions/{session_id}/harness/events` | query：`user_id`、可选 `profile_id`、`after`；也支持 `Last-Event-ID` | 会话级调试/订阅入口；生产 BFF 默认使用单 run 流 |
+| `POST /api/v3/sessions/{session_id}/input-requests/{request_id}/answers` | path：`request_id`；body：`user_id`、`profile_id`、`submission_id`、`expected_version`、`answers`、`text`、`skipped` | 提交部分答案或全部跳过；`Accept: text/event-stream` 时直接返回后续有限流 |
+| `POST /api/v3/sessions/{session_id}/harness/runs/{run_id}/cancel` | path：`run_id`；body：`user_id`、可选 `profile_id` | 幂等取消 run 和后代 |
+| `GET /api/v3/sessions/{session_id}/harness/runs/{run_id}/record` | path：`run_id`；query：`user_id`、可选 `profile_id` | 在 `done` 后读取不可变对话记录 |
 
 身份必须由可信 BFF 登录态注入。浏览器提交的 `user_id`、`profile_id` 只能作为服务端校验参数，不能建立身份信任。
 
@@ -66,9 +66,12 @@ data: {
 - `runs[].input_queue`：`active_group_id`、`queued_group_ids`、`active_request_id`、活动组总题数/完成数及旧兼容计数。
 - `runs[].round_experts`：当前轮专家 ID 的 `assigned/running/completed/failed` 列表与汇总状态；同一专家只保留最近任务状态。
 - `runs[].jump_cards`：服务端校验过的推荐卡片，仅含 intent、对象类型、筛选条件、标题、说明和推荐原因；没有推荐时为 `[]`。
+- `runs[].dispatch`：编排首完成后的任务分派摘要，包含计划任务数、专家数、可并行数、专家名称、业务人员编写的专家 `brief`、本次 `task_brief` 和依赖。`brief` 来自已发布专家定义，`task_brief` 来自本轮编排计划。它表示“计划调用”，不代表节点已经运行。
+- `runs[].phase`、`runs[].action`：当前主任务阶段和面向用户的动作说明。典型顺序为 `planning → dispatching_completed → experts_running → experts_completed → synthesizing → recommending → completed`。
+- `runs[].synthesis_status`、`runs[].recommendations_status`：汇总和推荐的独立状态；专家完成不等于最终回复完成。
 - `input_groups[]`：稳定组 ID、`active | queued | completed`、创建时间、题目 ID、当前题、题数、完成数和专家摘要。
 - `input_requests[]`：单题字段、`request_version`、状态、回答、绑定、专家和所属组。只有 `input_queue.active_request_id` 对应且状态为 `pending` 的卡片可填写。
-- `nodes[]`：主任务、专家、Skill 和工具树。专家、Skill 与其工具节点含稳定 `expert_id`；`actor` 仅为展示名称。工具完成不等于所属专家完成。
+- `nodes[]`：主任务、专家、Skill 和工具树。专家、Skill 与其工具节点含稳定 `expert_id`；`actor` 仅为展示名称。工具完成不等于所属专家完成。节点还可包含 `brief`、`phase`、`action`、`waiting_on`、子节点计数和受控的 `result` 摘要（`conclusion`、`findings`、`limitations`、`unresolved`），用于展示任务书、当前动作、依赖和专家结论。
 - `messages[]`：阶段说明与主 agent 最终正文；前端直接使用 final 消息当前完整 `content`。
 
 公开数据不含专家内部推理、完整提示词、原始工具参数、完整事实库或 trace。
@@ -105,6 +108,8 @@ Content-Type: application/json
 | message | `streaming → completed/interrupted/blocked` |
 
 `outcome=partial` 是受限业务结论，不是技术错误。只有没有可运行节点、且活动组等待用户时才发送 `suspended`。
+
+编排首成功返回 `consult` 后，服务端先发送 `state(reason=dispatch_completed)`，前端应立即显示已规划的专家列表和任务 brief；随后再根据 `nodes[]` 显示实际启动、Skill/工具和专家结论。`clarify` 或 `reject_out_of_scope` 不产生专家分派摘要。
 
 ## 8. 兼容与诊断
 

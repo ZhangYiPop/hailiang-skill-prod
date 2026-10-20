@@ -125,6 +125,78 @@ def public_jump_cards(run):
     return cards
 
 
+def public_dispatch(run):
+    """Expose the validated head plan before expert nodes start running."""
+    orchestration = run.get("orchestration") or {}
+    subtasks = orchestration.get("subtasks") if isinstance(orchestration, dict) else []
+    if not isinstance(subtasks, list):
+        subtasks = []
+    experts = []
+    for item in subtasks:
+        if not isinstance(item, dict):
+            continue
+        expert_id = str(item.get("target_expert_id") or item.get("expert_id") or "").strip()
+        if not expert_id:
+            continue
+        definition = (run.get("policy", {}).get("experts") or {}).get(expert_id, {})
+        depends_on = list(item.get("depends_on") or [])
+        matching = [task for task in run.get("tasks", {}).values()
+                    if task.get("kind") == "expert" and task.get("expert_id") == expert_id]
+        live = matching[-1] if matching else None
+        task_status = (live or {}).get("status")
+        public_status = {
+            "running": "running", "waiting_for_user": "waiting_for_user",
+            "waiting_for_dependency": "queued", "queued": "assigned",
+            "completed": "completed", "failed": "failed", "cancelled": "failed",
+        }.get(task_status, "assigned")
+        experts.append({
+            "subtask_id": str(item.get("subtask_id") or item.get("key") or f"st_{len(experts) + 1}"),
+            "expert_id": expert_id,
+            "name": definition.get("name") or expert_id,
+            # `brief` is the business-authored expert introduction from the
+            # published expert definition. The per-run task wording is kept
+            # separately so the UI does not confuse role scope with delegation.
+            "brief": str(definition.get("brief") or "").strip(),
+            "task_brief": str(item.get("brief") or item.get("question") or "").strip(),
+            "status": public_status,
+            "depends_on": depends_on,
+        })
+    if not experts:
+        return None
+    independent = sum(not item["depends_on"] for item in experts)
+    return {
+        "status": "completed",
+        "planned_task_count": len(experts),
+        "planned_expert_count": len({item["expert_id"] for item in experts}),
+        "parallel_task_count": independent,
+        "experts": experts,
+    }
+
+
+def _public_phase(run, task):
+    """Derive a safe user-facing phase/action without exposing model internals."""
+    phase = str(run.get("phase") or "").strip()
+    if task.get("kind") == "main":
+        if task.get("tail_done"):
+            return ("completed", "已完成最终回复")
+        if task.get("head_done") and not task.get("pending_calls"):
+            return ("synthesizing", "编排器正在汇总专家结论")
+        if not task.get("head_done"):
+            return ("planning", "正在理解问题并拆分任务")
+    if task.get("kind") == "expert":
+        if task.get("structured_result"):
+            status = task["structured_result"].get("status") or "completed"
+            return (status, "已提交专家结论")
+        if task.get("pending_calls"):
+            return ("using_skill", "正在执行 Skill 或工具")
+        if task.get("status") == "waiting_for_dependency":
+            return ("waiting_for_dependency", "等待前置任务结果")
+        return ("analyzing", "正在分析任务")
+    if task.get("kind") == "skill":
+        return ("using_skill", "正在执行专项 Skill")
+    return (phase or "running", "正在执行")
+
+
 def task_node(kind, goal, parent_id=None, expert_id=None, skill_id=None, completion="完成指定任务", depends_on=()):
     return {"id": identifier("task"), "parent_id": parent_id, "kind": kind, "expert_id": expert_id, "skill_id": skill_id,
             "goal": goal, "completion": completion, "depends_on": list(depends_on), "status": "queued", "messages": [{"role": "user", "content": goal}],
@@ -693,6 +765,13 @@ class HarnessRuntime:
                 live["trace"][-1]["output"] = {"final_text": json.dumps(plan_json, ensure_ascii=False)}
                 live["head_done"] = True
                 current["orchestration"] = {"action": plan.action, "reason": plan.reason, "subtasks": plan_json["subtasks"]}
+                if plan.action == "consult":
+                    current["phase"] = "dispatching_completed"
+                    current["action"] = f"已完成任务拆分，正在启动 {len(plan.subtasks)} 位专家"
+                    current["dispatch"] = public_dispatch(current)
+                else:
+                    current["phase"] = "clarifying" if plan.action == "clarify" else "rejected"
+                    current["action"] = "等待补充问题" if plan.action == "clarify" else "问题超出当前服务范围"
                 self._record_node(current, live, "orchestrate_head", {"action": plan.action}, plan_json, changes)
                 if plan.action != "consult":
                     finish_run(current, live, changes, plan.clarification_question or "请再具体说明一下你的问题。")
@@ -711,6 +790,15 @@ class HarnessRuntime:
             self.store.mutate(run_id, apply_head)
             return
 
+        if phase == "tail":
+            def mark_synthesis(current, changes, db):
+                if not self._valid(current, task_id, token):
+                    return
+                current["phase"] = "synthesizing"
+                current["action"] = "编排器正在汇总专家结论"
+                changes.append({"event": "synthesis_started", "node_id": task_id})
+                self._settle(current, changes, db)
+            self.store.mutate(run_id, mark_synthesis)
         rows = []
         for item in sorted((t for t in run["tasks"].values() if t["kind"] == "expert"), key=lambda t: t["created_at"]):
             text = str(item.get("result") or "").strip() if item["status"] == "completed" else ""
@@ -759,7 +847,13 @@ class HarnessRuntime:
             if cards:
                 current["jump_cards"] = cards
                 self._record_node(current, live, "recommend", {}, {"jump_cards": cards}, changes)
+                current["phase"] = "recommending"
+                current["action"] = "正在生成相关推荐"
+                current["recommendations_started"] = True
+            current["recommendations_status"] = "completed" if current.get("recommendations_started") else "not_available"
             live["tail_done"] = True
+            current["phase"] = "completed"
+            current["action"] = "已完成最终回复"
             finish_run(current, live, changes, text)
             self._settle(current, changes, db)
         self.store.mutate(run_id, apply_tail)
@@ -1096,6 +1190,8 @@ class HarnessRuntime:
                     child["status"] = "waiting_for_dependency"
                 run["tasks"][child["id"]] = child
                 changes.append({"event": "task_created", "node_id": child["id"]})
+            run["phase"] = "experts_running"
+            run["action"] = f"正在并行执行 {len(children)} 个专家任务"
             tool.update(status="waiting_for_dependency", children=[c["id"] for c in children.values()])
             changes.append({"event": "plan_updated", "node_id": task["id"]})
         elif name == "execute_skill":
@@ -1695,11 +1791,22 @@ class HarnessRuntime:
             actor = "主 agent" if task["kind"] == "main" else run["policy"]["experts"].get(task.get("expert_id"), {}).get("name", "主 agent")
             title = run["policy"]["skills"][task["skill_id"]]["name"] if task["kind"] == "skill" else task["goal"]
             expert_id = str(task.get("expert_id") or "").strip() or None
+            phase, action = _public_phase(run, task)
+            children = [child for child in run["tasks"].values() if child.get("parent_id") == task["id"]]
+            structured = task.get("structured_result") if isinstance(task.get("structured_result"), dict) else None
             nodes.append({
                 "id": task["id"], "parent_id": task["parent_id"], "kind": task["kind"], "title": title, "actor": actor,
                 "expert_id": expert_id,
                 "status": task["status"], "created_at": task.get("created_at"), "started_at": task["started_at"],
                 "ended_at": task["ended_at"], "error": task.get("error"), "stale": task.get("stale", False),
+                "brief": deepcopy(task.get("brief") or {"objective": task.get("goal", ""), "completion": task.get("completion", "")}),
+                "phase": phase, "action": action,
+                "result": {"status": structured.get("status"), "conclusion": structured.get("conclusion", ""),
+                           "findings": structured.get("findings", []), "limitations": structured.get("limitations", []),
+                           "unresolved": structured.get("unresolved", [])} if structured else None,
+                "waiting_on": list(task.get("depends_on") or []),
+                "children_count": len(children),
+                "completed_children_count": sum(child.get("status") in TERMINAL for child in children),
             })
         tasks_by_id = run["tasks"]
         for tool in run["tools"].values():
@@ -1726,7 +1833,11 @@ class HarnessRuntime:
                            "actors": list(dict.fromkeys(item.get("actor", "主 agent") for item in members))})
         return {"run_id": run["run_id"], "session_id": run["session_id"], "profile_id": run["profile_id"], "goal": run["goal"], "status": run["status"], "version": run["version"], "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "input_groups": groups,
-                "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "result": run.get("result", ""), "error": run.get("error"),
+                "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "action": run.get("action", ""),
+                "dispatch": public_dispatch(run),
+                "synthesis_status": "completed" if run.get("tail_done") else ("running" if run.get("phase") in {"synthesizing", "recommending"} else "pending"),
+                "recommendations_status": run.get("recommendations_status") or ("completed" if run.get("jump_cards") else ("not_started" if not run.get("tail_done") else "not_available")),
+                "result": run.get("result", ""), "error": run.get("error"),
                 "orchestrated": bool(run["policy"].get("orchestrated")), "orchestration": run.get("orchestration"),
                 "round_experts": public_round_experts(run), "jump_cards": public_jump_cards(run),
                 "input_tokens_estimated": run.get("input_tokens_estimated", 0), "input_tokens_actual": run.get("input_tokens_actual") if run.get("input_token_measurements") else None,

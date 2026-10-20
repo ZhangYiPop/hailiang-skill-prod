@@ -90,7 +90,8 @@ def upsert(db, scope, bucket, kind, run_id, entity):
     emit(db, scope, run_id, kind, entity)
     # Fine-grained events remain in the outbox for traceability. Consumers use
     # this immutable, full snapshot event instead, like SSE v2 state frames.
-    emit_full_state(db, scope, run_id)
+    reason = 'dispatch_completed' if bucket == 'runs' and entity.get('dispatch') and not (old or {}).get('dispatch') else 'updated'
+    emit_full_state(db, scope, run_id, reason=reason)
 
 def safe_error(error):
     return error if isinstance(error, str) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,79}', error) else 'TASK_EXECUTION_FAILED'
@@ -183,9 +184,12 @@ def project(db, run):
                           'completed_at': run['updated_at'], 'cancellation_reason': run.get('cancellation_reason'),
                           'superseded_by_run_id': run.get('superseded_by_run_id')},
             'agent_summary': [
-                {k: node.get(k) for k in ('id', 'parent_id', 'kind', 'actor', 'expert_id', 'title', 'status', 'outcome')}
+                {k: node.get(k) for k in ('id', 'parent_id', 'kind', 'actor', 'expert_id', 'title', 'status', 'outcome', 'brief', 'phase', 'action', 'result')}
                 for node in payload['nodes'].values() if node.get('run_id') == rid and node.get('kind') in {'main', 'expert', 'skill'}
             ],
+            'dispatch': run_entity.get('dispatch'),
+            'synthesis_status': run_entity.get('synthesis_status'),
+            'recommendations_status': run_entity.get('recommendations_status'),
             'round_experts': run_entity.get('round_experts') or {
                 'assigned_expert_ids': [], 'running_expert_ids': [], 'completed_expert_ids': [],
                 'failed_expert_ids': [], 'status': 'idle',

@@ -62,6 +62,36 @@ def test_v3_snapshot_carries_expert_id_and_jump_cards(tmp_path):
     runtime.close()
 
 
+def test_v3_snapshot_exposes_dispatch_brief_and_expert_result(tmp_path):
+    from hailiang_skills.harness.runtime import task_node
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    policy = v2_policy()
+    policy['experts']['career_plan_expert'] = {'name': '升学规划专家', 'brief': '负责升学路径与院校匹配', 'skills': []}
+    rid = runtime.create('s', 'u', 'p', '分析', policy, wire_protocol='hailiang.sse.v3')
+
+    def attach(run, changes, _db):
+        root = run['tasks'][run['root_task_id']]
+        child = task_node('expert', '分析升学路径', root['id'], expert_id='career_plan_expert')
+        child['brief'] = {'objective': '分析升学路径', 'completion': '提交结构化结论'}
+        child['status'] = 'completed'
+        child['structured_result'] = {'status': 'partial', 'conclusion': '需要补充地区', 'findings': ['当前成绩'], 'limitations': ['地区未知'], 'unresolved': ['地区']}
+        run['tasks'][child['id']] = child
+        run['orchestration'] = {'action': 'consult', 'subtasks': [{'subtask_id': 'st_1', 'target_expert_id': 'career_plan_expert', 'question': '分析升学路径', 'depends_on': []}]}
+        run['phase'] = 'experts_completed'
+        changes.append({'event': 'expert_result_attached', 'node_id': child['id']})
+
+    runtime.store.mutate(rid, attach)
+    entity = next(item for item in runtime.store.public_snapshot('s', 'u', 'p')['runs'] if item['id'] == rid)
+    assert entity['dispatch']['planned_expert_count'] == 1
+    assert entity['dispatch']['experts'][0]['brief'] == '负责升学路径与院校匹配'
+    assert entity['dispatch']['experts'][0]['task_brief'] == '分析升学路径'
+    node = next(item for item in runtime.store.public_snapshot('s', 'u', 'p')['nodes'] if item['kind'] == 'expert')
+    assert node['brief']['objective'] == '分析升学路径'
+    assert node['result']['status'] == 'partial'
+    assert node['result']['limitations'] == ['地区未知']
+    runtime.close()
+
+
 def test_v3_snapshot_projects_grouped_input_queue(tmp_path):
     from hailiang_skills.harness.contracts import AnswerSubmission
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))

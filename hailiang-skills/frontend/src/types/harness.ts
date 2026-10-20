@@ -8,11 +8,28 @@ export type HarnessRoundExperts = {
   completed_expert_ids: string[]; failed_expert_ids: string[];
   status: "idle" | "assigned" | "running" | "completed" | "failed" | "partial";
 };
+export type HarnessDispatchExpert = {
+  subtask_id: string; expert_id: string; name: string; brief: string; task_brief: string;
+  status: "assigned" | "running" | "waiting_for_user" | "completed" | "failed";
+  depends_on: string[];
+};
+export type HarnessDispatch = {
+  status: "completed" | "pending"; planned_task_count: number;
+  planned_expert_count: number; parallel_task_count: number;
+  experts: HarnessDispatchExpert[];
+};
+export type HarnessNodeResult = {
+  status?: string; conclusion?: string; findings?: string[];
+  limitations?: string[]; unresolved?: string[];
+};
 export type HarnessNode = {
   id: string; parent_id: string | null; kind: "main" | "expert" | "skill" | "tool";
   title: string; actor?: string; expert_id?: string | null; status: string;
   created_at?: string | null; started_at: string | null; ended_at: string | null;
   error?: string; attempts?: number; stale?: boolean;
+  brief?: Record<string, unknown> | string | null; phase?: string; action?: string;
+  result?: HarnessNodeResult | null; waiting_on?: string[];
+  children_count?: number; completed_children_count?: number;
 };
 export type HarnessField = {
   key: string; label: string; input_type: string; required: boolean;
@@ -36,6 +53,7 @@ export type HarnessRun = {
   input_groups?: HarnessInputGroup[];
   input_queue?: { active_group_id: string | null; queued_group_ids: string[]; active_request_id: string | null; active_group_total: number; active_group_completed: number };
   created_at: string; updated_at: string; result: string; phase?: string; error?: string;
+  action?: string; dispatch?: HarnessDispatch | null; synthesis_status?: string; recommendations_status?: string;
   message_status?: string;
   outcome?: "completed" | "partial" | "failed" | "cancelled" | null;
   cancellation_reason?: string; superseded_by_run_id?: string;

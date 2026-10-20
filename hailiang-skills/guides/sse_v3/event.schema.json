@@ -157,7 +157,35 @@
               "nodes",
               "input_requests",
               "messages"
-            ]
+            ],
+            "properties": {
+              "runs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "phase": {"type": "string"},
+                    "action": {"type": "string"},
+                    "dispatch": {"type": ["object", "null"]},
+                    "synthesis_status": {"type": "string"},
+                    "recommendations_status": {"type": "string"}
+                  }
+                }
+              },
+              "nodes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "brief": {},
+                    "phase": {"type": "string"},
+                    "action": {"type": "string"},
+                    "waiting_on": {"type": "array", "items": {"type": "string"}},
+                    "result": {"type": ["object", "null"]}
+                  }
+                }
+              }
+            }
           }
         }
       }
