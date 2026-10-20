@@ -1,5 +1,24 @@
 # 业务配置数据库迁移与回退
 
+## 日常怎么理解两套配置
+
+业务配置（Skill / 专家 / 专家团）同时存在于：
+
+1. **仓库目录**：`runtime_skills/`、`runtime_agents/`、`runtime_agent_teams/`  
+2. **调试台数据库**：对象库里的修订与发布，以及激活后的部署 ZIP
+
+本地或测试环境如果已经激活过专家团部署，**运行时只读部署快照**。仓库目录此时不是会话在用的那份；在文件里改专家规则、删专家包，都不会改变当前问答，除非你显式把 `HAILIANG_BUSINESS_CONFIG_SOURCE` 设为 `filesystem`，或重新做「迁移 / 导入 → 发布 → 激活」。
+
+怎么快速确认本机在用哪套：
+
+- 看 `/health/ready` 里的 `expert_runtime.default_expert_id`、团队规模，是否与工作台当前对象一致。  
+- 看 `/deployment/v1/deployments` 是否存在当前环境的 active 部署。  
+- 看工作台对象列表：那里才是业务日常编辑的权威内容。
+
+仓库目录的定位是：新库冷启动兜底、迁移对照、测试与历史基线。验收完成后的第二阶段计划删除业务目录的文件加载分支；在此之前不要把「改仓库」当成「改线上」。
+
+业务人员日常流程见 [AI 业务调试台业务使用手册](AI_WORKBENCH_BUSINESS_USER_MANUAL.md)。架构侧说明见 [AI 业务调试台架构与运行手册](../docs/architecture/business_workbench.md)。
+
 ## 配置边界
 
 业务配置包括 Skill、专家和专家团。Skill 的 `SKILL.md`、`runtime_contract.json`、`references/`、`assets/`、`scripts/` 以及根目录数据文件（例如 `professions.json`、`tools.yaml`）均随不可变修订保存。表单引擎、Facts、SSE、专家调度、公共工具和脚本沙箱仍属于程序代码。

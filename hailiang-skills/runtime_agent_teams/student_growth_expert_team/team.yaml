@@ -16,7 +16,7 @@ collaboration_rules: |
 members:
   - expert_id: career_plan_expert
     mention_name: 升学规划专家
-    routing_brief: 负责升学路径、选科、院校专业与学业规划，并作为主协调专家兜底。
+    routing_brief: 负责升学路径、选科、院校专业与学业规划。
     applicable_stages:
       - 小学
       - 初中
