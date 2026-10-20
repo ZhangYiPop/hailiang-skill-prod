@@ -1,5 +1,6 @@
 import { testerModelName, TESTER_MODEL_OPTIONS, useChatStore } from "@/store/useChatStore";
 import { legacyView, subscribeV3, type V3Snapshot } from "@/utils/harnessV3";
+import { createUuid } from "@/utils/uuid";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentInputRequest, TaskProgressBlock, type StepIo, type SubmitHarnessAnswer } from "@/components/message-blocks/TaskProgressBlock";
 import { MarkdownContent } from "@/components/MarkdownContent";
@@ -97,7 +98,7 @@ export function HarnessDebugPanel({
       const fingerprint = JSON.stringify({...value, submission_id: undefined});
       let cached: {fingerprint: string; id: string} | null = null;
       try { cached = JSON.parse(sessionStorage.getItem(startKey) || 'null'); } catch { /* empty */ }
-      value.submission_id = cached?.fingerprint === fingerprint ? cached.id : crypto.randomUUID();
+      value.submission_id = cached?.fingerprint === fingerprint ? cached.id : createUuid();
       sessionStorage.setItem(startKey, JSON.stringify({fingerprint, id: value.submission_id}));
     }
     try {
@@ -249,7 +250,7 @@ export function HarnessDebugPanel({
       if (id !== debugId) setRuns([]);
       const presetFacts = objectType === "skill" ? {} : { user_role: userRole, school_stage: schoolStage };
       await request(`${api}/sessions/harness-${id}/harness/runs`, {
-        ...(v3 ? { submission_id: crypto.randomUUID() } : {}),
+        ...(v3 ? { submission_id: createUuid() } : {}),
         goal,
         model: selectedModelId,
         context_data: { user_id: userId, facts: presetFacts, ...(gradeName && objectType !== "skill" ? { grade: gradeName } : {}) },

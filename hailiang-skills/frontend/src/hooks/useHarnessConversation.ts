@@ -1,4 +1,5 @@
 import { legacyView, subscribeV3, type V3Snapshot, type V3Event } from "@/utils/harnessV3";
+import { createUuid } from "@/utils/uuid";
 import { useEffect } from "react";
 import { create } from "zustand";
 import { useChatStore } from "@/store/useChatStore";
@@ -33,7 +34,7 @@ export async function harnessRequest<T>(path: string, body?: unknown): Promise<T
     const fingerprint = JSON.stringify({...value, submission_id: undefined});
     let cached: {fingerprint: string; id: string} | null = null;
     try { cached = JSON.parse(sessionStorage.getItem(submissionKey) || 'null'); } catch { /* empty */ }
-    value.submission_id = cached?.fingerprint === fingerprint ? cached.id : crypto.randomUUID();
+    value.submission_id = cached?.fingerprint === fingerprint ? cached.id : createUuid();
     sessionStorage.setItem(submissionKey, JSON.stringify({fingerprint, id: value.submission_id}));
   }
   const response = await fetch(`${useChatStore.getState().apiBaseUrl}/api/${v3 ? "v3" : "v2"}${path}`, {
@@ -100,7 +101,7 @@ export async function sendHarnessIfEnabled(content: string): Promise<boolean> {
   state.setSending(true);
   try {
     const response = await harnessRequest<{ run_id: string }>(`/sessions/${encodeURIComponent(state.sessionId)}/harness/runs`, {
-      ...(v3 ? { submission_id: crypto.randomUUID() } : {}),
+      ...(v3 ? { submission_id: createUuid() } : {}),
       goal: content, context_data: { ...who, ...(who.profile_id ? {
         student_name: state.debugIdentity.display_name, grade: state.debugIdentity.grade || undefined,
         school_year: state.debugIdentity.school_year || undefined,

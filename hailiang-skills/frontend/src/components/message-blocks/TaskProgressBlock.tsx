@@ -3,6 +3,7 @@ import type { HarnessRun, HarnessNode, HarnessInput } from "@/types/harness";
 import { isHarnessTerminal } from "@/types/harness";
 import { harnessRequest, refreshHarness, submitHarnessAnswer, useHarnessState } from "@/hooks/useHarnessConversation";
 import { useChatStore } from "@/store/useChatStore";
+import { createUuid } from "@/utils/uuid";
 
 const labels: Record<string, string> = { queued: "排队中", assigned: "已分派", running: "执行中", waiting_for_dependency: "等待前置任务",
   waiting_for_user: "等待你补充", completed: "已完成", failed: "执行失败", cancelled: "已停止", skipped: "未补充" };
@@ -35,7 +36,7 @@ export function AgentInputRequest({ request, sessionId, onSubmitAnswer, groupPro
     const serialized = JSON.stringify(body);
     let cached: { body: string; id: string } | null = null;
     try { cached = JSON.parse(sessionStorage.getItem(submissionKey) || "null"); } catch { /* empty */ }
-    body.submission_id = cached?.body === serialized ? cached.id : crypto.randomUUID();
+    body.submission_id = cached?.body === serialized ? cached.id : createUuid();
     sessionStorage.setItem(submissionKey, JSON.stringify({ body: serialized, id: body.submission_id }));
     try {
       if (onSubmitAnswer) await onSubmitAnswer(request, skipped ? {} : drafts, skipped, body.submission_id);
