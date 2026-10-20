@@ -31,22 +31,28 @@ def build_recommend_prompt(
     max_cards: int = 3,
 ) -> list[ChatMessage]:
     items = _catalog_items(catalog)
-    slim = [
-        {
-            "intent": str(item.get("intent") or "").strip(),
-            "object_type": str(item.get("object_type") or "").strip(),
+    slim = []
+    for item in items:
+        intent = str(item.get("intent") or "").strip()
+        object_type = str(item.get("object_type") or "").strip()
+        if not intent or not object_type:
+            continue
+        # `when` is the model-facing trigger hint; fall back to description for older catalogs.
+        when = str(item.get("when") or item.get("description") or "").strip()
+        slim.append({
+            "intent": intent,
+            "object_type": object_type,
             "sub_type": str(item.get("sub_type") or "").strip(),
             "title": str(item.get("title") or item.get("name") or "").strip(),
-            "description": str(item.get("description") or "").strip(),
-        }
-        for item in items
-        if str(item.get("intent") or "").strip() and str(item.get("object_type") or "").strip()
-    ]
+            "when": when,
+        })
     system_parts = [
         str(recommendation_rules or "").strip(),
         "只从下列推荐清单中挑选，输出 jump_cards JSON。不要查询会话状态，不要编造清单外条目。",
+        "主要依据本轮专家/平台回答是否落到某业务功能；用户很少会直接点名测评或咨询师。",
+        "多个条目相关时只留最相关的一条；都不够相关则返回空数组。",
         f"最多 {max(0, int(max_cards))} 条。若没有合适条目，返回 {{\"jump_cards\": []}}。",
-        "推荐清单：",
+        "推荐清单（when = 何时推荐）：",
         json.dumps(slim, ensure_ascii=False, indent=2),
         "用户本轮问题：",
         str(user_question or "").strip() or "（未提供）",

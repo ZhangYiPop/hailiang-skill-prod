@@ -1,3 +1,4 @@
+import { BatchEvalPanel } from "@/components/workbench/BatchEvalPanel";
 import { HarnessDebugPanel } from "@/components/workbench/HarnessDebugPanel";
 import {
   type CSSProperties,
@@ -27,6 +28,7 @@ import {
   GitCompareArrows,
   History,
   Layers3,
+  ListChecks,
   MoonStar,
   PackageCheck,
   Plus,
@@ -80,7 +82,7 @@ import {
   type WorkbenchObjectType,
 } from "@/utils/workbenchApi";
 
-type Section = "objects" | "versions" | "evaluation" | "convert" | "release";
+type Section = "objects" | "versions" | "evaluation" | "batch" | "convert" | "release";
 
 const TYPE_META: Record<
   WorkbenchObjectType,
@@ -2472,6 +2474,7 @@ export default function Workbench() {
                 label: "调试与用例",
                 icon: FlaskConical,
               },
+              { id: "batch" as const, label: "批量测评", icon: ListChecks },
               { id: "convert" as const, label: "标准协议转换", icon: Braces },
               { id: "release" as const, label: "发布中心", icon: Rocket },
             ].map((item) => {
@@ -2513,13 +2516,15 @@ export default function Workbench() {
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <p className="text-xs uppercase tracking-[0.2em] text-sky-400">
-                  {section === "objects" ? "Configuration" : section}
+                  {section === "objects" ? "Configuration" : section === "batch" ? "Batch" : section}
                 </p>
                 <h1 className="mt-1 text-xl font-semibold">
                   {section === "release"
                     ? "生产发布中心"
                     : section === "evaluation"
                       ? "调试与效果验证"
+                    : section === "batch"
+                      ? "批量测评"
                     : section === "versions"
                         ? "版本与依赖"
                         : section === "convert"
@@ -3305,6 +3310,10 @@ export default function Workbench() {
                 </aside>
               </div>
             </section>
+          ) : null}
+
+          {section === "batch" && actor ? (
+            <BatchEvalPanel baseUrl={apiBaseUrl} actorId={actor.actor_id} />
           ) : null}
 
           {section === "evaluation" ? (

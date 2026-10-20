@@ -1,7 +1,7 @@
 import { testerModelName, TESTER_MODEL_OPTIONS, useChatStore } from "@/store/useChatStore";
 import { legacyView, subscribeV3, type V3Snapshot } from "@/utils/harnessV3";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AgentInputRequest, TaskProgressBlock, type SubmitHarnessAnswer } from "@/components/message-blocks/TaskProgressBlock";
+import { AgentInputRequest, TaskProgressBlock, type StepIo, type SubmitHarnessAnswer } from "@/components/message-blocks/TaskProgressBlock";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { HarnessContextDiagnostics } from "./HarnessContextDiagnostics";
 import type { HarnessRun, HarnessSnapshot } from "@/types/harness";
@@ -69,6 +69,7 @@ export function HarnessDebugPanel({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [trace, setTrace] = useState("");
+  const [stepsByRun, setStepsByRun] = useState<Record<string, Record<string, StepIo>>>({});
   const [rightPane, setRightPane] = useState<"reply" | "trace">("reply");
   const [conclusion, setConclusion] = useState("");
   const [evidenceSaved, setEvidenceSaved] = useState(false);
@@ -163,6 +164,7 @@ export function HarnessDebugPanel({
     setDebugId(sessionStorage.getItem(persistenceKey) || "");
     setRuns([]);
     setTrace("");
+    setStepsByRun({});
     setEvidenceSaved(false);
     setConclusion("");
   }, [persistenceKey, knownKey]);
@@ -202,6 +204,7 @@ export function HarnessDebugPanel({
   const selectSession = (nextId: string) => {
     setError("");
     setTrace("");
+    setStepsByRun({});
     setRightPane("reply");
     setConclusion("");
     setEvidenceSaved(false);
@@ -215,15 +218,28 @@ export function HarnessDebugPanel({
     }
   };
 
-  const loadTrace = async () => {
-    if (!runs.length || !debugId) return;
-    try {
-      const data = await request(`${api}/sessions/${sessionId}/harness/runs/${runs[runs.length - 1].run_id}/trace?user_id=${encodeURIComponent(userId)}`);
-      setTrace(JSON.stringify(data, null, 2));
-    } catch (e) {
-      setError(String(e));
-    }
-  };
+  const runKey = runs.map((run) => `${run.run_id}:${run.version}`).join("|");
+  useEffect(() => {
+    if (rightPane !== "trace" || !debugId || !runs.length) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const loaded = await Promise.all(runs.map(async (run) => {
+          const data = await request<{ steps?: Record<string, StepIo> }>(`${api}/sessions/${sessionId}/harness/runs/${run.run_id}/trace?user_id=${encodeURIComponent(userId)}`);
+          return [run.run_id, data] as const;
+        }));
+        if (cancelled) return;
+        setStepsByRun(Object.fromEntries(loaded.map(([id, data]) => [id, data.steps || {}])));
+        const latest = loaded[loaded.length - 1]?.[1];
+        setTrace(latest ? JSON.stringify(latest, null, 2) : "");
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+    })();
+    return () => { cancelled = true; };
+    // Trace payloads stay on the debug endpoint. Refetch when a run version changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rightPane, debugId, runKey]);
 
   const start = async () => {
     if (active || busy || !goal.trim()) return;
@@ -354,10 +370,7 @@ export function HarnessDebugPanel({
           </button>
           <button
             type="button"
-            onClick={() => {
-              setRightPane("trace");
-              if (!trace && runs.length) void loadTrace();
-            }}
+            onClick={() => setRightPane("trace")}
             className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${rightPane === "trace" ? "bg-sky-400/15 text-sky-100" : "text-slate-400 hover:text-slate-200"}`}
           >
             轨迹过程{runs.length ? ` · ${runs.length}` : ""}
@@ -428,7 +441,7 @@ export function HarnessDebugPanel({
                 <div className="space-y-2 rounded-xl border border-white/10 bg-black/20 p-3">
                   <p className="text-xs font-medium text-slate-300">任务树与执行过程</p>
                   {runs.map((run) => (
-                    <TaskProgressBlock key={`trace-${run.run_id}`} run={run} connection={connection} />
+                    <TaskProgressBlock key={`trace-${run.run_id}`} run={run} connection={connection} steps={stepsByRun[run.run_id]} />
                   ))}
                 </div>
               ) : null}
@@ -514,7 +527,7 @@ export function HarnessDebugPanel({
           </button>
         )}
       </div>
-      <p className="shrink-0 text-[11px] leading-5 text-slate-500">匿名会话：不读写孩子档案；任务树、分派与追问都在「轨迹过程」。</p>
+      <p className="shrink-0 text-[11px] leading-5 text-slate-500">匿名会话：不读写孩子档案；任务树、分派与追问都在「轨迹过程」。展开步骤可查看该步的输入和输出。</p>
     </div>
   );
 }

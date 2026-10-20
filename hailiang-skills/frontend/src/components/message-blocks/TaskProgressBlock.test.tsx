@@ -91,6 +91,25 @@ describe("Harness task bubble", () => {
     expect(useChatStore.getState().isSending).toBe(false);
   });
 
+  it("shows step input and output after the step is expanded", () => {
+    const run = fixture();
+    run.nodes.push({ id: "head", parent_id: "root", kind: "tool", title: "编排首：选专家", status: "completed", started_at: null, ended_at: null });
+    render(<TaskProgressBlock run={run} steps={{
+      head: { input: { question: "你好" }, output: { subtasks: [{ target_expert_id: "career_plan_expert" }] } },
+    }} />);
+    const step = screen.getByText("编排首：选专家").closest("details");
+    expect(step).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("编排首：选专家"));
+    const input = within(step as HTMLElement).getByText("输入").closest("details");
+    const output = within(step as HTMLElement).getByText("输出").closest("details");
+    expect(input).not.toHaveAttribute("open");
+    expect(output).not.toHaveAttribute("open");
+    fireEvent.click(within(step as HTMLElement).getByText("输入"));
+    fireEvent.click(within(step as HTMLElement).getByText("输出"));
+    expect(input).toHaveTextContent("你好");
+    expect(output).toHaveTextContent("career_plan_expert");
+  });
+
   it("shows disconnection as connection state without changing task status", () => {
     useHarnessState.getState().set({ connection: "reconnecting" });
     render(<TaskProgressBlock run={fixture()} />);

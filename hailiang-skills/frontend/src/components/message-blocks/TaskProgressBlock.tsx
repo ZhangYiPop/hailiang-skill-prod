@@ -74,7 +74,37 @@ function sortNodes(nodes: HarnessNode[]): HarnessNode[] {
   });
 }
 
-export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedConnection }: { run: HarnessRun; onSubmitAnswer?: SubmitHarnessAnswer; connection?: string }) {
+export type StepIo = { input: unknown; output: unknown };
+
+function formatIo(value: unknown): string {
+  if (value == null || value === "") return "（无）";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return "（无）";
+    if (trimmed[0] === "{" || trimmed[0] === "[") {
+      try { return JSON.stringify(JSON.parse(trimmed), null, 2); } catch { /* keep the original text */ }
+    }
+    return value;
+  }
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
+function StepIoNodes({ io }: { io: StepIo }) {
+  return (
+    <>
+      {([["输入", io.input], ["输出", io.output]] as const).map(([label, value]) => (
+        <div key={label} className="ml-3 border-l border-white/10 pl-3">
+          <details>
+            <summary className="cursor-pointer py-1 text-xs text-slate-400">{label}</summary>
+            <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/30 p-2 text-xs leading-5 text-slate-300">{formatIo(value)}</pre>
+          </details>
+        </div>
+      ))}
+    </>
+  );
+}
+
+export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedConnection, steps }: { run: HarnessRun; onSubmitAnswer?: SubmitHarnessAnswer; connection?: string; steps?: Record<string, StepIo> }) {
   const [clock, setClock] = useState(Date.now());
   const chatConnection = useHarnessState((s) => s.connection);
   const connection = suppliedConnection || chatConnection;
@@ -83,12 +113,14 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
   const render = (node: HarnessNode, depth = 0) => {
     const children = sortNodes(run.nodes.filter((n) => n.parent_id === node.id));
     const requests = run.inputs.filter((q) => q.bindings.some((b) => b.task_id === node.id));
+    const io = steps?.[node.id];
     return <div key={node.id} className={depth ? "ml-3 border-l border-white/10 pl-3" : ""}>
       <details open={!isHarnessTerminal(node.status) && node.status !== "skipped"}>
         <summary className="cursor-pointer py-2 text-sm text-slate-200"><span>{node.title}</span>{node.actor && <span className="ml-2 text-xs text-slate-400">{node.actor}</span>}
           <span className={`ml-2 text-xs ${node.status === "waiting_for_user" ? "text-amber-200" : node.status === "failed" ? "text-rose-300" : "text-cyan-200"}`}>{labels[node.status] || node.status}</span>
           {(node.attempts ?? 0) > 1 && <span className="ml-2 text-xs text-slate-400">第 {node.attempts} 次执行</span>}
         </summary>
+        {io ? <StepIoNodes io={io} /> : null}
         {children.map((child) => render(child, depth + 1))}
         {requests.filter((q) => !["pending", "queued"].includes(q.status)).map((q) => <AgentInputRequest key={q.id} request={q} sessionId={run.session_id} onSubmitAnswer={onSubmitAnswer} />)}
         {node.error && <p className="text-xs text-rose-300">失败原因：{node.error}</p>}

@@ -12,7 +12,7 @@
 
 ## 3. 判断规则
 
-按相关程度只留一组功能对象；寒暄/拒答/纯解释或只能靠专家类型猜测时输出空数组。intent / object_type / sub_type 必须来自 catalog。`match_terms` 本地关键词匹配已废弃。
+主依据是本轮专家/平台回答是否落到某业务功能（对照 catalog 各条 when），不是等用户点名测评/咨询师。多个相关时只留最相关一组；寒暄/拒答/纯解释或只能靠专家类型猜测时输出空数组。intent / object_type / sub_type 必须来自 catalog。
 
 ## 4. 输出要求
 

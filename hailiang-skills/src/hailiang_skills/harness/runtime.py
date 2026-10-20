@@ -125,6 +125,132 @@ def public_jump_cards(run):
     return cards
 
 
+def _trace_messages(raw):
+    rows = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            rows.append(item)
+            continue
+        row = {"role": item.get("role") or ""}
+        if item.get("content"):
+            row["content"] = item["content"]
+        if item.get("name"):
+            row["name"] = item["name"]
+        if item.get("tool_calls"):
+            row["tool_calls"] = item["tool_calls"]
+        rows.append(row)
+    return rows
+
+
+def _phase_output(entry):
+    output = entry.get("output") if isinstance(entry, dict) else None
+    if not isinstance(output, dict) or "final_text" not in output:
+        return output
+    text = output.get("final_text")
+    if not isinstance(text, str):
+        return text
+    stripped = text.strip()
+    if stripped[:1] in "{[":
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            return text
+    return text
+
+
+def recommend_debug_input(view, question, reply, catalog):
+    """Inputs of the recommend step, kept for the debug task tree only."""
+    raw_items = catalog.get("items") or catalog.get("jump_cards") or catalog.get("recommendations") if isinstance(catalog, dict) else catalog
+    catalog_items = []
+    for item in raw_items if isinstance(raw_items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        catalog_items.append({key: str(item.get(key) or "") for key in ("intent", "object_type", "sub_type", "title")})
+    return {
+        "user_question": question,
+        "assistant_reply": reply,
+        "recommendation_rules": str((view or {}).get("recommendation_rules") or ""),
+        "catalog": catalog_items,
+    }
+
+
+def _dispatch_tasks(arguments):
+    """Structured work handed to experts. This is the dispatch step's output, not their replies."""
+    tasks = []
+    for item in (arguments or {}).get("tasks") or []:
+        if not isinstance(item, dict):
+            continue
+        tasks.append({
+            "expert_id": item.get("expert_id") or "",
+            "question": item.get("goal") or item.get("question") or "",
+            "depends_on": list(item.get("depends_on") or []),
+        })
+    return tasks
+
+
+def debug_step_io(run):
+    """Input and output of each mechanism, for workbench debug sessions only.
+
+    The root task is only a container once orchestration starts: the user question
+    is the orchestrator head's input. Dispatch shows the structured expert tasks,
+    and the expert reply stays on the expert node.
+    Public run snapshots stay free of prompts and raw tool payloads.
+    """
+    phases = {}
+    for task in run["tasks"].values():
+        for entry in task.get("trace") or []:
+            phase = (entry.get("diagnostics") or {}).get("phase")
+            if phase:
+                phases[phase] = entry
+    tools = list(run["tools"].values())
+    orchestrated = any(tool.get("name") == "orchestrate_head" for tool in tools)
+    head_plan = next((tool.get("result") for tool in tools if tool.get("name") == "orchestrate_head" and isinstance(tool.get("result"), dict)), None)
+    assignments = {}
+    for tool in tools:
+        if tool.get("name") != "delegate_tasks":
+            continue
+        for item in _dispatch_tasks(tool.get("arguments")):
+            if item["expert_id"]:
+                assignments[item["expert_id"]] = item
+    steps = {}
+    for task in run["tasks"].values():
+        kind = task.get("kind")
+        output = task.get("result") or ({"error": task["error"]} if task.get("error") else "")
+        if kind == "main":
+            if orchestrated:
+                continue
+            steps[task["id"]] = {"input": run.get("goal") or "", "output": output}
+        elif kind == "expert":
+            expert_id = task.get("expert_id") or ""
+            steps[task["id"]] = {
+                "input": assignments.get(expert_id) or {"expert_id": expert_id, "question": task.get("goal") or "", "depends_on": []},
+                "output": output,
+            }
+        elif kind == "skill":
+            steps[task["id"]] = {
+                "input": {"skill_id": task.get("skill_id") or "", "expert_id": task.get("expert_id") or "", "task": task.get("goal") or ""},
+                "output": output,
+            }
+    for tool in tools:
+        name = tool.get("name")
+        phase = phases.get(name)
+        if name == "delegate_tasks":
+            steps[tool["id"]] = {"input": head_plan or {}, "output": {"tasks": _dispatch_tasks(tool.get("arguments"))}}
+            continue
+        if name in {"orchestrate_head", "orchestrate_tail"} and phase:
+            if name == "orchestrate_tail":
+                output = _phase_output(phase)
+            else:
+                output = tool.get("result") if tool.get("result") not in (None, "", {}) else _phase_output(phase)
+            steps[tool["id"]] = {"input": _trace_messages(phase.get("input")), "output": output}
+            continue
+        output = tool.get("result")
+        if output is None and tool.get("error"):
+            output = {"error": tool["error"]}
+        steps[tool["id"]] = {"input": tool.get("arguments") if tool.get("arguments") is not None else {}, "output": output}
+    return steps
+
+
 def task_node(kind, goal, parent_id=None, expert_id=None, skill_id=None, completion="完成指定任务", depends_on=()):
     return {"id": identifier("task"), "parent_id": parent_id, "kind": kind, "expert_id": expert_id, "skill_id": skill_id,
             "goal": goal, "completion": completion, "depends_on": list(depends_on), "status": "queued", "messages": [{"role": "user", "content": goal}],
@@ -718,13 +844,15 @@ class HarnessRuntime:
                          "status": "completed" if text else "failed", "text": text})
         goal = run["goal"]
         stamped = True
+        client = None
         if direct_id:
-            # Single expert: no tail. The expert's own answer is the reply.
+            # Workbench single-expert object: no head/tail model call; expert text is the reply.
+            # Recommend still runs below when a catalog is present.
             stamped = False
             done = [row for row in rows if row["status"] == "completed"]
             text = done[0]["text"] if done else "本次分析尚未完成，暂时无法提供有充分依据的完整结论。"
-            cards = []
         elif any(row["status"] == "completed" for row in rows):
+            # Team flow (one or many experts): always through orchestration tail, then recommend.
             prompt = build_tail_prompt(tail_rules=view.get("tail_rules", ""), expert_results=rows, user_question=goal,
                                        collaboration_rules=view.get("collaboration_rules", ""))
             if not stamp_call(prompt, "orchestrate_tail"):
@@ -733,21 +861,33 @@ class HarnessRuntime:
             final = select_final_reply(rows, client=client, tail_rules=view.get("tail_rules", ""), user_question=goal,
                                        collaboration_rules=view.get("collaboration_rules", ""))
             text = str(final.get("text") or "").strip()
-            catalog = view.get("recommend_catalog") or view.get("recommendations")
-            cards = []
-            if text and catalog:
-                try:
-                    cards = extract_jump_cards(client, catalog, recommendation_rules=view.get("recommendation_rules", ""),
-                                               user_question=goal, assistant_reply=text)
-                except Exception:
-                    log.warning("harness recommend step failed", exc_info=True)
         else:
             text = "本次分析尚未完成，暂时无法提供有充分依据的完整结论。"
-            cards = []
             if not stamp_call([ChatMessage(role="system", content="编排尾：没有专家成功作答。")], "orchestrate_tail"):
                 return
         if not text:
             raise HarnessError("EMPTY_MODEL_REPLY")
+        # Recommend after any successful expert reply: team single/multi (post-tail) and
+        # workbench direct_expert_id. Skipped when catalog is missing or empty.
+        recommend_io = None
+        catalog = view.get("recommend_catalog") or view.get("recommendations")
+        if catalog and any(row["status"] == "completed" for row in rows):
+            if client is None:
+                client = self.client_factory(run)
+            failed = False
+            try:
+                cards = extract_jump_cards(client, catalog, recommendation_rules=view.get("recommendation_rules", ""),
+                                           user_question=goal, assistant_reply=text, max_cards=1)
+            except Exception:
+                log.warning("harness recommend step failed", exc_info=True)
+                cards = []
+                failed = True
+            recommend_io = {
+                "input": recommend_debug_input(view, goal, text, catalog),
+                "output": {"jump_cards": cards},
+            }
+            if failed:
+                recommend_io["output"]["error"] = "recommend_failed"
         def apply_tail(current, changes, db):
             if not self._valid(current, task_id, token):
                 return
@@ -756,9 +896,10 @@ class HarnessRuntime:
                 live["trace"][-1]["output"] = {"final_text": text}
                 self._record_node(current, live, "orchestrate_tail", {"experts": [r["expert_id"] for r in rows]},
                                   {"mode": "direct" if sum(r["status"] == "completed" for r in rows) == 1 else "merge", "experts": rows}, changes)
-            if cards:
-                current["jump_cards"] = cards
-                self._record_node(current, live, "recommend", {}, {"jump_cards": cards}, changes)
+            if recommend_io:
+                if recommend_io["output"].get("jump_cards"):
+                    current["jump_cards"] = recommend_io["output"]["jump_cards"]
+                self._record_node(current, live, "recommend", recommend_io["input"], recommend_io["output"], changes)
             live["tail_done"] = True
             finish_run(current, live, changes, text)
             self._settle(current, changes, db)
