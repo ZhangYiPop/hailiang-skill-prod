@@ -83,7 +83,7 @@ export function parseDelimited(text: string): string[][] {
 
 export async function rowsFromWorkbook(buffer: ArrayBuffer): Promise<string[][]> {
   const loaded = await import("xlsx");
-  const XLSX = "read" in loaded ? loaded : loaded.default;
+  const XLSX = loaded;
   const book = XLSX.read(buffer, { type: "array" });
   const sheet = book.Sheets[book.SheetNames[0]];
   if (!sheet) throw new Error("表格里没有可读取的工作表。");
