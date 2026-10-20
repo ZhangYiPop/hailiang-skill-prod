@@ -62,7 +62,7 @@ async def proxy(path: str, request: Request):
     if request.method == 'POST':
         body = await request.json()
         if path == 'sessions/chat/stream':
-            # The product request never trusts browser-provided context_data.
+            # The product request never trusts frontend-provided context_data.
             # Production BFFs obtain the equivalent data from their profile API.
             body.pop('context_data', None)
             body['context_data'] = context

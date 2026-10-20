@@ -13,9 +13,9 @@
 → pending 卡片仍 POST BFF 同一路径；其响应主动继续推流
 ```
 
-前端不得调用 `/harness/*`、`/events`、`/answers` 或 `/record`。这些细粒度接口只供算法工作台和排障使用。BFF 负责可信身份、档案授权和原样转发；它不得缓冲、重排、改写 SSE、关闭浏览器订阅时取消 run，或自动重试新的聊天请求。
+前端不得调用 `/harness/*`、`/events`、`/answers` 或 `/record`。这些细粒度接口只供算法工作台和排障使用。BFF 负责可信身份、档案授权和原样转发；它不得缓冲、重排、改写 SSE、前端连接关闭时取消 run，或自动重试新的聊天请求。
 
-浏览器 body 中只允许 `session_id`、`run_id`、`input`。`user_id`、`profile_id`、`profile_data` 必须由 BFF 注入；专家成员、Skill、任务树、卡片版本和恢复指令都不是前端参数。具体 cURL 见 [SSE_V3_CURL_TEST_PLAYBOOK.md](SSE_V3_CURL_TEST_PLAYBOOK.md)。
+前端请求 body 中只允许 `session_id`、`run_id`、`input`。`user_id`、`profile_id`、`profile_data` 必须由 BFF 注入；专家成员、Skill、任务树、卡片版本和恢复指令都不是前端参数。具体 cURL 见 [SSE_V3_CURL_TEST_PLAYBOOK.md](SSE_V3_CURL_TEST_PLAYBOOK.md)。
 
 ## 2. 有限流规则
 

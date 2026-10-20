@@ -15,7 +15,7 @@ chat/stream                   context_data                    chat/stream
 input                          原样转发完整快照                恢复和汇总
 ```
 
-浏览器请求只有三个字段：
+前端请求只有三个字段：
 
 ```json
 {
@@ -29,7 +29,7 @@ input                          原样转发完整快照                恢复和
 - `run_id`：BFF 创建的客户端幂等键。一次新问题使用一个新值；`done_timeout` 后续接同一任务时，必须复用原值。
 - `input`：JSON **字符串**。每种动作都必须带 `expert_team_id`，团队内专家、Skill、任务树和表单版本均不由前端传入。
 
-浏览器**不得**传 `user_id`、`profile_id` 或 `profile_data`。BFF 从登录态及档案服务取得它们，组装后才向算法服务发送：
+前端**不得**传 `user_id`、`profile_id` 或 `profile_data`。BFF 从登录态及档案服务取得它们，组装后才向算法服务发送：
 
 ```json
 {
@@ -41,7 +41,7 @@ input                          原样转发完整快照                恢复和
 }
 ```
 
-本地 BFF 参考实现为 [examples/sse_v3/bff.py](../examples/sse_v3/bff.py)：它也会丢弃浏览器伪造的 `context_data`。
+本地 BFF 参考实现为 [examples/sse_v3/bff.py](../examples/sse_v3/bff.py)：它也会丢弃前端伪造的 `context_data`。
 
 ## 2. 本地准备
 
@@ -74,7 +74,7 @@ export EXPERT_TEAM_ID="student_growth_expert_team"
 export BFF_COOKIE="local-only"
 ```
 
-`Origin` 在真实浏览器中自动携带；本地 cURL 必须模拟同源请求。`-N` 禁用 cURL 缓冲，`--max-time 610` 给服务端 600 秒有限流留下余量。
+`Origin` 仅适用于使用 Cookie 的 Web BFF；原生 App 由 BFF 的 Token／签名认证策略处理，不应伪造 Web 同源语义。仓库的本地 BFF 示例采用 Cookie，因此 cURL 需要模拟同源请求。`-N` 禁用 cURL 缓冲，`--max-time 610` 给服务端 600 秒有限流留下余量。
 
 ## 3. 场景一：发送新问题，展示拆分后的专家树
 
@@ -195,9 +195,9 @@ curl -sS -N --max-time 30 -X POST "$BFF_BASE/api/v3/sessions/chat/stream" \
 
 - 前端只访问 BFF；算法服务地址不得暴露给 App。
 - BFF 从 Cookie／Token 注入 `user_id`，校验并注入 `profile_id`，按需读取档案并注入 `profile_data`。
-- BFF 丢弃浏览器提供的 `context_data`、专家、Skill、节点、版本和恢复字段。
+- BFF 丢弃前端提供的 `context_data`、专家、Skill、节点、版本和恢复字段。
 - BFF 逐字节、低延迟转发 SSE，不缓冲、聚合、重排或改写帧。
-- BFF 不因浏览器断开而取消上游 run，不自动重试新的 `chat`。
+- BFF 不因前端连接断开而取消上游 run，不自动重试新的 `chat`。
 - BFF 将每帧完整 `snapshot` 暂存到 `assistant_message_id`；只按 `persistence` 写入或清理对话历史。
 
 完整字段、状态树与保存语义见 [SSE_V3_HARNESS_CONTRACT.md](SSE_V3_HARNESS_CONTRACT.md)；算法服务的细粒度 Harness 调试接口仅供工作台和排障使用，不属于此手册。

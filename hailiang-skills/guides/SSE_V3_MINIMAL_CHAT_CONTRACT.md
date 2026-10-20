@@ -3,11 +3,11 @@
 > 协议：`hailiang.sse.v3`
 > 入口：`POST /api/v3/sessions/chat/stream`
 
-浏览器只发送用户问题、当前追问卡答案或停止指令，以及每次动作对应的 `expert_team_id`。团队内的专家选择、Skill 选择、任务恢复、问题组推进和任务编排均由算法服务完成。
+前端（App 或 Web）只发送用户问题、当前追问卡答案或停止指令，以及每次动作对应的 `expert_team_id`。团队内的专家选择、Skill 选择、任务恢复、问题组推进和任务编排均由算法服务完成。
 
 ## 调用层次
 
-浏览器只能调用 BFF 的同路径入口：`POST {BFF_BASE}/api/v3/sessions/chat/stream`。它的 body 只有 `session_id`、`run_id` 与 `input` 三项；不能信任浏览器提交的身份或画像。BFF 从登录态和档案服务注入 `context_data`，再将下面的完整请求转发到算法服务。
+前端只能调用 BFF 的同路径入口：`POST {BFF_BASE}/api/v3/sessions/chat/stream`。它的 body 只有 `session_id`、`run_id` 与 `input` 三项；不能信任前端提交的身份或画像。BFF 从登录态和档案服务注入 `context_data`，再将下面的完整请求转发到算法服务。
 
 ## 算法服务请求
 
@@ -31,7 +31,7 @@ BFF 到算法服务的请求外层与 v2 一致，`input` 必须是 JSON 字符�
 }
 ```
 
-`context_data.user_id` 由 BFF 从登录态注入；浏览器不得直接提交它。`profile_id` 可在泛聊时省略。`profile_data` 是可选的增量画像字典，可随 `chat` 或表单答案提交：服务端保留原始结构、为叶子字段建立版本化 `profile.*` 事实投影，并仅在任务需要时交给模型。不存在的档案会自动创建；档案属于其他用户时请求被拒绝。`null` 不删除已有画像字段，删除应使用档案或事实接口。
+`context_data.user_id` 由 BFF 从登录态注入；前端不得直接提交它。`profile_id` 可在泛聊时省略。`profile_data` 是可选的增量画像字典，可随 `chat` 或表单答案提交：服务端保留原始结构、为叶子字段建立版本化 `profile.*` 事实投影，并仅在任务需要时交给模型。不存在的档案会自动创建；档案属于其他用户时请求被拒绝。`null` 不删除已有画像字段，删除应使用档案或事实接口。
 
 支持的 `input.action` 只有：
 
