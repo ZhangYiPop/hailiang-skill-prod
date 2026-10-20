@@ -273,7 +273,9 @@ class BatchEvalService:
         while time.monotonic() < deadline:
             if job["cancel"]:
                 self.runtime.cancel(run_id)
-                break
+                public = self.runtime.public(self.runtime.store.get(run_id))
+                public["status"] = "cancelled"
+                return public
             run = self.runtime.store.get(run_id)
             for request in run["inputs"].values():
                 if request["status"] != "pending" or request["id"] in answered:
