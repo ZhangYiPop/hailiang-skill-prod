@@ -122,6 +122,9 @@ def public_jump_cards(run):
         card["intent"] = intent
         card["object_type"] = object_type
         card["filter"] = {key: "" if source_filter.get(key) is None else str(source_filter.get(key) or "") for key in _PUBLIC_FILTER_KEYS}
+        # The extractor has no stable public identifier. Derive one from the
+        # validated public payload so a full-frame replacement keeps card keys stable.
+        card["id"] = "rec_" + hashlib.sha256(json.dumps(card, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
         cards.append(card)
     return cards
 
@@ -141,9 +144,15 @@ def public_dispatch(run):
             continue
         definition = (run.get("policy", {}).get("experts") or {}).get(expert_id, {})
         depends_on = list(item.get("depends_on") or [])
+        subtask_id = str(item.get("subtask_id") or item.get("key") or f"st_{len(experts) + 1}")
         matching = [task for task in run.get("tasks", {}).values()
-                    if task.get("kind") == "expert" and task.get("expert_id") == expert_id]
-        live = matching[-1] if matching else None
+                    if task.get("kind") == "expert" and task.get("plan_subtask_id") == subtask_id]
+        # Older persisted runs predate plan_subtask_id.  Keep their public
+        # projection readable without using that fallback for newly created tasks.
+        if not matching:
+            matching = [task for task in run.get("tasks", {}).values()
+                        if task.get("kind") == "expert" and task.get("expert_id") == expert_id]
+        live = sorted(matching, key=lambda task: (task.get("created_at") or "", task.get("id") or ""))[-1] if matching else None
         task_status = (live or {}).get("status")
         public_status = {
             "running": "running", "waiting_for_user": "waiting_for_user",
@@ -151,7 +160,8 @@ def public_dispatch(run):
             "completed": "completed", "failed": "failed", "cancelled": "failed",
         }.get(task_status, "assigned")
         experts.append({
-            "subtask_id": str(item.get("subtask_id") or item.get("key") or f"st_{len(experts) + 1}"),
+            "subtask_id": subtask_id,
+            "node_id": (live or {}).get("id"),
             "expert_id": expert_id,
             "name": definition.get("name") or expert_id,
             # `brief` is the business-authored expert introduction from the
@@ -159,8 +169,13 @@ def public_dispatch(run):
             # separately so the UI does not confuse role scope with delegation.
             "brief": str(definition.get("brief") or "").strip(),
             "task_brief": str(item.get("brief") or item.get("question") or "").strip(),
+            "completion_criteria": str(item.get("completion") or "完成本次分派任务并提交可核验结论").strip(),
+            "plan_status": "assigned",
+            "execution_status": public_status,
             "status": public_status,
             "depends_on": depends_on,
+            "depends_on_node_ids": list((live or {}).get("depends_on") or []),
+            "can_run_now": public_status in {"assigned", "running"},
         })
     if not experts:
         return None
@@ -169,7 +184,12 @@ def public_dispatch(run):
         "status": "completed",
         "planned_task_count": len(experts),
         "planned_expert_count": len({item["expert_id"] for item in experts}),
+        # Independent means dependency-ready in the plan. It is distinct
+        # from the worker concurrency cap and from tasks already running.
         "parallel_task_count": independent,
+        "ready_task_count": sum(item["execution_status"] in {"assigned", "running"} for item in experts),
+        "blocked_task_count": sum(bool(item["depends_on"]) and item["execution_status"] == "assigned" for item in experts),
+        "max_parallelism": int((run.get("policy", {}).get("settings") or {}).get("max_parallel_experts", 3)),
         "experts": experts,
     }
 
@@ -962,6 +982,16 @@ class HarnessRuntime:
         recommend_io = None
         catalog = view.get("recommend_catalog") or view.get("recommendations")
         if catalog and any(row["status"] == "completed" for row in rows):
+            def mark_recommending(current, changes, db):
+                if not self._valid(current, task_id, token):
+                    return
+                current["phase"] = "recommending"
+                current["action"] = "正在生成相关推荐"
+                current["recommendations_status"] = "running"
+                current["recommendations_started"] = True
+                changes.append({"event": "recommendation_started", "node_id": task_id})
+                self._settle(current, changes, db)
+            self.store.mutate(run_id, mark_recommending)
             if client is None:
                 client = self.client_factory(run)
             failed = False
@@ -990,10 +1020,17 @@ class HarnessRuntime:
                 if recommend_io["output"].get("jump_cards"):
                     current["jump_cards"] = recommend_io["output"]["jump_cards"]
                 self._record_node(current, live, "recommend", recommend_io["input"], recommend_io["output"], changes)
-                current["phase"] = "recommending"
-                current["action"] = "正在生成相关推荐"
                 current["recommendations_started"] = True
-            current["recommendations_status"] = "completed" if current.get("recommendations_started") else "not_available"
+                if recommend_io["output"].get("error"):
+                    current["recommendations_status"] = "failed"
+                elif recommend_io["output"].get("jump_cards"):
+                    current["recommendations_status"] = "completed"
+                else:
+                    current["recommendations_status"] = "empty"
+            elif not catalog:
+                current["recommendations_status"] = "unavailable"
+            else:
+                current["recommendations_status"] = "not_available"
             live["tail_done"] = True
             current["phase"] = "completed"
             current["action"] = "已完成最终回复"
@@ -1328,6 +1365,7 @@ class HarnessRuntime:
                     child["brief"] = cp.brief_for(run, child, item.get("brief"))
             for item in items:
                 child = children[item["key"]]
+                child["plan_subtask_id"] = item["key"]
                 child["depends_on"] = [children[k]["id"] for k in item.get("depends_on", [])]
                 if child["depends_on"]:
                     child["status"] = "waiting_for_dependency"
@@ -2019,7 +2057,7 @@ class HarnessRuntime:
                 "synthesis_status": "completed" if run.get("tail_done") else ("running" if run.get("phase") in {"synthesizing", "recommending"} else "pending"),
                 "recommendations_status": run.get("recommendations_status") or ("completed" if run.get("jump_cards") else ("not_started" if not run.get("tail_done") else "not_available")),
                 "result": run.get("result", ""), "error": run.get("error"),
-                "orchestrated": bool(run["policy"].get("orchestrated")), "orchestration": run.get("orchestration"),
+                "orchestrated": bool(run["policy"].get("orchestrated")),
                 "round_experts": public_round_experts(run), "jump_cards": public_jump_cards(run),
                 "input_tokens_estimated": run.get("input_tokens_estimated", 0), "input_tokens_actual": run.get("input_tokens_actual") if run.get("input_token_measurements") else None,
                 "input_token_limit": run["policy"]["settings"].get("max_run_input_tokens", 300000),

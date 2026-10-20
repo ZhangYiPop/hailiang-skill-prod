@@ -160,23 +160,37 @@ def _persistence(*, event: str, run: dict) -> dict[str, Any]:
 
 
 def _payload(runtime, run, *, event: str, reason: str, cursor: int = 0):
-    public = runtime.public(run)
+    """Return the canonical public V3 full frame for the minimal BFF entry."""
+    snapshot = runtime.store.public_snapshot(run["session_id"], run["user_id"], run["profile_id"])
+    run_id = run["run_id"]
+    # A BFF stream is scoped to one run. Never carry another run's queued form
+    # groups into its bubble merely because they share the session/profile scope.
+    snapshot = {
+        **snapshot,
+        "runs": [item for item in snapshot["runs"] if item["id"] == run_id],
+        "nodes": [item for item in snapshot["nodes"] if item.get("run_id") == run_id],
+        "input_requests": [item for item in snapshot["input_requests"] if item.get("run_id") == run_id],
+        "input_groups": [item for item in snapshot.get("input_groups", []) if item.get("run_id") == run_id],
+        "messages": [item for item in snapshot["messages"] if item.get("run_id") == run_id],
+    }
+    public_run = next((item for item in snapshot["runs"] if item["id"] == run_id), {})
     return {
         "protocol": SSE_V3_PROTOCOL,
         "session_id": run["session_id"],
-        # run_id remains for older V2-shaped BFF code.  The two explicit IDs
+        # run_id remains for older V2-shaped BFF code. The two explicit IDs
         # remove ambiguity between its idempotency key and the Harness ID.
-        "run_id": run["run_id"],
-        "harness_run_id": run["run_id"],
-        "client_run_id": run.get("client_run_id"),
-        "assistant_message_id": run.get("assistant_message_id") or f"msg_harness_{run['run_id']}",
-        "record_version": run["version"],
+        "run_id": run_id,
+        "harness_run_id": run_id,
+        "client_run_id": public_run.get("client_run_id", run.get("client_run_id")),
+        "assistant_message_id": public_run.get("assistant_message_id") or run.get("assistant_message_id") or f"msg_harness_{run_id}",
+        "record_version": public_run.get("record_version", run["version"]),
+        "seq": cursor,
         "cursor": cursor,
         "reason": reason,
         "stream_status": "waiting_for_user" if event == "done_suspended" else ("running" if event == "done_timeout" else run["status"]),
         "outcome": _outcome(run),
         "persistence": _persistence(event=event, run=run),
-        "state": public,
+        "snapshot": snapshot,
     }
 
 
@@ -200,8 +214,10 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         # V3 remains a finite BFF request, but ten minutes gives multi-agent
         # work a practical default before emitting a resumable checkpoint.
         timeout_seconds = max(1, int(os.getenv("HAILIANG_HARNESS_SSE_WAIT_SECONDS", "600")))
-        started, cursor = time.monotonic(), 0
+        started = time.monotonic()
         run = await asyncio.to_thread(runtime.store.get, harness_run_id)
+        initial = await asyncio.to_thread(runtime.store.public_snapshot, run["session_id"], run["user_id"], run["profile_id"])
+        cursor = initial["cursor"]
         yield format_sse_event("state", _payload(runtime, run, event="state", reason="stream_started", cursor=cursor))
         while not await http_request.is_disconnected():
             run = await asyncio.to_thread(runtime.store.get, harness_run_id)
@@ -213,12 +229,16 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 # assistant record, then resumes with the same client_run_id.
                 yield format_sse_event("done_suspended", _payload(runtime, run, event="done_suspended", reason="waiting_for_user", cursor=cursor))
                 return
-            events = await asyncio.to_thread(runtime.store.events, run["session_id"], cursor)
-            relevant = [event for event in events if event["run_id"] == harness_run_id]
+            events = await asyncio.to_thread(runtime.store.public_events, run["session_id"], run["user_id"], run["profile_id"], cursor)
+            relevant = [event for event in events if event.get("run_id") == harness_run_id and event.get("type") in {"state", "done"}]
             if relevant:
                 cursor = max(event["seq"] for event in events)
+                latest = relevant[-1]
                 run = await asyncio.to_thread(runtime.store.get, harness_run_id)
-                yield format_sse_event("state", _payload(runtime, run, event="state", reason=relevant[-1]["event"], cursor=cursor))
+                event_name = "done" if latest.get("type") == "done" else "state"
+                yield format_sse_event(event_name, _payload(runtime, run, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor))
+                if event_name == "done":
+                    return
                 continue
             if time.monotonic() - started >= timeout_seconds:
                 # A finite BFF connection timing out is also a persistence
@@ -269,7 +289,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 for old in sorted(runtime.store.runs(request.session_id), key=lambda item: item["created_at"])[-10:]:
                     if old["profile_id"] == data.profile_id and old["status"] == "completed":
                         history.extend([{"role": "user", "content": old["goal"]}, {"role": "assistant", "content": old.get("result", "")}])
-                harness_run_id = operation(lambda: runtime.create(request.session_id, data.user_id, data.profile_id, input_data.content, policy, _seed_facts(context, runtime, request.session_id, data.user_id, data.profile_id), history))
+                harness_run_id = operation(lambda: runtime.create(request.session_id, data.user_id, data.profile_id, input_data.content, policy, _seed_facts(context, runtime, request.session_id, data.user_id, data.profile_id), history, wire_protocol=SSE_V3_PROTOCOL))
                 harness_run_id = operation(lambda: runtime.store.bind_client_run(request.session_id, data.user_id, data.profile_id, request.run_id, harness_run_id, fingerprint))
             # Stored on the run so a retry, form answer and final reply all
             # address one stable assistant bubble.

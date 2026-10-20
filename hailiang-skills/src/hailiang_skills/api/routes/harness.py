@@ -285,6 +285,7 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                 "runs": [item for item in snapshot["runs"] if item["id"] == run_id],
                 "nodes": [item for item in snapshot["nodes"] if item.get("run_id") == run_id],
                 "input_requests": [item for item in snapshot["input_requests"] if item.get("run_id") == run_id],
+                "input_groups": [item for item in snapshot.get("input_groups", []) if item.get("run_id") == run_id],
                 "messages": [item for item in snapshot["messages"] if item.get("run_id") == run_id],
             }
 

@@ -1,5 +1,5 @@
 export type HarnessJumpCard = {
-  intent: string; object_type: string; sub_type: string; reason: string;
+  id?: string; intent: string; object_type: string; sub_type: string; reason: string;
   title: string; description: string;
   filter: { region: string; grade: string; keyword: string; category: string };
 };
@@ -9,13 +9,15 @@ export type HarnessRoundExperts = {
   status: "idle" | "assigned" | "running" | "completed" | "failed" | "partial";
 };
 export type HarnessDispatchExpert = {
-  subtask_id: string; expert_id: string; name: string; brief: string; task_brief: string;
+  subtask_id: string; node_id?: string | null; expert_id: string; name: string; brief: string; task_brief: string;
+  completion_criteria?: string; plan_status?: "assigned"; execution_status?: "assigned" | "running" | "waiting_for_user" | "completed" | "failed";
   status: "assigned" | "running" | "waiting_for_user" | "completed" | "failed";
-  depends_on: string[];
+  depends_on: string[]; depends_on_node_ids?: string[]; can_run_now?: boolean;
 };
 export type HarnessDispatch = {
   status: "completed" | "pending"; planned_task_count: number;
-  planned_expert_count: number; parallel_task_count: number;
+  planned_expert_count: number; parallel_task_count: number; ready_task_count?: number;
+  blocked_task_count?: number; max_parallelism?: number;
   experts: HarnessDispatchExpert[];
 };
 export type HarnessNodeResult = {
@@ -56,7 +58,6 @@ export type HarnessRun = {
   created_at: string; updated_at: string; result: string; phase?: string; error?: string;
   action?: string; dispatch?: HarnessDispatch | null; synthesis_status?: string; recommendations_status?: string;
   message_status?: string;
-  outcome?: "completed" | "partial" | "failed" | "cancelled" | null;
   cancellation_reason?: string; superseded_by_run_id?: string;
   input_tokens_estimated?: number; input_tokens_actual?: number | null; input_token_limit?: number;
   completed_count: number; task_count: number; waiting_count: number;

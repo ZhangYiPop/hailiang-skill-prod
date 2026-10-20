@@ -51,11 +51,14 @@ def test_v3_snapshot_carries_expert_id_and_jump_cards(tmp_path):
         'failed_expert_ids': [],
         'status': 'completed',
     }
-    assert entity['jump_cards'] == [{
+    assert len(entity['jump_cards']) == 1
+    card = entity['jump_cards'][0]
+    assert card['id'].startswith('rec_')
+    assert {key: value for key, value in card.items() if key != 'id'} == {
         'intent': 'assessment', 'object_type': 'single_assessment', 'sub_type': 'career_interest',
         'reason': '兴趣不清', 'title': '职业兴趣测评', 'description': '先做兴趣测评',
         'filter': {'region': '', 'grade': '高一', 'keyword': '', 'category': ''},
-    }]
+    }
     node = next(item for item in snapshot['nodes'] if item['kind'] == 'expert')
     assert node['expert_id'] == 'career_plan_expert'
     assert node['actor'] == '升学规划专家'
@@ -73,6 +76,7 @@ def test_v3_snapshot_exposes_dispatch_brief_and_expert_result(tmp_path):
         root = run['tasks'][run['root_task_id']]
         child = task_node('expert', '分析升学路径', root['id'], expert_id='career_plan_expert')
         child['brief'] = {'objective': '分析升学路径', 'completion': '提交结构化结论'}
+        child['plan_subtask_id'] = 'st_1'
         child['status'] = 'completed'
         child['structured_result'] = {'status': 'partial', 'conclusion': '需要补充地区', 'findings': ['当前成绩'], 'limitations': ['地区未知'], 'unresolved': ['地区']}
         run['tasks'][child['id']] = child
@@ -84,8 +88,13 @@ def test_v3_snapshot_exposes_dispatch_brief_and_expert_result(tmp_path):
     entity = next(item for item in runtime.store.public_snapshot('s', 'u', 'p')['runs'] if item['id'] == rid)
     assert entity['dispatch']['planned_expert_count'] == 1
     assert entity['dispatch']['experts'][0]['brief'] == '负责升学路径与院校匹配'
-    assert entity['dispatch']['experts'][0]['task_brief'] == '分析升学路径'
+    dispatched = entity['dispatch']['experts'][0]
+    assert dispatched['task_brief'] == '分析升学路径'
+    assert dispatched['completion_criteria']
+    assert dispatched['execution_status'] == 'completed'
+    assert 'orchestration' not in entity
     node = next(item for item in runtime.store.public_snapshot('s', 'u', 'p')['nodes'] if item['kind'] == 'expert')
+    assert dispatched['node_id'] == node['id']
     assert node['brief']['objective'] == '分析升学路径'
     assert node['result']['status'] == 'partial'
     assert node['result']['limitations'] == ['地区未知']

@@ -243,22 +243,27 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
     {connection === "reconnecting" && !isHarnessTerminal(run.status) && <p role="status" className="mt-2 text-xs text-amber-200">连接恢复中，后台任务继续执行</p>}
     {run.dispatch && <div className="mt-3 rounded-xl border border-violet-300/20 bg-violet-300/5 p-3">
       <p className="text-sm text-violet-100">任务拆解：已分派 {run.dispatch.planned_expert_count} 位专家、{run.dispatch.planned_task_count} 个任务</p>
+      <p className="mt-1 text-xs text-slate-400">当前可执行 {run.dispatch.ready_task_count ?? run.dispatch.parallel_task_count} 个 · 等待依赖 {run.dispatch.blocked_task_count ?? 0} 个 · 最大并行 {run.dispatch.max_parallelism ?? "—"}</p>
       <div className="mt-2 space-y-2">{run.dispatch.experts.map((expert) => <div key={expert.subtask_id} className="rounded-lg border border-white/10 p-2 text-xs">
         <div className="flex items-center justify-between gap-2"><span className="text-slate-200">{expert.name}</span><span className="text-cyan-200">{labels[expert.status] || expert.status}</span></div>
         {expert.brief ? <p className="mt-1 text-slate-400">专家职责：{expert.brief}</p> : null}
         {expert.task_brief ? <p className="mt-1 text-slate-300">本次任务：{expert.task_brief}</p> : null}
-        {expert.depends_on.length ? <p className="mt-1 text-amber-200">依赖：{expert.depends_on.join("、")}</p> : <p className="mt-1 text-slate-500">可并行执行</p>}
+        {expert.completion_criteria ? <p className="mt-1 text-slate-400">完成条件：{expert.completion_criteria}</p> : null}
+        {expert.depends_on.length ? <p className="mt-1 text-amber-200">依赖：{expert.depends_on.join("、")}</p> : <p className="mt-1 text-slate-500">{expert.can_run_now ? "可并行执行" : "等待调度"}</p>}
       </div>)}</div>
     </div>}
     {sortNodes(run.nodes.filter((n) => !n.parent_id)).map((n) => render(n))}
     {run.synthesis_status === "running" && !isHarnessTerminal(run.status) && <p className="mt-3 rounded-lg border border-cyan-300/20 p-2 text-xs text-cyan-100">编排器正在汇总专家结论</p>}
+    {run.recommendations_status === "running" && <p className="mt-2 rounded-lg border border-cyan-300/20 p-2 text-xs text-cyan-100">正在生成相关推荐</p>}
     {run.recommendations_status === "completed" && <div className="mt-2 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-3 text-xs text-emerald-100">
       <p className="font-medium">相关推荐已生成</p>
-      {run.jump_cards?.map((card) => <div key={`${card.intent}:${card.object_type}:${card.title}`} className="mt-2 rounded-lg border border-white/10 p-2">
+      {run.jump_cards?.map((card) => <div key={card.id || `${card.intent}:${card.object_type}:${card.title}`} className="mt-2 rounded-lg border border-white/10 p-2">
         <p className="text-slate-100">{card.title}</p><p className="mt-1 text-slate-300">{card.description}</p>
         {card.reason ? <p className="mt-1 text-slate-400">推荐原因：{card.reason}</p> : null}
       </div>)}
     </div>}
+    {run.recommendations_status === "empty" && <p className="mt-2 text-xs text-slate-400">本轮没有匹配的相关推荐</p>}
+    {run.recommendations_status === "failed" && <p className="mt-2 text-xs text-amber-200">相关推荐暂时未生成，已保留专家结论和最终回复</p>}
     {run.inputs.filter((q) => q.status === "pending").map((q) => {
       const owner = run.nodes.find((n) => n.id === q.owner_task_id);
       const group = run.input_groups?.find((item) => item.id === q.group_id);

@@ -263,6 +263,7 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         response = client.post('/api/v3/sessions/chat/stream', json=body)
         assert response.status_code == 200
         assert 'event: state' in response.text and '"protocol": "hailiang.sse.v3"' in response.text
+        assert '"snapshot"' in response.text and '"input_groups"' in response.text
         assert '"client_run_id": "client-1"' in response.text
         assert '"assistant_message_id": "msg_harness_' in response.text
         assert '"should_store_snapshot": true' in response.text

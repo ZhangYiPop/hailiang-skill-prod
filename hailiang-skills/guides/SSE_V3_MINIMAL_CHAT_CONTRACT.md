@@ -51,16 +51,16 @@
 
 ```text
 event: state
-data: {"protocol":"hailiang.sse.v3","run_id":"run_xxx","state":{...}}
+data: {"protocol":"hailiang.sse.v3","run_id":"run_xxx","snapshot":{...}}
 
 event: done_suspended
-data: {"protocol":"hailiang.sse.v3","state":{...}}
+data: {"protocol":"hailiang.sse.v3","snapshot":{...}}
 
 event: done_timeout
-data: {"protocol":"hailiang.sse.v3","state":{...}}
+data: {"protocol":"hailiang.sse.v3","snapshot":{...}}
 
 event: done
-data: {"protocol":"hailiang.sse.v3","state":{...}}
+data: {"protocol":"hailiang.sse.v3","snapshot":{...}}
 ```
 
 - `state`：任务、画像、专家、工具、问题组、结论或正文发生变化。只更新 BFF 的暂存快照，不作为正式对话历史。
@@ -79,6 +79,7 @@ data: {"protocol":"hailiang.sse.v3","state":{...}}
   "client_run_id": "client_run_001",
   "assistant_message_id": "msg_harness_run_server_001",
   "record_version": 18,
+  "seq": 128,
   "stream_status": "running",
   "outcome": null,
   "persistence": {
@@ -89,11 +90,22 @@ data: {"protocol":"hailiang.sse.v3","state":{...}}
     "terminal": false,
     "record_kind": "progress"
   },
-  "state": {"...": "完整公开快照"}
+  "snapshot": {
+    "protocol": "hailiang.sse.v3",
+    "cursor": 128,
+    "runs": [], "nodes": [], "input_requests": [],
+    "input_groups": [], "messages": []
+  }
 }
 ```
 
 `assistant_message_id` 在同一个 Harness 任务的所有帧中保持不变。任务树、表单、专家结论和最终主回复都更新这一个助手气泡，最终回复不能另建气泡。
+
+`event: state` 是事件名称；`data.snapshot` 才是完整状态载体。最小入口与 `/harness/runs/{run_id}/events` 使用相同的公开快照、SSE 游标和 public outbox。单 run 帧中的 `runs`、`nodes`、`input_requests`、`input_groups` 与 `messages` 都只包含该 `harness_run_id` 的实体。
+
+`dispatch.experts[]` 既展示编排首的计划，也建立与实际节点的关联：`subtask_id`、可空的 `node_id`、业务 `brief`、本次 `task_brief`、`completion_criteria`、依赖子任务/节点、`execution_status` 与 `can_run_now`。`parallel_task_count` 是无依赖计划任务数；实际展示并行度应读取 `ready_task_count`、`blocked_task_count` 与 `max_parallelism`。
+
+推荐状态为 `not_started`、`running`、`completed`、`empty`、`unavailable`、`failed`。只有 `completed` 才表示 `jump_cards` 非空；没有命中卡片是 `empty`，推荐失败不影响专家结论和最终回复。
 
 V3 的默认等待上限为 **600 秒（10 分钟）**，可由算法服务环境变量 `HAILIANG_HARNESS_SSE_WAIT_SECONDS` 覆盖。到达上限后只发送 `done_timeout` 检查点，后台任务继续运行。
 

@@ -162,7 +162,7 @@ def project(db, run):
     if run.get('phase'):
         upsert(db, scope, 'messages', 'message.updated', rid, {'id': rid + ':phase', 'run_id': rid,
             'kind': 'phase', 'content': run['phase'], 'status': 'completed', 'revision': 1})
-    mid = rid + ':final'
+    mid = str(run.get('assistant_message_id') or (rid + ':final'))
     previous = scope.payload['messages'].get(mid)
     if run.get('result') or previous or run['status'] in TERMINAL:
         content = run.get('result') or (previous or {}).get('content', '')
@@ -177,6 +177,7 @@ def project(db, run):
         run_entity = payload['runs'][rid]
         record = {
             'protocol': PROTOCOL, 'record_version': 1, 'id': rid, 'run_id': rid,
+            'assistant_message_id': mid,
             'session_id': run['session_id'], 'profile_id': run['profile_id'],
             'user_message': {'content': run['goal'], 'created_at': run['created_at']},
             'assistant_message': {k: final_message.get(k) for k in ('id', 'content', 'status', 'revision', 'version')},
@@ -208,7 +209,7 @@ def project(db, run):
              'final_message_id': final_message['id'], 'final_message_version': final_message.get('version', 0)}
         emit(db, scope, rid, 'run.finalized', finalization)
         # ``done`` is the V2-compatible terminal signal consumed by BFFs.
-        emit_full_state(db, scope, rid, event_type='done', reason='completed', extra={
+        emit_full_state(db, scope, rid, event_type='done', reason=run_entity.get('outcome') or run['status'], extra={
             'record_version': 1, 'record_url': finalization['record_url'],
             'final_message_id': finalization['final_message_id'],
             'final_message_version': finalization['final_message_version'],
