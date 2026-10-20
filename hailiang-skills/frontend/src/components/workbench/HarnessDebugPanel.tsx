@@ -415,15 +415,6 @@ export function HarnessDebugPanel({
                         {run.result ? (
                           <MarkdownContent content={run.result} />
                         ) : null}
-                        {run.jump_cards?.length ? (
-                          <div className="flex flex-wrap gap-2 pt-1">
-                            {run.jump_cards.map((card, index) => (
-                              <span key={index} className="rounded-full border border-sky-300/30 px-3 py-1 text-xs text-sky-100">
-                                {String((card as Record<string, unknown>).title || (card as Record<string, unknown>).id || "推荐")}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
                         {!run.result && terminal ? (
                           <p className="text-sm text-slate-400">任务状态：{run.status}{run.error ? `，原因：${run.error}` : ""}</p>
                         ) : null}

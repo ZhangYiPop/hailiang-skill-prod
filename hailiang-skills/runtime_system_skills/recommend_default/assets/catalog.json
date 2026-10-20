@@ -34,7 +34,7 @@
       "id": "assessment.single_assessment.subject_aptitude",
       "title": "学科潜能测评",
       "kind": "feature",
-      "when": "本轮回答涉及选科、学科强弱、文理偏向或学科潜能时，用学科潜能测评深化",
+      "when": "本轮在讨论选科、两科对比纠结（如听得懂/听不懂、分数高低、赋分与排名）、学科强弱、文理偏向或学科潜能时，用学科潜能测评深化；即使回答还在追问省份/排名等细节，只要话题已是选科决策，仍可推荐",
       "intent": "assessment",
       "object_type": "single_assessment",
       "sub_type": "subject_aptitude",

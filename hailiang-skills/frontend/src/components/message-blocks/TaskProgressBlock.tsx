@@ -104,16 +104,106 @@ function StepIoNodes({ io }: { io: StepIo }) {
   );
 }
 
+const ROUND_STATUS: Record<string, string> = {
+  idle: "未分配",
+  assigned: "已分配",
+  running: "执行中",
+  completed: "已完成",
+  failed: "失败",
+  partial: "部分完成",
+};
+
+function isDispatchStep(node: HarnessNode): boolean {
+  return node.kind === "tool" && node.title === "分派专家任务";
+}
+
+function isHeadStep(node: HarnessNode): boolean {
+  return node.kind === "tool" && node.title.startsWith("编排首");
+}
+
+function isRecommendStep(node: HarnessNode): boolean {
+  return node.kind === "tool" && node.title === "推荐";
+}
+
+/** Prefer 分派专家任务; fall back to 编排首 when there is no dispatch node yet. */
+function expertTransferAnchorId(nodes: HarnessNode[]): string | null {
+  const dispatch = nodes.find(isDispatchStep);
+  if (dispatch) return dispatch.id;
+  return nodes.find(isHeadStep)?.id ?? null;
+}
+
+function RoundExpertsTransfer({ run }: { run: HarnessRun }) {
+  const experts = run.round_experts;
+  const assigned = experts?.assigned_expert_ids || [];
+  const passed = assigned.length > 0;
+  return (
+    <div aria-label="SSE 专家 id" className="ml-3 mt-1 rounded-lg border border-violet-300/20 bg-violet-950/20 p-2 text-xs text-slate-300">
+      <p className="text-slate-200">
+        SSE · 专家 id · <span className={passed ? "text-emerald-300" : "text-slate-500"}>{passed ? "已传递" : "等待分配"}</span>
+        {experts ? <span className="ml-2 text-slate-400">status={ROUND_STATUS[experts.status] || experts.status}</span> : null}
+      </p>
+      {passed ? (
+        <dl className="mt-1 space-y-0.5 text-slate-400">
+          <div><dt className="inline">assigned：</dt><dd className="inline text-slate-200">{assigned.join("、")}</dd></div>
+          {(experts?.running_expert_ids || []).length > 0 ? (
+            <div><dt className="inline">running：</dt><dd className="inline">{experts!.running_expert_ids.join("、")}</dd></div>
+          ) : null}
+          {(experts?.completed_expert_ids || []).length > 0 ? (
+            <div><dt className="inline">completed：</dt><dd className="inline">{experts!.completed_expert_ids.join("、")}</dd></div>
+          ) : null}
+          {(experts?.failed_expert_ids || []).length > 0 ? (
+            <div><dt className="inline">failed：</dt><dd className="inline text-rose-300">{experts!.failed_expert_ids.join("、")}</dd></div>
+          ) : null}
+        </dl>
+      ) : null}
+    </div>
+  );
+}
+
+function JumpCardsTransfer({ run }: { run: HarnessRun }) {
+  const cards = run.jump_cards || [];
+  const passed = cards.length > 0;
+  return (
+    <div aria-label="SSE 推荐字段" className="ml-3 mt-1 rounded-lg border border-violet-300/20 bg-violet-950/20 p-2 text-xs text-slate-300">
+      <p className="text-slate-200">
+        SSE · jump_cards · <span className={passed ? "text-emerald-300" : "text-slate-500"}>{passed ? `已传递 · ${cards.length} 条` : "尚未产出"}</span>
+      </p>
+      {passed ? (
+        <ul className="mt-1 space-y-2">
+          {cards.map((card, index) => (
+            <li key={index} className="rounded-lg border border-white/10 bg-black/20 p-2">
+              <p className="text-slate-100">{card.title || "（无标题）"}</p>
+              <p className="mt-0.5 text-slate-400">{card.description || "（无描述）"}</p>
+              <p className="mt-1 text-slate-500">
+                intent={card.intent || "—"} · object_type={card.object_type || "—"} · sub_type={card.sub_type || "—"}
+              </p>
+              {card.reason ? <p className="mt-0.5 text-slate-500">reason={card.reason}</p> : null}
+              {card.filter ? (
+                <p className="mt-0.5 text-slate-500">
+                  filter: region={card.filter.region || "—"} · grade={card.filter.grade || "—"} · keyword={card.filter.keyword || "—"} · category={card.filter.category || "—"}
+                </p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedConnection, steps }: { run: HarnessRun; onSubmitAnswer?: SubmitHarnessAnswer; connection?: string; steps?: Record<string, StepIo> }) {
   const [clock, setClock] = useState(Date.now());
   const chatConnection = useHarnessState((s) => s.connection);
   const connection = suppliedConnection || chatConnection;
   useEffect(() => { if (isHarnessTerminal(run.status)) return; const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, [run.status]);
   const end = isHarnessTerminal(run.status) ? Date.parse(run.updated_at) : clock;
+  const expertAnchorId = expertTransferAnchorId(run.nodes);
   const render = (node: HarnessNode, depth = 0) => {
     const children = sortNodes(run.nodes.filter((n) => n.parent_id === node.id));
     const requests = run.inputs.filter((q) => q.bindings.some((b) => b.task_id === node.id));
     const io = steps?.[node.id];
+    const showExperts = node.id === expertAnchorId;
+    const showRecommend = isRecommendStep(node);
     return <div key={node.id} className={depth ? "ml-3 border-l border-white/10 pl-3" : ""}>
       <details open={!isHarnessTerminal(node.status) && node.status !== "skipped"}>
         <summary className="cursor-pointer py-2 text-sm text-slate-200"><span>{node.title}</span>{node.actor && <span className="ml-2 text-xs text-slate-400">{node.actor}</span>}
@@ -121,6 +211,8 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
           {(node.attempts ?? 0) > 1 && <span className="ml-2 text-xs text-slate-400">第 {node.attempts} 次执行</span>}
         </summary>
         {io ? <StepIoNodes io={io} /> : null}
+        {showExperts ? <RoundExpertsTransfer run={run} /> : null}
+        {showRecommend ? <JumpCardsTransfer run={run} /> : null}
         {children.map((child) => render(child, depth + 1))}
         {requests.filter((q) => !["pending", "queued"].includes(q.status)).map((q) => <AgentInputRequest key={q.id} request={q} sessionId={run.session_id} onSubmitAnswer={onSubmitAnswer} />)}
         {node.error && <p className="text-xs text-rose-300">失败原因：{node.error}</p>}

@@ -49,8 +49,8 @@ def build_recommend_prompt(
     system_parts = [
         str(recommendation_rules or "").strip(),
         "只从下列推荐清单中挑选，输出 jump_cards JSON。不要查询会话状态，不要编造清单外条目。",
-        "主要依据本轮专家/平台回答是否落到某业务功能；用户很少会直接点名测评或咨询师。",
-        "多个条目相关时只留最相关的一条；都不够相关则返回空数组。",
+        "主要依据本轮话题/回答是否命中某条 when；用户很少会直接点名测评或咨询师。回答在解释或追问细节时，只要话题已命中 when，仍应出卡。",
+        "多个条目相关时只留最相关的一条；仅寒暄、拒答、无关闲聊或只能靠专家身份硬猜时才返回空数组。",
         f"最多 {max(0, int(max_cards))} 条。若没有合适条目，返回 {{\"jump_cards\": []}}。",
         "推荐清单（when = 何时推荐）：",
         json.dumps(slim, ensure_ascii=False, indent=2),
