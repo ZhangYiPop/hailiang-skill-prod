@@ -284,25 +284,16 @@ curl --no-buffer -sS -X POST \
 
 前端预期：该卡片变 `answered`，显示填写项及跳过字段；只恢复它绑定的专家/Skill 节点，其他专家继续维持自己的状态。字段名须与 `fields[].key` 一致。
 
-提交后，转发端使用上一次 `run.suspended.data.resume_after` 续连：
-
-```bash
-export RESUME_AFTER="$(sed -n 's/^data: //p' /tmp/sse-v3-$RUN_ID.log | jq -r 'select(.type == "run.suspended") | .data.resume_after' | tail -n 1)"
-
-curl --no-buffer -sS \
-  -H "Accept: text/event-stream" \
-  -H "Last-Event-ID: $RESUME_AFTER" \
-  "$BASE/api/v3/sessions/$SESSION_ID/harness/runs/$RUN_ID/events?user_id=$USER_ID&profile_id=$PROFILE_ID&after=$RESUME_AFTER" \
-  | tee /tmp/sse-v3-$RUN_ID-resume-1.log
-```
+提交请求本身会继续推送有限 SSE 流。转发端应逐帧转发这一个响应，直到收到 `suspended`、`timeout` 或 `done`；不要在成功提交后额外调用恢复接口。若这段流以 `timeout` 收束，才使用最后收到的 SSE `id`（也就是帧的 `seq`）续连同一 run。
 
 ## 8. 场景：全部跳过与旧卡片拒绝
 
 对待答卡片全部跳过：
 
 ```bash
-curl -sS -X POST \
+curl --no-buffer -sS -X POST \
   -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
   "$BASE/api/v3/sessions/$SESSION_ID/input-requests/$REQUEST_ID/answers" \
   -d "{
     \"user_id\": \"$USER_ID\",
@@ -336,13 +327,13 @@ export HAILIANG_SSE_V3_RUN_STREAM_SECONDS=10
 有限流最后应收到：
 
 ```text
-event: stream.timeout
+event: timeout
 ```
 
 取游标并重新连接同一 run：
 
 ```bash
-export RESUME_AFTER="$(sed -n 's/^data: //p' /tmp/sse-v3-$RUN_ID.log | jq -r 'select(.type == "stream.timeout") | .data.resume_after' | tail -n 1)"
+export RESUME_AFTER="$(sed -n 's/^id: //p' /tmp/sse-v3-$RUN_ID.log | tail -n 1)"
 
 curl --no-buffer -sS \
   -H "Accept: text/event-stream" \
@@ -355,11 +346,10 @@ curl --no-buffer -sS \
 
 ## 10. 场景：最终正文、完成与对话记录落库
 
-有限流结束时，检查事件：
+有限流结束时，检查公开帧顺序和最终快照：
 
 ```bash
-sed -n 's/^data: //p' /tmp/sse-v3-$RUN_ID*.log \
-  | jq -c 'select(.type == "message.delta" or .type == "message.updated" or .type == "run.finalized") | {seq,type,run_id,data}'
+grep -E '^(id:|event:|data:)' /tmp/sse-v3-$RUN_ID*.log
 ```
 
 前端处理正文规则：从每帧 `snapshot.messages` 读取完整正文并整体替换，不再拼接 token 增量或校验 offset。最后应看到 final 消息的 `status=completed` 或 `interrupted`，以及 `done`。
