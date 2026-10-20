@@ -104,6 +104,20 @@ def test_formal_session_with_selected_expert_skips_orchestration(monkeypatch):
     assert frozen['orchestrated'] is False
 
 
+def test_minimal_v3_team_uses_system_rules_when_legacy_snapshot_lacks_them(monkeypatch):
+    from hailiang_skills.workbench import orchestration
+    monkeypatch.setattr(orchestration, 'load_seed_rules', lambda: {
+        'head_rules': 'v3 head', 'tail_rules': 'v3 tail',
+        'recommendation_rules': 'v3 recommendation', 'recommendations': [],
+    })
+    context = _formal_context(harness_v3_minimal=True)
+    context.session_meta['configuration_snapshot']['orchestration_rules'] = {}
+    frozen = policy.capture_policy(_team_orchestrator(monkeypatch), context)
+    assert frozen['orchestrated'] is True
+    assert frozen['snapshot']['source'] == 'v3_system_skill_compat'
+    assert frozen['orchestrator']['head_rules'] == 'v3 head'
+
+
 def test_formal_session_without_published_head_rules_skips_orchestration(monkeypatch):
     context = _formal_context()
     context.session_meta['configuration_snapshot']['orchestration_rules'] = {}

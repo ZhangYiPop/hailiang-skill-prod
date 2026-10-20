@@ -325,6 +325,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     context_scope="profile" if data.profile_id else "unbound", allow_context_seed=False,
                 )
                 context.session_meta["runtime_mode"] = "harness_v1"
+                context.session_meta["harness_v3_minimal"] = True
                 if created and snapshot_resolver:
                     snapshot = snapshot_resolver()
                     if snapshot:

@@ -155,10 +155,21 @@ def capture_policy(orchestrator, context):
     # Do not fill an existing (including legacy) snapshot with absent rules:
     # its historical behaviour must remain stable.
     policy_snapshot = captured_snapshot
-    if not policy_snapshot:
+    has_head_rules = bool(
+        isinstance(policy_snapshot.get("orchestration_rules"), dict)
+        and str(policy_snapshot["orchestration_rules"].get("head_rules") or "").strip()
+    ) if policy_snapshot else False
+    # The V3 minimal team entry is a new harness contract.  A local/legacy
+    # deployment may contain the selected team but predate system-skill
+    # orchestration documents.  Freeze the bundled rule package on *this new
+    # run* so the explicit team still uses head/tail/recommend; never rewrite
+    # the deployment or retrofit ordinary legacy sessions.
+    use_minimal_v3_rules = bool(context.session_meta.get("harness_v3_minimal")) and not has_head_rules
+    if not policy_snapshot or use_minimal_v3_rules:
         from hailiang_skills.workbench.orchestration import load_seed_rules
         policy_snapshot = {
-            "source": "filesystem_bootstrap",
+            **policy_snapshot,
+            "source": "v3_system_skill_compat" if policy_snapshot else "filesystem_bootstrap",
             "orchestration_rules": load_seed_rules(),
         }
     orchestrator_view = orchestrator_snapshot_view(
