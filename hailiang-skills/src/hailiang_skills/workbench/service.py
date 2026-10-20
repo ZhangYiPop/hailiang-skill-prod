@@ -370,22 +370,13 @@ class WorkbenchService:
         )
         if row is None:
             return {"head_rules": "", "tail_rules": "", "recommendation_rules": "", "recommendations": []}
-        payload = row.payload if isinstance(row.payload, dict) else {}
-        return {
-            "orchestration_revision_id": row.orchestration_revision_id,
-            "revision_no": row.revision_no,
-            "content_hash": row.content_hash,
-            "head_rules": str(payload.get("head_rules") or ""),
-            "tail_rules": str(payload.get("tail_rules") or ""),
-            "recommendation_rules": str(payload.get("recommendation_rules") or ""),
-            "recommendations": list(payload.get("recommendations") or []),
-        }
+        # Keep catalog / system_skills so recommend runs after deploy activate.
+        return self._orchestration_rule_dict(row)
 
     def _attach_orchestration_rules(self, db, deployment: WorkbenchDeploymentRow) -> None:
+        # Always refresh from the currently published revision so re-activate
+        # picks up new recommend catalog / rule bodies.
         manifest = dict(deployment.manifest or {})
-        current = manifest.get("orchestration_rules")
-        if isinstance(current, dict) and str(current.get("head_rules") or "").strip():
-            return
         manifest["orchestration_rules"] = self._published_orchestration_rules(db)
         deployment.manifest = manifest
 
