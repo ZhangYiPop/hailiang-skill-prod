@@ -47,6 +47,24 @@ python3.11 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.tok
 ./deploy-smoke.sh --env ./env.8015.sh --replace-port --with-frontend
 ```
 
+
+### 并行 8011 / 5178 Harness SSE v3 烟测
+
+`env.8011.sh` 在已有私有 `env.8010.sh` 基础上覆盖端口、运行目录、Redis DB/前缀和 PostgreSQL 数据库，避免与 8010 实例共享状态。它同时启用本地 `run.sh` 的 Harness v2 上下文策略和 SSE v3 开关。
+
+```bash
+./deploy-smoke.sh --env ./env.8011.sh --replace-port --with-frontend
+curl --fail http://10.30.6.45:8011/health/ready
+curl --fail -I http://10.30.6.45:5178/
+```
+
+如果服务器上的私有 8010 环境文件不在项目目录，先指定其路径：
+
+```bash
+HAILIANG_8011_BASE_ENV=/secure/env.8010.sh \
+  ./deploy-smoke.sh --env ./env.8011.sh --replace-port --with-frontend
+```
+
 脚本会将浏览器运行时 API 地址写入 `frontend/dist/runtime-config.js`，并自动把前端 Origin 追加到 `HAILIANG_CORS_ORIGINS`。带 `--replace-port` 时，脚本也会向监听 `FRONTEND_PORT` 的既有 `scripts/static_frontend_server.py` 发送 `SIGTERM` 后再启动新前端；若该端口属于其他程序，脚本仍会拒绝停止，避免误杀服务。
 
 成功后检查：

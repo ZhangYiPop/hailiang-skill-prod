@@ -187,10 +187,16 @@ validate_base64_aes256_key HAILIANG_SECURITY_QUARANTINE_KEY
   exit 2
 }
 # The normal test database and Redis namespace belong to the legacy test
-# service.  Requiring a distinct name prevents a smoke migration from changing it.
+# service. Each parallel smoke deployment declares a dedicated database name;
+# 8010 keeps the historical default for compatibility.
+SMOKE_DATABASE_NAME="${HAILIANG_SMOKE_DATABASE_NAME:-hailiang_skills_test_multi_profile_v1_smoke}"
+case "$SMOKE_DATABASE_NAME" in
+  *[!A-Za-z0-9_]*|"") echo "HAILIANG_SMOKE_DATABASE_NAME must contain only letters, digits, and underscores" >&2; exit 2 ;;
+esac
+export HAILIANG_SMOKE_DATABASE_NAME="$SMOKE_DATABASE_NAME"
 case "$HAILIANG_DATABASE_URL" in
-  *"/hailiang_skills_test_multi_profile_v1_smoke"|*"/hailiang_skills_test_multi_profile_v1_smoke?"*) ;;
-  *) echo "Smoke database must be the dedicated hailiang_skills_test_multi_profile_v1_smoke database" >&2; exit 2 ;;
+  *"/$SMOKE_DATABASE_NAME"|*"/$SMOKE_DATABASE_NAME?"*) ;;
+  *) echo "Smoke database must be the dedicated $SMOKE_DATABASE_NAME database" >&2; exit 2 ;;
 esac
 case "$HAILIANG_REDIS_KEY_PREFIX" in
   hailiang:smoke*) ;;
@@ -317,6 +323,7 @@ fi
 # where the application role does not have CREATEDB privileges.
 HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" \
 HAILIANG_DATABASE_ADMIN_URL="${HAILIANG_DATABASE_ADMIN_URL:-}" \
+HAILIANG_SMOKE_DATABASE_NAME="$HAILIANG_SMOKE_DATABASE_NAME" \
 HAILIANG_SMOKE_RESET_DATABASE="$RESET_DATABASE" \
   "$VENV_DIR/bin/python" - <<'PY'
 import os
@@ -325,7 +332,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
 target = make_url(os.environ["HAILIANG_DATABASE_URL"])
-expected = "hailiang_skills_test_multi_profile_v1_smoke"
+expected = os.environ["HAILIANG_SMOKE_DATABASE_NAME"]
 if target.database != expected:
     raise SystemExit(f"Smoke database must be {expected}, got {target.database!r}")
 
