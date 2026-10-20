@@ -29,6 +29,88 @@ def object_schema(properties, required=()):
     return {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
 
 
+_PUBLIC_CARD_FIELDS = ("intent", "object_type", "sub_type", "reason", "title", "description")
+_PUBLIC_FILTER_KEYS = ("region", "grade", "keyword", "category")
+_EXPERT_RUNNING = {"running", "waiting_for_user", "waiting_for_dependency"}
+_EXPERT_FAILED = {"failed", "cancelled"}
+
+
+def public_round_experts(run):
+    """Project expert tasks into the V2 round_experts shape.
+
+    The value of each id is the expert agent id. One expert keeps the status of
+    its latest task, so a later retry does not leave the same id in two buckets.
+    """
+    tasks = sorted(
+        (
+            task for task in run.get("tasks", {}).values()
+            if task.get("kind") == "expert" and str(task.get("expert_id") or "").strip()
+        ),
+        key=lambda task: (task.get("created_at") or "", task.get("id") or ""),
+    )
+    latest = {}
+    order = []
+    for task in tasks:
+        expert_id = str(task["expert_id"]).strip()
+        if expert_id not in latest:
+            order.append(expert_id)
+        latest[expert_id] = task
+    assigned, running, completed, failed = [], [], [], []
+    queued = False
+    for expert_id in order:
+        assigned.append(expert_id)
+        status = latest[expert_id].get("status")
+        if status == "completed":
+            completed.append(expert_id)
+        elif status in _EXPERT_FAILED:
+            failed.append(expert_id)
+        elif status in _EXPERT_RUNNING:
+            running.append(expert_id)
+        else:
+            queued = True
+    if not assigned:
+        round_status = "idle"
+    elif running:
+        round_status = "running"
+    elif queued:
+        round_status = "assigned"
+    elif completed and failed:
+        round_status = "partial"
+    elif failed:
+        round_status = "failed"
+    else:
+        round_status = "completed"
+    return {
+        "assigned_expert_ids": assigned,
+        "running_expert_ids": running,
+        "completed_expert_ids": completed,
+        "failed_expert_ids": failed,
+        "status": round_status,
+    }
+
+
+def public_jump_cards(run):
+    """Copy already validated recommendation cards into the public snapshot."""
+    raw = run.get("jump_cards") or []
+    if isinstance(raw, dict):
+        raw = raw.get("jump_cards") or raw.get("cards") or []
+    cards = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        intent = str(item.get("intent") or "").strip()
+        object_type = str(item.get("object_type") or "").strip()
+        if not intent or not object_type:
+            continue
+        source_filter = item.get("filter") if isinstance(item.get("filter"), dict) else {}
+        card = {key: str(item.get(key) or "") for key in _PUBLIC_CARD_FIELDS}
+        card["intent"] = intent
+        card["object_type"] = object_type
+        card["filter"] = {key: "" if source_filter.get(key) is None else str(source_filter.get(key) or "") for key in _PUBLIC_FILTER_KEYS}
+        cards.append(card)
+    return cards
+
+
 def task_node(kind, goal, parent_id=None, expert_id=None, skill_id=None, completion="完成指定任务", depends_on=()):
     return {"id": identifier("task"), "parent_id": parent_id, "kind": kind, "expert_id": expert_id, "skill_id": skill_id,
             "goal": goal, "completion": completion, "depends_on": list(depends_on), "status": "queued", "messages": [{"role": "user", "content": goal}],
@@ -442,6 +524,8 @@ class HarnessRuntime:
                         live["structured_result"] = cp.TaskResult(status="completed", conclusion=response.final_text).model_dump()
                     if live["kind"] == "main":
                         current.update(status="completed", result=response.final_text)
+                        if not current.get("jump_cards"):
+                            current["jump_cards"] = self._recommend_cards(current, response.final_text)
                     changes.append({"event": "task_completed", "node_id": task_id})
                 self._settle(current, changes, db)
             self.store.mutate(run_id, after)
@@ -1349,15 +1433,20 @@ class HarnessRuntime:
         for task in run["tasks"].values():
             actor = "主 agent" if task["kind"] == "main" else run["policy"]["experts"].get(task.get("expert_id"), {}).get("name", "主 agent")
             title = run["policy"]["skills"][task["skill_id"]]["name"] if task["kind"] == "skill" else task["goal"]
+            expert_id = str(task.get("expert_id") or "").strip() or None
             nodes.append({
                 "id": task["id"], "parent_id": task["parent_id"], "kind": task["kind"], "title": title, "actor": actor,
+                "expert_id": expert_id,
                 "status": task["status"], "created_at": task.get("created_at"), "started_at": task["started_at"],
                 "ended_at": task["ended_at"], "error": task.get("error"), "stale": task.get("stale", False),
             })
+        tasks_by_id = run["tasks"]
         for tool in run["tools"].values():
             error = tool.get("error") or (tool.get("result", {}).get("error") if isinstance(tool.get("result"), dict) else None)
+            parent = tasks_by_id.get(tool.get("task_id")) or {}
             nodes.append({
                 "id": tool["id"], "parent_id": tool["task_id"], "kind": "tool",
+                "expert_id": str(parent.get("expert_id") or "").strip() or None,
                 "title": labels.get(tool["name"], "执行专项工具"), "status": tool["status"],
                 "created_at": tool.get("created_at"), "started_at": tool["started_at"], "ended_at": tool["ended_at"],
                 "attempts": tool["attempts"], "error": error,
@@ -1377,7 +1466,33 @@ class HarnessRuntime:
         return {"run_id": run["run_id"], "session_id": run["session_id"], "profile_id": run["profile_id"], "goal": run["goal"], "status": run["status"], "version": run["version"], "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "input_groups": groups,
                 "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "result": run.get("result", ""), "error": run.get("error"),
+                "round_experts": public_round_experts(run), "jump_cards": public_jump_cards(run),
                 "input_tokens_estimated": run.get("input_tokens_estimated", 0), "input_tokens_actual": run.get("input_tokens_actual") if run.get("input_token_measurements") else None,
                 "input_token_limit": run["policy"]["settings"].get("max_run_input_tokens", 300000),
                 "completed_count": sum(t["status"] == "completed" for t in run["tasks"].values() if t["kind"] != "main"), "task_count": sum(t["kind"] != "main" for t in run["tasks"].values()),
                 "waiting_count": sum(q["status"] in {"pending", "queued"} for q in run["inputs"].values())}
+
+    def _recommend_cards(self, run, reply):
+        """Fill jump_cards from the frozen recommend catalog when the main reply is done.
+
+        Runs that already stored cards, or policies without a catalog, stay unchanged.
+        A recommend failure leaves an empty list and does not fail the reply.
+        """
+        view = (run.get("policy") or {}).get("orchestrator") or {}
+        catalog = view.get("recommend_catalog") or view.get("recommendations")
+        if not catalog:
+            return []
+        try:
+            from hailiang_skills.runtime_bridge.recommendation_extractor import extract_jump_cards
+            client = self.client_factory(run)
+            return extract_jump_cards(
+                client,
+                catalog,
+                recommendation_rules=str(view.get("recommendation_rules") or ""),
+                user_question=str(run.get("goal") or ""),
+                assistant_reply=str(reply or ""),
+                max_cards=1,
+            )
+        except Exception:
+            log.warning("harness recommend step failed", exc_info=True)
+            return []

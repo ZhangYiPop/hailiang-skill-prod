@@ -23,6 +23,45 @@ def test_public_events_are_immutable_and_scope_isolated(tmp_path):
     runtime.close()
 
 
+def test_v3_snapshot_carries_expert_id_and_jump_cards(tmp_path):
+    from hailiang_skills.harness.runtime import task_node
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    rid = runtime.create('s', 'u', 'p', '分析', v2_policy(), wire_protocol='hailiang.sse.v3')
+
+    def attach(run, changes, _db):
+        root = run['tasks'][run['root_task_id']]
+        child = task_node('expert', '分析选科', root['id'], expert_id='career_plan_expert')
+        child['status'] = 'completed'
+        run['tasks'][child['id']] = child
+        run['policy'].setdefault('experts', {})['career_plan_expert'] = {'name': '升学规划专家', 'skills': []}
+        run['jump_cards'] = [{
+            'intent': 'assessment', 'object_type': 'single_assessment', 'sub_type': 'career_interest',
+            'reason': '兴趣不清', 'filter': {'grade': '高一', 'extra': 'drop-me'},
+            'title': '职业兴趣测评', 'description': '先做兴趣测评', 'recommendation_id': 'hidden',
+        }]
+        changes.append({'event': 'recommend_attached', 'node_id': child['id']})
+
+    runtime.store.mutate(rid, attach)
+    snapshot = runtime.store.public_snapshot('s', 'u', 'p')
+    entity = next(item for item in snapshot['runs'] if item['id'] == rid)
+    assert entity['round_experts'] == {
+        'assigned_expert_ids': ['career_plan_expert'],
+        'running_expert_ids': [],
+        'completed_expert_ids': ['career_plan_expert'],
+        'failed_expert_ids': [],
+        'status': 'completed',
+    }
+    assert entity['jump_cards'] == [{
+        'intent': 'assessment', 'object_type': 'single_assessment', 'sub_type': 'career_interest',
+        'reason': '兴趣不清', 'title': '职业兴趣测评', 'description': '先做兴趣测评',
+        'filter': {'region': '', 'grade': '高一', 'keyword': '', 'category': ''},
+    }]
+    node = next(item for item in snapshot['nodes'] if item['kind'] == 'expert')
+    assert node['expert_id'] == 'career_plan_expert'
+    assert node['actor'] == '升学规划专家'
+    runtime.close()
+
+
 def test_v3_snapshot_projects_grouped_input_queue(tmp_path):
     from hailiang_skills.harness.contracts import AnswerSubmission
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))

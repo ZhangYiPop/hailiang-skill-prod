@@ -229,19 +229,30 @@ JSON Patch 解释。完整 Schema 位于 [`sse_v3/event.schema.json`](sse_v3/eve
 ### run
 
 关键字段：`id`、`goal`、`root_task_id`、`status`、`outcome`、`allowed_actions`、
-`completed_count`、`task_count`、`waiting_count`、`elapsed_ms`、`phase`、`error`、`version`。
+`completed_count`、`task_count`、`waiting_count`、`elapsed_ms`、`phase`、`error`、`version`、
+`round_experts`、`jump_cards`。
 
 - `status` 表示执行状态。
 - `outcome` 表示业务结果：`completed | partial | failed | cancelled | null`。
 - `error` 只公开安全错误码和通用文案。
 - `allowed_actions` 由服务端计算，前端不自行推断。
+- `round_experts` 是本轮专家进度。`assigned_expert_ids`、`running_expert_ids`、
+  `completed_expert_ids`、`failed_expert_ids` 里的值都是专家 `agent_id`，字段名仍是
+  `expert_id`。`status` 为 `idle | assigned | running | completed | failed | partial`。
+  同一专家只保留最新任务的状态。没有专家任务时四个列表为空，`status` 为 `idle`。
+- `jump_cards` 是本轮推荐。每条只含 `intent`、`object_type`、`sub_type`、`reason`、
+  `filter`、`title`、`description`。`filter` 只含 `region`、`grade`、`keyword`、`category`。
+  没有合适推荐时为 `[]`。catalog 只在服务端校验，不进入公开帧。
 
 ### node
 
-关键字段：`id`、`run_id`、`parent_id`、`kind`、`actor`、`title`、`status`、
+关键字段：`id`、`run_id`、`parent_id`、`kind`、`actor`、`expert_id`、`title`、`status`、
 `outcome`、`attempts`、`started_at`、`ended_at`、`stale`、`error`、`version`。
 
 `kind` 可表示 `main`、`expert`、`skill`、`tool`。工具完成不代表所属专家完成。
+`expert_id` 是该节点所属专家的 `agent_id`。主任务没有专家时为 `null`。`actor` 只是展示名，
+不能用来反查专家。终态记录 `agent_summary` 同样带 `expert_id`，并带上本轮
+`round_experts` 与 `jump_cards`。
 
 ### input_request
 
