@@ -12,7 +12,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, SecretStr
 
-from hailiang_skills.runtime_bridge.expert_bundle import ExpertDefinition, ExpertRegistry, LockedSkill
+from hailiang_skills.runtime_bridge.expert_bundle import (
+    ExpertDefinition,
+    ExpertRegistry,
+    LockedSkill,
+    _normalize_capabilities,
+)
 from hailiang_skills.runtime_bridge.expert_team_bundle import ExpertTeamDefinition, ExpertTeamMember, ExpertTeamRegistry
 from hailiang_skills.runtime_bridge.expert_models import ExpertMember, SkillObservation
 from hailiang_skills.runtime_bridge.native_skill_executor import NativeSkillExecutor
@@ -799,9 +804,7 @@ class AgentScopeExpertRuntime:
             brief=str(payload.get("brief") or "").strip(),
             max_iters=max(1, min(int(budget.get("max_iters", 4)), 4)),
             max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 8)),
-            capabilities=tuple(str(item) for item in payload.get("capabilities", []) if str(item)) or (
-                "execute_skill", "request_declared_form", "read_effective_facts",
-            ),
+            capabilities=_normalize_capabilities(payload.get("capabilities")),
         )
 
     def _configured_team(self, context, team: ExpertTeamDefinition | None) -> ExpertTeamDefinition | None:
@@ -938,14 +941,17 @@ class AgentScopeExpertRuntime:
             "read_effective_facts": TrustedFunctionTool(read_effective_facts, is_read_only=True),
             "record_candidate_fact": TrustedFunctionTool(record_candidate_fact, is_concurrency_safe=False),
         }
-        enabled_capabilities = set(definition.capabilities)
+        # Platform tools are always available; AGENT.md decides when to call them.
+        # AgentScope form tool name remains request_declared_form.
+        enabled_capabilities = set(definition.capabilities) | {
+            "request_user_input",
+            "request_declared_form",
+            "read_effective_facts",
+            "record_candidate_fact",
+        }
         # A published expert's dependency lock is the authorization source.
-        # Candidate bundles may carry an older non-empty capabilities list
-        # that forgot this legacy tool name; it must not make all locked Skills
-        # invisible to the expert.
         if definition.authorized_skill_ids:
             enabled_capabilities.add("execute_skill")
-        enabled_capabilities.add("record_candidate_fact")
         if team is not None and self._can_propose_team_handoff(team, definition.agent_id):
             all_tools["propose_member_handoff"] = TrustedFunctionTool(propose_member_handoff, is_concurrency_safe=False)
             enabled_capabilities.add("propose_member_handoff")

@@ -4306,7 +4306,7 @@ class WorkbenchService:
             registry.bundles[object_key] = skill_bundle_from_entry(entry)
             return
         if object_type == "expert":
-            from hailiang_skills.runtime_bridge.expert_bundle import ExpertDefinition, LockedSkill
+            from hailiang_skills.runtime_bridge.expert_bundle import ExpertDefinition, LockedSkill, _normalize_capabilities
 
             budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
             definition = ExpertDefinition(
@@ -4317,9 +4317,7 @@ class WorkbenchService:
                 brief=str(payload.get("brief") or ""),
                 max_iters=max(1, min(int(budget.get("max_iters", 4)), 4)),
                 max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 8)),
-                capabilities=tuple(str(item) for item in payload.get("capabilities", []) if str(item)) or (
-                    "execute_skill", "request_declared_form", "read_effective_facts",
-                ),
+                capabilities=_normalize_capabilities(payload.get("capabilities")),
             )
             self.orchestrator.expert_registry.definitions[object_key] = definition
             self.orchestrator.expert_runtime.expert_registry.definitions[object_key] = definition

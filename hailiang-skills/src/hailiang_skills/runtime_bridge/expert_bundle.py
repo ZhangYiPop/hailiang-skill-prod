@@ -38,7 +38,7 @@ class ExpertDefinition:
     max_skill_calls: int = 3
     capabilities: tuple[str, ...] = (
         "execute_skill",
-        "request_declared_form",
+        "request_user_input",
         "read_effective_facts",
     )
     topology: str = "single_expert"
@@ -139,8 +139,6 @@ def load_expert_bundle(bundle_dir: str | Path, runtime_registry) -> ExpertDefini
     if str(raw.get("rule_file") or "AGENT.md").strip() != "AGENT.md":
         raise ExpertBundleError("v1 专家规则文件必须是包根目录的 AGENT.md")
     declared_ids = _skill_ids(raw.get("skills"))
-    if not declared_ids:
-        raise ExpertBundleError("agent.yaml 必须声明至少一个 skills")
     locks = _load_locks(lock_path)
     if set(declared_ids) != set(locks):
         raise ExpertBundleError("agent.yaml.skills 必须与 skills.lock.json 的 Skill ID 完全一致")
@@ -168,10 +166,7 @@ def load_expert_bundle(bundle_dir: str | Path, runtime_registry) -> ExpertDefini
     max_skill_calls = _positive_int(budget.get("max_skill_calls", raw.get("max_skill_calls", 3)), "max_skill_calls")
     if max_iters > 4 or max_skill_calls > 3:
         raise ExpertBundleError("v1 安全上限为 max_iters=4、max_skill_calls=3")
-    capabilities = tuple(str(item).strip() for item in raw.get("capabilities", []) if str(item).strip())
-    allowed = {"execute_skill", "request_declared_form", "read_effective_facts"}
-    if capabilities and not set(capabilities).issubset(allowed):
-        raise ExpertBundleError("专家包声明了 v1 不允许的能力")
+    capabilities = _normalize_capabilities(raw.get("capabilities"))
     return ExpertDefinition(
         agent_id=agent_id,
         name=name,
@@ -180,10 +175,37 @@ def load_expert_bundle(bundle_dir: str | Path, runtime_registry) -> ExpertDefini
         brief=str(raw.get("brief") or "").strip(),
         max_iters=max_iters,
         max_skill_calls=max_skill_calls,
-        capabilities=capabilities or tuple(sorted(allowed)),
+        capabilities=capabilities,
         topology=topology,
         source_dir=root,
     )
+
+
+_ALLOWED_CAPABILITIES = frozenset({
+    "execute_skill",
+    "request_user_input",
+    "request_declared_form",  # legacy alias for request_user_input
+    "read_effective_facts",
+})
+_DEFAULT_CAPABILITIES = (
+    "execute_skill",
+    "request_user_input",
+    "read_effective_facts",
+)
+
+
+def _normalize_capabilities(value: Any) -> tuple[str, ...]:
+    raw = tuple(str(item).strip() for item in (value or []) if str(item).strip())
+    if raw and not set(raw).issubset(_ALLOWED_CAPABILITIES):
+        raise ExpertBundleError("专家包声明了 v1 不允许的能力")
+    if not raw:
+        return _DEFAULT_CAPABILITIES
+    normalized: list[str] = []
+    for item in raw:
+        name = "request_user_input" if item == "request_declared_form" else item
+        if name not in normalized:
+            normalized.append(name)
+    return tuple(normalized)
 
 
 def _skill_ids(value: Any) -> list[str]:

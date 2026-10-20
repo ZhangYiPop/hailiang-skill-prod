@@ -108,6 +108,13 @@ const TYPE_META: Record<
   },
 };
 
+/** Platform tools are always available at runtime; AGENT.md decides who uses them when. */
+const DEFAULT_EXPERT_CAPABILITIES = [
+  "execute_skill",
+  "request_user_input",
+  "read_effective_facts",
+] as const;
+
 const emptyPayload = (type: WorkbenchObjectType): Record<string, unknown> => {
   if (type === "skill")
     return {
@@ -117,14 +124,11 @@ const emptyPayload = (type: WorkbenchObjectType): Record<string, unknown> => {
     };
   if (type === "expert")
     return {
-      rules_markdown: "# 专家规则\n\n请填写专家角色、边界和决策原则。",
+      rules_markdown:
+        "# 专家规则\n\n请填写专家角色、边界和决策原则。\n\n# 工具调用规则\n\n## 可用工具清单\n\n| 工具名称 | 用途 | 何时调用 | 注意事项 |\n| --- | --- | --- | --- |\n| `request_user_input` | 向用户弹出追问表单 | 缺会影响结论的关键信息，且现有事实/已答不足以继续 | 禁止在结论正文里提问；用户跳过后再给阶段性结论 |\n| `execute_skill` | 调用下方授权 Skill | 有明确专项诉求时 | 同一轮优先只启动最贴切的 Skill |\n\n## 调用决策流程\n\n1. 先核对已有事实；缺关键信息时调用 `request_user_input`，不要在正文追问。\n2. 信息足够后再 `execute_skill` 或直接作答。\n",
       brief: "",
       budget: { max_iters: 4, max_skill_calls: 3 },
-      capabilities: [
-        "execute_skill",
-        "request_declared_form",
-        "read_effective_facts",
-      ],
+      capabilities: [...DEFAULT_EXPERT_CAPABILITIES],
     };
   return {
     rules_markdown: "# 专家团规则\n\n请填写协同、转交与兜底原则。",
@@ -1685,6 +1689,13 @@ export default function Workbench() {
         });
         return;
       }
+    }
+    if (selectedObject.object_type === "expert") {
+      // Platform tools are always granted; AGENT.md decides when to call them.
+      nextPayload = {
+        ...nextPayload,
+        capabilities: [...DEFAULT_EXPERT_CAPABILITIES],
+      };
     }
     if (selectedObject.object_type === "expert_team") {
       nextPayload = {

@@ -19,5 +19,5 @@ budget:
   max_skill_calls: 3
 capabilities:
   - execute_skill
-  - request_declared_form
+  - request_user_input
   - read_effective_facts

@@ -81,7 +81,8 @@ def capture_policy(orchestrator, context):
         if e:
             expert_data[expert_id] = {"name": e.name, "brief": e.brief, "rules": e.rules_markdown,
                                      "skills": [normalize_skill(s) for s in e.authorized_skill_ids],
-                                     "max_skill_calls": e.max_skill_calls}
+                                     "max_skill_calls": e.max_skill_calls,
+                                     "capabilities": list(getattr(e, "capabilities", ()) or ())}
     settings = load_settings()
     debug_root = snapshot_root(context.session_meta.get("configuration_snapshot")) if context.session_meta.get("workbench_debug_session_id") else {}
     classifications = {key: {"skills": e.authorized_skill_ids} for key, e in orchestrator.expert_registry.definitions.items()}

@@ -12,6 +12,12 @@ from hailiang_skills.storage.database import (
 )
 
 
+def _expert_capabilities(value: Any) -> tuple[str, ...]:
+    from hailiang_skills.runtime_bridge.expert_bundle import _normalize_capabilities
+
+    return _normalize_capabilities(value)
+
+
 def load_current_release_entries(session_factory) -> list[dict[str, Any]]:
     """Read the immutable entries selected by each object's publication pointer."""
     if session_factory is None:
@@ -91,9 +97,7 @@ def build_runtime_registries(entries: list[dict[str, Any]], *, enabled_by_id: di
             brief=str(payload.get("brief") or ""),
             max_iters=int(budget.get("max_iters") or 4),
             max_skill_calls=int(budget.get("max_skill_calls") or 3),
-            capabilities=tuple(payload.get("capabilities") or (
-                "execute_skill", "request_declared_form", "read_effective_facts",
-            )),
+            capabilities=_expert_capabilities(payload.get("capabilities")),
         )
         experts.definitions[definition.agent_id] = definition
 
