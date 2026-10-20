@@ -54,6 +54,7 @@ def has_explicit_expert_selection(context):
     return str(meta.get("expert_selection_source") or "").strip() not in {
         "default_coordinator",
         "deployment_snapshot",
+        "input_team",
     }
 
 

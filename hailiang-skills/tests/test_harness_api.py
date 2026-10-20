@@ -249,14 +249,22 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         def get_profile_facts(self, user_id, profile_id):
             return self.profile_repo.get_profile_facts(user_id, profile_id)
 
-    monkeypatch.setattr(v3, 'capture_policy', lambda *_: policy())
+    frozen = policy()
+    frozen['team_id'] = 'team-a'
+    monkeypatch.setattr(v3, 'capture_policy', lambda *_: deepcopy(frozen))
     monkeypatch.setenv('HAILIANG_HARNESS_SSE_WAIT_SECONDS', '1')
+    expert = SimpleNamespace(name='团队协调专家')
+    team = SimpleNamespace(team_id='team-a', coordinator_expert_id='expert-a', member_expert_ids=('expert-a',))
+    orchestrator = SimpleNamespace(
+        expert_registry=SimpleNamespace(get=lambda key: expert if key == 'expert-a' else None),
+        expert_team_registry=SimpleNamespace(get=lambda key: team if key == 'team-a' else None),
+    )
     runtime = make_runtime(tmp_path, lambda messages, *_: AssistantTurnResult(final_text='完成') if any(m.role == 'tool' for m in messages) else call('request_user_input', QUESTION))
     app = FastAPI()
-    app.include_router(build_harness_chat_stream_v3_router(Repository(), V3Facts(), None, runtime), prefix='/api/v3')
+    app.include_router(build_harness_chat_stream_v3_router(Repository(), V3Facts(), orchestrator, runtime), prefix='/api/v3')
     body = {
         'session_id': 's', 'run_id': 'client-1',
-        'input': json.dumps({'action': 'chat', 'content': '请规划'}, ensure_ascii=False),
+        'input': json.dumps({'action': 'chat', 'content': '请规划', 'expert_team_id': 'team-a'}, ensure_ascii=False),
         'context_data': {'user_id': 'u', 'profile_id': 'p', 'profile_data': {'name': '小明', 'province': '浙江', 'recent_exam': {'total_score': 620}}},
     }
     with TestClient(app) as client:
@@ -281,7 +289,7 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         request = next(iter(runtime.store.get(run['run_id'])['inputs'].values()))
         answer = {
             'session_id': 's', 'run_id': 'client-1',
-            'input': json.dumps({'action': 'answer_input_request', 'request_id': request['id'], 'text': '高二'}, ensure_ascii=False),
+            'input': json.dumps({'action': 'answer_input_request', 'request_id': request['id'], 'text': '高二', 'expert_team_id': 'team-a'}, ensure_ascii=False),
             'context_data': {'user_id': 'u', 'profile_id': 'p'},
         }
         accepted = client.post('/api/v3/sessions/chat/stream', json=answer)
@@ -291,7 +299,14 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         # A different later submission is an explicit correction, without a
         # client submission ID or card version.
         correction = deepcopy(answer)
-        correction['input'] = json.dumps({'action': 'answer_input_request', 'request_id': request['id'], 'text': '高三'}, ensure_ascii=False)
+        correction['input'] = json.dumps({'action': 'answer_input_request', 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-a'}, ensure_ascii=False)
         assert client.post('/api/v3/sessions/chat/stream', json=correction).status_code == 200
         assert runtime.store.scoped_facts('u', 'profile', 'p')['grade']['value'] == '高三'
+        mismatch = deepcopy(answer)
+        mismatch['input'] = json.dumps({'action': 'answer_input_request', 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-b'}, ensure_ascii=False)
+        assert client.post('/api/v3/sessions/chat/stream', json=mismatch).status_code == 409
+        missing_team = deepcopy(body)
+        missing_team['run_id'] = 'client-missing-team'
+        missing_team['input'] = json.dumps({'action': 'chat', 'content': '请规划'}, ensure_ascii=False)
+        assert client.post('/api/v3/sessions/chat/stream', json=missing_team).status_code == 422
     runtime.close()

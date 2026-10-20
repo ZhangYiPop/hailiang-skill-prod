@@ -4,6 +4,51 @@
 
 转发端流程固定为：启动 run → 连接该 run 的事件流 → 收到等待、超时或终态后关闭连接 → 按游标续连或提交回答 → 收到 `done` 后读取 `/record` 并持久化对话记录。
 
+
+## 0. 当前 BFF 最小入口：指定专家团并获取同一任务气泡
+
+当前业务 BFF 使用 `POST /api/v3/sessions/chat/stream`，不需要先调用 `/harness/runs`。每个 `input` action 都带相同的 `expert_team_id`；服务端在新 `chat` 时按该团队执行 `orchestrator_head → 专家任务 → orchestrator_tail → recommend`。
+
+```bash
+export BASE="http://127.0.0.1:8016"
+export SESSION_ID="session-v3-team-$(date +%s)"
+export CLIENT_RUN_ID="client-v3-team-$(date +%s)"
+export USER_ID="user-v3-curl"
+export PROFILE_ID="profile-v3-curl"
+export EXPERT_TEAM_ID="student_growth_expert_team"
+
+cat >/tmp/v3-chat.json <<JSON
+{
+  "session_id":"$SESSION_ID",
+  "run_id":"$CLIENT_RUN_ID",
+  "input":"{\"action\":\"chat\",\"content\":\"请为浙江高一学生规划选科、升学和职业探索。\",\"expert_team_id\":\"$EXPERT_TEAM_ID\"}",
+  "context_data":{"user_id":"$USER_ID","profile_id":"$PROFILE_ID","profile_data":{"name":"小海","grade":"高一","province":"浙江"}}
+}
+JSON
+curl -sS -N --max-time 610 -H "Content-Type: application/json" \
+  --data-binary @/tmp/v3-chat.json "$BASE/api/v3/sessions/chat/stream" | tee /tmp/v3-initial.sse
+```
+
+观察 `event: state` 的 `snapshot.runs[0].dispatch`。`reason=dispatch_completed` 且 `dispatch.source=orchestrator_head` 时，前端立即展示已计划的专家、任务 brief 和依赖；随后从 `snapshot.nodes` 按 `dispatch.experts[].node_id` 与 `parent_id` 构建每位专家的执行树。所有帧用同一 `assistant_message_id` 更新一个气泡。
+
+若最后一帧为 `done_suspended`，从最后完整快照取得 `active_request_id`，填写后继续同一入口：
+
+```bash
+export REQUEST_ID="input_xxx" # 由 snapshot.runs[0].input_queue.active_request_id 取得
+cat >/tmp/v3-answer.json <<JSON
+{
+  "session_id":"$SESSION_ID",
+  "run_id":"$CLIENT_RUN_ID",
+  "input":"{\"action\":\"answer_input_request\",\"request_id\":\"$REQUEST_ID\",\"answers\":{\"user_role\":\"学生\",\"school_stage\":\"高中\"},\"skipped\":false,\"expert_team_id\":\"$EXPERT_TEAM_ID\"}",
+  "context_data":{"user_id":"$USER_ID","profile_id":"$PROFILE_ID"}
+}
+JSON
+curl -sS -N --max-time 610 -H "Content-Type: application/json" \
+  --data-binary @/tmp/v3-answer.json "$BASE/api/v3/sessions/chat/stream" | tee /tmp/v3-answer.sse
+```
+
+回答响应主动续跑，不要额外调用恢复接口。预期依次可见 `state(reason=dispatch_completed)`、专家节点及结论、`synthesizing`、`recommending`，最后为 `event: done`。若 `expert_team_id` 与 run 冻结的团队不同，响应为 `409 EXPERT_TEAM_MISMATCH`。
+
 ## 1. 公开帧骨架：前端只替换，不推断
 
 V3 的浏览器/BFF 消费模型与 V2 的 `state` 相同：除 `ping` 外，**每一帧 `data` 都是一份完整、可独立渲染的公开 run 快照**。前端不得根据上一帧补丁、工具完成事件或模型文本自行推断任何状态。
@@ -67,8 +112,8 @@ data: {
 | SSE 事件 | 何时发出 | 帧后的连接行为 |
 | --- | --- | --- |
 | `state` | run 创建、任务/工具/卡片/正文/结果任一公开状态变更后 | 保持连接。 |
-| `suspended` | 已先发出等待用户的完整 `state`，且当前没有独立节点可继续 | 服务端关闭本次流，等待用户操作。 |
-| `timeout` | 本次有限流接近 BFF 的五分钟等待上限，run 仍未终态 | 服务端关闭本次流；任务继续后台执行。 |
+| `done_suspended` | 已先发出等待用户的完整 `state`，且当前没有独立节点可继续 | 服务端关闭本次流，等待用户操作。 |
+| `done_timeout` | 本次有限流接近 BFF 的五分钟等待上限，run 仍未终态 | 服务端关闭本次流；任务继续后台执行。 |
 | `done` | run、节点、卡片及最终正文都已投影并持久化后 | 服务端关闭本次流；这是唯一的可落库终态信号。 |
 | `ping` | 无业务状态变化时保活 | 忽略。 |
 
@@ -98,7 +143,7 @@ data: {
 | A 首先缺信息 | `waiting_for_user` | 仍可 `running` | A 的卡片为 `pending`，B 继续。run 保持 `running`。 |
 | B/C 随后也缺信息 | `waiting_for_user` | `waiting_for_user` | B、C 进入同一个 queued 组；前端仅显示该组的题数和专家摘要。 |
 | 用户回答/跳过 A | A 的绑定工具完成并重新入队 | B/C 仍等待 | 服务端原子激活下一组，先仅提升 B 为 `pending`；B 提交后才显示 C。答案 POST 的 SSE 立即发出新的完整 `state`。 |
-| A/B 都无独立工作可做 | 等待答案 | 等待答案 | `state` 显示 pending/queued；只有此时流才以 `suspended` 收束。 |
+| A/B 都无独立工作可做 | 等待答案 | 等待答案 | `state` 显示 pending/queued；只有此时流才以 `done_suspended` 收束。 |
 | 用户回答 B | B 继续或形成 partial 结果 | 其他可运行节点继续 | 不创建新 run；继续同一个任务树，最终交给主 agent 汇总。 |
 
 `queued` 不是失败、也不是“模型没有追问”；它表示问题已经持久化、归属到对应专家及其工具，但为了避免多个专家同时打断用户，尚未提升为唯一可填写的 `pending` 卡片。用户不能提交 `queued` 卡片，前端也不能自己提升它。相同用户、事实字段、对象和适用时间，且输入约束兼容的追问复用同一张卡片和绑定；用户一次回答或跳过会同时恢复所有绑定专家，不再重复提问。
@@ -142,8 +187,8 @@ sequenceDiagram
 
 1. 状态与 SSE 帧在同一数据库事务写入；帧中的 `snapshot` 是该次变更后的事实，不临时拼装最新状态。
 2. 用户回答只恢复该卡片绑定的节点；其他专家若仍可运行会持续工作，不因一个专家等待而暂停。
-3. `suspended` 只在没有独立节点可继续时出现。用户提交时不需要额外“恢复”接口：答案 POST 的 SSE 响应就是主动恢复流。
-4. `timeout` 不改变任何 run/node/input 状态；它只是传输边界。BFF 或浏览器 EventSource 用最后一个 SSE `id` 自动续连相同 URL，不能重新启动 run。
+3. `done_suspended` 只在没有独立节点可继续时出现。用户提交时不需要额外“恢复”接口：答案 POST 的 SSE 响应就是主动恢复流。
+4. `done_timeout` 不改变任何 run/node/input 状态；它只是传输边界。BFF 或浏览器 EventSource 用最后一个 SSE `id` 自动续连相同 URL，不能重新启动 run。
 5. `done` 只在所有公开终态已经写入后发送；BFF 以 `run_id + record_version` 幂等保存对话记录。
 
 ## 3. 启动与变量
@@ -215,8 +260,8 @@ curl --no-buffer -sS \
 
 | 最后一帧 | 转发端动作 | 前端动作 |
 | --- | --- | --- |
-| `suspended` | 结束本次转发；等待用户卡片 POST | 显示该专家的待答卡片 |
-| `timeout` | 使用最后 SSE `id` 自动续连同一 run | 保持当前任务状态，不能标失败 |
+| `done_suspended` | 结束本次转发；等待用户卡片 POST | 显示该专家的待答卡片 |
+| `done_timeout` | 使用最后 SSE `id` 自动续连同一 run | 保持当前任务状态，不能标失败 |
 | `done` | GET `/record` 并按 `run_id + record_version` 持久化 | 显示终态正文及执行结果 |
 
 ## 6. 场景：状态快照与任务树核验
@@ -250,7 +295,7 @@ jq --arg run "$RUN_ID" '.nodes[] | select(.run_id == $run) | {
 
 ## 7. 场景：专家追问、部分填写与恢复
 
-等待有限流以 `suspended` 结束，或从快照找当前卡片：
+等待有限流以 `done_suspended` 结束，或从快照找当前卡片：
 
 ```bash
 curl -sS \
@@ -284,7 +329,7 @@ curl --no-buffer -sS -X POST \
 
 前端预期：该卡片变 `answered`，显示填写项及跳过字段；只恢复它绑定的专家/Skill 节点，其他专家继续维持自己的状态。字段名须与 `fields[].key` 一致。
 
-提交请求本身会继续推送有限 SSE 流。转发端应逐帧转发这一个响应，直到收到 `suspended`、`timeout` 或 `done`；不要在成功提交后额外调用恢复接口。若这段流以 `timeout` 收束，才使用最后收到的 SSE `id`（也就是帧的 `seq`）续连同一 run。
+提交请求本身会继续推送有限 SSE 流。转发端应逐帧转发这一个响应，直到收到 `done_suspended`、`done_timeout` 或 `done`；不要在成功提交后额外调用恢复接口。若这段流以 `done_timeout` 收束，才使用最后收到的 SSE `id`（也就是帧的 `seq`）续连同一 run。
 
 ## 8. 场景：全部跳过与旧卡片拒绝
 
@@ -342,7 +387,7 @@ curl --no-buffer -sS \
   | tee /tmp/sse-v3-$RUN_ID-resume-timeout.log
 ```
 
-`seq` 是会话范围游标；过滤其他 run 后不要求相邻。前端只需丢弃小于等于已处理游标的重复帧；每个有效帧整体替换状态，不能把 `timeout` 显示为失败。
+`seq` 是会话范围游标；过滤其他 run 后不要求相邻。前端只需丢弃小于等于已处理游标的重复帧；每个有效帧整体替换状态，不能把 `done_timeout` 显示为失败。
 
 ## 10. 场景：最终正文、完成与对话记录落库
 
@@ -417,17 +462,17 @@ curl --no-buffer -sS \
   "http://127.0.0.1:8090/api/v3/sessions/$SESSION_ID/harness/runs/$RUN_ID/events"
 ```
 
-BFF 必须原样转发 SSE：不得缓冲、重排、改写正文、遇到 `timeout` 自动重复启动 run，或因浏览器连接关闭调用取消接口。
+BFF 必须原样转发 SSE：不得缓冲、重排、改写正文、遇到 `done_timeout` 自动重复启动 run，或因浏览器连接关闭调用取消接口。
 
 ## 14. 验收记录
 
 | 场景 | 关键事件 | 前端结果 | 转发端结果 |
 | --- | --- | --- | --- |
 | 启动与分派 | `state` | 更新任务树 | 仅订阅该 run |
-| 多专家追问 | `suspended` | 显示带专家名的卡片 | 保存游标后关闭 |
+| 多专家追问 | `done_suspended` | 显示带专家名的卡片 | 保存游标后关闭 |
 | 部分回答 | `state` | 显示已答／跳过字段 | 提交后按游标续连 |
 | 全部跳过 | `state` | 卡片变 skipped | 不重复提交旧卡片 |
-| 超时 | `timeout` | 保持进行中 | 续连同一 run |
+| 超时 | `done_timeout` | 保持进行中 | 续连同一 run |
 | 正文完成 | `state` | 连续渲染正文 | 等待 `done` |
 | 终态落库 | `done` | 显示最终状态 | GET `/record` 幂等落库 |
 | 新问题替代 | `done`（旧） | 旧气泡 interrupted | 启动新 run，不传旧中间态 |

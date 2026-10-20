@@ -18,7 +18,12 @@ SSE v3 使用 V2 风格的**完整状态帧**。除 `ping` 外，所有帧的 `d
 
 ## 2. 接口
 
-所有接口的完整前缀为：`/api/v3/sessions/{session_id}`。资源标识放在 URL 路径；POST 的业务数据放在 JSON 请求体；读取身份、档案和游标放在 query 参数。POST 参数不应全部拼到 URL 中。
+细粒度 Harness 接口的完整前缀为：`/api/v3/sessions/{session_id}`。业务 BFF 默认使用下方的最小入口 `POST /api/v3/sessions/chat/stream`；其外层采用 V2 形状，`session_id` 放在 body，`input` 为 JSON 字符串。`input` 的每一种 action 都必须带 `expert_team_id`，只允许指定团队，不能指定团队成员、Skill、路由状态或任务树。资源标识放在 URL 路径；POST 的业务数据放在 JSON 请求体；读取身份、档案和游标放在 query 参数。POST 参数不应全部拼到 URL 中。
+
+| 方法和完整路径 | 参数位置 | 行为 |
+| --- | --- | --- |
+| `POST /api/v3/sessions/chat/stream` | body：`session_id`、`run_id`、`input`、`context_data`；`input` 内必填 `expert_team_id` | BFF 唯一业务对话入口：启动、回答表单或停止，同一响应返回有限完整 SSE 流。 |
+
 
 | 方法和完整路径 | 参数位置 | 行为 |
 | --- | --- | --- |
@@ -76,7 +81,7 @@ data: {
 - `runs[].synthesis_status`、`runs[].recommendations_status`：汇总和推荐的独立状态；专家完成不等于最终回复完成。推荐状态为 `not_started | running | completed | empty | unavailable | failed`；只有 `completed` 表示存在推荐卡片。
 - `input_groups[]`：稳定组 ID、`active | queued | completed`、创建时间、题目 ID、当前题、题数、完成数和专家摘要。
 - `input_requests[]`：单题字段、`request_version`、状态、回答、绑定、专家和所属组。只有 `input_queue.active_request_id` 对应且状态为 `pending` 的卡片可填写。
-- `nodes[]`：主任务、专家、Skill 和工具树。专家、Skill 与其工具节点含稳定 `expert_id`；`actor` 仅为展示名称。工具完成不等于所属专家完成。节点还可包含 `brief`、`phase`、`action`、`waiting_on`、子节点计数和受控的 `result` 摘要（`conclusion`、`findings`、`limitations`、`unresolved`），用于展示任务书、当前动作、依赖和专家结论。
+- `nodes[]`：主任务、专家、Skill 和工具树。用 `dispatch.experts[].node_id → nodes[].id` 定位专家根节点，再按 `parent_id` 递归取后代，即可展示该专家正在执行的步骤。专家、Skill 与其工具节点含稳定 `expert_id`；`actor` 仅为展示名称。工具完成不等于所属专家完成。节点还可包含 `brief`、`phase`、`action`、`waiting_on`、子节点计数和受控的 `result` 摘要（`conclusion`、`findings`、`limitations`、`unresolved`），用于展示任务书、当前动作、依赖和专家结论。
 - `messages[]`：阶段说明与主 agent 最终正文；前端直接使用 final 消息当前完整 `content`。
 
 公开数据不含专家内部推理、完整提示词、原始工具参数、完整事实库或 trace。

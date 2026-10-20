@@ -3,7 +3,7 @@
 > 协议：`hailiang.sse.v3`
 > 入口：`POST /api/v3/sessions/chat/stream`
 
-业务前端只发送用户问题、当前追问卡答案或停止指令。专家选择、Skill 选择、任务恢复、问题组推进和任务编排由算法服务完成。
+业务前端只发送用户问题、当前追问卡答案或停止指令，以及每次动作对应的 `expert_team_id`。团队内的专家选择、Skill 选择、任务恢复、问题组推进和任务编排均由算法服务完成。
 
 ## 请求
 
@@ -13,7 +13,7 @@
 {
   "session_id": "session_001",
   "run_id": "client_run_001",
-  "input": "{\"action\":\"chat\",\"content\":\"帮孩子规划升学路径\"}",
+  "input": "{\"action\":\"chat\",\"content\":\"帮孩子规划升学路径\",\"expert_team_id\":\"student_growth_expert_team\"}",
   "context_data": {
     "user_id": "user_001",
     "profile_id": "profile_001",
@@ -32,16 +32,18 @@
 支持的 `input.action` 只有：
 
 ```json
-{"action":"chat","content":"用户的新问题"}
+{"action":"chat","content":"用户的新问题","expert_team_id":"student_growth_expert_team"}
 ```
 
 ```json
-{"action":"answer_input_request","request_id":"input_xxx","answers":{"province":"浙江"},"skipped":false}
+{"action":"answer_input_request","request_id":"input_xxx","answers":{"province":"浙江"},"skipped":false,"expert_team_id":"student_growth_expert_team"}
 ```
 
 ```json
-{"action":"stop"}
+{"action":"stop","expert_team_id":"student_growth_expert_team"}
 ```
+
+`expert_team_id` 是必填的团队边界，服务端先验证团队与其协调专家均存在，再冻结到本次 run 的 policy。新的 `chat` 可更换团队；服务端会取消当前活动 run 并用新团队重新编排。`answer_input_request` 与 `stop` 必须携带所属 run 的同一团队 ID，团队不匹配返回 `409 EXPERT_TEAM_MISMATCH`，不会把旧任务恢复给新团队。
 
 回答卡不传 `submission_id`、`expected_version`。服务端按 `request_id` 和规范化答案去重：相同答案幂等返回；不同答案在活动任务中作为用户更正写入新事实版本并重新分析依赖旧事实的节点。
 
@@ -102,6 +104,10 @@ data: {"protocol":"hailiang.sse.v3","snapshot":{...}}
 `assistant_message_id` 在同一个 Harness 任务的所有帧中保持不变。任务树、表单、专家结论和最终主回复都更新这一个助手气泡，最终回复不能另建气泡。
 
 `event: state` 是事件名称；`data.snapshot` 才是完整状态载体。最小入口与 `/harness/runs/{run_id}/events` 使用相同的公开快照、SSE 游标和 public outbox。单 run 帧中的 `runs`、`nodes`、`input_requests`、`input_groups` 与 `messages` 都只包含该 `harness_run_id` 的实体。
+
+### 专家执行树：前端如何读取“某位专家正在做什么”
+
+不需要增加专家详情接口。收到任意完整帧后，先从 `runs[0].dispatch.experts[]` 找到目标专家的 `node_id`，再在 `snapshot.nodes[]` 中按 `id` 找到专家根节点，并递归读取 `parent_id=node_id` 的所有后代。树固定为“主任务 → 专家 → Skill／工具”。专家节点的 `phase`、`action`、`status`、`waiting_on` 与 `result` 是当前动作、等待原因与已提交结论的公开来源；子节点只补充 Skill/工具步骤。完整帧替换后重新计算这棵树，不能根据上一帧自行补齐或推进。
 
 `dispatch.experts[]` 既展示编排首的计划，也建立与实际节点的关联：`subtask_id`、可空的 `node_id`、业务 `brief`、本次 `task_brief`、`completion_criteria`、依赖子任务/节点、`execution_status` 与 `can_run_now`。`parallel_task_count` 是无依赖计划任务数；实际展示并行度应读取 `ready_task_count`、`blocked_task_count` 与 `max_parallelism`。
 
