@@ -25,6 +25,7 @@ describe("Home", () => {
       isSending: false,
       isLoadingEvents: false,
       errorMessage: "",
+      selectedModelId: "flash",
     });
   });
 
@@ -34,5 +35,6 @@ describe("Home", () => {
     expect(screen.getByText("hailiang-skills 对话测试台")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "为当前孩子新建会话" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText("输入你要测试的对话...")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "问答模型" })).toHaveValue("flash");
   });
 });

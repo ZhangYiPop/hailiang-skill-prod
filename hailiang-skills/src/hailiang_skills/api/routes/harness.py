@@ -12,8 +12,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
+from hailiang_skills.core.deployment import deployment_environment
 from hailiang_skills.harness.contracts import AnswerSubmission, HarnessError
 from hailiang_skills.harness.policy import capture_policy, snapshot_root
+from hailiang_skills.llm.config import UnknownTesterModelError
 from hailiang_skills.security.models import ModerationBlockedError
 from hailiang_skills.skills.common import extract_grade
 
@@ -27,11 +29,26 @@ class StartRun(BaseModel):
     expert_team_id: str | None = None
     expert_id: str | None = None
     clear_experts: bool = False
+    model: str = ""
 
 
 class Identity(BaseModel):
     user_id: str = Field(min_length=1)
     profile_id: str | None = None
+
+
+def _apply_tester_model(orchestrator, context, requested: str) -> None:
+    """Record the Q&A tester model before policy capture freezes the client."""
+    requested = str(requested or "").strip()
+    llm_config = getattr(orchestrator, "llm_config", None)
+    resolver = getattr(llm_config, "resolve_tester_model", None)
+    resolved = ""
+    if requested and callable(resolver):
+        try:
+            resolved = str(resolver(requested, environment=deployment_environment()) or "")
+        except UnknownTesterModelError as exc:
+            raise HTTPException(status_code=422, detail="UNKNOWN_MODEL") from exc
+    context.session_meta["requested_llm_model"] = resolved
 
 
 def harness_enabled():
@@ -161,6 +178,7 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                 context.session_meta["expert_id"] = None
             if request.expert_id:
                 context.session_meta["expert_id"] = request.expert_id
+        _apply_tester_model(orchestrator, context, request.model)
         policy = operation(lambda: capture_policy(orchestrator, context))
         context.session_meta["context_contract_version"] = 3
         if not context.title:

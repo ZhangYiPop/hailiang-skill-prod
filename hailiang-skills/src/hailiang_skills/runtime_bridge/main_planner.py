@@ -71,6 +71,7 @@ from hailiang_skills.runtime_bridge.expert_bundle import load_local_expert_regis
 from hailiang_skills.runtime_bridge.expert_team_bundle import load_local_expert_team_registry
 from hailiang_skills.runtime_bridge.imports import PROJECT_ROOT, ensure_skill_runtime_importable
 from hailiang_skills.runtime_bridge.runtime_config import load_runtime_bridge_config
+from hailiang_skills.llm.config import UnknownTesterModelError
 from hailiang_skills.llm.test_routing import TestLLMRoutingConfig
 from hailiang_skills.core.deployment import deployment_environment
 from hailiang_skills.skills.base import SkillResult
@@ -2655,6 +2656,16 @@ class MainPlannerOrchestrator:
             candidate_timeout = int(raw_candidate_timeout or 0)
         except (TypeError, ValueError):
             candidate_timeout = 0
+        requested_model = str((getattr(context, "session_meta", {}) or {}).get("requested_llm_model") or "").strip()
+        resolver = getattr(self.llm_config, "resolve_tester_model", None)
+        resolved_model = ""
+        if callable(resolver) and requested_model:
+            try:
+                resolved_model = str(resolver(requested_model, environment=deployment_environment()) or "")
+            except UnknownTesterModelError:
+                resolved_model = ""
+        if resolved_model and resolved_model != selected_config.model:
+            selected_config = replace(selected_config, model=resolved_model)
         if candidate_timeout > 0:
             selected_config = replace(
                 selected_config,

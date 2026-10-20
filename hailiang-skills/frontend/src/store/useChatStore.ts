@@ -24,6 +24,35 @@ import type { MessageBlock, RuntimeStatusItem } from "@/types/messageBlocks";
 
 const DEBUG_IDENTITY_STORAGE_KEY = "hailiang.debug_identity";
 const THEME_STORAGE_KEY = "hailiang.theme_mode";
+const TESTER_MODEL_STORAGE_KEY = "hailiang.tester_model";
+
+export type TesterModelId = "flash" | "pro";
+
+export const TESTER_MODEL_OPTIONS: Array<{ id: TesterModelId; model: string }> = [
+  { id: "flash", model: "deepseek-v4-flash-0731" },
+  { id: "pro", model: "deepseek-v4-pro" },
+];
+
+export function testerModelName(id: string): string {
+  return TESTER_MODEL_OPTIONS.find((item) => item.id === id)?.model ?? TESTER_MODEL_OPTIONS[0].model;
+}
+
+function readStoredTesterModel(): TesterModelId {
+  if (typeof window === "undefined") return "flash";
+  try {
+    return window.localStorage.getItem(TESTER_MODEL_STORAGE_KEY) === "pro" ? "pro" : "flash";
+  } catch {
+    return "flash";
+  }
+}
+
+function persistTesterModel(value: TesterModelId): void {
+  try {
+    window.localStorage.setItem(TESTER_MODEL_STORAGE_KEY, value);
+  } catch {
+    // Keep the current in-memory choice when storage is unavailable.
+  }
+}
 
 function readStoredThemeMode(): "dark" | "light" {
   if (typeof window === "undefined") return "dark";
@@ -101,6 +130,7 @@ type ChatStore = {
   themeMode: "dark" | "light";
   enableThinking: boolean;
   returnReasoning: boolean;
+  selectedModelId: TesterModelId;
   profiles: ProfileSummary[];
   selectedProfileId: string;
   activeProfileId: string;
@@ -155,6 +185,7 @@ type ChatStore = {
   setThemeMode: (value: "dark" | "light") => void;
   setEnableThinking: (value: boolean) => void;
   setReturnReasoning: (value: boolean) => void;
+  setSelectedModelId: (value: TesterModelId) => void;
   setProfiles: (profiles: ProfileSummary[]) => void;
   setSelectedProfileId: (value: string) => void;
   setActiveProfileId: (value: string) => void;
@@ -380,6 +411,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   themeMode: readStoredThemeMode(),
   enableThinking: false,
   returnReasoning: false,
+  selectedModelId: readStoredTesterModel(),
   profiles: [],
   selectedProfileId: "",
   activeProfileId: "",
@@ -448,6 +480,11 @@ export const useChatStore = create<ChatStore>((set) => ({
       returnReasoning: value,
       enableThinking: value ? true : state.enableThinking,
     }));
+  },
+  setSelectedModelId: (value) => {
+    const selectedModelId = value === "pro" ? "pro" : "flash";
+    persistTesterModel(selectedModelId);
+    set({ selectedModelId });
   },
   setProfiles: (profiles) => set({ profiles }),
   setSelectedProfileId: (value) => set({ selectedProfileId: value }),

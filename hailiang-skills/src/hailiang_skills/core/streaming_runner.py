@@ -823,6 +823,7 @@ class StreamingRunner:
         *,
         enable_thinking: bool = False,
         return_reasoning: bool = False,
+        model: str = "",
         requested_target_skill_id: str | None = None,
         handoff_context: dict[str, Any] | None = None,
         team_member_switch: dict[str, Any] | None = None,
@@ -1252,6 +1253,7 @@ class StreamingRunner:
                 context.session_meta["stream_final_reply"] = True
                 context.session_meta["enable_thinking"] = enable_thinking
                 context.session_meta["return_reasoning"] = return_reasoning
+                context.session_meta["requested_llm_model"] = str(model or "").strip()
                 if requested_target_skill_id:
                     context.session_meta["requested_target_skill_id"] = requested_target_skill_id
                     context.session_meta["handoff_context"] = handoff_context or {}
@@ -2109,6 +2111,7 @@ class StreamingRunner:
         source_interaction_id: str | None = None,
         enable_thinking: bool = False,
         return_reasoning: bool = False,
+        model: str = "",
         prepared_transition: dict[str, Any] | None = None,
         lease: TurnLease | None = None,
         protocol: str = "legacy",
@@ -2218,6 +2221,7 @@ class StreamingRunner:
             prompt,
             enable_thinking=enable_thinking,
             return_reasoning=return_reasoning,
+            model=model,
             requested_target_skill_id=str(transition["to_skill_id"]),
             handoff_context=handoff_context,
             lease=lease,

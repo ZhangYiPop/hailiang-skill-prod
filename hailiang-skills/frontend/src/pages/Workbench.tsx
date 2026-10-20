@@ -3500,9 +3500,9 @@ export default function Workbench() {
                     </button>
                     <div className="shrink-0">
                       <p className="text-xs uppercase tracking-[0.18em] text-sky-300">Debug Zone</p>
-                      <h2 className="mt-1 text-lg font-semibold">候选修订手动测试</h2>
+                      {selectedTestRevision ? null : <h2 className="mt-1 text-lg font-semibold">候选修订手动测试</h2>}
                     </div>
-                    <div className="mt-3 flex min-h-0 flex-1 flex-col">
+                    <div className={`${selectedTestRevision ? "mt-1" : "mt-3"} flex min-h-0 flex-1 flex-col`}>
                       {selectedTestRevision ? (
                         <HarnessDebugPanel
                           baseUrl={apiBaseUrl}

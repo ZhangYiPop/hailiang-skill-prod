@@ -1124,6 +1124,7 @@ export function useChatActions() {
       let assistantMessageId = options.reuseAssistantMessageId ?? "";
       const exitTransition = options.transition?.action === "exit";
       const thinkingEnabledForTurn = options.enableThinkingOverride ?? useChatStore.getState().enableThinking;
+      const selectedModelId = useChatStore.getState().selectedModelId;
       const retryRequest: ChatRetryRequest = {
         content: trimmed,
         enableThinking: thinkingEnabledForTurn,
@@ -1285,6 +1286,7 @@ export function useChatActions() {
               source_interaction_id: options.transition.sourceInteractionId,
               enable_thinking: thinkingEnabledForTurn,
               return_reasoning: thinkingEnabledForTurn,
+              model: selectedModelId,
             }
           : options.teamHandoff
             ? {
@@ -1296,6 +1298,7 @@ export function useChatActions() {
                 source: "team_handoff",
                 enable_thinking: thinkingEnabledForTurn,
                 return_reasoning: thinkingEnabledForTurn,
+                model: selectedModelId,
               }
             : options.teamMemberSwitch
               ? {
@@ -1307,6 +1310,7 @@ export function useChatActions() {
                   content: trimmed,
                   enable_thinking: thinkingEnabledForTurn,
                   return_reasoning: thinkingEnabledForTurn,
+                  model: selectedModelId,
                 }
             : {
                 action: "chat",
@@ -1317,6 +1321,7 @@ export function useChatActions() {
                 context_activation: "auto" as const,
                 enable_thinking: thinkingEnabledForTurn,
                 return_reasoning: thinkingEnabledForTurn,
+                model: selectedModelId,
               };
         const runId = makeMessageId("run");
         let latestStateSeq = -1;

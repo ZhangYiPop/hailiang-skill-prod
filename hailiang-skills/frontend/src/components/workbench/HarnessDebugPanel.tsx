@@ -1,3 +1,4 @@
+import { testerModelName, TESTER_MODEL_OPTIONS, useChatStore } from "@/store/useChatStore";
 import { legacyView, subscribeV3, type V3Snapshot } from "@/utils/harnessV3";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentInputRequest, TaskProgressBlock, type SubmitHarnessAnswer } from "@/components/message-blocks/TaskProgressBlock";
@@ -29,10 +30,6 @@ function sessionLabel(item: HarnessHistorySession): string {
     || "问答会话";
   const status = item.status === "completed" ? "已完成" : "进行中";
   return `${formatSessionTime(item.created_at)} · ${status} · ${first.slice(0, 28)}${first.length > 28 ? "…" : ""}`;
-}
-
-function isHarnessSession(item: HarnessHistorySession): boolean {
-  return (item.trace || []).some((turn) => turn.runtime_mode === "harness_v1" || Boolean(turn.run_id));
 }
 
 export function HarnessDebugPanel({
@@ -77,6 +74,8 @@ export function HarnessDebugPanel({
   const [evidenceSaved, setEvidenceSaved] = useState(false);
   const [connection, setConnection] = useState("connected");
   const [knownSessionIds, setKnownSessionIds] = useState<string[]>([]);
+  const selectedModelId = useChatStore((state) => state.selectedModelId);
+  const setSelectedModelId = useChatStore((state) => state.setSelectedModelId);
   const userId = `workbench-harness:${actorId}`;
   const sessionId = `harness-${debugId}`;
   const active = runs.find((r) => !isHarnessTerminal(r.status));
@@ -134,7 +133,7 @@ export function HarnessDebugPanel({
   };
 
   const sessionOptions = useMemo(() => {
-    const fromHistory = historySessions.filter((item) => isHarnessSession(item) || knownSessionIds.includes(item.debug_session_id));
+    const fromHistory = historySessions.filter((item) => item.debug_session_id);
     const byId = new Map(fromHistory.map((item) => [item.debug_session_id, item]));
     for (const id of knownSessionIds) {
       if (!byId.has(id)) {
@@ -236,6 +235,7 @@ export function HarnessDebugPanel({
       await request(`${api}/sessions/harness-${id}/harness/runs`, {
         ...(v3 ? { submission_id: crypto.randomUUID() } : {}),
         goal,
+        model: selectedModelId,
         context_data: { user_id: userId, facts: presetFacts, ...(gradeName && objectType !== "skill" ? { grade: gradeName } : {}) },
         debug_session_id: id,
       });
@@ -275,17 +275,51 @@ export function HarnessDebugPanel({
 
   const canSend = Boolean(revisionId) && !active && !busy && !evidenceSaved && Boolean(goal.trim());
 
-  const flowHint = objectType === "expert_team"
-    ? "完整流程：身份学段检查 → 编排首 → 专家 → 编排尾 → 推荐"
-    : objectType === "expert"
-      ? "单专家：直接由该专家作答，不经过编排首和编排尾"
-      : objectType === "skill"
-        ? "单 Skill：通过临时测试专家调用，不经过编排"
-        : "";
+  const historyTitle = sessionOptions.find((item) => item.debug_session_id === debugId);
+  const historyLabel = historyTitle ? sessionLabel(historyTitle) : "新建问答会话";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      {flowHint ? <p className="shrink-0 rounded-lg border border-sky-300/15 bg-sky-400/5 px-3 py-2 text-xs text-sky-100">{flowHint}</p> : null}
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold">候选修订手动测试</h2>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <select
+            aria-label="历史会话"
+            title={historyLabel}
+            value={debugId}
+            onChange={(event) => selectSession(event.target.value)}
+            className="h-7 max-w-[11rem] rounded-md border border-white/10 bg-slate-950 px-2 text-xs text-slate-100 outline-none"
+          >
+            <option value="" className="bg-slate-950 text-slate-100">
+              {sessionOptions.length ? "历史会话" : "暂无历史会话"}
+            </option>
+            {sessionOptions.map((item) => (
+              <option key={item.debug_session_id} value={item.debug_session_id} className="bg-slate-950 text-slate-100">
+                {sessionLabel(item)}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="问答模型"
+            title={testerModelName(selectedModelId)}
+            value={selectedModelId}
+            onChange={(event) => setSelectedModelId(event.target.value === "pro" ? "pro" : "flash")}
+            className="h-7 rounded-md border border-white/10 bg-slate-950 px-2 text-xs text-slate-100 outline-none"
+          >
+            {TESTER_MODEL_OPTIONS.map((item) => (
+              <option key={item.id} value={item.id} className="bg-slate-950 text-slate-100">{item.model}</option>
+            ))}
+          </select>
+        </div>
+        <button
+          type="button"
+          disabled={Boolean(active) || busy}
+          onClick={() => selectSession("")}
+          className="ml-auto h-7 shrink-0 rounded-md border border-sky-300/30 px-2.5 text-xs text-sky-100 disabled:opacity-40"
+        >
+          新建会话
+        </button>
+      </div>
       {objectType && objectType !== "skill" ? (
         <div className="grid shrink-0 grid-cols-3 gap-2 text-xs text-slate-400">
           {([
@@ -308,21 +342,6 @@ export function HarnessDebugPanel({
           ))}
         </div>
       ) : null}
-      <label className="block shrink-0 text-xs text-slate-400">
-        历史会话
-        <select
-          value={debugId}
-          onChange={(event) => selectSession(event.target.value)}
-          className="mt-1 w-full rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-400/40"
-        >
-          <option value="">新建问答会话</option>
-          {sessionOptions.map((item) => (
-            <option key={item.debug_session_id} value={item.debug_session_id}>
-              {sessionLabel(item)}
-            </option>
-          ))}
-        </select>
-      </label>
 
       <div className="flex min-h-[20rem] min-w-0 flex-1 flex-col rounded-2xl border border-sky-300/15 bg-slate-950/50">
         <div className="flex shrink-0 gap-1 border-b border-white/10 p-1">

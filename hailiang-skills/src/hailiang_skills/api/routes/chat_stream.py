@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 from hailiang_skills.core.concurrency import CapacityExceededError, TurnCoordinator
+from hailiang_skills.core.deployment import deployment_environment
+from hailiang_skills.llm.config import UnknownTesterModelError
 from hailiang_skills.core.fact_service import FactService
 from hailiang_skills.core.sse_protocol import SSE_V2_PROTOCOL
 from hailiang_skills.core.skill_ids import CAREER_PLAN_SKILL_ID, GENERAL_CHAT_SKILL_ID, canonical_skill_id
@@ -52,6 +54,7 @@ class ChatInput(ProfileBoundInput):
     source: Literal["chat", "toolbar"]
     enable_thinking: bool = False
     return_reasoning: bool = False
+    model: str = ""
 
 
 class EnterSkillInput(ProfileBoundInput):
@@ -62,6 +65,7 @@ class EnterSkillInput(ProfileBoundInput):
     source_interaction_id: str | None = None
     enable_thinking: bool = False
     return_reasoning: bool = False
+    model: str = ""
 
 
 class QuitSkillInput(ProfileBoundInput):
@@ -70,6 +74,7 @@ class QuitSkillInput(ProfileBoundInput):
     source: Literal["toolbar", "exit_button"]
     enable_thinking: bool = False
     return_reasoning: bool = False
+    model: str = ""
 
 
 class ConfirmTeamHandoffInput(ProfileBoundInput):
@@ -79,6 +84,7 @@ class ConfirmTeamHandoffInput(ProfileBoundInput):
     source: Literal["team_handoff"]
     enable_thinking: bool = False
     return_reasoning: bool = False
+    model: str = ""
 
 
 class SwitchTeamMemberInput(ProfileBoundInput):
@@ -88,6 +94,7 @@ class SwitchTeamMemberInput(ProfileBoundInput):
     source: Literal["toolbar"]
     enable_thinking: bool = False
     return_reasoning: bool = False
+    model: str = ""
 
 
 class OpenSessionInput(ProfileBoundInput):
@@ -823,6 +830,21 @@ def _switch_team_member(context, orchestrator, input_data: SwitchTeamMemberInput
     }
 
 
+def _tester_model_name(orchestrator, input_data) -> str:
+    """Resolve a Q&A-tester model id. Production and unknown configs keep Flash."""
+    requested = str(getattr(input_data, "model", "") or "").strip()
+    if not requested:
+        return ""
+    llm_config = getattr(orchestrator, "llm_config", None)
+    resolver = getattr(llm_config, "resolve_tester_model", None)
+    if not callable(resolver):
+        return ""
+    try:
+        return str(resolver(requested, environment=deployment_environment()) or "")
+    except UnknownTesterModelError as exc:
+        raise HTTPException(status_code=422, detail="UNKNOWN_MODEL") from exc
+
+
 def build_chat_stream_router(
     repository: InMemorySessionRepository,
     fact_service: FactService,
@@ -838,6 +860,7 @@ def build_chat_stream_router(
     @router.post("/sessions/chat/stream")
     def post_chat_stream(request: ChatStreamRequest, http_request: Request) -> StreamingResponse:
         input_data = _parse_input(request.input)
+        tester_model = "" if isinstance(input_data, (StopInput, OpenSessionInput)) else _tester_model_name(orchestrator, input_data)
         if isinstance(input_data, StopInput):
             try:
                 context = repository.get(request.session_id)
@@ -1123,6 +1146,7 @@ def build_chat_stream_router(
                 str(team_member_switch.get("source_user_message") or "专家接管"),
                 enable_thinking=input_data.enable_thinking,
                 return_reasoning=input_data.return_reasoning,
+                model=tester_model,
                 team_member_switch=team_member_switch,
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
@@ -1166,6 +1190,7 @@ def build_chat_stream_router(
                 input_data.content,
                 enable_thinking=input_data.enable_thinking,
                 return_reasoning=input_data.return_reasoning,
+                model=tester_model,
                 team_member_switch=team_member_switch,
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
@@ -1239,6 +1264,7 @@ def build_chat_stream_router(
                 input_data.content,
                 enable_thinking=input_data.enable_thinking,
                 return_reasoning=input_data.return_reasoning,
+                model=tester_model,
                 team_member_switch=team_member_switch,
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
@@ -1311,6 +1337,7 @@ def build_chat_stream_router(
                 source_interaction_id=getattr(input_data, "source_interaction_id", None),
                 enable_thinking=input_data.enable_thinking,
                 return_reasoning=input_data.return_reasoning,
+                model=tester_model,
                 prepared_transition=prepared,
                 lease=lease,
                 protocol=SSE_V2_PROTOCOL,
