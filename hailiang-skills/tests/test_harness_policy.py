@@ -74,6 +74,19 @@ def test_formal_session_runs_team_orchestration_with_form_gate(monkeypatch):
     assert frozen['direct_expert_id'] == ''
 
 
+def test_formal_session_without_deployment_snapshot_uses_bundled_orchestration_rules(monkeypatch):
+    from hailiang_skills.workbench import orchestration
+    monkeypatch.setattr(orchestration, 'load_seed_rules', lambda: {
+        'head_rules': 'bundled head', 'tail_rules': 'bundled tail',
+        'recommendation_rules': 'bundled recommendation', 'recommendations': [],
+    })
+    context = SessionContext(session_id='s', user_id='u', session_meta={'expert_team_id': 'team'})
+    frozen = policy.capture_policy(_team_orchestrator(monkeypatch), context)
+    assert frozen['orchestrated'] is True
+    assert frozen['snapshot']['source'] == 'filesystem_bootstrap'
+    assert frozen['orchestrator']['head_rules'] == 'bundled head'
+
+
 def test_formal_session_with_default_coordinator_still_runs_team_orchestration(monkeypatch):
     frozen = policy.capture_policy(
         _team_orchestrator(monkeypatch),

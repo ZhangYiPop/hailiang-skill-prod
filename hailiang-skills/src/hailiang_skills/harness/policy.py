@@ -73,7 +73,9 @@ def snapshot_root(snapshot):
 def capture_policy(orchestrator, context):
     """Freeze rules, catalogs and tool schemas for this run, not global mutable state."""
     skills, experts, teams = orchestrator.runtime_registry, orchestrator.expert_registry, orchestrator.expert_team_registry
-    entries = context.session_meta.get("configuration_snapshot", {}).get("entries")
+    captured_snapshot = context.session_meta.get("configuration_snapshot")
+    captured_snapshot = captured_snapshot if isinstance(captured_snapshot, dict) else {}
+    entries = captured_snapshot.get("entries")
     if entries:
         from hailiang_skills.workbench.catalog import build_runtime_registries
         skills, experts, teams = build_runtime_registries(entries)
@@ -101,7 +103,7 @@ def capture_policy(orchestrator, context):
                                      "skills": [normalize_skill(s) for s in e.authorized_skill_ids],
                                      "max_skill_calls": e.max_skill_calls}
     settings = load_settings()
-    debug_root = snapshot_root(context.session_meta.get("configuration_snapshot")) if context.session_meta.get("workbench_debug_session_id") else {}
+    debug_root = snapshot_root(captured_snapshot) if context.session_meta.get("workbench_debug_session_id") else {}
     classifications = {key: {"skills": e.authorized_skill_ids} for key, e in orchestrator.expert_registry.definitions.items()}
     classifications.update({key: {"skills": e.authorized_skill_ids} for key, e in experts.definitions.items()})
     independent = validate_skill_boundary(settings.get("independent_skill_ids", []), classifications)
@@ -146,9 +148,21 @@ def capture_policy(orchestrator, context):
     client = resolve_client(context) if resolve_client else None
     if client is not None and getattr(client, "_config", None) is not None:
         model_config = {key: value for key, value in asdict(client._config).items() if key != "api_key"}
+    # Local auto mode can legitimately have no active Workbench deployment.
+    # In that case the runtime registry already comes from the bundled files;
+    # freeze the matching published system-skill rules onto this new run too.
+    # Do not fill an existing (including legacy) snapshot with absent rules:
+    # its historical behaviour must remain stable.
+    policy_snapshot = captured_snapshot
+    if not policy_snapshot:
+        from hailiang_skills.workbench.orchestration import load_seed_rules
+        policy_snapshot = {
+            "source": "filesystem_bootstrap",
+            "orchestration_rules": load_seed_rules(),
+        }
     orchestrator_view = orchestrator_snapshot_view(
         team,
-        context.session_meta.get("configuration_snapshot") or {},
+        policy_snapshot,
         enabled=bool(context.session_meta.get("orchestrator_v2")),
     )
     # An expert team runs the whole formal flow: identity gate, orchestrator
@@ -160,7 +174,7 @@ def capture_policy(orchestrator, context):
     #     the published orchestration rules. A user who explicitly picked one
     #     specific expert bypasses orchestration; the default coordinator does not.
     debug_session = bool(context.session_meta.get("workbench_debug_session_id"))
-    tested = snapshot_root(context.session_meta.get("configuration_snapshot")) if debug_session else {}
+    tested = snapshot_root(captured_snapshot) if debug_session else {}
     root_type = tested.get("object_type")
     direct_expert_id = str(tested.get("object_key") or "") if root_type == "expert" and tested.get("object_key") in expert_data else ""
     if debug_session:
@@ -198,7 +212,7 @@ def capture_policy(orchestrator, context):
                          "max_run_input_tokens": max(0, int(os.getenv("HAILIANG_HARNESS_MAX_RUN_INPUT_TOKENS", settings.get("max_run_input_tokens", 300000)))),
                          "main_input_reserve_tokens": int(settings.get("main_input_reserve_tokens", 32000)),
                          "max_run_model_calls": int(settings.get("max_run_model_calls", 96)), "max_run_tool_calls": int(settings.get("max_run_tool_calls", 192)), "max_tasks": int(settings.get("max_tasks", 64))},
-            "team_id": team_id, "snapshot": context.session_meta.get("configuration_snapshot", {}),
+            "team_id": team_id, "snapshot": policy_snapshot,
             "model_config": model_config,
             "soul": orchestrator._soul_context(context).get("content", ""),
             "orchestrator": orchestrator_view}
