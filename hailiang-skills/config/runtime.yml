@@ -70,9 +70,6 @@ skill_management:
     multi_path_planning: true
     interest_explore: true
     career_plan_entity: true
-    junior_multi_path_planning: false
-    future_explore: false
-    score_improve: false
 # Empty means native Skill is the default. Add a public Skill ID only during a
 # controlled rollback; a running turn never falls back automatically.
 legacy_bridge_skill_ids: []

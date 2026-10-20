@@ -134,6 +134,64 @@ def run_orchestrated(tmp_path, head_json, expert_text='专家 B 原文', tail_te
     return runtime, runtime.store.get(run_id), seen
 
 
+def test_debug_step_io_exposes_head_expert_and_tail(tmp_path):
+    from hailiang_skills.harness.runtime import debug_step_io
+    head = json.dumps({'action': 'consult', 'subtasks': [{'subtask_id': 'st_1', 'question': '你好', 'target_expert_id': 'b', 'priority': 1}], 'reason': '寒暄'})
+    runtime, run, _seen = run_orchestrated(tmp_path, head)
+    public = runtime.public(run)
+    assert '编排首规则' not in json.dumps(public, ensure_ascii=False)
+    steps = debug_step_io(run)
+    by_title = {node['title']: node['id'] for node in public['nodes']}
+    head_step = steps[by_title['编排首：选专家']]
+    assert head_step['output']['subtasks'][0]['target_expert_id'] == 'b'
+    assert any('编排首规则' in str(message.get('content') or '') for message in head_step['input'])
+    assert run['root_task_id'] not in steps
+    expert = next(task for task in run['tasks'].values() if task['kind'] == 'expert')
+    dispatch = steps[by_title['分派专家任务']]
+    assert dispatch['input']['subtasks'][0]['target_expert_id'] == 'b'
+    assert dispatch['output'] == {'tasks': [{'expert_id': 'b', 'question': '你好', 'depends_on': []}]}
+    assert '专家 B 原文' not in json.dumps(dispatch, ensure_ascii=False)
+    assert steps[expert['id']]['input'] == dispatch['output']['tasks'][0]
+    assert steps[expert['id']]['output'] == '专家 B 原文'
+    assert steps[by_title['编排尾：出站收口']]['output'] == '出站正文'
+    runtime.close()
+
+
+def test_debug_step_io_includes_recommend_cards(tmp_path):
+    from hailiang_skills.harness.runtime import debug_step_io
+    head = json.dumps({'action': 'consult', 'subtasks': [{'subtask_id': 'st_1', 'question': '你好', 'target_expert_id': 'b', 'priority': 1}], 'reason': '寒暄'})
+    raw_card = json.dumps({'jump_cards': [{'intent': 'open', 'object_type': 'skill', 'sub_type': 'multi_path', 'filter': {}, 'title': '升学路径'}]})
+
+    class Client:
+        def complete(self, messages, request_purpose='', max_tokens=None, **_):
+            if request_purpose == 'orchestrator_head':
+                return head
+            if request_purpose == 'recommend_jump_cards':
+                return raw_card
+            return '出站正文'
+        def complete_with_tools(self, messages, specs, request_purpose, max_tokens=None):
+            return AssistantTurnResult(final_text='专家 B 原文')
+
+    frozen = orchestrated_policy()
+    frozen['orchestrator']['recommendation_rules'] = '推荐规则'
+    frozen['orchestrator']['recommend_catalog'] = {'items': [{'intent': 'open', 'object_type': 'skill', 'sub_type': 'multi_path', 'title': '升学路径', 'description': '了解升学路径'}]}
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / 'harness.sqlite3'), lambda _run: Client())
+    run_id = runtime.create('s', 'u', 'p', '你好', frozen, identity_seed())
+    advance(runtime, run_id, 10)
+    run = runtime.store.get(run_id)
+    assert run['status'] == 'completed', run.get('error')
+    public = runtime.public(run)
+    assert '推荐规则' not in json.dumps(public, ensure_ascii=False)
+    recommend_id = next(node['id'] for node in public['nodes'] if node['title'] == '推荐')
+    step = debug_step_io(run)[recommend_id]
+    assert step['input']['recommendation_rules'] == '推荐规则'
+    assert step['input']['user_question'] == '你好'
+    assert step['input']['catalog'][0]['sub_type'] == 'multi_path'
+    assert step['output']['jump_cards'][0]['sub_type'] == 'multi_path'
+    assert step['output']['jump_cards'][0]['title'] == '升学路径'
+    runtime.close()
+
+
 def test_team_flow_runs_head_expert_and_tail(tmp_path):
     head = json.dumps({'action': 'consult', 'subtasks': [{'subtask_id': 'st_1', 'question': '你好', 'target_expert_id': 'b', 'priority': 1}], 'reason': '寒暄'})
     runtime, run, seen = run_orchestrated(tmp_path, head)
@@ -236,6 +294,48 @@ def test_single_expert_test_goes_straight_to_the_expert(tmp_path):
     assert run['result'] == '专家原文'
     assert seen['purposes'] == ['harness_expert']
     assert [t['expert_id'] for t in run['tasks'].values() if t['kind'] == 'expert'] == ['b']
+    assert 'recommend' not in {t['name'] for t in run['tools'].values()}
+    runtime.close()
+
+
+def test_single_expert_direct_still_runs_recommend(tmp_path):
+    from hailiang_skills.harness.runtime import debug_step_io
+    raw_card = json.dumps({'jump_cards': [{'intent': 'open', 'object_type': 'skill', 'sub_type': 'multi_path', 'filter': {}, 'title': '升学路径'}]})
+    seen = {'purposes': []}
+
+    class Client:
+        def complete(self, messages, request_purpose='', max_tokens=None, **_):
+            seen['purposes'].append(request_purpose)
+            if request_purpose == 'recommend_jump_cards':
+                return raw_card
+            raise AssertionError(f'unexpected complete purpose: {request_purpose}')
+
+        def complete_with_tools(self, messages, specs, request_purpose, max_tokens=None):
+            seen['purposes'].append(request_purpose)
+            return AssistantTurnResult(final_text='专家原文')
+
+    frozen = policy()
+    frozen['direct_expert_id'] = 'b'
+    frozen['orchestrator'] = {
+        'enabled': False, 'head_rules': '', 'tail_rules': '', 'collaboration_rules': '',
+        'recommendation_rules': '推荐规则',
+        'recommend_catalog': {'items': [{'intent': 'open', 'object_type': 'skill', 'sub_type': 'multi_path', 'title': '升学路径', 'description': '了解升学路径'}]},
+        'recommendations': [], 'consultation_policy': {}, 'fallback_expert_id': 'b', 'members': [],
+    }
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / 'harness.sqlite3'), lambda _run: Client())
+    run_id = runtime.create('s', 'u', 'p', '你好', frozen)
+    advance(runtime, run_id, 8)
+    run = runtime.store.get(run_id)
+    assert run['status'] == 'completed', run.get('error')
+    assert run['result'] == '专家原文'
+    assert 'orchestrator_head' not in seen['purposes']
+    assert 'orchestrator_tail' not in seen['purposes']
+    assert 'recommend_jump_cards' in seen['purposes']
+    public = runtime.public(run)
+    recommend_id = next(node['id'] for node in public['nodes'] if node['title'] == '推荐')
+    step = debug_step_io(run)[recommend_id]
+    assert step['input']['recommendation_rules'] == '推荐规则'
+    assert step['output']['jump_cards'][0]['title'] == '升学路径'
     runtime.close()
 
 

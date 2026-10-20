@@ -677,6 +677,8 @@ def create_app() -> FastAPI:
     app.include_router(build_profiles_router(fact_service, storage.user_metadata_repository), prefix="/api/v1")
     app.include_router(build_admin_assets_router(), prefix="/api/v1")
     app.include_router(build_skill_analytics_router(orchestrator), prefix="/api/v1")
+    from hailiang_skills.workbench.batch_eval import BatchEvalService
+    workbench_service.batch_eval = BatchEvalService(workbench_service, repository, fact_service, orchestrator, harness)
     app.include_router(build_workbench_router(workbench_service), prefix="/workbench/v1")
     app.include_router(build_deployment_router(workbench_service), prefix="/deployment/v1")
     app.include_router(build_token_usage_router(storage.engine), prefix="/deployment/v1")

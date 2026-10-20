@@ -20,6 +20,26 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class BatchEvalCaseInput(StrictModel):
+    scene: str = Field(default="", max_length=200)
+    opening: str = Field(min_length=1, max_length=4000)
+    persona: str = Field(min_length=1, max_length=8000)
+    goal: str = Field(default="", max_length=4000)
+
+
+class BatchEvalInput(StrictModel):
+    revision_id: str = Field(min_length=1, max_length=80)
+    soul_revision_id: str | None = None
+    actor_id: str = Field(min_length=1, max_length=80)
+    persona_mode: Literal["simulator", "seed"] = "simulator"
+    speaker_role: Literal["家长", "学生"] = "家长"
+    model: str = Field(default="flash", max_length=80)
+    preset_identity: bool = True
+    max_rounds: int = Field(default=4, ge=1, le=8)
+    round_timeout_s: int = Field(default=180, ge=30, le=600)
+    cases: list[BatchEvalCaseInput] = Field(min_length=1, max_length=200)
+
+
 class ActorInput(StrictModel):
     display_name: str = Field(min_length=2, max_length=80)
     device_token: str | None = None
@@ -494,6 +514,33 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
     @router.get("/audit")
     def audit(limit: int = Query(default=50, ge=1, le=200)):
         return {"events": service.list_audit_events(limit)}
+
+    def batch_runner():
+        runner = getattr(service, "batch_eval", None)
+        if runner is None:
+            raise HTTPException(status_code=503, detail={"code": "BATCH_EVAL_UNAVAILABLE", "message": "批量测评运行时未就绪"})
+        return runner
+
+    @router.post("/batch-evals", status_code=202)
+    def start_batch_eval(body: BatchEvalInput):
+        return _call(lambda: batch_runner().start(body.model_dump()))
+
+    @router.get("/batch-evals/{job_id}")
+    def get_batch_eval(job_id: str):
+        return _call(lambda: batch_runner().get(job_id))
+
+    @router.post("/batch-evals/{job_id}/cancel")
+    def cancel_batch_eval(job_id: str):
+        return _call(lambda: batch_runner().cancel(job_id))
+
+    @router.get("/batch-evals/{job_id}/export")
+    def export_batch_eval(job_id: str):
+        content = _call(lambda: batch_runner().export_csv(job_id))
+        return Response(
+            "\ufeff" + content,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="batch-eval-{job_id}.csv"'},
+        )
 
     return router
 

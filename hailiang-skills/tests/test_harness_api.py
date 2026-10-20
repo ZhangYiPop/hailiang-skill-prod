@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from hailiang_skills.api.routes.harness import build_harness_router
 from hailiang_skills.core.context import SessionContext
+from hailiang_skills.llm.config import load_llm_config
 from hailiang_skills.schemas.facts import KnownFacts
 from hailiang_skills.harness.contracts import AnswerSubmission
 from test_harness import make_runtime, policy, advance, call, QUESTION, postgres_test_backend
@@ -110,6 +111,41 @@ def test_run_goal_seeds_explicit_grade_before_requesting_missing_facts(tmp_path,
     assert not run['inputs']
     tool = next(iter(run['tools'].values()))
     assert tool['result'] == {'answers': {'grade': '高二'}, 'source': 'existing_facts'}
+    runtime.close()
+
+
+def test_manual_revision_test_selects_model_before_policy_capture(tmp_path, monkeypatch):
+    import hailiang_skills.api.routes.harness as api
+
+    seen = {}
+
+    def capture(_orchestrator, context):
+        seen["model"] = context.session_meta.get("requested_llm_model")
+        return policy()
+
+    monkeypatch.setattr(api, "capture_policy", capture)
+    monkeypatch.setattr(api, "deployment_environment", lambda: "test")
+    runtime = make_runtime(tmp_path, lambda *_args, **_kwargs: AssistantTurnResult(final_text="ok"))
+    app = FastAPI()
+    app.include_router(
+        build_harness_router(Repository(), Facts(), SimpleNamespace(llm_config=load_llm_config()), runtime),
+        prefix="/api/v2",
+    )
+    with TestClient(app) as client:
+        started = client.post("/api/v2/sessions/model-pro/harness/runs", json={
+            "goal": "规划",
+            "context_data": {"user_id": "u"},
+            "model": "pro",
+        })
+        assert started.status_code == 202, started.text
+        rejected = client.post("/api/v2/sessions/model-bad/harness/runs", json={
+            "goal": "规划",
+            "context_data": {"user_id": "u"},
+            "model": "other",
+        })
+        assert rejected.status_code == 422
+
+    assert seen["model"] == "deepseek-v4-pro"
     runtime.close()
 
 

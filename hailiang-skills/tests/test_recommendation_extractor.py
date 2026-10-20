@@ -41,15 +41,25 @@ class ScriptedClient:
 def test_build_recommend_prompt_includes_catalog_and_forbids_state_lookup():
     prompt = build_recommend_prompt(
         recommendation_rules="RECOMMEND",
-        catalog=CATALOG,
+        catalog={
+            **CATALOG,
+            "items": [
+                {**CATALOG["items"][0], "when": "本轮回答涉及升学路径时推荐"},
+                CATALOG["items"][1],
+            ],
+        },
         user_question="想了解路径",
         assistant_reply="这是专家回答",
+        max_cards=1,
     )
     assert prompt[0].role == "system"
     assert "RECOMMEND" in prompt[0].content
     assert "不要查询会话状态" in prompt[0].content
     assert "multi_path" in prompt[0].content
+    assert "本轮回答涉及升学路径时推荐" in prompt[0].content
+    assert "最相关的一条" in prompt[0].content
     assert "想了解路径" in prompt[0].content
+    assert "这是专家回答" in prompt[0].content
 
 
 def test_extract_jump_cards_filters_by_catalog():

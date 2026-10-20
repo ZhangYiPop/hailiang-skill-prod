@@ -32,6 +32,23 @@
 其中对话链路、SSE 协议、事件顺序、表单/按钮/转场/取消/风控等完整说明，统一以 `docs/architecture/conversation_sse_dataflow.md` 为准。
 前端如果需要直接做 parser、状态机和 UI mock，优先参考 `guides/SSE_FRONTEND_MOCK_EXAMPLES.md`。
 
+## 业务配置从哪里加载（必读）
+
+Skill、专家、专家团有两套载体，**不要混着改**：
+
+| 载体 | 路径 / 位置 | 什么时候会用到 |
+| --- | --- | --- |
+| 仓库文件 | `runtime_skills/`、`runtime_agents/`、`runtime_agent_teams/` | 新库还没有 active 部署时的启动兜底；迁移导入源；单测对照 |
+| 调试台对象库 + 已激活部署 | 工作台对象 / 修订 / 发布，以及 `/deployment` 激活后的不可变 ZIP | **本机或环境一旦激活过部署，正式问答与调试台运行时只认这套** |
+
+默认 `HAILIANG_BUSINESS_CONFIG_SOURCE=auto`：有 active 部署就整包用数据库快照，不会再和仓库目录逐项拼装。因此在仓库里改 `AGENT.md` / `TEAM.md`，**不会**自动进当前会话；要改线上效果，请在 AI 业务调试台编辑对象 → 发布 → 激活部署。
+
+细节、回退变量与迁移命令见：
+
+- [业务配置数据库迁移与回退](guides/BUSINESS_CONFIGURATION_MIGRATION.md)
+- [AI 业务调试台业务使用手册](guides/AI_WORKBENCH_BUSINESS_USER_MANUAL.md)
+- [AI 业务调试台架构与运行手册](docs/architecture/business_workbench.md)
+
 业务调试台当前有两条不同的“导入”链路：
 
 - `递归导入到工作台对象库`：把导出的专家团 / 专家 / Skill 配置包按依赖闭包完整回灌到工作台对象库中。专家团包会自动递归导入其专家与 Skill，导入后对象可继续编辑、调试和发布。

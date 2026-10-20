@@ -369,8 +369,9 @@ def test_open_or_resume_tolerates_concurrent_profile_insert(tmp_path: Path, monk
 
 def test_input_contract_and_external_run_id() -> None:
     expert_context = '{"expert_team_id":null,"expert_id":null,"expected_branch_version":1,"operation":"continue"}'
-    parsed = _parse_input('{"action":"chat","content":"你好","source":"chat","expert_context":' + expert_context + '}')
+    parsed = _parse_input('{"action":"chat","content":"你好","source":"chat","model":"pro","expert_context":' + expert_context + '}')
     assert isinstance(parsed, ChatInput)
+    assert parsed.model == "pro"
     parsed = _parse_input('{"action":"chat","content":"你好","source":"chat","expert_context":{"expert_team_id":null,"expert_id":null,"operation":"continue"}}')
     assert isinstance(parsed, ChatInput)
     parsed = _parse_input('{"action":"enter_skill","target_skill_id":"interest_explore","source":"toolbar","expert_context":' + expert_context + '}')

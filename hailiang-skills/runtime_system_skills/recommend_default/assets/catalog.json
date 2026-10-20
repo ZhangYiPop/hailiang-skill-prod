@@ -5,7 +5,7 @@
       "id": "assessment.career_first",
       "title": "首次生涯测评",
       "kind": "feature",
-      "when": "用户要做首次生涯测评",
+      "when": "本轮回答在帮用户建立生涯/升学方向的整体认知，适合用首次生涯测评把兴趣与方向摸清",
       "intent": "assessment",
       "object_type": "career_first",
       "url_or_route": ""
@@ -14,7 +14,7 @@
       "id": "assessment.single_assessment.career_interest",
       "title": "职业兴趣测评",
       "kind": "feature",
-      "when": "用户讨论或要求职业兴趣测评",
+      "when": "本轮回答涉及职业方向、兴趣匹配、适合做什么工作时，用职业兴趣测评深化",
       "intent": "assessment",
       "object_type": "single_assessment",
       "sub_type": "career_interest",
@@ -24,7 +24,7 @@
       "id": "assessment.single_assessment.multiple_intelligence",
       "title": "多元智能测评",
       "kind": "feature",
-      "when": "用户讨论或要求多元智能测评",
+      "when": "本轮回答涉及孩子优势智能、特长类型、能力结构时，用多元智能测评深化",
       "intent": "assessment",
       "object_type": "single_assessment",
       "sub_type": "multiple_intelligence",
@@ -34,7 +34,7 @@
       "id": "assessment.single_assessment.subject_aptitude",
       "title": "学科潜能测评",
       "kind": "feature",
-      "when": "用户讨论或要求学科潜能测评",
+      "when": "本轮在讨论选科、两科对比纠结（如听得懂/听不懂、分数高低、赋分与排名）、学科强弱、文理偏向或学科潜能时，用学科潜能测评深化；即使回答还在追问省份/排名等细节，只要话题已是选科决策，仍可推荐",
       "intent": "assessment",
       "object_type": "single_assessment",
       "sub_type": "subject_aptitude",
@@ -44,7 +44,7 @@
       "id": "assessment.learning_ability",
       "title": "学习力测评",
       "kind": "feature",
-      "when": "用户要做学习力测评",
+      "when": "本轮回答涉及学习方法、学习状态、提分路径或学习能力短板时，用学习力测评深化",
       "intent": "assessment",
       "object_type": "learning_ability",
       "url_or_route": ""
@@ -53,7 +53,7 @@
       "id": "assessment.generic",
       "title": "通用测评入口",
       "kind": "feature",
-      "when": "用户只说想做测评，没有具体种类",
+      "when": "本轮回答明确建议先做测评，但未落到某一种具体测评时使用；能落到具体测评时优先更具体的条目",
       "intent": "assessment",
       "object_type": "generic",
       "url_or_route": ""
@@ -62,7 +62,7 @@
       "id": "course.expert_course",
       "title": "专家课程",
       "kind": "feature",
-      "when": "用户要看专家课程",
+      "when": "本轮回答建议系统学习某主题、跟专家课程深入时推荐",
       "intent": "course",
       "object_type": "expert_course",
       "url_or_route": ""
@@ -71,7 +71,7 @@
       "id": "course.live",
       "title": "直播",
       "kind": "feature",
-      "when": "用户要看直播",
+      "when": "本轮回答建议去听直播课、公开课或实时讲解时推荐",
       "intent": "course",
       "object_type": "live",
       "url_or_route": ""
@@ -80,7 +80,7 @@
       "id": "course.my_course",
       "title": "我的课程",
       "kind": "feature",
-      "when": "用户要看已购或进行中的课程",
+      "when": "本轮回答引导用户回到已购/进行中的课程继续学习时推荐",
       "intent": "course",
       "object_type": "my_course",
       "url_or_route": ""
@@ -89,7 +89,7 @@
       "id": "counselor.counselor_list",
       "title": "咨询师列表",
       "kind": "feature",
-      "when": "用户要找咨询师",
+      "when": "本轮回答建议找规划师/咨询师一对一深入沟通，但未点名具体人时推荐",
       "intent": "counselor",
       "object_type": "counselor_list",
       "url_or_route": ""
@@ -98,7 +98,7 @@
       "id": "counselor.counselor_detail",
       "title": "咨询师详情",
       "kind": "feature",
-      "when": "用户要看某位咨询师介绍",
+      "when": "本轮回答提到某位具体咨询师/规划师，适合进入其详情时推荐",
       "intent": "counselor",
       "object_type": "counselor_detail",
       "url_or_route": ""
@@ -107,7 +107,7 @@
       "id": "counselor.consult_intro",
       "title": "咨询说明",
       "kind": "feature",
-      "when": "用户要了解咨询服务说明",
+      "when": "本轮回答在解释咨询服务怎么进行、适合谁、注意事项时推荐",
       "intent": "counselor",
       "object_type": "consult_intro",
       "url_or_route": ""
@@ -116,7 +116,7 @@
       "id": "counselor.im_consult",
       "title": "在线咨询",
       "kind": "feature",
-      "when": "用户要发起在线咨询",
+      "when": "本轮回答建议立刻发起在线咨询、即时沟通时推荐",
       "intent": "counselor",
       "object_type": "im_consult",
       "url_or_route": ""
@@ -125,7 +125,7 @@
       "id": "theme.college_explore",
       "title": "院校探索",
       "kind": "feature",
-      "when": "用户要查学校",
+      "when": "本轮回答涉及查学校、院校层次、志愿院校范围时推荐",
       "intent": "theme",
       "object_type": "college_explore",
       "url_or_route": ""
@@ -134,7 +134,7 @@
       "id": "theme.career_explore",
       "title": "职业探索",
       "kind": "feature",
-      "when": "用户要查职业",
+      "when": "本轮回答涉及了解职业、岗位要求、就业方向时推荐",
       "intent": "theme",
       "object_type": "career_explore",
       "url_or_route": ""
@@ -143,7 +143,7 @@
       "id": "theme.primary_path",
       "title": "小学路径",
       "kind": "feature",
-      "when": "用户要看小学路径",
+      "when": "本轮回答落在小学阶段升学/培养路径规划时推荐",
       "intent": "theme",
       "object_type": "primary_path",
       "url_or_route": ""
@@ -152,7 +152,7 @@
       "id": "theme.path_major",
       "title": "专业路径",
       "kind": "feature",
-      "when": "用户要看专业路径",
+      "when": "本轮回答涉及专业选择、专业方向对比时推荐",
       "intent": "theme",
       "object_type": "path_major",
       "url_or_route": ""
@@ -161,7 +161,7 @@
       "id": "theme.path_primary",
       "title": "初中路径",
       "kind": "feature",
-      "when": "用户要看初中路径",
+      "when": "本轮回答落在初中阶段升学/培养路径规划时推荐",
       "intent": "theme",
       "object_type": "path_primary",
       "url_or_route": ""
@@ -170,7 +170,7 @@
       "id": "theme.path_secondary",
       "title": "高中路径",
       "kind": "feature",
-      "when": "用户要看高中路径",
+      "when": "本轮回答落在高中阶段升学路径、多元升学通道时推荐",
       "intent": "theme",
       "object_type": "path_secondary",
       "url_or_route": ""
@@ -179,7 +179,7 @@
       "id": "news_case.news",
       "title": "资讯",
       "kind": "feature",
-      "when": "用户要看资讯",
+      "when": "本轮回答建议去看相关政策/升学资讯作补充时推荐",
       "intent": "news_case",
       "object_type": "news",
       "url_or_route": ""
@@ -188,7 +188,7 @@
       "id": "news_case.case",
       "title": "案例",
       "kind": "feature",
-      "when": "用户要看案例",
+      "when": "本轮回答建议参考同类学生案例、成功经验时推荐",
       "intent": "news_case",
       "object_type": "case",
       "url_or_route": ""
@@ -197,7 +197,7 @@
       "id": "account.student_create",
       "title": "新建学生档案",
       "kind": "feature",
-      "when": "用户明确要求新建学生档案",
+      "when": "仅当用户本轮明确提出要新建学生档案时推荐；不要因「可能还没建档」就出卡",
       "intent": "account",
       "object_type": "student_create",
       "url_or_route": ""
@@ -206,7 +206,7 @@
       "id": "account.student_modify",
       "title": "修改学生档案",
       "kind": "feature",
-      "when": "用户明确要求修改学生档案",
+      "when": "仅当用户本轮明确提出要修改学生档案时推荐",
       "intent": "account",
       "object_type": "student_modify",
       "url_or_route": ""
@@ -215,7 +215,7 @@
       "id": "product.product_list",
       "title": "商品列表",
       "kind": "feature",
-      "when": "用户要找升学产品或服务列表",
+      "when": "本轮回答建议去看升学产品/服务清单、对比可选方案时推荐",
       "intent": "product",
       "object_type": "product_list",
       "url_or_route": ""
@@ -224,7 +224,7 @@
       "id": "product.product_detail",
       "title": "商品详情",
       "kind": "feature",
-      "when": "用户要看某个商品详情",
+      "when": "本轮回答点到某个具体产品/服务，适合进入详情时推荐",
       "intent": "product",
       "object_type": "product_detail",
       "url_or_route": ""
@@ -233,7 +233,7 @@
       "id": "product.product_search",
       "title": "商品搜索",
       "kind": "feature",
-      "when": "用户要搜索商品",
+      "when": "本轮回答建议按关键词去搜索相关产品/服务时推荐",
       "intent": "product",
       "object_type": "product_search",
       "url_or_route": ""
@@ -242,7 +242,7 @@
       "id": "product.product_consult",
       "title": "商品咨询",
       "kind": "feature",
-      "when": "用户要咨询商品",
+      "when": "本轮回答建议就某产品/服务发起咨询时推荐",
       "intent": "product",
       "object_type": "product_consult",
       "url_or_route": ""
@@ -251,7 +251,7 @@
       "id": "product.my_order",
       "title": "我的订单",
       "kind": "feature",
-      "when": "用户要看订单",
+      "when": "本轮回答引导用户查看已购订单、履约进度时推荐",
       "intent": "product",
       "object_type": "my_order",
       "url_or_route": ""

@@ -91,6 +91,60 @@ describe("Harness task bubble", () => {
     expect(useChatStore.getState().isSending).toBe(false);
   });
 
+  it("shows step input and output after the step is expanded", () => {
+    const run = fixture();
+    run.nodes.push({ id: "head", parent_id: "root", kind: "tool", title: "编排首：选专家", status: "completed", started_at: null, ended_at: null });
+    render(<TaskProgressBlock run={run} steps={{
+      head: { input: { question: "你好" }, output: { subtasks: [{ target_expert_id: "career_plan_expert" }] } },
+    }} />);
+    const step = screen.getByText("编排首：选专家").closest("details");
+    expect(step).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("编排首：选专家"));
+    const input = within(step as HTMLElement).getByText("输入").closest("details");
+    const output = within(step as HTMLElement).getByText("输出").closest("details");
+    expect(input).not.toHaveAttribute("open");
+    expect(output).not.toHaveAttribute("open");
+    fireEvent.click(within(step as HTMLElement).getByText("输入"));
+    fireEvent.click(within(step as HTMLElement).getByText("输出"));
+    expect(input).toHaveTextContent("你好");
+    expect(output).toHaveTextContent("career_plan_expert");
+  });
+
+  it("places SSE expert ids after dispatch and jump_cards after recommend", () => {
+    const run = fixture();
+    run.nodes.push(
+      { id: "dispatch", parent_id: "root", kind: "tool", title: "分派专家任务", status: "completed", started_at: null, ended_at: null },
+      { id: "recommend", parent_id: "root", kind: "tool", title: "推荐", status: "completed", started_at: null, ended_at: null },
+    );
+    run.round_experts = {
+      assigned_expert_ids: ["career_plan_expert"],
+      running_expert_ids: [],
+      completed_expert_ids: ["career_plan_expert"],
+      failed_expert_ids: [],
+      status: "completed",
+    };
+    run.jump_cards = [{
+      intent: "assessment",
+      object_type: "single_assessment",
+      sub_type: "career_interest",
+      reason: "兴趣不清",
+      title: "职业兴趣测评",
+      description: "先做兴趣测评",
+      filter: { region: "", grade: "高一", keyword: "", category: "" },
+    }];
+    render(<TaskProgressBlock run={run} />);
+    fireEvent.click(screen.getByText("分派专家任务"));
+    fireEvent.click(screen.getByText("推荐"));
+    const experts = screen.getByLabelText("SSE 专家 id");
+    const recommend = screen.getByLabelText("SSE 推荐字段");
+    expect(experts).toHaveTextContent("career_plan_expert");
+    expect(recommend).toHaveTextContent("职业兴趣测评");
+    expect(recommend).toHaveTextContent("intent=assessment");
+    expect(recommend).toHaveTextContent("grade=高一");
+    expect(screen.getByText("分派专家任务").closest("details")).toContainElement(experts);
+    expect(screen.getByText("推荐").closest("details")).toContainElement(recommend);
+  });
+
   it("shows disconnection as connection state without changing task status", () => {
     useHarnessState.getState().set({ connection: "reconnecting" });
     render(<TaskProgressBlock run={fixture()} />);

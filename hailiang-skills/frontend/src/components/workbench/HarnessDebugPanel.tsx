@@ -1,6 +1,7 @@
+import { testerModelName, TESTER_MODEL_OPTIONS, useChatStore } from "@/store/useChatStore";
 import { legacyView, subscribeV3, type V3Snapshot } from "@/utils/harnessV3";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AgentInputRequest, TaskProgressBlock, type SubmitHarnessAnswer } from "@/components/message-blocks/TaskProgressBlock";
+import { AgentInputRequest, TaskProgressBlock, type StepIo, type SubmitHarnessAnswer } from "@/components/message-blocks/TaskProgressBlock";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { HarnessContextDiagnostics } from "./HarnessContextDiagnostics";
 import type { HarnessRun, HarnessSnapshot } from "@/types/harness";
@@ -29,10 +30,6 @@ function sessionLabel(item: HarnessHistorySession): string {
     || "问答会话";
   const status = item.status === "completed" ? "已完成" : "进行中";
   return `${formatSessionTime(item.created_at)} · ${status} · ${first.slice(0, 28)}${first.length > 28 ? "…" : ""}`;
-}
-
-function isHarnessSession(item: HarnessHistorySession): boolean {
-  return (item.trace || []).some((turn) => turn.runtime_mode === "harness_v1" || Boolean(turn.run_id));
 }
 
 export function HarnessDebugPanel({
@@ -72,11 +69,14 @@ export function HarnessDebugPanel({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [trace, setTrace] = useState("");
+  const [stepsByRun, setStepsByRun] = useState<Record<string, Record<string, StepIo>>>({});
   const [rightPane, setRightPane] = useState<"reply" | "trace">("reply");
   const [conclusion, setConclusion] = useState("");
   const [evidenceSaved, setEvidenceSaved] = useState(false);
   const [connection, setConnection] = useState("connected");
   const [knownSessionIds, setKnownSessionIds] = useState<string[]>([]);
+  const selectedModelId = useChatStore((state) => state.selectedModelId);
+  const setSelectedModelId = useChatStore((state) => state.setSelectedModelId);
   const userId = `workbench-harness:${actorId}`;
   const sessionId = `harness-${debugId}`;
   const active = runs.find((r) => !isHarnessTerminal(r.status));
@@ -134,7 +134,7 @@ export function HarnessDebugPanel({
   };
 
   const sessionOptions = useMemo(() => {
-    const fromHistory = historySessions.filter((item) => isHarnessSession(item) || knownSessionIds.includes(item.debug_session_id));
+    const fromHistory = historySessions.filter((item) => item.debug_session_id);
     const byId = new Map(fromHistory.map((item) => [item.debug_session_id, item]));
     for (const id of knownSessionIds) {
       if (!byId.has(id)) {
@@ -164,6 +164,7 @@ export function HarnessDebugPanel({
     setDebugId(sessionStorage.getItem(persistenceKey) || "");
     setRuns([]);
     setTrace("");
+    setStepsByRun({});
     setEvidenceSaved(false);
     setConclusion("");
   }, [persistenceKey, knownKey]);
@@ -203,6 +204,7 @@ export function HarnessDebugPanel({
   const selectSession = (nextId: string) => {
     setError("");
     setTrace("");
+    setStepsByRun({});
     setRightPane("reply");
     setConclusion("");
     setEvidenceSaved(false);
@@ -216,15 +218,28 @@ export function HarnessDebugPanel({
     }
   };
 
-  const loadTrace = async () => {
-    if (!runs.length || !debugId) return;
-    try {
-      const data = await request(`${api}/sessions/${sessionId}/harness/runs/${runs[runs.length - 1].run_id}/trace?user_id=${encodeURIComponent(userId)}`);
-      setTrace(JSON.stringify(data, null, 2));
-    } catch (e) {
-      setError(String(e));
-    }
-  };
+  const runKey = runs.map((run) => `${run.run_id}:${run.version}`).join("|");
+  useEffect(() => {
+    if (rightPane !== "trace" || !debugId || !runs.length) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const loaded = await Promise.all(runs.map(async (run) => {
+          const data = await request<{ steps?: Record<string, StepIo> }>(`${api}/sessions/${sessionId}/harness/runs/${run.run_id}/trace?user_id=${encodeURIComponent(userId)}`);
+          return [run.run_id, data] as const;
+        }));
+        if (cancelled) return;
+        setStepsByRun(Object.fromEntries(loaded.map(([id, data]) => [id, data.steps || {}])));
+        const latest = loaded[loaded.length - 1]?.[1];
+        setTrace(latest ? JSON.stringify(latest, null, 2) : "");
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+    })();
+    return () => { cancelled = true; };
+    // Trace payloads stay on the debug endpoint. Refetch when a run version changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rightPane, debugId, runKey]);
 
   const start = async () => {
     if (active || busy || !goal.trim()) return;
@@ -236,6 +251,7 @@ export function HarnessDebugPanel({
       await request(`${api}/sessions/harness-${id}/harness/runs`, {
         ...(v3 ? { submission_id: crypto.randomUUID() } : {}),
         goal,
+        model: selectedModelId,
         context_data: { user_id: userId, facts: presetFacts, ...(gradeName && objectType !== "skill" ? { grade: gradeName } : {}) },
         debug_session_id: id,
       });
@@ -275,17 +291,51 @@ export function HarnessDebugPanel({
 
   const canSend = Boolean(revisionId) && !active && !busy && !evidenceSaved && Boolean(goal.trim());
 
-  const flowHint = objectType === "expert_team"
-    ? "完整流程：身份学段检查 → 编排首 → 专家 → 编排尾 → 推荐"
-    : objectType === "expert"
-      ? "单专家：直接由该专家作答，不经过编排首和编排尾"
-      : objectType === "skill"
-        ? "单 Skill：通过临时测试专家调用，不经过编排"
-        : "";
+  const historyTitle = sessionOptions.find((item) => item.debug_session_id === debugId);
+  const historyLabel = historyTitle ? sessionLabel(historyTitle) : "新建问答会话";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      {flowHint ? <p className="shrink-0 rounded-lg border border-sky-300/15 bg-sky-400/5 px-3 py-2 text-xs text-sky-100">{flowHint}</p> : null}
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <h2 className="text-lg font-semibold">候选修订手动测试</h2>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <select
+            aria-label="历史会话"
+            title={historyLabel}
+            value={debugId}
+            onChange={(event) => selectSession(event.target.value)}
+            className="h-7 max-w-[11rem] rounded-md border border-white/10 bg-slate-950 px-2 text-xs text-slate-100 outline-none"
+          >
+            <option value="" className="bg-slate-950 text-slate-100">
+              {sessionOptions.length ? "历史会话" : "暂无历史会话"}
+            </option>
+            {sessionOptions.map((item) => (
+              <option key={item.debug_session_id} value={item.debug_session_id} className="bg-slate-950 text-slate-100">
+                {sessionLabel(item)}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="问答模型"
+            title={testerModelName(selectedModelId)}
+            value={selectedModelId}
+            onChange={(event) => setSelectedModelId(event.target.value === "pro" ? "pro" : "flash")}
+            className="h-7 rounded-md border border-white/10 bg-slate-950 px-2 text-xs text-slate-100 outline-none"
+          >
+            {TESTER_MODEL_OPTIONS.map((item) => (
+              <option key={item.id} value={item.id} className="bg-slate-950 text-slate-100">{item.model}</option>
+            ))}
+          </select>
+        </div>
+        <button
+          type="button"
+          disabled={Boolean(active) || busy}
+          onClick={() => selectSession("")}
+          className="ml-auto h-7 shrink-0 rounded-md border border-sky-300/30 px-2.5 text-xs text-sky-100 disabled:opacity-40"
+        >
+          新建会话
+        </button>
+      </div>
       {objectType && objectType !== "skill" ? (
         <div className="grid shrink-0 grid-cols-3 gap-2 text-xs text-slate-400">
           {([
@@ -308,21 +358,6 @@ export function HarnessDebugPanel({
           ))}
         </div>
       ) : null}
-      <label className="block shrink-0 text-xs text-slate-400">
-        历史会话
-        <select
-          value={debugId}
-          onChange={(event) => selectSession(event.target.value)}
-          className="mt-1 w-full rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-400/40"
-        >
-          <option value="">新建问答会话</option>
-          {sessionOptions.map((item) => (
-            <option key={item.debug_session_id} value={item.debug_session_id}>
-              {sessionLabel(item)}
-            </option>
-          ))}
-        </select>
-      </label>
 
       <div className="flex min-h-[20rem] min-w-0 flex-1 flex-col rounded-2xl border border-sky-300/15 bg-slate-950/50">
         <div className="flex shrink-0 gap-1 border-b border-white/10 p-1">
@@ -335,10 +370,7 @@ export function HarnessDebugPanel({
           </button>
           <button
             type="button"
-            onClick={() => {
-              setRightPane("trace");
-              if (!trace && runs.length) void loadTrace();
-            }}
+            onClick={() => setRightPane("trace")}
             className={`flex-1 rounded-lg px-3 py-1.5 text-xs transition ${rightPane === "trace" ? "bg-sky-400/15 text-sky-100" : "text-slate-400 hover:text-slate-200"}`}
           >
             轨迹过程{runs.length ? ` · ${runs.length}` : ""}
@@ -383,15 +415,6 @@ export function HarnessDebugPanel({
                         {run.result ? (
                           <MarkdownContent content={run.result} />
                         ) : null}
-                        {run.jump_cards?.length ? (
-                          <div className="flex flex-wrap gap-2 pt-1">
-                            {run.jump_cards.map((card, index) => (
-                              <span key={index} className="rounded-full border border-sky-300/30 px-3 py-1 text-xs text-sky-100">
-                                {String((card as Record<string, unknown>).title || (card as Record<string, unknown>).id || "推荐")}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
                         {!run.result && terminal ? (
                           <p className="text-sm text-slate-400">任务状态：{run.status}{run.error ? `，原因：${run.error}` : ""}</p>
                         ) : null}
@@ -409,7 +432,7 @@ export function HarnessDebugPanel({
                 <div className="space-y-2 rounded-xl border border-white/10 bg-black/20 p-3">
                   <p className="text-xs font-medium text-slate-300">任务树与执行过程</p>
                   {runs.map((run) => (
-                    <TaskProgressBlock key={`trace-${run.run_id}`} run={run} connection={connection} />
+                    <TaskProgressBlock key={`trace-${run.run_id}`} run={run} connection={connection} steps={stepsByRun[run.run_id]} />
                   ))}
                 </div>
               ) : null}
@@ -495,7 +518,7 @@ export function HarnessDebugPanel({
           </button>
         )}
       </div>
-      <p className="shrink-0 text-[11px] leading-5 text-slate-500">匿名会话：不读写孩子档案；任务树、分派与追问都在「轨迹过程」。</p>
+      <p className="shrink-0 text-[11px] leading-5 text-slate-500">匿名会话：不读写孩子档案；任务树、分派与追问都在「轨迹过程」。展开步骤可查看该步的输入和输出。</p>
     </div>
   );
 }

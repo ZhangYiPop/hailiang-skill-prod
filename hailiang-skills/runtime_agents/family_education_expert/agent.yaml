@@ -1,6 +1,7 @@
 schema_version: 1
 id: family_education_expert
 name: 家庭教育专家
+brief: 处理亲子沟通、家庭规则与学习习惯，以及用户明确要求的 MBTI 自我探索。
 rule_file: AGENT.md
 topology: single_expert
 skills:
