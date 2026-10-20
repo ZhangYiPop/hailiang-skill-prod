@@ -15,7 +15,7 @@ export type HarnessDispatchExpert = {
   depends_on: string[]; depends_on_node_ids?: string[]; can_run_now?: boolean;
 };
 export type HarnessDispatch = {
-  status: "completed" | "pending"; planned_task_count: number;
+  status: "completed" | "pending"; source?: "orchestrator_head" | "main_agent_delegate"; planned_task_count: number;
   planned_expert_count: number; parallel_task_count: number; ready_task_count?: number;
   blocked_task_count?: number; max_parallelism?: number;
   experts: HarnessDispatchExpert[];

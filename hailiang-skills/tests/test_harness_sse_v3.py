@@ -101,6 +101,33 @@ def test_v3_snapshot_exposes_dispatch_brief_and_expert_result(tmp_path):
     runtime.close()
 
 
+def test_v3_snapshot_projects_direct_main_agent_dispatch(tmp_path):
+    from hailiang_skills.harness.runtime import task_node
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    policy = v2_policy()
+    policy['experts']['career_plan_expert'] = {'name': '升学规划专家', 'brief': '负责升学路径', 'skills': []}
+    rid = runtime.create('s', 'u', 'p', '分析', policy, wire_protocol='hailiang.sse.v3')
+
+    def attach(run, changes, _db):
+        root = run['tasks'][run['root_task_id']]
+        child = task_node('expert', '分析选科', root['id'], expert_id='career_plan_expert')
+        child['plan_subtask_id'] = 'main_delegate_1'
+        child['status'] = 'running'
+        run['tasks'][child['id']] = child
+        changes.append({'event': 'direct_delegate', 'node_id': child['id']})
+
+    runtime.store.mutate(rid, attach)
+    entity = next(item for item in runtime.store.public_snapshot('s', 'u', 'p')['runs'] if item['id'] == rid)
+    dispatch = entity['dispatch']
+    assert dispatch['source'] == 'main_agent_delegate'
+    assert dispatch['ready_task_count'] == 1
+    assert dispatch['experts'][0]['node_id']
+    assert dispatch['experts'][0]['execution_status'] == 'running'
+    assert entity['phase'] == 'planning'
+    assert entity['action'] == '正在理解问题并拆分任务'
+    runtime.close()
+
+
 def test_v3_snapshot_projects_grouped_input_queue(tmp_path):
     from hailiang_skills.harness.contracts import AnswerSubmission
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))

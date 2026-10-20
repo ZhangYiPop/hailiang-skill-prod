@@ -133,8 +133,22 @@ def public_dispatch(run):
     """Expose the validated head plan before expert nodes start running."""
     orchestration = run.get("orchestration") or {}
     subtasks = orchestration.get("subtasks") if isinstance(orchestration, dict) else []
+    source = "orchestrator_head"
     if not isinstance(subtasks, list):
         subtasks = []
+    # A legacy/main-agent route may call delegate_tasks without an
+    # orchestrator_head ConsultationPlan. It still needs an honest public
+    # dispatch once the expert nodes exist, otherwise the UI hides the most
+    # important state transition merely because its planner was different.
+    if not subtasks:
+        source = "main_agent_delegate"
+        subtasks = [{
+            "subtask_id": task.get("plan_subtask_id") or task["id"],
+            "target_expert_id": task.get("expert_id"),
+            "question": task.get("goal", ""),
+            "completion": task.get("completion", ""),
+            "depends_on": list(task.get("depends_on") or []),
+        } for task in run.get("tasks", {}).values() if task.get("kind") == "expert"]
     experts = []
     for item in subtasks:
         if not isinstance(item, dict):
@@ -182,6 +196,7 @@ def public_dispatch(run):
     independent = sum(not item["depends_on"] for item in experts)
     return {
         "status": "completed",
+        "source": source,
         "planned_task_count": len(experts),
         "planned_expert_count": len({item["expert_id"] for item in experts}),
         # Independent means dependency-ready in the plan. It is distinct
@@ -2046,13 +2061,16 @@ class HarnessRuntime:
                            "request_ids": request_ids, "active_request_id": group.get("active_request_id"),
                            "total_count": len(request_ids), "completed_count": sum(item["status"] in {"answered", "skipped", "expired"} for item in members),
                            "actors": list(dict.fromkeys(item.get("actor", "主 agent") for item in members))})
+        root_task = run["tasks"].get(run["root_task_id"], {})
+        fallback_phase, fallback_action = _public_phase(run, root_task) if root_task else ("running", "正在执行")
         return {"run_id": run["run_id"], "client_run_id": run.get("client_run_id"),
                 "assistant_message_id": run.get("assistant_message_id") or f"msg_harness_{run['run_id']}",
                 "record_version": run["version"], "session_id": run["session_id"], "profile_id": run["profile_id"],
                 "goal": run["goal"], "status": run["status"], "outcome": run.get("outcome"), "version": run["version"],
                 "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "input_groups": groups,
-                "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "action": run.get("action", ""),
+                "created_at": run["created_at"], "updated_at": run["updated_at"],
+                "phase": run.get("phase") or fallback_phase, "action": run.get("action") or fallback_action,
                 "dispatch": public_dispatch(run),
                 "synthesis_status": "completed" if run.get("tail_done") else ("running" if run.get("phase") in {"synthesizing", "recommending"} else "pending"),
                 "recommendations_status": run.get("recommendations_status") or ("completed" if run.get("jump_cards") else ("not_started" if not run.get("tail_done") else "not_available")),

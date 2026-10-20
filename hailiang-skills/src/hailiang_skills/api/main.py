@@ -628,7 +628,9 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def harness_mutation_guard(request: Request, call_next):
         path = request.url.path
-        if request.method in {"POST", "PATCH", "PUT", "DELETE"} and "/harness/" not in path and "/input-requests/" not in path:
+        # The V3 minimal chat endpoint owns chat, form answers and stop actions.
+        # It must reach its action router while a Harness run is active.
+        if request.method in {"POST", "PATCH", "PUT", "DELETE"} and "/harness/" not in path and "/input-requests/" not in path and path != "/api/v3/sessions/chat/stream":
             session_id = ""
             if "/sessions/" in path:
                 suffix = path.split("/sessions/", 1)[1]

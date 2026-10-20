@@ -71,7 +71,7 @@ data: {
 - `runs[].input_queue`：`active_group_id`、`queued_group_ids`、`active_request_id`、活动组总题数/完成数及旧兼容计数。
 - `runs[].round_experts`：当前轮专家 ID 的 `assigned/running/completed/failed` 列表与汇总状态；同一专家只保留最近任务状态。
 - `runs[].jump_cards`：服务端校验过的推荐卡片，含稳定 `id`、intent、对象类型、筛选条件、标题、说明和推荐原因；没有推荐时为 `[]`。
-- `runs[].dispatch`：编排首完成后的任务分派摘要。每项含稳定 `subtask_id`、实际创建后的 `node_id`、专家名称、业务人员编写的专家 `brief`、本次 `task_brief`、`completion_criteria`、依赖子任务/节点、`execution_status` 和 `can_run_now`。`brief` 来自已发布专家定义，`task_brief` 来自本轮编排计划。它表示“计划调用”，不代表节点已经运行；`ready_task_count`、`blocked_task_count` 与 `max_parallelism` 才是前端展示实际调度情况的依据。
+- `runs[].dispatch`：任务分派摘要。`source=orchestrator_head` 表示编排首已验证的计划，`source=main_agent_delegate` 表示主 agent 已直接创建专家任务。每项含稳定 `subtask_id`、实际创建后的 `node_id`、专家名称、业务人员编写的专家 `brief`、本次 `task_brief`、`completion_criteria`、依赖子任务/节点、`execution_status` 和 `can_run_now`。`brief` 来自已发布专家定义。`ready_task_count`、`blocked_task_count` 与 `max_parallelism` 才是前端展示实际调度情况的依据。
 - `runs[].phase`、`runs[].action`：当前主任务阶段和面向用户的动作说明。典型顺序为 `planning → dispatching_completed → experts_running → experts_completed → synthesizing → recommending → completed`。
 - `runs[].synthesis_status`、`runs[].recommendations_status`：汇总和推荐的独立状态；专家完成不等于最终回复完成。推荐状态为 `not_started | running | completed | empty | unavailable | failed`；只有 `completed` 表示存在推荐卡片。
 - `input_groups[]`：稳定组 ID、`active | queued | completed`、创建时间、题目 ID、当前题、题数、完成数和专家摘要。
@@ -87,8 +87,8 @@ data: {
 
 | 当前快照条件 | 可立即展示 | 不应提前展示 |
 | --- | --- | --- |
-| `run.phase=planning`，`dispatch=null` | “正在理解问题并拆分任务”、主任务 `action` | 专家列表、专家结论、推荐卡。 |
-| `run.dispatch` 非空，或帧 `reason=dispatch_completed` | “已拆分 N 个专家任务”、每位专家的名称、业务 `brief`、本次 `task_brief`、完成条件、依赖和可执行/阻塞数量 | 将 `plan_status=assigned` 解释为该专家已经开始执行。实际状态看 `execution_status` 和 `nodes`。 |
+| `run.phase=planning`，`dispatch=null` | “正在理解问题并拆分任务”、主任务 `action`；旧快照兼容时可退回根主节点的 `phase/action` | 专家列表、专家结论、推荐卡。 |
+| `run.dispatch` 非空，或帧 `reason=dispatch_completed` | “已分派 N 个专家任务”、每位专家的名称、业务 `brief`、本次 `task_brief`、完成条件、依赖和可执行/阻塞数量；同时标明 `source` | 将 `plan_status=assigned` 解释为该专家已经开始执行。实际状态看 `execution_status` 和 `nodes`。 |
 | `run.phase=experts_running`，存在专家/Skill/工具节点 | 专家树、节点 `phase`、`action`、重试次数、失败原因；`waiting_on` 非空时显示具体等待对象 | 工具节点完成时显示“专家已完成”。只有专家节点有合法 `result` 且进入 `completed` 或 `partial` 才算专家完成。 |
 | 专家节点 `result` 非空 | 该专家的结论、关键依据、限制与未解决事项；同时仍显示“等待编排器汇总”，直到 `synthesis_status=completed` | 专家内部推理、完整工具输入输出或未校验的中间文本。 |
 | `input_queue.active_request_id` 指向状态为 `pending` 的 `input_request` | 该请求的表单，标明 `actor` 与所属专家；活动组的“第 N/M 题” | 同组其他请求或后续 queued 组的输入控件。它们只显示题数和专家摘要。 |
