@@ -14,6 +14,7 @@ from .contracts import HarnessError, TERMINAL, now
 from .models import (
     TABLES, HarnessRunRow, HarnessTaskRow, HarnessToolRow, HarnessInputRow,
     HarnessCheckpointRow, HarnessJobRow, HarnessEventRow, HarnessFactRow, HarnessAttemptRow,
+    HarnessClientRunRow, HarnessPortraitRow,
 )
 
 
@@ -148,6 +149,74 @@ class HarnessStore:
     def cursor(self, session_id):
         with Session(self.engine) as db:
             return db.scalar(select(func.max(HarnessEventRow.seq)).where(HarnessEventRow.session_id == session_id)) or 0
+
+    def client_run(self, session_id, user_id, profile_id, client_run_id):
+        profile_key = profile_id or ""
+        with Session(self.engine) as db:
+            row = db.scalar(select(HarnessClientRunRow).where(
+                HarnessClientRunRow.session_id == session_id,
+                HarnessClientRunRow.user_id == user_id,
+                HarnessClientRunRow.profile_id == profile_key,
+                HarnessClientRunRow.client_run_id == client_run_id,
+            ))
+            return None if row is None else {"harness_run_id": row.harness_run_id, "request_hash": row.request_hash}
+
+    def bind_client_run(self, session_id, user_id, profile_id, client_run_id, harness_run_id, request_hash):
+        profile_key = profile_id or ""
+        with self.transaction() as db:
+            existing = db.scalar(select(HarnessClientRunRow).where(
+                HarnessClientRunRow.session_id == session_id,
+                HarnessClientRunRow.user_id == user_id,
+                HarnessClientRunRow.profile_id == profile_key,
+                HarnessClientRunRow.client_run_id == client_run_id,
+            ).with_for_update())
+            if existing:
+                if existing.request_hash != request_hash:
+                    raise HarnessError("CLIENT_RUN_ID_CONFLICT", 409)
+                return existing.harness_run_id
+            db.add(HarnessClientRunRow(client_run_id=client_run_id, session_id=session_id, user_id=user_id,
+                                       profile_id=profile_key, harness_run_id=harness_run_id, request_hash=request_hash))
+            return harness_run_id
+
+    def upsert_portrait(self, user_id, profile_id, patch: dict, *, aliases: dict[str, str] | None = None):
+        """Merge trusted portrait leaves and index them as profile facts."""
+        if not profile_id or not isinstance(patch, dict):
+            return {}
+        aliases = aliases or {}
+        def leaves(value, prefix=""):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if not isinstance(key, str) or not key or "." in key:
+                        raise HarnessError("INVALID_PROFILE_DATA")
+                    yield from leaves(child, f"{prefix}.{key}" if prefix else key)
+            else:
+                if value is not None:
+                    yield prefix, value
+        flattened = dict(leaves(patch))
+        run = {"session_id": "portrait", "user_id": user_id, "profile_id": profile_id}
+        task = {"id": "portrait"}
+        with self.transaction() as db:
+            row = db.get(HarnessPortraitRow, {"user_id": user_id, "profile_id": profile_id})
+            payload = deepcopy(row.payload) if row else {"data": {}, "history": []}
+            data = payload.setdefault("data", {})
+            changed = {}
+            for path, value in flattened.items():
+                if data.get(path) != value:
+                    changed[path] = value
+                    data[path] = value
+            if changed:
+                payload.setdefault("history", []).append({"updated_at": now(), "paths": sorted(changed)})
+                version = (row.version + 1) if row else 1
+                db.merge(HarnessPortraitRow(user_id=user_id, profile_id=profile_id, payload=payload, version=version))
+                for path, value in changed.items():
+                    keys = [f"profile.{path}"]
+                    if path in aliases:
+                        keys.append(aliases[path])
+                    for key in keys:
+                        identity = self.fact_identity(run, task, "profile", key)
+                        self.write_fact(db, identity, {"key": key, "value": value, "scope": "profile", "status": "confirmed",
+                                                       "source": {"type": "project_backend", "portrait_path": path, "portrait_version": version}})
+            return changed
 
     def ready(self):
         try:

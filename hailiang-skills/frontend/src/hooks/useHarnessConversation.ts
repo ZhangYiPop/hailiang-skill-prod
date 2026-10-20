@@ -32,15 +32,14 @@ export async function harnessRequest<T>(path: string, body?: unknown): Promise<T
   return data as T;
 }
 function runMessages(run: HarnessRun): ChatMessage[] {
-  const messages: ChatMessage[] = [
+  const result = run.result || (run.status === "failed" ? "本次任务未能完成，请重新发起任务。" : "");
+  return [
     { id: `harness-user-${run.run_id}`, role: "user", content: run.goal, createdAt: run.created_at, blocks: [], messageType: "harness" },
-    { id: `harness-work-${run.run_id}`, role: "assistant", content: "", createdAt: run.created_at, agentLabel: "主 agent",
-      blocks: [{ type: "task_progress", payload: { run } }], streamingStatus: "completed", messageType: "harness" },
+    // Progress and final conclusion belong to the same assistant response.
+    { id: run.assistant_message_id || `harness-work-${run.run_id}`, role: "assistant", content: "", createdAt: run.created_at, agentLabel: "主 agent",
+      blocks: [{ type: "task_progress", payload: { run } }, ...(result ? [{ type: "markdown" as const, payload: { content: result } }] : [])],
+      streamingStatus: run.status === "failed" ? "failed" : "completed", messageType: "harness" },
   ];
-  if (run.result || run.status === "failed") messages.push({ id: `harness-result-${run.run_id}`, role: "assistant",
-    content: run.result || "本次任务未能完成，请重新发起任务。", createdAt: run.updated_at, blocks: [],
-    agentLabel: "主 agent", streamingStatus: run.status === "failed" ? "failed" : "completed", messageType: "harness" });
-  return messages;
 }
 export async function refreshHarness(): Promise<HarnessSnapshot> {
   const state = useChatStore.getState();

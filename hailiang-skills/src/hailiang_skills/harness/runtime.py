@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 import threading
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import ValidationError
@@ -597,32 +598,45 @@ class HarnessRuntime:
         tool.update(status="waiting_for_user", input_request_id=request["id"])
         changes.append({"event": "input_requested" if request_status == "pending" else "input_queued", "node_id": task["id"]})
 
-    def answer(self, request_id, submission):
+    def answer(self, request_id, submission, *, allow_partial=False, allow_correction=False):
         run_id = self.store.request_run(request_id)
         def apply(run, changes, db):
             if run["user_id"] != submission.user_id or run["profile_id"] != submission.profile_id:
                 raise HarnessError("HARNESS_ACCESS_DENIED", 403)
             request = run["inputs"][request_id]
-            if request.get("submission_id") == submission.submission_id:
-                if request.get("submission") != submission.model_dump():
+            normalized = validate_answers(request["fields"], submission, allow_partial=allow_partial)
+            canonical = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            submission_id = submission.submission_id or "server_" + hashlib.sha256(
+                f"{request_id}:{canonical}".encode("utf-8")
+            ).hexdigest()[:32]
+            if request.get("submission_id") == submission_id:
+                if request.get("submission_canonical") != canonical:
                     raise HarnessError("SUBMISSION_ID_REUSED", 409)
                 return {"request_id": request_id, "status": request["status"], "run_id": run_id}
-            if run["status"] in TERMINAL or request["status"] != "pending" or request["version"] != submission.expected_version:
+            if request["status"] == "answered" and allow_correction and run["status"] not in TERMINAL:
+                previous = request.get("submission_canonical")
+                if previous == canonical:
+                    return {"request_id": request_id, "status": request["status"], "run_id": run_id}
+                answer = normalized
+                request.update(answer=answer, submission_id=submission_id, submission_canonical=canonical,
+                               version=request["version"] + 1, corrected_at=now())
+                self._write_answer_facts(run, request, answer, submission_id, changes, db)
+                for binding in request["bindings"]:
+                    task = run["tasks"][binding["task_id"]]
+                    if task["status"] not in {"failed", "cancelled"}:
+                        task.update(status="queued", stale=True, ended_at=None, lease_token="", lease_until="")
+                        task["messages"].append({"role": "user", "content": "用户已更正此前补充信息，请使用最新事实重新分析。"})
+                        changes.append({"event": "input_corrected", "node_id": task["id"]})
+                        self._invalidate_consumers(run, task["id"], changes)
+                self._settle(run, changes, db)
+                return {"request_id": request_id, "status": request["status"], "run_id": run_id, "corrected": True}
+            if run["status"] in TERMINAL or request["status"] != "pending" or (submission.expected_version is not None and request["version"] != submission.expected_version):
                 raise HarnessError("INPUT_REQUEST_INACTIVE", 409)
-            answer = validate_answers(request["fields"], submission)
-            request.update(status="skipped" if submission.skipped else "answered", answer=answer, submission_id=submission.submission_id,
-                           submission=submission.model_dump(), version=request["version"] + 1)
+            answer = normalized
+            request.update(status="skipped" if submission.skipped else "answered", answer=answer, submission_id=submission_id,
+                           submission_canonical=canonical, version=request["version"] + 1)
             self._promote_input_request(run, changes)
-            task = run["tasks"][request["bindings"][0]["task_id"]]
-            for field in sorted(request["fields"], key=lambda f: request["identities"][request["fields"].index(f)]):
-                if field["key"] not in answer["answers"]:
-                    continue
-                key = field.get("fact_key") or field["key"]
-                identity = self.store.fact_identity(run, task, field["scope"], key)
-                record = self.store.write_fact(db, identity, {"key": key, "scope": field["scope"], "value": answer["answers"][field["key"]],
-                    "status": "confirmed", "source": {"input_request_id": request_id, "submission_id": submission.submission_id}})
-                run["seed_facts"].pop(identity, None)
-                self._invalidate_fact_version(run, identity, record["version"], changes)
+            self._write_answer_facts(run, request, answer, submission_id, changes, db)
             for binding in request["bindings"]:
                 tool = run["tools"][binding["tool_id"]]
                 if run["tasks"][binding["task_id"]]["status"] in {"failed", "cancelled"}:
@@ -634,6 +648,18 @@ class HarnessRuntime:
             self._settle(run, changes, db)
             return {"request_id": request_id, "status": request["status"], "run_id": run_id}
         return self.store.mutate(run_id, apply)
+
+    def _write_answer_facts(self, run, request, answer, submission_id, changes, db):
+        task = run["tasks"][request["bindings"][0]["task_id"]]
+        for index, field in enumerate(request["fields"]):
+            if field["key"] not in answer["answers"]:
+                continue
+            key = field.get("fact_key") or field["key"]
+            identity = self.store.fact_identity(run, task, field["scope"], key)
+            record = self.store.write_fact(db, identity, {"key": key, "scope": field["scope"], "value": answer["answers"][field["key"]],
+                "status": "confirmed", "source": {"input_request_id": request["id"], "submission_id": submission_id}})
+            run["seed_facts"].pop(identity, None)
+            self._invalidate_fact_version(run, identity, record["version"], changes)
 
     def _invalidate_fact_version(self, run, identity, version, changes):
         for dependent in run["tasks"].values():
@@ -780,7 +806,7 @@ class HarnessRuntime:
             error = tool.get("error") or (tool.get("result", {}).get("error") if isinstance(tool.get("result"), dict) else None)
             nodes.append({"id": tool["id"], "parent_id": tool["task_id"], "kind": "tool", "title": labels.get(tool["name"], "执行专项工具"), "status": tool["status"], "started_at": tool["started_at"], "ended_at": tool["ended_at"], "attempts": tool["attempts"], "error": error})
         requests = [{k: deepcopy(v) for k, v in q.items() if k in {"id", "title", "fields", "status", "version", "round", "answer", "bindings", "clarification_reason", "owner_task_id", "actor"}} for q in run["inputs"].values()]
-        return {"run_id": run["run_id"], "session_id": run["session_id"], "profile_id": run["profile_id"], "goal": run["goal"], "status": run["status"], "version": run["version"], "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
+        return {"run_id": run["run_id"], "client_run_id": run.get("client_run_id"), "assistant_message_id": run.get("assistant_message_id") or f"msg_harness_{run['run_id']}", "record_version": run["version"], "session_id": run["session_id"], "profile_id": run["profile_id"], "goal": run["goal"], "status": run["status"], "outcome": run.get("outcome"), "version": run["version"], "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "result": run.get("result", ""), "error": run.get("error"),
                 "input_tokens_estimated": run.get("input_tokens_estimated", 0), "input_tokens_actual": run.get("input_tokens_actual") if run.get("input_token_measurements") else None,
                 "input_token_limit": run["policy"]["settings"].get("max_run_input_tokens", 300000),

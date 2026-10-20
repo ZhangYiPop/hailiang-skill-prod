@@ -14,7 +14,8 @@ export type HarnessInput = {
   answer?: { answers: Record<string, unknown>; skipped: boolean }; clarification_reason?: string;
 };
 export type HarnessRun = {
-  run_id: string; session_id: string; profile_id: string | null; goal: string; status: string; version: number;
+  run_id: string; client_run_id?: string | null; assistant_message_id?: string; record_version?: number;
+  session_id: string; profile_id: string | null; goal: string; status: string; outcome?: "completed" | "partial" | "failed" | "cancelled" | null; version: number;
   root_task_id: string; nodes: HarnessNode[]; inputs: HarnessInput[];
   created_at: string; updated_at: string; result: string; phase?: string; error?: string;
   input_tokens_estimated?: number; input_tokens_actual?: number | null; input_token_limit?: number;

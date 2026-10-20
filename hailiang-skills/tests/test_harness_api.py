@@ -140,3 +140,87 @@ def test_sse_disconnect_replays_cursor_without_canceling_execution(tmp_path):
     advance(runtime, rid, 5)
     assert runtime.store.get(rid)['status'] == 'completed'
     runtime.close()
+
+
+def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_versions(tmp_path, monkeypatch):
+    import json
+    import hailiang_skills.api.routes.harness_chat_stream_v3 as v3
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import build_harness_chat_stream_v3_router
+    from hailiang_skills.schemas.facts import KnownFacts
+
+    class Profiles:
+        def __init__(self):
+            self.items = {}
+            self.facts = {}
+        def list_profiles(self, user_id):
+            return [deepcopy(value) for value in self.items.values() if value['user_id'] == user_id]
+        def get_profile_by_id(self, profile_id):
+            if profile_id not in self.items:
+                raise KeyError(profile_id)
+            return deepcopy(self.items[profile_id])
+        def create_profile(self, user_id, *, profile_id, name, shared_facts_initialized=False, **_):
+            item = {'profile_id': profile_id, 'name': name, 'user_id': user_id}
+            self.items[profile_id] = item
+            return deepcopy(item)
+        def update_profile(self, user_id, profile_id, *, name=None, **_):
+            item = self.items[profile_id]
+            assert item['user_id'] == user_id
+            if name:
+                item['name'] = name
+            return deepcopy(item)
+        def get_profile_facts(self, user_id, profile_id):
+            return self.facts.setdefault((user_id, profile_id), KnownFacts())
+        def save_profile_facts(self, user_id, profile_id, facts):
+            self.facts[(user_id, profile_id)] = facts
+            return facts
+
+    class V3Facts(Facts):
+        profile_repo = Profiles()
+        def get_profile_facts(self, user_id, profile_id):
+            return self.profile_repo.get_profile_facts(user_id, profile_id)
+
+    monkeypatch.setattr(v3, 'capture_policy', lambda *_: policy())
+    monkeypatch.setenv('HAILIANG_HARNESS_SSE_WAIT_SECONDS', '1')
+    runtime = make_runtime(tmp_path, lambda messages, *_: AssistantTurnResult(final_text='完成') if any(m.role == 'tool' for m in messages) else call('request_user_input', QUESTION))
+    app = FastAPI()
+    app.include_router(build_harness_chat_stream_v3_router(Repository(), V3Facts(), None, runtime), prefix='/api/v3')
+    body = {
+        'session_id': 's', 'run_id': 'client-1',
+        'input': json.dumps({'action': 'chat', 'content': '请规划'}, ensure_ascii=False),
+        'context_data': {'user_id': 'u', 'profile_id': 'p', 'profile_data': {'name': '小明', 'province': '浙江', 'recent_exam': {'total_score': 620}}},
+    }
+    with TestClient(app) as client:
+        response = client.post('/api/v3/sessions/chat/stream', json=body)
+        assert response.status_code == 200
+        assert 'event: state' in response.text and '"protocol": "hailiang.sse.v3"' in response.text
+        assert '"client_run_id": "client-1"' in response.text
+        assert '"assistant_message_id": "msg_harness_' in response.text
+        assert '"should_store_snapshot": true' in response.text
+        assert 'event: done_timeout' in response.text
+        run = runtime.store.active('s')
+        assert run
+        facts = runtime.store.scoped_facts('u', 'profile', 'p')
+        assert facts['profile.province']['value'] == '浙江'
+        assert facts['exam_score']['value'] == 620
+        # Same client run is an idempotent retry, not a second dispatch.
+        replay = client.post('/api/v3/sessions/chat/stream', json=body)
+        assert replay.status_code == 200
+        assert len(runtime.store.runs('s')) == 1
+        advance(runtime, run['run_id'], 4)
+        request = next(iter(runtime.store.get(run['run_id'])['inputs'].values()))
+        answer = {
+            'session_id': 's', 'run_id': 'client-1',
+            'input': json.dumps({'action': 'answer_input_request', 'request_id': request['id'], 'text': '高二'}, ensure_ascii=False),
+            'context_data': {'user_id': 'u', 'profile_id': 'p'},
+        }
+        accepted = client.post('/api/v3/sessions/chat/stream', json=answer)
+        assert accepted.status_code == 200
+        stored = runtime.store.get(run['run_id'])['inputs'][request['id']]
+        assert stored['status'] == 'answered'
+        # A different later submission is an explicit correction, without a
+        # client submission ID or card version.
+        correction = deepcopy(answer)
+        correction['input'] = json.dumps({'action': 'answer_input_request', 'request_id': request['id'], 'text': '高三'}, ensure_ascii=False)
+        assert client.post('/api/v3/sessions/chat/stream', json=correction).status_code == 200
+        assert runtime.store.scoped_facts('u', 'profile', 'p')['grade']['value'] == '高三'
+    runtime.close()

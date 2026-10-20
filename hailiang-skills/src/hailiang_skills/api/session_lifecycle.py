@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
 from sqlalchemy.exc import IntegrityError
 
 from hailiang_skills.core.context import SessionContext
@@ -32,6 +33,11 @@ class ContextData(BaseModel):
     school_year: str | None = Field(default=None, min_length=1)
     grade: str | None = Field(default=None, min_length=1)
     facts: dict[str, object] = Field(default_factory=dict)
+    # V3's chat entry accepts a trusted, extensible portrait patch.  It is
+    # deliberately separate from ``facts``: registered facts are still
+    # validated by the legacy projection while arbitrary portrait attributes
+    # are persisted by the Harness portrait store and only read on demand.
+    profile_data: dict[str, Any] | None = None
 
 
 def _seed_profile(
