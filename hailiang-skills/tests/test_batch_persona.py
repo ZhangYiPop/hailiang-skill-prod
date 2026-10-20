@@ -1,4 +1,8 @@
-from hailiang_skills.workbench.batch_eval import BatchEvalService, _parse_decision
+import pytest
+
+from hailiang_skills.llm.config import UnknownTesterModelError
+from hailiang_skills.workbench import WorkbenchError
+from hailiang_skills.workbench.batch_eval import BatchEvalService, _parse_decision, resolve_batch_model
 from hailiang_skills.workbench.persona import answer_fields, parse_persona
 
 
@@ -19,6 +23,14 @@ def test_parse_persona_maps_stage_city_and_role():
     seeded = persona.seed_facts(preset_identity=True, seed_profile=True)
     assert seeded["grade"] == "高一"
     assert seeded["student_province"] == "山东"
+
+
+def test_explicit_speaker_role_overrides_opening_hints():
+    parent = parse_persona("城市:广州；学段:五年级", "我该怎么选科", user_role="家长")
+    child = parse_persona(SAMPLE, "孩子数学差可以选物理吗", user_role="学生")
+    assert parent.user_role == "家长"
+    assert child.user_role == "学生"
+    assert child.seed_facts(preset_identity=True, seed_profile=False)["user_role"] == "学生"
 
 
 def test_student_voice_and_city_province():
@@ -48,6 +60,22 @@ def test_missing_persona_field_is_left_blank():
         {"key": "language", "label": "雅思成绩", "input_type": "text", "fact_key": "language_score"},
     ], persona)
     assert answers == {}
+
+
+def test_batch_model_uses_the_debug_console_list():
+    class Config:
+        def resolve_tester_model(self, requested, *, environment):
+            assert environment
+            if requested == "pro":
+                return "deepseek-v4-pro"
+            raise UnknownTesterModelError(requested)
+
+    class Orchestrator:
+        llm_config = Config()
+
+    assert resolve_batch_model(Orchestrator(), "pro") == ("pro", "deepseek-v4-pro")
+    with pytest.raises(WorkbenchError):
+        resolve_batch_model(Orchestrator(), "other")
 
 
 def test_decision_json_and_batch_progress():

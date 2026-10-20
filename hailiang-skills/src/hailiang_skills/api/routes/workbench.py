@@ -32,6 +32,8 @@ class BatchEvalInput(StrictModel):
     soul_revision_id: str | None = None
     actor_id: str = Field(min_length=1, max_length=80)
     persona_mode: Literal["simulator", "seed"] = "simulator"
+    speaker_role: Literal["家长", "学生"] = "家长"
+    model: str = Field(default="flash", max_length=80)
     preset_identity: bool = True
     max_rounds: int = Field(default=4, ge=1, le=8)
     round_timeout_s: int = Field(default=180, ge=30, le=600)

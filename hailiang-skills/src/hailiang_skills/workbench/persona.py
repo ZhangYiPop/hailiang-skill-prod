@@ -153,16 +153,17 @@ class Persona:
         return "，".join(bits) + "。其余没提到的我暂时不清楚。"
 
 
-def parse_persona(text: str, opening: str = "") -> Persona:
+def parse_persona(text: str, opening: str = "", user_role: str | None = None) -> Persona:
     raw = str(text or "").strip()
     fields = _split_fields(raw)
     stage_raw = fields.get("stage_raw", "")
     grade, school_stage = _stage_and_grade(stage_raw)
     city = fields.get("city", "")
+    role = user_role if user_role in {"家长", "学生"} else _infer_role(opening)
     return Persona(
         raw=raw,
         fields=fields,
-        user_role=_infer_role(opening),
+        user_role=role,
         school_stage=school_stage,
         grade=grade,
         province=_province(city),

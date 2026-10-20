@@ -17,9 +17,11 @@ from threading import RLock, Thread
 from typing import Any
 
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
+from hailiang_skills.core.deployment import deployment_environment
 from hailiang_skills.harness.contracts import AnswerSubmission, HarnessError
 from hailiang_skills.harness.policy import capture_policy, snapshot_root
 from hailiang_skills.harness.store import HarnessStore
+from hailiang_skills.llm.config import UnknownTesterModelError
 from hailiang_skills.skill_runtime.models import ChatMessage
 from hailiang_skills.skills.common import extract_grade
 from hailiang_skills.workbench import WorkbenchError
@@ -44,6 +46,7 @@ class BatchEvalService:
             if any(job["status"] == "running" for job in self._jobs.values()):
                 raise WorkbenchError("已有批量测评在运行，请等它结束或停止后再开始", code="BATCH_EVAL_BUSY")
             job_id = f"batch_{uuid.uuid4().hex[:12]}"
+            model_choice, resolved_model = resolve_batch_model(self.orchestrator, payload.get("model") or "flash")
             cases = []
             for index, item in enumerate(payload["cases"], start=1):
                 cases.append({
@@ -70,6 +73,9 @@ class BatchEvalService:
                 "soul_revision_id": payload.get("soul_revision_id") or None,
                 "actor_id": payload["actor_id"],
                 "persona_mode": payload.get("persona_mode") or "simulator",
+                "speaker_role": payload.get("speaker_role") if payload.get("speaker_role") in {"家长", "学生"} else "家长",
+                "model": model_choice,
+                "resolved_model": resolved_model,
                 "preset_identity": bool(payload.get("preset_identity", True)),
                 "max_rounds": int(payload.get("max_rounds") or 4),
                 "round_timeout_s": int(payload.get("round_timeout_s") or 180),
@@ -160,7 +166,7 @@ class BatchEvalService:
 
     def _run_case(self, job: dict[str, Any], case: dict[str, Any]) -> None:
         started = time.monotonic()
-        persona = parse_persona(case["persona"], case["opening"])
+        persona = parse_persona(case["persona"], case["opening"], user_role=job["speaker_role"])
         debug = self.workbench.create_revision_test_session(
             job["revision_id"],
             soul_revision_id=job["soul_revision_id"],
@@ -181,7 +187,7 @@ class BatchEvalService:
                 case["stop_reason"] = "已停止"
                 break
             case["rounds"] = round_no
-            run_id = self._start_round(session_id, user_id, debug_id, utterance, facts if round_no == 1 else {})
+            run_id = self._start_round(session_id, user_id, debug_id, utterance, facts if round_no == 1 else {}, job["resolved_model"])
             case["transcript"].append({"role": "user", "content": utterance, "source": "首轮" if round_no == 1 else "模拟用户"})
             public = self._wait_round(job, case, persona, run_id, user_id)
             last_result = str(public.get("result") or "")
@@ -198,7 +204,7 @@ class BatchEvalService:
                 case["status"] = "cancelled"
                 case["stop_reason"] = "已停止"
                 break
-            decision = self._decide(persona, case["goal"], last_result, round_no, job["max_rounds"])
+            decision = self._decide(persona, case["goal"], last_result, round_no, job["max_rounds"], self._model_client(job))
             if decision["kind"] != "answer":
                 case["status"] = "completed"
                 case["stop_reason"] = decision["reason"]
@@ -211,7 +217,7 @@ class BatchEvalService:
             case["status"] = "completed"
         case["elapsed_s"] = round(time.monotonic() - started, 1)
 
-    def _start_round(self, session_id: str, user_id: str, debug_id: str, goal: str, facts: dict[str, str]) -> str:
+    def _start_round(self, session_id: str, user_id: str, debug_id: str, goal: str, facts: dict[str, str], model: str) -> str:
         data = ContextData(user_id=user_id, facts=dict(facts), grade=facts.get("grade") or None)
         context, created = open_or_resume_session(
             self.repository,
@@ -230,6 +236,7 @@ class BatchEvalService:
                 context.session_meta["expert_team_id"] = root.get("object_key")
         elif not context.session_meta.get("workbench_debug_session_id"):
             raise WorkbenchError("调试快照没有绑定到会话", code="BATCH_EVAL_SNAPSHOT_MISSING")
+        context.session_meta["requested_llm_model"] = model
         policy = capture_policy(self.orchestrator, context)
         if not context.title:
             context.title = goal[:40]
@@ -324,10 +331,18 @@ class BatchEvalService:
         public["error"] = public.get("error") or "本轮超时"
         return public
 
-    def _decide(self, persona, session_goal: str, assistant_text: str, round_no: int, max_rounds: int) -> dict[str, str]:
+    def _model_client(self, job: dict[str, Any]):
+        model = str(job.get("resolved_model") or "")
+        factory = getattr(self.orchestrator, "_runtime_client_for_context", None)
+        if model and callable(factory):
+            return factory(_ModelScope(model))
+        return getattr(self.orchestrator, "runtime_client", None)
+
+    def _decide(self, persona, session_goal: str, assistant_text: str, round_no: int, max_rounds: int, client=None) -> dict[str, str]:
         if round_no >= max_rounds:
             return {"kind": "done", "utterance": "", "reason": "达到最大轮数"}
-        client = getattr(self.orchestrator, "runtime_client", None)
+        if client is None:
+            client = getattr(self.orchestrator, "runtime_client", None)
         enabled = bool(getattr(getattr(self.orchestrator, "llm_config", None), "enabled", False))
         if client is not None and enabled and assistant_text.strip():
             try:
@@ -335,6 +350,7 @@ class BatchEvalService:
                     [
                         ChatMessage(role="system", content=_SIMULATOR_RULES),
                         ChatMessage(role="user", content=json.dumps({
+                            "发言身份": persona.user_role,
                             "画像": persona.raw,
                             "会话目标": session_goal,
                             "助手本轮回复": assistant_text[:4000],
@@ -358,6 +374,8 @@ def _public(job: dict[str, Any]) -> dict[str, Any]:
         "revision_id": job["revision_id"],
         "soul_revision_id": job["soul_revision_id"],
         "persona_mode": job["persona_mode"],
+        "speaker_role": job["speaker_role"],
+        "model": job["model"],
         "preset_identity": job["preset_identity"],
         "max_rounds": job["max_rounds"],
         "total": job["total"],
@@ -429,10 +447,32 @@ _SIMULATOR_RULES = """你在扮演评测里的真实用户，根据给定画像�
 只输出一个 JSON 对象，不要解释：
 {"kind":"answer"|"done","utterance":"","reason":""}
 规则：
+- 画像描述的是孩子。发言身份为家长时用家长口吻谈孩子；为学生时用孩子本人的口吻，把画像里的情况说成自己的。
 - 助手还在追问、澄清或要求补充信息时，kind 用 answer。utterance 只回答当前问题，事实必须来自画像；画像没有就说「不清楚」。
 - 助手已经给出针对会话目标的结论，或没有继续提问时，kind 用 done，utterance 留空。
 - 会话目标为空时，拿到一次具体建议就 done。
 - 不要主动把整份画像倒出去，不要编造画像里没有的分数、城市或意向。"""
+
+
+class _ModelScope:
+    def __init__(self, model: str):
+        self.session_meta = {"requested_llm_model": model}
+        self.user_id = ""
+
+
+def resolve_batch_model(orchestrator, requested: str) -> tuple[str, str]:
+    """Map a debug-console model id to the configured model name.
+
+    The choice stays visible even when this environment keeps the default model.
+    """
+    choice = str(requested or "").strip() or "flash"
+    resolver = getattr(getattr(orchestrator, "llm_config", None), "resolve_tester_model", None)
+    if not callable(resolver):
+        return choice, ""
+    try:
+        return choice, str(resolver(choice, environment=deployment_environment()) or "")
+    except UnknownTesterModelError as exc:
+        raise WorkbenchError("不在调试台可选模型里", code="UNKNOWN_MODEL") from exc
 
 
 def _parse_decision(raw: str) -> dict[str, str] | None:
