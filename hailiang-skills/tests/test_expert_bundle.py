@@ -86,8 +86,7 @@ def test_family_education_expert_reuses_only_the_two_central_runtime_skills():
     registry = load_local_expert_registry(ROOT / "runtime_agents", _runtime_registry())
     expert = registry.require("family_education_expert")
 
-    assert expert.authorized_skill_ids == ("parenting_action_planner", "mbti_self_exploration")
-    assert all(_runtime_registry().get(skill_id) is not None for skill_id in expert.authorized_skill_ids)
+    assert expert.authorized_skill_ids == ()
 
 
 def test_expert_direct_reply_keeps_expert_identity_outside_general_chat():
@@ -122,7 +121,7 @@ def test_expert_direct_reply_keeps_expert_identity_outside_general_chat():
     assert result == "expert-direct-result"
     assert legacy_calls == ["孩子总熬夜"]
     assert context.skill_states["agent_runtime"]["execution_mode"] == "expert_direct"
-    assert context.skill_states["agent_runtime"]["expert_name"] == "家庭教育专家"
+    assert context.skill_states["agent_runtime"]["expert_name"] == "家庭教育专家顾问"
 
 
 def test_shared_expert_runtime_instructs_agent_to_route_or_continue_active_skill():
@@ -130,8 +129,8 @@ def test_shared_expert_runtime_instructs_agent_to_route_or_continue_active_skill
     experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
     runtime = AgentScopeExpertRuntime(experts, skill_registry)
     context = SessionContext()
-    context.session_meta["active_expert_id"] = "family_education_expert"
-    context.interaction_state["active_skill"] = "mbti_self_exploration"
+    context.session_meta["active_expert_id"] = "career_plan_expert"
+    context.interaction_state["active_skill"] = "subject_advisor"
     runtime._available = True
     runtime.client_factory = lambda _context: object()
     runtime._is_supported_client = lambda _client: True
@@ -145,7 +144,7 @@ def test_shared_expert_runtime_instructs_agent_to_route_or_continue_active_skill
     runtime.handle_message("我更想解决亲子冲突", context, lambda _message, _context: "legacy-result")
 
     assert instructions
-    assert "mbti_self_exploration" in instructions[0]
+    assert "subject_advisor" in instructions[0]
     assert "另一已授权 Skill" in instructions[0]
     assert "AGENT.md 是本轮选择的最高业务策略" in instructions[0]
 
@@ -258,7 +257,7 @@ def test_expert_catalog_has_no_out_of_band_session_mutation_api():
     catalog = client.get("/api/v1/experts")
     assert catalog.status_code == 200
     family = next(item for item in catalog.json()["experts"] if item["expert_id"] == "family_education_expert")
-    assert family["skill_ids"] == ["parenting_action_planner", "mbti_self_exploration"]
+    assert family["skill_ids"] == []
 
     selected = client.put("/api/v1/sessions/expert-selection/expert", json={"expert_id": "family_education_expert"})
     assert selected.status_code == 404
