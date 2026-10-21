@@ -62,7 +62,7 @@ export HAILIANG_SANDBOX_SHARED_TOKEN=local-dev-sandbox-token
 
 ## 裸机测试服务器
 
-`./deploy-smoke.sh --env ./env.8010.sh ...` 同样启动裸机 API，但会默认启动或复用 Docker 中的 `skill-sandbox-runner`。测试服务器私有环境文件必须包含：
+`./deploy-smoke.sh` 默认加载独立的 `./env.8011.sh`，并会启动或复用 Docker 中的 `skill-sandbox-runner`。如需指定其他私有配置文件，才传入 `--env PATH`。测试服务器私有环境文件必须包含：
 
 ```bash
 export HAILIANG_SCRIPT_EXECUTOR=remote

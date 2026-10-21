@@ -7,14 +7,14 @@
 # PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
 # INSTALL_MS_AGENT_RUNTIME=auto \
 # ./deploy-smoke.sh \
-#   --env ./env.8010.sh \
+#   --env ./env.8011.sh \
 #   --replace-port \
 #   --with-frontend
 
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ENV_FILE="$PROJECT_DIR/env.8010.sh"
+ENV_FILE="$PROJECT_DIR/env.8011.sh"
 REPLACE_PORT=0
 SKIP_INSTALL=0
 SKIP_MIGRATIONS=0
@@ -30,7 +30,7 @@ old-Linux-compatible Python wheels from the Tsinghua mirror, migrates only the
 configured isolated database, and verifies /health/ready.
 
 Options:
-  --env PATH          Private environment file (default: ./env.8010.sh)
+  --env PATH          Private environment file (default: ./env.8011.sh)
   --replace-port      Gracefully stop an existing Hailiang Uvicorn instance on
                       BACKEND_PORT and an existing smoke static frontend on
                       FRONTEND_PORT (when --with-frontend is set).
