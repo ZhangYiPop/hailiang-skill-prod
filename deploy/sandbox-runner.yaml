@@ -1,0 +1,140 @@
+# Apply alongside the API deployment after replacing the CI placeholders.
+# The Runner is intentionally not exposed by Ingress.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${APP_NAME}-sandbox
+  namespace: ${DOCKERHUB_NAMESPACE}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${APP_NAME}-sandbox
+  namespace: ${DOCKERHUB_NAMESPACE}
+spec:
+  type: ClusterIP
+  selector:
+    app: ${APP_NAME}-sandbox
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${APP_NAME}-sandbox
+  namespace: ${DOCKERHUB_NAMESPACE}
+spec:
+  replicas: ${SANDBOX_REPLICAS}
+  selector:
+    matchLabels:
+      app: ${APP_NAME}-sandbox
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}-sandbox
+    spec:
+      serviceAccountName: ${APP_NAME}-sandbox
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sandbox-runner
+          image: '${REGISTRY}/${DOCKERHUB_NAMESPACE}/${APP_NAME}-sandbox:${BUILD_NUMBER}'
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - name: HAILIANG_SANDBOX_SHARED_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ${APP_NAME}-sandbox
+                  key: shared-token
+            - name: HAILIANG_SANDBOX_PYPI_INDEX_URL
+              value: ${SANDBOX_PYPI_INDEX_URL}
+            - name: HAILIANG_SANDBOX_IMAGE_DIGEST
+              value: '${REGISTRY}/${DOCKERHUB_NAMESPACE}/${APP_NAME}-sandbox:${BUILD_NUMBER}'
+            - name: HAILIANG_SANDBOX_MAX_CONCURRENT_EXECUTIONS
+              value: '${SANDBOX_WORKERS_PER_POD}'
+            - name: HAILIANG_SANDBOX_QUEUE_TIMEOUT_SECONDS
+              value: '${SANDBOX_QUEUE_TIMEOUT_SECONDS}'
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: ${SANDBOX_REQUEST_CPU}
+              memory: ${SANDBOX_REQUEST_MEMORY}
+            limits:
+              cpu: ${SANDBOX_LIMIT_CPU}
+              memory: ${SANDBOX_LIMIT_MEMORY}
+          volumeMounts:
+            - name: cache
+              mountPath: /sandbox/cache
+            - name: work
+              mountPath: /sandbox/work
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: cache
+          emptyDir: {}
+        - name: work
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+# Default deny egress.  The only allowed external destination is the platform
+# managed internal PyPI CIDR supplied by deployment variables.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ${APP_NAME}-sandbox-default-deny
+  namespace: ${DOCKERHUB_NAMESPACE}
+spec:
+  podSelector:
+    matchLabels:
+      app: ${APP_NAME}-sandbox
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ${APP_NAME}
+      ports:
+        - protocol: TCP
+          port: 8081
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: ${SANDBOX_PYPI_CIDR}
+      ports:
+        - protocol: TCP
+          port: 443
