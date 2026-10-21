@@ -202,8 +202,29 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
   const [clock, setClock] = useState(Date.now());
   const chatConnection = useHarnessState((s) => s.connection);
   const connection = suppliedConnection || chatConnection;
-  useEffect(() => { if (isHarnessTerminal(run.status)) return; const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, [run.status]);
-  const end = isHarnessTerminal(run.status) ? Date.parse(run.updated_at) : clock;
+  // A run can remain open while it waits for another task or for the user.
+  // That wall-clock wait is not task execution, so it must not keep a UI
+  // "running" timer growing after the scheduler has become idle.
+  const activeExecutionCount = run.nodes.filter((node) => node.status === "running").length;
+  const waitingForDependency = run.nodes.some((node) => node.status === "waiting_for_dependency");
+  const waitingForUser = run.nodes.some((node) => node.status === "waiting_for_user");
+  const tickElapsed = !isHarnessTerminal(run.status) && activeExecutionCount > 0;
+  useEffect(() => {
+    if (!tickElapsed) return;
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [tickElapsed]);
+  const serverUpdatedAt = Date.parse(run.updated_at);
+  const end = tickElapsed ? clock : (Number.isFinite(serverUpdatedAt) ? serverUpdatedAt : Date.now());
+  const startedAt = Date.parse(run.created_at);
+  const elapsedSeconds = Math.max(0, Math.floor((end - startedAt) / 1000));
+  const elapsedLabel = tickElapsed
+    ? `流程历时 ${elapsedSeconds}s · ${activeExecutionCount} 项任务执行中`
+    : waitingForDependency
+      ? `流程暂计 ${elapsedSeconds}s · 当前等待前置任务，等待时间不计为执行耗时`
+      : waitingForUser
+        ? `流程暂计 ${elapsedSeconds}s · 等待补充，计时已暂停`
+        : `流程历时 ${elapsedSeconds}s`;
   const expertAnchorId = expertTransferAnchorId(run.nodes);
   const render = (node: HarnessNode, depth = 0) => {
     const children = sortNodes(run.nodes.filter((n) => n.parent_id === node.id));
@@ -239,7 +260,7 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
   return <section aria-label="任务动态状态" className="rounded-2xl border border-cyan-300/20 bg-cyan-950/20 p-4">
     <p className="text-sm text-cyan-100">{run.goal} · {labels[run.status] || "处理中"}</p>
     {(run.action || run.phase) && !isHarnessTerminal(run.status) && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-300">{run.action || run.phase}</p>}
-    <p className="mt-1 text-xs text-slate-400">已完成 {run.completed_count} / {run.task_count} 项任务 · {run.waiting_count} 项等待补充 · {Math.max(0, Math.floor((end - Date.parse(run.created_at)) / 1000))}s</p>
+    <p className="mt-1 text-xs text-slate-400">已完成 {run.completed_count} / {run.task_count} 项任务 · {run.waiting_count} 项等待补充 · {elapsedLabel}</p>
     {run.input_token_limit && <p className="mt-1 text-xs text-slate-400">累计模型输入估算 {run.input_tokens_estimated?.toLocaleString() ?? 0} / {run.input_token_limit.toLocaleString()} token{run.input_tokens_actual != null ? ` · 已回报实际输入 ${run.input_tokens_actual.toLocaleString()} token` : ""}</p>}
     {connection === "reconnecting" && !isHarnessTerminal(run.status) && <p role="status" className="mt-2 text-xs text-amber-200">连接恢复中，后台任务继续执行</p>}
     {run.dispatch && <div className="mt-3 rounded-xl border border-violet-300/20 bg-violet-300/5 p-3">
