@@ -271,16 +271,28 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         response = client.post('/api/v3/sessions/chat/stream', json=body)
         assert response.status_code == 200
         assert 'event: state' in response.text and '"protocol": "hailiang.sse.v3"' in response.text
-        assert '"snapshot"' in response.text and '"input_groups"' in response.text
-        assert '"client_run_id": "client-1"' in response.text
-        assert '"assistant_message_id": "msg_harness_' in response.text
+        assert '"state"' in response.text and '"input_groups"' in response.text
+        assert '"snapshot"' not in response.text
+        assert '"client_run_id"' not in response.text
+        assert '"harness_run_id"' not in response.text
+        assert '"run_id": "client-1"' in response.text
+        assert '"assistant_message_id": "msg_' in response.text
+        assert 'msg_harness_' not in response.text
         assert '"should_store_snapshot": true' in response.text
-        assert 'event: done_timeout' in response.text
+        frame = json.loads(next(line.removeprefix('data: ') for line in response.text.splitlines() if line.startswith('data: ')))
+        assert frame['run_id'] == 'client-1'
+        assert frame['state']['nodes'][0]['id'] == 'node_1'
+        assert 'root_task_id' not in frame['state']
         run = runtime.store.active('s')
         assert run
         facts = runtime.store.scoped_facts('u', 'profile', 'p')
         assert facts['profile.province']['value'] == '浙江'
         assert facts['exam_score']['value'] == 620
+        assert frame['expert_team_id'] == 'team-a'
+        assert frame['expert_team_ids'] == ['team-a']
+        assert frame['team_orchestration_version'] == 'single_team_v1'
+        assert frame['state']['expert_team_ids'] == ['team-a']
+        assert frame['state']['team_orchestration_version'] == 'single_team_v1'
         # Same client run is an idempotent retry, not a second dispatch.
         replay = client.post('/api/v3/sessions/chat/stream', json=body)
         assert replay.status_code == 200
@@ -309,4 +321,27 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         missing_team['run_id'] = 'client-missing-team'
         missing_team['input'] = json.dumps({'action': 'chat', 'content': '请规划'}, ensure_ascii=False)
         assert client.post('/api/v3/sessions/chat/stream', json=missing_team).status_code == 422
+        stop = {
+            'session_id': 's', 'run_id': 'client-1',
+            'input': json.dumps({'action': 'stop', 'source': 'composer'}, ensure_ascii=False),
+            'context_data': {'user_id': 'u', 'profile_id': 'p'},
+        }
+        stopped = client.post('/api/v3/sessions/chat/stream', json=stop)
+        assert stopped.status_code == 200
+        assert runtime.store.get(run['run_id'])['status'] == 'cancelled'
+        # The canonical selector form is a list; a single selected team stays
+        # compatible with the current single-team orchestration head.
+        list_selector = deepcopy(body)
+        list_selector['run_id'] = 'client-list-selector'
+        list_selector['input'] = json.dumps({'action': 'chat', 'content': '请规划另一个问题', 'expert_team_id': ['team-a']}, ensure_ascii=False)
+        list_response = client.post('/api/v3/sessions/chat/stream', json=list_selector)
+        assert list_response.status_code == 200
+        list_frame = json.loads(next(line.removeprefix('data: ') for line in list_response.text.splitlines() if line.startswith('data: ')))
+        assert list_frame['expert_team_ids'] == ['team-a']
+        multi_selector = deepcopy(body)
+        multi_selector['run_id'] = 'client-multi-selector'
+        multi_selector['input'] = json.dumps({'action': 'chat', 'content': '请规划多个团队', 'expert_team_id': ['team-a', 'team-b']}, ensure_ascii=False)
+        multi_response = client.post('/api/v3/sessions/chat/stream', json=multi_selector)
+        assert multi_response.status_code == 422
+        assert multi_response.json()['detail'] == 'MULTI_EXPERT_TEAMS_NOT_ENABLED'
     runtime.close()

@@ -11,14 +11,14 @@ import json
 import os
 import time
 from copy import deepcopy
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
-from hailiang_skills.harness.contracts import InternalAnswerSubmission, HarnessError, TERMINAL
+from hailiang_skills.harness.contracts import InternalAnswerSubmission, HarnessError, TERMINAL, identifier
 from hailiang_skills.harness.policy import capture_policy
 
 
@@ -34,10 +34,14 @@ class StrictInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+ExpertTeamSelector: TypeAlias = str | list[str]
+
+
 class TeamBoundInput(StrictInput):
-    # V3 always makes the business entry team explicit.  The server owns all
-    # member/Skill routing below it; callers never select an expert or Skill.
-    expert_team_id: str = Field(min_length=1, max_length=100)
+    # The canonical wire form is a list so callers can reserve a multi-team
+    # request now. A single string remains valid for V2-style compatibility.
+    # The current orchestration head deliberately accepts exactly one team.
+    expert_team_id: ExpertTeamSelector
 
 
 class ChatInput(TeamBoundInput):
@@ -53,8 +57,9 @@ class AnswerInput(TeamBoundInput):
     skipped: bool = False
 
 
-class StopInput(TeamBoundInput):
+class StopInput(StrictInput):
     action: Literal["stop"]
+    source: Literal["composer"]
 
 
 class V3ChatStreamRequest(StrictInput):
@@ -84,14 +89,65 @@ def _parse_input(raw: str) -> ChatInput | AnswerInput | StopInput:
     raise HTTPException(422, "HARNESS_V3_ACTION_UNSUPPORTED")
 
 
-def _request_hash(input_data, profile_data):
-    encoded = json.dumps({"input": input_data.model_dump(), "profile_data": profile_data}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+def _normalise_expert_team_ids(value: ExpertTeamSelector) -> list[str]:
+    """Validate the public selector and canonicalise it to an ordered list."""
+    raw_values = [value] if isinstance(value, str) else value
+    if not isinstance(raw_values, list) or not raw_values:
+        raise HTTPException(422, "EXPERT_TEAM_ID_REQUIRED")
+    if len(raw_values) > 8:
+        raise HTTPException(422, "TOO_MANY_EXPERT_TEAMS")
+    team_ids: list[str] = []
+    for item in raw_values:
+        if not isinstance(item, str) or not (team_id := item.strip()) or len(team_id) > 100:
+            raise HTTPException(422, "INVALID_EXPERT_TEAM_ID")
+        team_ids.append(team_id)
+    if len(set(team_ids)) != len(team_ids):
+        raise HTTPException(422, "DUPLICATE_EXPERT_TEAM_ID")
+    return team_ids
+
+
+def _single_supported_team_id(value: ExpertTeamSelector) -> tuple[str, list[str]]:
+    team_ids = _normalise_expert_team_ids(value)
+    # This makes the contract forward compatible without pretending current
+    # single-head orchestration has already combined several teams.
+    if len(team_ids) != 1:
+        raise HTTPException(422, "MULTI_EXPERT_TEAMS_NOT_ENABLED")
+    return team_ids[0], team_ids
+
+
+def _request_hash(input_data, profile_data, team_ids: list[str]):
+    payload = input_data.model_dump()
+    # A legacy string and the canonical one-element list mean the same request
+    # for idempotency purposes.
+    if "expert_team_id" in payload:
+        payload["expert_team_id"] = team_ids
+    encoded = json.dumps({"input": payload, "profile_data": profile_data}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _profile_name(profile_data: dict | None, profile_id: str) -> str:
     value = (profile_data or {}).get("name")
     return value.strip() if isinstance(value, str) and value.strip() else f"未命名孩子-{profile_id}"
+
+
+def _public_context(context, profile_data: dict | None = None) -> dict[str, Any]:
+    """Persist V2-compatible profile context in the V3 run, never in prompts."""
+    profile_id = getattr(context, "profile_id", None) if context is not None else None
+    scope = "profile" if profile_id else "unbound"
+    name = str(getattr(context, "profile_name", "") or "").strip() if context is not None else ""
+    if not name and profile_id:
+        name = _profile_name(profile_data, str(profile_id))
+    return {
+        "profile_id": profile_id,
+        "profile_name": name or None,
+        "context_scope": scope,
+        "context_label": name if scope == "profile" else "未绑定孩子",
+        "context_notice": (
+            {"type": "profile_context_activated", "text": f"本轮回答将结合 **{name}** 的档案数据。"}
+            if scope == "profile" and name else {}
+        ),
+        "profile_context_status": "matched" if scope == "profile" else "unbound",
+    }
 
 
 def _ensure_profile(fact_service, user_id: str, profile_id: str | None, profile_data: dict | None):
@@ -210,38 +266,96 @@ def _persistence(*, event: str, run: dict) -> dict[str, Any]:
             "terminal": True, "record_kind": "final"}
 
 
+def _project_product_state(snapshot: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+    """Turn the diagnostic/public-store snapshot into the BFF-facing state.
+
+    The store projection intentionally keeps durable internal IDs for tracing.
+    This boundary assigns stable per-frame product IDs and removes all fields
+    that would let a BFF treat an internal Harness ID as an external contract.
+    """
+    internal_run_id = run["run_id"]
+    source_run = next((item for item in snapshot.get("runs", []) if item.get("id") == internal_run_id), {})
+    source_nodes = [item for item in snapshot.get("nodes", []) if item.get("run_id") == internal_run_id]
+    id_map = {item["id"]: f"node_{index + 1}" for index, item in enumerate(source_nodes)}
+
+    def projected_node(item: dict[str, Any]) -> dict[str, Any]:
+        kind, status = item.get("kind"), item.get("status")
+        phase = item.get("phase")
+        action = item.get("action")
+        if kind == "tool":
+            phase = phase or ({"running": "using_tool", "waiting_for_user": "waiting_for_user",
+                               "waiting_for_dependency": "waiting_for_dependency", "completed": "completed"}.get(status, status))
+            action = action or item.get("title") or "正在执行工具"
+        return {
+            "id": id_map[item["id"]], "parent_id": id_map.get(item.get("parent_id")),
+            "kind": kind, "title": item.get("title"), "actor": item.get("actor"),
+            "expert_id": item.get("expert_id"), "brief": deepcopy(item.get("brief")),
+            "phase": phase, "action": action, "status": status, "outcome": item.get("outcome"),
+            "result": deepcopy(item.get("result")),
+            "waiting_on": [id_map.get(value, value) for value in item.get("waiting_on") or []],
+            "children_count": item.get("children_count", 0),
+            "completed_children_count": item.get("completed_children_count", 0),
+            "attempts": item.get("attempts"), "error": deepcopy(item.get("error")),
+            "stale": bool(item.get("stale", False)), "started_at": item.get("started_at"), "ended_at": item.get("ended_at"),
+        }
+
+    dispatch = deepcopy(source_run.get("dispatch"))
+    if isinstance(dispatch, dict):
+        for expert in dispatch.get("experts") or []:
+            if isinstance(expert, dict):
+                expert["node_id"] = id_map.get(expert.get("node_id"))
+                expert["depends_on_node_ids"] = [id_map.get(value, value) for value in expert.get("depends_on_node_ids") or []]
+    inputs = []
+    for item in snapshot.get("input_requests", []):
+        if item.get("run_id") != internal_run_id:
+            continue
+        inputs.append({key: deepcopy(item.get(key)) for key in (
+            "id", "title", "fields", "status", "round", "answer", "clarification_reason", "actor",
+            "group_id", "group_position", "request_version"
+        ) if key in item} | {"owner_node_id": id_map.get(item.get("owner_task_id"))})
+    groups = []
+    for item in snapshot.get("input_groups", []):
+        if item.get("run_id") == internal_run_id:
+            groups.append({key: deepcopy(item.get(key)) for key in (
+                "id", "status", "created_at", "request_ids", "active_request_id", "total_count", "completed_count", "actors", "version"
+            ) if key in item})
+    allowed = (
+        "goal", "status", "outcome", "phase", "action", "dispatch", "synthesis_status",
+        "recommendations_status", "jump_cards", "result", "error", "input_queue", "waiting_count",
+        "completed_count", "task_count", "input_tokens_estimated", "input_tokens_actual", "input_token_limit",
+    )
+    state = {key: deepcopy(source_run.get(key)) for key in allowed if key in source_run}
+    state.update({"dispatch": dispatch, "nodes": [projected_node(item) for item in source_nodes],
+                  "inputs": inputs, "input_groups": groups})
+    return state
+
+
 def _payload(runtime, run, *, event: str, reason: str, cursor: int = 0):
-    """Return the canonical public V3 full frame for the minimal BFF entry."""
+    """Canonical minimal V3 frame: only BFF IDs plus a complete product state."""
     snapshot = runtime.store.public_snapshot(run["session_id"], run["user_id"], run["profile_id"])
-    run_id = run["run_id"]
-    # A BFF stream is scoped to one run. Never carry another run's queued form
-    # groups into its bubble merely because they share the session/profile scope.
-    snapshot = {
-        **snapshot,
-        "runs": [item for item in snapshot["runs"] if item["id"] == run_id],
-        "nodes": [item for item in snapshot["nodes"] if item.get("run_id") == run_id],
-        "input_requests": [item for item in snapshot["input_requests"] if item.get("run_id") == run_id],
-        "input_groups": [item for item in snapshot.get("input_groups", []) if item.get("run_id") == run_id],
-        "messages": [item for item in snapshot["messages"] if item.get("run_id") == run_id],
-    }
-    public_run = next((item for item in snapshot["runs"] if item["id"] == run_id), {})
+    state = _project_product_state(snapshot, run)
+    requested_team_ids = deepcopy(run.get("requested_expert_team_ids") or [run.get("policy", {}).get("team_id")])
+    team_orchestration_version = str(run.get("team_orchestration_version") or "single_team_v1")
+    state["expert_team_id"] = run.get("policy", {}).get("team_id")
+    state["expert_team_ids"] = requested_team_ids
+    state["team_orchestration_version"] = team_orchestration_version
+    context = deepcopy(run.get("public_context") or {})
     return {
         "protocol": SSE_V3_PROTOCOL,
         "session_id": run["session_id"],
-        # run_id remains for older V2-shaped BFF code. The two explicit IDs
-        # remove ambiguity between its idempotency key and the Harness ID.
-        "run_id": run_id,
-        "harness_run_id": run_id,
-        "client_run_id": public_run.get("client_run_id", run.get("client_run_id")),
-        "assistant_message_id": public_run.get("assistant_message_id") or run.get("assistant_message_id") or f"msg_harness_{run_id}",
-        "record_version": public_run.get("record_version", run["version"]),
-        "seq": cursor,
-        "cursor": cursor,
-        "reason": reason,
+        # The BFF-provided key must round-trip unchanged, including after a
+        # process restart. Internal run IDs only live in persistence/diagnostics.
+        "run_id": run.get("client_run_id"),
+        "assistant_message_id": run.get("assistant_message_id"),
+        # Singular stays for existing BFFs; the selector list is the forward
+        # compatible contract for a future multi-team orchestrator.
+        "expert_team_id": run.get("policy", {}).get("team_id"),
+        "expert_team_ids": requested_team_ids,
+        "team_orchestration_version": team_orchestration_version,
+        "record_version": run["version"], "cursor": cursor, "reason": reason,
         "stream_status": "waiting_for_user" if event == "done_suspended" else ("running" if event == "done_timeout" else run["status"]),
-        "outcome": _outcome(run),
-        "persistence": _persistence(event=event, run=run),
-        "snapshot": snapshot,
+        "outcome": _outcome(run), "persistence": _persistence(event=event, run=run),
+        **context, "state": state,
     }
 
 
@@ -303,16 +417,24 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         input_data = _parse_input(request.input)
         data = request.context_data
         profile_data = data.profile_data
+        context = None
         if profile_data is not None and not isinstance(profile_data, dict):
             raise HTTPException(422, "INVALID_PROFILE_DATA")
 
         if isinstance(input_data, ChatInput):
-            fingerprint = _request_hash(input_data, profile_data)
+            team_id, team_ids = _single_supported_team_id(input_data.expert_team_id)
+            fingerprint = _request_hash(input_data, profile_data, team_ids)
             bound = operation(lambda: runtime.store.client_run(request.session_id, data.user_id, data.profile_id, request.run_id))
             if bound:
                 if bound["request_hash"] != fingerprint:
                     raise HTTPException(409, "CLIENT_RUN_ID_CONFLICT")
                 harness_run_id = bound["harness_run_id"]
+                existing_run = operation(lambda: runtime.store.get(harness_run_id))
+                _assert_run_team(existing_run, team_id)
+                try:
+                    context = repository.get(request.session_id)
+                except KeyError:
+                    context = None
             else:
                 active = runtime.store.active(request.session_id)
                 if active:
@@ -330,7 +452,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     snapshot = snapshot_resolver()
                     if snapshot:
                         context.session_meta["configuration_snapshot"] = snapshot
-                _bind_input_team(context, orchestrator, input_data.expert_team_id)
+                _bind_input_team(context, orchestrator, team_id)
                 repository.save(context)
                 if profile_data and data.profile_id:
                     aliases = {"grade": "grade", "province": "student_province", "recent_exam.total_score": "exam_score"}
@@ -351,18 +473,36 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 if run.get("client_run_id") != request.run_id:
                     run["client_run_id"] = request.run_id
                     changed = True
-                if not run.get("assistant_message_id"):
-                    run["assistant_message_id"] = f"msg_harness_{run['run_id']}"
+                legacy_message_id = f"msg_harness_{run['run_id']}"
+                if not run.get("assistant_message_id") or run.get("assistant_message_id") == legacy_message_id:
+                    run["assistant_message_id"] = identifier("msg")
+                    changed = True
+                requested_team_ids = list(team_ids)
+                if run.get("requested_expert_team_ids") != requested_team_ids:
+                    run["requested_expert_team_ids"] = requested_team_ids
+                    changed = True
+                if not run.get("team_orchestration_version"):
+                    # Existing and current V3 runs use one frozen team.  A
+                    # future multi-team runtime will introduce a new version,
+                    # leaving this behaviour readable without a DB migration.
+                    run["team_orchestration_version"] = "single_team_v1"
+                    changed = True
+                public_context = _public_context(context, profile_data) if context is not None else deepcopy(run.get("public_context") or {})
+                if run.get("public_context") != public_context:
+                    run["public_context"] = public_context
                     changed = True
                 if changed:
                     changes.append({"event": "assistant_message_bound", "node_id": run["root_task_id"]})
             operation(lambda: runtime.store.mutate(harness_run_id, bind_public_ids))
         elif isinstance(input_data, AnswerInput):
+            team_id, _team_ids = _single_supported_team_id(input_data.expert_team_id)
             harness_run_id = operation(lambda: runtime.store.request_run(input_data.request_id))
             run = operation(lambda: runtime.store.get(harness_run_id))
             if run["session_id"] != request.session_id or run["user_id"] != data.user_id or run["profile_id"] != data.profile_id:
                 raise HTTPException(403, "HARNESS_ACCESS_DENIED")
-            _assert_run_team(run, input_data.expert_team_id)
+            if run.get("client_run_id") != request.run_id:
+                raise HTTPException(409, "CLIENT_RUN_ID_MISMATCH")
+            _assert_run_team(run, team_id)
             if profile_data and data.profile_id:
                 aliases = {"grade": "grade", "province": "student_province", "recent_exam.total_score": "exam_score"}
                 operation(lambda: runtime.store.upsert_portrait(data.user_id, data.profile_id, profile_data, aliases=aliases))
@@ -377,7 +517,6 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
             run = operation(lambda: runtime.store.get(harness_run_id))
             if run["session_id"] != request.session_id or run["user_id"] != data.user_id or run["profile_id"] != data.profile_id:
                 raise HTTPException(403, "HARNESS_ACCESS_DENIED")
-            _assert_run_team(run, input_data.expert_team_id)
             runtime.cancel(harness_run_id)
         return StreamingResponse(stream(http_request, harness_run_id), media_type="text/event-stream", headers={
             "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no", "X-SSE-Protocol": SSE_V3_PROTOCOL,
