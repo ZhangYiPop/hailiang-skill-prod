@@ -51,14 +51,80 @@ def test_v3_snapshot_carries_expert_id_and_jump_cards(tmp_path):
         'failed_expert_ids': [],
         'status': 'completed',
     }
-    assert entity['jump_cards'] == [{
+    assert len(entity['jump_cards']) == 1
+    card = entity['jump_cards'][0]
+    assert card['id'].startswith('rec_')
+    assert {key: value for key, value in card.items() if key != 'id'} == {
         'intent': 'assessment', 'object_type': 'single_assessment', 'sub_type': 'career_interest',
         'reason': '兴趣不清', 'title': '职业兴趣测评', 'description': '先做兴趣测评',
         'filter': {'region': '', 'grade': '高一', 'keyword': '', 'category': ''},
-    }]
+    }
     node = next(item for item in snapshot['nodes'] if item['kind'] == 'expert')
     assert node['expert_id'] == 'career_plan_expert'
     assert node['actor'] == '升学规划专家'
+    runtime.close()
+
+
+def test_v3_snapshot_exposes_dispatch_brief_and_expert_result(tmp_path):
+    from hailiang_skills.harness.runtime import task_node
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    policy = v2_policy()
+    policy['experts']['career_plan_expert'] = {'name': '升学规划专家', 'brief': '负责升学路径与院校匹配', 'skills': []}
+    rid = runtime.create('s', 'u', 'p', '分析', policy, wire_protocol='hailiang.sse.v3')
+
+    def attach(run, changes, _db):
+        root = run['tasks'][run['root_task_id']]
+        child = task_node('expert', '分析升学路径', root['id'], expert_id='career_plan_expert')
+        child['brief'] = {'objective': '分析升学路径', 'completion': '提交结构化结论'}
+        child['plan_subtask_id'] = 'st_1'
+        child['status'] = 'completed'
+        child['structured_result'] = {'status': 'partial', 'conclusion': '需要补充地区', 'findings': ['当前成绩'], 'limitations': ['地区未知'], 'unresolved': ['地区']}
+        run['tasks'][child['id']] = child
+        run['orchestration'] = {'action': 'consult', 'subtasks': [{'subtask_id': 'st_1', 'target_expert_id': 'career_plan_expert', 'question': '分析升学路径', 'depends_on': []}]}
+        run['phase'] = 'experts_completed'
+        changes.append({'event': 'expert_result_attached', 'node_id': child['id']})
+
+    runtime.store.mutate(rid, attach)
+    entity = next(item for item in runtime.store.public_snapshot('s', 'u', 'p')['runs'] if item['id'] == rid)
+    assert entity['dispatch']['planned_expert_count'] == 1
+    assert entity['dispatch']['experts'][0]['brief'] == '负责升学路径与院校匹配'
+    dispatched = entity['dispatch']['experts'][0]
+    assert dispatched['task_brief'] == '分析升学路径'
+    assert dispatched['completion_criteria']
+    assert dispatched['execution_status'] == 'completed'
+    assert 'orchestration' not in entity
+    node = next(item for item in runtime.store.public_snapshot('s', 'u', 'p')['nodes'] if item['kind'] == 'expert')
+    assert dispatched['node_id'] == node['id']
+    assert node['brief']['objective'] == '分析升学路径'
+    assert node['result']['status'] == 'partial'
+    assert node['result']['limitations'] == ['地区未知']
+    runtime.close()
+
+
+def test_v3_snapshot_projects_direct_main_agent_dispatch(tmp_path):
+    from hailiang_skills.harness.runtime import task_node
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    policy = v2_policy()
+    policy['experts']['career_plan_expert'] = {'name': '升学规划专家', 'brief': '负责升学路径', 'skills': []}
+    rid = runtime.create('s', 'u', 'p', '分析', policy, wire_protocol='hailiang.sse.v3')
+
+    def attach(run, changes, _db):
+        root = run['tasks'][run['root_task_id']]
+        child = task_node('expert', '分析选科', root['id'], expert_id='career_plan_expert')
+        child['plan_subtask_id'] = 'main_delegate_1'
+        child['status'] = 'running'
+        run['tasks'][child['id']] = child
+        changes.append({'event': 'direct_delegate', 'node_id': child['id']})
+
+    runtime.store.mutate(rid, attach)
+    entity = next(item for item in runtime.store.public_snapshot('s', 'u', 'p')['runs'] if item['id'] == rid)
+    dispatch = entity['dispatch']
+    assert dispatch['source'] == 'main_agent_delegate'
+    assert dispatch['ready_task_count'] == 1
+    assert dispatch['experts'][0]['node_id']
+    assert dispatch['experts'][0]['execution_status'] == 'running'
+    assert entity['phase'] == 'planning'
+    assert entity['action'] == '正在理解问题并拆分任务'
     runtime.close()
 
 
@@ -173,7 +239,8 @@ def test_v3_http_start_retry_and_capability_gate(tmp_path, monkeypatch):
         monkeypatch.setenv('HAILIANG_SSE_V3_RUN_STREAM_SECONDS', '0.1')
         timed = client.get(path + f"/runs/{replacement.json()['run_id']}/events?user_id=u")
         assert timed.status_code == 200
-        assert 'event: timeout' in timed.text
+        assert 'event: done_timeout' in timed.text
+        assert '"should_save_history": true' in timed.text
         active_id = replacement.json()['run_id']
         def suspend(run, changes, _db):
             root = run['tasks'][run['root_task_id']]
@@ -186,7 +253,8 @@ def test_v3_http_start_retry_and_capability_gate(tmp_path, monkeypatch):
         runtime.store.mutate(active_id, suspend)
         suspended = client.get(path + f"/runs/{active_id}/events?user_id=u")
         assert suspended.status_code == 200
-        assert 'event: suspended' in suspended.text
+        assert 'event: done_suspended' in suspended.text
+        assert '"record_kind": "waiting_for_user"' in suspended.text
         assert client.get(path + '?user_id=other').status_code == 403
         snap = client.get(path + '?user_id=u').json()
         assert snap['protocol'] == 'hailiang.sse.v3'

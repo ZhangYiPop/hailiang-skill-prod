@@ -1,4 +1,5 @@
 import { legacyView, subscribeV3, type V3Snapshot, type V3Event } from "@/utils/harnessV3";
+import { createUuid } from "@/utils/uuid";
 import { useEffect } from "react";
 import { create } from "zustand";
 import { useChatStore } from "@/store/useChatStore";
@@ -33,7 +34,7 @@ export async function harnessRequest<T>(path: string, body?: unknown): Promise<T
     const fingerprint = JSON.stringify({...value, submission_id: undefined});
     let cached: {fingerprint: string; id: string} | null = null;
     try { cached = JSON.parse(sessionStorage.getItem(submissionKey) || 'null'); } catch { /* empty */ }
-    value.submission_id = cached?.fingerprint === fingerprint ? cached.id : crypto.randomUUID();
+    value.submission_id = cached?.fingerprint === fingerprint ? cached.id : createUuid();
     sessionStorage.setItem(submissionKey, JSON.stringify({fingerprint, id: value.submission_id}));
   }
   const response = await fetch(`${useChatStore.getState().apiBaseUrl}/api/${v3 ? "v3" : "v2"}${path}`, {
@@ -46,15 +47,13 @@ export async function harnessRequest<T>(path: string, body?: unknown): Promise<T
   return data as T;
 }
 function runMessages(run: HarnessRun): ChatMessage[] {
-  const messages: ChatMessage[] = [
+  const result = run.result || (run.status === "failed" ? "本次任务未能完成，请重新发起任务。" : "");
+  return [
     { id: `harness-user-${run.run_id}`, role: "user", content: run.goal, createdAt: run.created_at, blocks: [], messageType: "harness" },
-    { id: `harness-work-${run.run_id}`, role: "assistant", content: "", createdAt: run.created_at, agentLabel: "主 agent",
-      blocks: [{ type: "task_progress", payload: { run } }], streamingStatus: "completed", messageType: "harness" },
+    { id: run.assistant_message_id || `harness-work-${run.run_id}`, role: "assistant", content: "", createdAt: run.created_at,
+      agentLabel: "主 agent", blocks: [{ type: "task_progress", payload: { run } }, ...(result ? [{ type: "markdown" as const, payload: { content: result } }] : [])],
+      streamingStatus: run.message_status === "streaming" ? "streaming" : run.status === "failed" ? "failed" : "completed", messageType: "harness" },
   ];
-  if (run.result || run.status === "failed") messages.push({ id: `harness-result-${run.run_id}`, role: "assistant",
-    content: run.result || "本次任务未能完成，请重新发起任务。", createdAt: run.updated_at, blocks: [],
-    agentLabel: "主 agent", streamingStatus: run.message_status === "streaming" ? "streaming" : run.status === "failed" ? "failed" : "completed", messageType: "harness" });
-  return messages;
 }
 export async function refreshHarness(): Promise<HarnessSnapshot> {
   const state = useChatStore.getState();
@@ -102,7 +101,7 @@ export async function sendHarnessIfEnabled(content: string): Promise<boolean> {
   state.setSending(true);
   try {
     const response = await harnessRequest<{ run_id: string }>(`/sessions/${encodeURIComponent(state.sessionId)}/harness/runs`, {
-      ...(v3 ? { submission_id: crypto.randomUUID() } : {}),
+      ...(v3 ? { submission_id: createUuid() } : {}),
       goal: content, context_data: { ...who, ...(who.profile_id ? {
         student_name: state.debugIdentity.display_name, grade: state.debugIdentity.grade || undefined,
         school_year: state.debugIdentity.school_year || undefined,

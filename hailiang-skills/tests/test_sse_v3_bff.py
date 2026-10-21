@@ -1,4 +1,5 @@
 import asyncio
+import json
 import importlib.util
 from pathlib import Path
 import httpx
@@ -37,3 +38,32 @@ def test_bff_rejects_missing_session_and_cross_origin(monkeypatch):
         assert client.get('/api/v3/sessions/s/harness').status_code == 401
         client.cookies.set('demo_session','secret')
         assert client.post('/api/v3/sessions/s/harness/runs',json={}).status_code == 403
+
+
+def test_bff_minimal_chat_injects_trusted_context(monkeypatch):
+    received = {}
+    class Bytes(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'event: done\ndata: {}\n\n'
+        async def aclose(self):
+            pass
+    async def upstream(request):
+        received['path'] = request.url.path
+        received['body'] = json.loads(await request.aread())
+        return httpx.Response(200, headers={'Content-Type':'text/event-stream'}, stream=Bytes())
+    original = httpx.AsyncClient
+    monkeypatch.setattr(bff.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(upstream)))
+    monkeypatch.setenv('BFF_DEMO_COOKIE', 'secret')
+    monkeypatch.setenv('BFF_DEMO_USER', 'trusted')
+    monkeypatch.setenv('BFF_DEMO_PROFILE', 'profile-1')
+    monkeypatch.setenv('BFF_DEMO_PROFILE_DATA', '{"grade":"高一"}')
+    with TestClient(bff.app) as client:
+        client.cookies.set('demo_session', 'secret')
+        response = client.post('/api/v3/sessions/chat/stream', headers={'Origin': 'http://testserver'}, json={
+            'session_id': 'session-1', 'run_id': 'client-run-1',
+            'input': '{"action":"chat","content":"你好","expert_team_id":"student_growth_expert_team"}',
+            'context_data': {'user_id': 'forged'},
+        })
+    assert response.status_code == 200, response.text
+    assert received['path'] == '/api/v3/sessions/chat/stream'
+    assert received['body']['context_data'] == {'user_id': 'trusted', 'profile_id': 'profile-1', 'profile_data': {'grade': '高一'}}

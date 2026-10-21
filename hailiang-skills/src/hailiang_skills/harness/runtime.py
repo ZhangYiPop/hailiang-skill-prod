@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
 import inspect
+import hashlib
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -121,8 +122,116 @@ def public_jump_cards(run):
         card["intent"] = intent
         card["object_type"] = object_type
         card["filter"] = {key: "" if source_filter.get(key) is None else str(source_filter.get(key) or "") for key in _PUBLIC_FILTER_KEYS}
+        # The extractor has no stable public identifier. Derive one from the
+        # validated public payload so a full-frame replacement keeps card keys stable.
+        card["id"] = "rec_" + hashlib.sha256(json.dumps(card, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
         cards.append(card)
     return cards
+
+
+def public_dispatch(run):
+    """Expose the validated head plan before expert nodes start running."""
+    orchestration = run.get("orchestration") or {}
+    subtasks = orchestration.get("subtasks") if isinstance(orchestration, dict) else []
+    source = "orchestrator_head"
+    if not isinstance(subtasks, list):
+        subtasks = []
+    # A legacy/main-agent route may call delegate_tasks without an
+    # orchestrator_head ConsultationPlan. It still needs an honest public
+    # dispatch once the expert nodes exist, otherwise the UI hides the most
+    # important state transition merely because its planner was different.
+    if not subtasks:
+        source = "main_agent_delegate"
+        subtasks = [{
+            "subtask_id": task.get("plan_subtask_id") or task["id"],
+            "target_expert_id": task.get("expert_id"),
+            "question": task.get("goal", ""),
+            "completion": task.get("completion", ""),
+            "depends_on": list(task.get("depends_on") or []),
+        } for task in run.get("tasks", {}).values() if task.get("kind") == "expert"]
+    experts = []
+    for item in subtasks:
+        if not isinstance(item, dict):
+            continue
+        expert_id = str(item.get("target_expert_id") or item.get("expert_id") or "").strip()
+        if not expert_id:
+            continue
+        definition = (run.get("policy", {}).get("experts") or {}).get(expert_id, {})
+        depends_on = list(item.get("depends_on") or [])
+        subtask_id = str(item.get("subtask_id") or item.get("key") or f"st_{len(experts) + 1}")
+        matching = [task for task in run.get("tasks", {}).values()
+                    if task.get("kind") == "expert" and task.get("plan_subtask_id") == subtask_id]
+        # Older persisted runs predate plan_subtask_id.  Keep their public
+        # projection readable without using that fallback for newly created tasks.
+        if not matching:
+            matching = [task for task in run.get("tasks", {}).values()
+                        if task.get("kind") == "expert" and task.get("expert_id") == expert_id]
+        live = sorted(matching, key=lambda task: (task.get("created_at") or "", task.get("id") or ""))[-1] if matching else None
+        task_status = (live or {}).get("status")
+        public_status = {
+            "running": "running", "waiting_for_user": "waiting_for_user",
+            "waiting_for_dependency": "queued", "queued": "assigned",
+            "completed": "completed", "failed": "failed", "cancelled": "failed",
+        }.get(task_status, "assigned")
+        experts.append({
+            "subtask_id": subtask_id,
+            "node_id": (live or {}).get("id"),
+            "expert_id": expert_id,
+            "name": definition.get("name") or expert_id,
+            # `brief` is the business-authored expert introduction from the
+            # published expert definition. The per-run task wording is kept
+            # separately so the UI does not confuse role scope with delegation.
+            "brief": str(definition.get("brief") or "").strip(),
+            "task_brief": str(item.get("brief") or item.get("question") or "").strip(),
+            "completion_criteria": str(item.get("completion") or "完成本次分派任务并提交可核验结论").strip(),
+            "plan_status": "assigned",
+            "execution_status": public_status,
+            "status": public_status,
+            "depends_on": depends_on,
+            "depends_on_node_ids": list((live or {}).get("depends_on") or []),
+            "can_run_now": public_status in {"assigned", "running"},
+        })
+    if not experts:
+        return None
+    independent = sum(not item["depends_on"] for item in experts)
+    return {
+        "status": "completed",
+        "source": source,
+        "planned_task_count": len(experts),
+        "planned_expert_count": len({item["expert_id"] for item in experts}),
+        # Independent means dependency-ready in the plan. It is distinct
+        # from the worker concurrency cap and from tasks already running.
+        "parallel_task_count": independent,
+        "ready_task_count": sum(item["execution_status"] in {"assigned", "running"} for item in experts),
+        "blocked_task_count": sum(bool(item["depends_on"]) and item["execution_status"] == "assigned" for item in experts),
+        "max_parallelism": int((run.get("policy", {}).get("settings") or {}).get("max_parallel_experts", 3)),
+        "experts": experts,
+    }
+
+
+def _public_phase(run, task):
+    """Derive a safe user-facing phase/action without exposing model internals."""
+    phase = str(run.get("phase") or "").strip()
+    if task.get("kind") == "main":
+        if task.get("tail_done"):
+            return ("completed", "已完成最终回复")
+        if task.get("head_done") and not task.get("pending_calls"):
+            return ("synthesizing", "编排器正在汇总专家结论")
+        if not task.get("head_done"):
+            return ("planning", "正在理解问题并拆分任务")
+    if task.get("kind") == "expert":
+        if task.get("structured_result"):
+            status = task["structured_result"].get("status") or "completed"
+            return (status, "已提交专家结论")
+        if task.get("pending_calls"):
+            return ("using_skill", "正在执行 Skill 或工具")
+        if task.get("status") == "waiting_for_dependency":
+            return ("waiting_for_dependency", "等待前置任务结果")
+        return ("analyzing", "正在分析任务")
+    if task.get("kind") == "skill":
+        return ("using_skill", "正在执行专项 Skill")
+    return (phase or "running", "正在执行")
+
 
 
 def _trace_messages(raw):
@@ -819,6 +928,13 @@ class HarnessRuntime:
                 live["trace"][-1]["output"] = {"final_text": json.dumps(plan_json, ensure_ascii=False)}
                 live["head_done"] = True
                 current["orchestration"] = {"action": plan.action, "reason": plan.reason, "subtasks": plan_json["subtasks"]}
+                if plan.action == "consult":
+                    current["phase"] = "dispatching_completed"
+                    current["action"] = f"已完成任务拆分，正在启动 {len(plan.subtasks)} 位专家"
+                    current["dispatch"] = public_dispatch(current)
+                else:
+                    current["phase"] = "clarifying" if plan.action == "clarify" else "rejected"
+                    current["action"] = "等待补充问题" if plan.action == "clarify" else "问题超出当前服务范围"
                 self._record_node(current, live, "orchestrate_head", {"action": plan.action}, plan_json, changes)
                 if plan.action != "consult":
                     finish_run(current, live, changes, plan.clarification_question or "请再具体说明一下你的问题。")
@@ -837,6 +953,15 @@ class HarnessRuntime:
             self.store.mutate(run_id, apply_head)
             return
 
+        if phase == "tail":
+            def mark_synthesis(current, changes, db):
+                if not self._valid(current, task_id, token):
+                    return
+                current["phase"] = "synthesizing"
+                current["action"] = "编排器正在汇总专家结论"
+                changes.append({"event": "synthesis_started", "node_id": task_id})
+                self._settle(current, changes, db)
+            self.store.mutate(run_id, mark_synthesis)
         rows = []
         for item in sorted((t for t in run["tasks"].values() if t["kind"] == "expert"), key=lambda t: t["created_at"]):
             text = str(item.get("result") or "").strip() if item["status"] == "completed" else ""
@@ -872,6 +997,16 @@ class HarnessRuntime:
         recommend_io = None
         catalog = view.get("recommend_catalog") or view.get("recommendations")
         if catalog and any(row["status"] == "completed" for row in rows):
+            def mark_recommending(current, changes, db):
+                if not self._valid(current, task_id, token):
+                    return
+                current["phase"] = "recommending"
+                current["action"] = "正在生成相关推荐"
+                current["recommendations_status"] = "running"
+                current["recommendations_started"] = True
+                changes.append({"event": "recommendation_started", "node_id": task_id})
+                self._settle(current, changes, db)
+            self.store.mutate(run_id, mark_recommending)
             if client is None:
                 client = self.client_factory(run)
             failed = False
@@ -900,7 +1035,20 @@ class HarnessRuntime:
                 if recommend_io["output"].get("jump_cards"):
                     current["jump_cards"] = recommend_io["output"]["jump_cards"]
                 self._record_node(current, live, "recommend", recommend_io["input"], recommend_io["output"], changes)
+                current["recommendations_started"] = True
+                if recommend_io["output"].get("error"):
+                    current["recommendations_status"] = "failed"
+                elif recommend_io["output"].get("jump_cards"):
+                    current["recommendations_status"] = "completed"
+                else:
+                    current["recommendations_status"] = "empty"
+            elif not catalog:
+                current["recommendations_status"] = "unavailable"
+            else:
+                current["recommendations_status"] = "not_available"
             live["tail_done"] = True
+            current["phase"] = "completed"
+            current["action"] = "已完成最终回复"
             finish_run(current, live, changes, text)
             self._settle(current, changes, db)
         self.store.mutate(run_id, apply_tail)
@@ -1232,11 +1380,14 @@ class HarnessRuntime:
                     child["brief"] = cp.brief_for(run, child, item.get("brief"))
             for item in items:
                 child = children[item["key"]]
+                child["plan_subtask_id"] = item["key"]
                 child["depends_on"] = [children[k]["id"] for k in item.get("depends_on", [])]
                 if child["depends_on"]:
                     child["status"] = "waiting_for_dependency"
                 run["tasks"][child["id"]] = child
                 changes.append({"event": "task_created", "node_id": child["id"]})
+            run["phase"] = "experts_running"
+            run["action"] = f"正在并行执行 {len(children)} 个专家任务"
             tool.update(status="waiting_for_dependency", children=[c["id"] for c in children.values()])
             changes.append({"event": "plan_updated", "node_id": task["id"]})
         elif name == "execute_skill":
@@ -1473,6 +1624,10 @@ class HarnessRuntime:
                 consumer["read_fact_keys"] = sorted(set(consumer.get("read_fact_keys", []) + [r["key"] for r in written_facts.values()]))
                 consumer["fact_versions"].update({identity: r["version"] for identity, r in written_facts.items()})
             local = self._binding_answer(request, binding, answer)
+            # A card may contain only unknown fields while the tool already
+            # carries confirmed facts selected before the card was displayed.
+            local["answers"] = {**tool.get("existing_answers", {}), **local["answers"]}
+            local["skipped"] = not bool(local["answers"])
             self._tool_result(tool, local, "skipped" if local["skipped"] else "completed")
             changes.append({"event": "input_answered", "node_id": binding["task_id"]})
 
@@ -1616,36 +1771,50 @@ class HarnessRuntime:
         tool.update(status="waiting_for_user", input_request_id=request["id"])
         changes.append({"event": "input_requested" if request["status"] == "pending" else "input_queued", "node_id": task["id"]})
 
-    def answer(self, request_id, submission):
+    def answer(self, request_id, submission, *, allow_partial=False, allow_correction=False):
+        """Resolve grouped cards while allowing the minimal V3 adapter to hide IDs.
+
+        The group placement, shared-field fan-out and tool completion below stay
+        cj-10's implementation.  Only identity, partial submission and correction
+        policy differ for the trusted V3 adapter.
+        """
         run_id = self.store.request_run(request_id)
         def apply(run, changes, db):
             if run["user_id"] != submission.user_id or run["profile_id"] != submission.profile_id:
                 raise HarnessError("HARNESS_ACCESS_DENIED", 403)
             request = run["inputs"][request_id]
-            if request.get("submission_id") == submission.submission_id:
-                if request.get("submission") != submission.model_dump():
+            answer = validate_answers(request["fields"], submission, allow_partial=allow_partial)
+            canonical = json.dumps(answer, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            submission_id = submission.submission_id or "server_" + hashlib.sha256(
+                f"{request_id}:{canonical}".encode("utf-8")
+            ).hexdigest()[:32]
+            if request.get("submission_id") == submission_id:
+                if request.get("submission_canonical") not in {None, canonical}:
                     raise HarnessError("SUBMISSION_ID_REUSED", 409)
                 return {"request_id": request_id, "status": request["status"], "run_id": run_id}
-            if run["status"] in TERMINAL or request["status"] != "pending" or request["version"] != submission.expected_version:
+            if request["status"] == "answered" and allow_correction and run["status"] not in TERMINAL:
+                if request.get("submission_canonical") == canonical:
+                    return {"request_id": request_id, "status": request["status"], "run_id": run_id}
+                request.update(answer=answer, submission_id=submission_id, submission_canonical=canonical,
+                               version=request["version"] + 1, corrected_at=now())
+                written_facts = self._write_grouped_answer_facts(run, request, answer, submission_id, changes, db)
+                for binding in request["bindings"]:
+                    task = run["tasks"][binding["task_id"]]
+                    if task["status"] not in {"failed", "cancelled"}:
+                        task.update(status="queued", stale=True, ended_at=None, lease_token="", lease_until="")
+                        task["messages"].append({"role": "user", "content": "用户已更正此前补充信息，请使用最新事实重新分析。"})
+                        changes.append({"event": "input_corrected", "node_id": task["id"]})
+                        self._invalidate_consumers(run, task["id"], changes)
+                self._settle(run, changes, db)
+                return {"request_id": request_id, "status": request["status"], "run_id": run_id, "corrected": True}
+            if run["status"] in TERMINAL or request["status"] != "pending" or (
+                submission.expected_version is not None and request["version"] != submission.expected_version
+            ):
                 raise HarnessError("INPUT_REQUEST_INACTIVE", 409)
-            answer = validate_answers(request["fields"], submission)
-            request.update(status="skipped" if answer["skipped"] else "answered", answer=answer, submission_id=submission.submission_id,
-                           submission=submission.model_dump(), version=request["version"] + 1)
-            task = run["tasks"][request["bindings"][0]["task_id"]]
-            written_facts = {}
-            for index, field in sorted(enumerate(request["fields"]), key=lambda item: request["identities"][item[0]]):
-                if field["key"] not in answer["answers"]:
-                    continue
-                key = cp.question_key(field) if cp.enabled(run) else field.get("fact_key") or field["key"]
-                identity = request["identities"][index]
-                record = self.store.write_fact(db, identity, {"key": key, "scope": field["scope"], "value": answer["answers"][field["key"]],
-                    "status": "confirmed", "source": {"input_request_id": request_id, "submission_id": submission.submission_id}})
-                written_facts[identity] = record
-                run["seed_facts"].pop(identity, None)
-                self._invalidate_fact_version(run, identity, record["version"], changes)
-            # Deliver shared fields to forms which still have different fields
-            # outstanding. Their own card remains queued/pending, but it no
-            # longer asks for this value a second time.
+            request.update(status="skipped" if answer["skipped"] else "answered", answer=answer,
+                           submission_id=submission_id, submission_canonical=canonical,
+                           version=request["version"] + 1)
+            written_facts = self._write_grouped_answer_facts(run, request, answer, submission_id, changes, db)
             for target in run["inputs"].values():
                 dependencies = [item for item in target.get("shared_dependencies", []) if item["request_id"] == request_id]
                 if not dependencies or target["status"] not in {"pending", "queued"}:
@@ -1662,6 +1831,22 @@ class HarnessRuntime:
             self._settle(run, changes, db)
             return {"request_id": request_id, "status": request["status"], "run_id": run_id}
         return self.store.mutate(run_id, apply)
+
+    def _write_grouped_answer_facts(self, run, request, answer, submission_id, changes, db):
+        """Keep cj-10's canonical question identities for cross-expert reuse."""
+        written_facts = {}
+        for index, field in sorted(enumerate(request["fields"]), key=lambda item: request["identities"][item[0]]):
+            if field["key"] not in answer["answers"]:
+                continue
+            key = cp.question_key(field) if cp.enabled(run) else field.get("fact_key") or field["key"]
+            identity = request["identities"][index]
+            record = self.store.write_fact(db, identity, {"key": key, "scope": field["scope"],
+                "value": answer["answers"][field["key"]], "status": "confirmed",
+                "source": {"input_request_id": request["id"], "submission_id": submission_id}})
+            written_facts[identity] = record
+            run["seed_facts"].pop(identity, None)
+            self._invalidate_fact_version(run, identity, record["version"], changes)
+        return written_facts
 
     def _invalidate_fact_version(self, run, identity, version, changes):
         if cp.enabled(run):
@@ -1836,11 +2021,22 @@ class HarnessRuntime:
             actor = "主 agent" if task["kind"] == "main" else run["policy"]["experts"].get(task.get("expert_id"), {}).get("name", "主 agent")
             title = run["policy"]["skills"][task["skill_id"]]["name"] if task["kind"] == "skill" else task["goal"]
             expert_id = str(task.get("expert_id") or "").strip() or None
+            phase, action = _public_phase(run, task)
+            children = [child for child in run["tasks"].values() if child.get("parent_id") == task["id"]]
+            structured = task.get("structured_result") if isinstance(task.get("structured_result"), dict) else None
             nodes.append({
                 "id": task["id"], "parent_id": task["parent_id"], "kind": task["kind"], "title": title, "actor": actor,
                 "expert_id": expert_id,
                 "status": task["status"], "created_at": task.get("created_at"), "started_at": task["started_at"],
                 "ended_at": task["ended_at"], "error": task.get("error"), "stale": task.get("stale", False),
+                "brief": deepcopy(task.get("brief") or {"objective": task.get("goal", ""), "completion": task.get("completion", "")}),
+                "phase": phase, "action": action,
+                "result": {"status": structured.get("status"), "conclusion": structured.get("conclusion", ""),
+                           "findings": structured.get("findings", []), "limitations": structured.get("limitations", []),
+                           "unresolved": structured.get("unresolved", [])} if structured else None,
+                "waiting_on": list(task.get("depends_on") or []),
+                "children_count": len(children),
+                "completed_children_count": sum(child.get("status") in TERMINAL for child in children),
             })
         tasks_by_id = run["tasks"]
         for tool in run["tools"].values():
@@ -1865,10 +2061,21 @@ class HarnessRuntime:
                            "request_ids": request_ids, "active_request_id": group.get("active_request_id"),
                            "total_count": len(request_ids), "completed_count": sum(item["status"] in {"answered", "skipped", "expired"} for item in members),
                            "actors": list(dict.fromkeys(item.get("actor", "主 agent") for item in members))})
-        return {"run_id": run["run_id"], "session_id": run["session_id"], "profile_id": run["profile_id"], "goal": run["goal"], "status": run["status"], "version": run["version"], "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
+        root_task = run["tasks"].get(run["root_task_id"], {})
+        fallback_phase, fallback_action = _public_phase(run, root_task) if root_task else ("running", "正在执行")
+        return {"run_id": run["run_id"], "client_run_id": run.get("client_run_id"),
+                "assistant_message_id": run.get("assistant_message_id") or f"msg_harness_{run['run_id']}",
+                "record_version": run["version"], "session_id": run["session_id"], "profile_id": run["profile_id"],
+                "goal": run["goal"], "status": run["status"], "outcome": run.get("outcome"), "version": run["version"],
+                "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "input_groups": groups,
-                "created_at": run["created_at"], "updated_at": run["updated_at"], "phase": run.get("phase", ""), "result": run.get("result", ""), "error": run.get("error"),
-                "orchestrated": bool(run["policy"].get("orchestrated")), "orchestration": run.get("orchestration"),
+                "created_at": run["created_at"], "updated_at": run["updated_at"],
+                "phase": run.get("phase") or fallback_phase, "action": run.get("action") or fallback_action,
+                "dispatch": public_dispatch(run),
+                "synthesis_status": "completed" if run.get("tail_done") else ("running" if run.get("phase") in {"synthesizing", "recommending"} else "pending"),
+                "recommendations_status": run.get("recommendations_status") or ("completed" if run.get("jump_cards") else ("not_started" if not run.get("tail_done") else "not_available")),
+                "result": run.get("result", ""), "error": run.get("error"),
+                "orchestrated": bool(run["policy"].get("orchestrated")),
                 "round_experts": public_round_experts(run), "jump_cards": public_jump_cards(run),
                 "input_tokens_estimated": run.get("input_tokens_estimated", 0), "input_tokens_actual": run.get("input_tokens_actual") if run.get("input_token_measurements") else None,
                 "input_token_limit": run["policy"]["settings"].get("max_run_input_tokens", 300000),

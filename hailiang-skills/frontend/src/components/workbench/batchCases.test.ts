@@ -58,7 +58,7 @@ describe("casesFromRows", () => {
 
   it("reads an xlsx sheet with the evaluation headers", async () => {
     const loaded = await import("xlsx");
-    const XLSX = "read" in loaded ? loaded : loaded.default;
+    const XLSX = loaded;
     const book = XLSX.utils.book_new();
     const sheet = XLSX.utils.aoa_to_sheet([
       ["场景（skill）", "首轮对话 (1)", "画像信息 (1)", "会话最终目标 (1)"],

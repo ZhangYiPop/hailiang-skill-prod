@@ -3,9 +3,16 @@ import type { HarnessRun, HarnessNode, HarnessInput } from "@/types/harness";
 import { isHarnessTerminal } from "@/types/harness";
 import { harnessRequest, refreshHarness, submitHarnessAnswer, useHarnessState } from "@/hooks/useHarnessConversation";
 import { useChatStore } from "@/store/useChatStore";
+import { createUuid } from "@/utils/uuid";
 
-const labels: Record<string, string> = { queued: "排队中", running: "执行中", waiting_for_dependency: "等待任务结果",
+const labels: Record<string, string> = { queued: "排队中", assigned: "已分派", running: "执行中", waiting_for_dependency: "等待前置任务",
   waiting_for_user: "等待你补充", completed: "已完成", failed: "执行失败", cancelled: "已停止", skipped: "未补充" };
+
+function briefText(brief: HarnessNode["brief"]): string {
+  if (!brief) return "";
+  if (typeof brief === "string") return brief;
+  return String(brief.objective || brief.goal || brief.completion || "");
+}
 
 export type SubmitHarnessAnswer = (request: HarnessInput, answers: Record<string, unknown>, skipped: boolean, submissionId: string) => Promise<void>;
 export function AgentInputRequest({ request, sessionId, onSubmitAnswer, groupProgress }: { request: HarnessInput; sessionId: string; onSubmitAnswer?: SubmitHarnessAnswer; groupProgress?: string }) {
@@ -29,7 +36,7 @@ export function AgentInputRequest({ request, sessionId, onSubmitAnswer, groupPro
     const serialized = JSON.stringify(body);
     let cached: { body: string; id: string } | null = null;
     try { cached = JSON.parse(sessionStorage.getItem(submissionKey) || "null"); } catch { /* empty */ }
-    body.submission_id = cached?.body === serialized ? cached.id : crypto.randomUUID();
+    body.submission_id = cached?.body === serialized ? cached.id : createUuid();
     sessionStorage.setItem(submissionKey, JSON.stringify({ body: serialized, id: body.submission_id }));
     try {
       if (onSubmitAnswer) await onSubmitAnswer(request, skipped ? {} : drafts, skipped, body.submission_id);
@@ -210,10 +217,20 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
           <span className={`ml-2 text-xs ${node.status === "waiting_for_user" ? "text-amber-200" : node.status === "failed" ? "text-rose-300" : "text-cyan-200"}`}>{labels[node.status] || node.status}</span>
           {(node.attempts ?? 0) > 1 && <span className="ml-2 text-xs text-slate-400">第 {node.attempts} 次执行</span>}
         </summary>
+        {(node.action || briefText(node.brief)) && <div className="pb-2 text-xs text-slate-400">
+          {node.action ? <p>{node.action}</p> : null}
+          {briefText(node.brief) ? <p className="mt-1">任务：{briefText(node.brief)}</p> : null}
+          {node.waiting_on?.length ? <p className="mt-1 text-amber-200">等待：{node.waiting_on.join("、")}</p> : null}
+        </div>}
         {io ? <StepIoNodes io={io} /> : null}
         {showExperts ? <RoundExpertsTransfer run={run} /> : null}
         {showRecommend ? <JumpCardsTransfer run={run} /> : null}
         {children.map((child) => render(child, depth + 1))}
+        {node.result?.conclusion && <div className="mb-2 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-3 text-xs text-emerald-100">
+          <p className="font-medium">专家结论</p><p className="mt-1 whitespace-pre-wrap">{node.result.conclusion}</p>
+          {node.result.findings?.length ? <p className="mt-1 text-slate-300">依据：{node.result.findings.join("；")}</p> : null}
+          {node.result.limitations?.length ? <p className="mt-1 text-amber-200">限制：{node.result.limitations.join("；")}</p> : null}
+        </div>}
         {requests.filter((q) => !["pending", "queued"].includes(q.status)).map((q) => <AgentInputRequest key={q.id} request={q} sessionId={run.session_id} onSubmitAnswer={onSubmitAnswer} />)}
         {node.error && <p className="text-xs text-rose-300">失败原因：{node.error}</p>}
       </details>
@@ -221,11 +238,33 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
   };
   return <section aria-label="任务动态状态" className="rounded-2xl border border-cyan-300/20 bg-cyan-950/20 p-4">
     <p className="text-sm text-cyan-100">{run.goal} · {labels[run.status] || "处理中"}</p>
-    {run.phase && !isHarnessTerminal(run.status) && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-300">{run.phase}</p>}
+    {(run.action || run.phase) && !isHarnessTerminal(run.status) && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-300">{run.action || run.phase}</p>}
     <p className="mt-1 text-xs text-slate-400">已完成 {run.completed_count} / {run.task_count} 项任务 · {run.waiting_count} 项等待补充 · {Math.max(0, Math.floor((end - Date.parse(run.created_at)) / 1000))}s</p>
     {run.input_token_limit && <p className="mt-1 text-xs text-slate-400">累计模型输入估算 {run.input_tokens_estimated?.toLocaleString() ?? 0} / {run.input_token_limit.toLocaleString()} token{run.input_tokens_actual != null ? ` · 已回报实际输入 ${run.input_tokens_actual.toLocaleString()} token` : ""}</p>}
     {connection === "reconnecting" && !isHarnessTerminal(run.status) && <p role="status" className="mt-2 text-xs text-amber-200">连接恢复中，后台任务继续执行</p>}
+    {run.dispatch && <div className="mt-3 rounded-xl border border-violet-300/20 bg-violet-300/5 p-3">
+      <p className="text-sm text-violet-100">任务拆解：已分派 {run.dispatch.planned_expert_count} 位专家、{run.dispatch.planned_task_count} 个任务</p>
+      <p className="mt-1 text-xs text-slate-400">当前可执行 {run.dispatch.ready_task_count ?? run.dispatch.parallel_task_count} 个 · 等待依赖 {run.dispatch.blocked_task_count ?? 0} 个 · 最大并行 {run.dispatch.max_parallelism ?? "—"}</p>
+      <div className="mt-2 space-y-2">{run.dispatch.experts.map((expert) => <div key={expert.subtask_id} className="rounded-lg border border-white/10 p-2 text-xs">
+        <div className="flex items-center justify-between gap-2"><span className="text-slate-200">{expert.name}</span><span className="text-cyan-200">{labels[expert.status] || expert.status}</span></div>
+        {expert.brief ? <p className="mt-1 text-slate-400">专家职责：{expert.brief}</p> : null}
+        {expert.task_brief ? <p className="mt-1 text-slate-300">本次任务：{expert.task_brief}</p> : null}
+        {expert.completion_criteria ? <p className="mt-1 text-slate-400">完成条件：{expert.completion_criteria}</p> : null}
+        {expert.depends_on.length ? <p className="mt-1 text-amber-200">依赖：{expert.depends_on.join("、")}</p> : <p className="mt-1 text-slate-500">{expert.can_run_now ? "可并行执行" : "等待调度"}</p>}
+      </div>)}</div>
+    </div>}
     {sortNodes(run.nodes.filter((n) => !n.parent_id)).map((n) => render(n))}
+    {run.synthesis_status === "running" && !isHarnessTerminal(run.status) && <p className="mt-3 rounded-lg border border-cyan-300/20 p-2 text-xs text-cyan-100">编排器正在汇总专家结论</p>}
+    {run.recommendations_status === "running" && <p className="mt-2 rounded-lg border border-cyan-300/20 p-2 text-xs text-cyan-100">正在生成相关推荐</p>}
+    {run.recommendations_status === "completed" && <div className="mt-2 rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-3 text-xs text-emerald-100">
+      <p className="font-medium">相关推荐已生成</p>
+      {run.jump_cards?.map((card) => <div key={card.id || `${card.intent}:${card.object_type}:${card.title}`} className="mt-2 rounded-lg border border-white/10 p-2">
+        <p className="text-slate-100">{card.title}</p><p className="mt-1 text-slate-300">{card.description}</p>
+        {card.reason ? <p className="mt-1 text-slate-400">推荐原因：{card.reason}</p> : null}
+      </div>)}
+    </div>}
+    {run.recommendations_status === "empty" && <p className="mt-2 text-xs text-slate-400">本轮没有匹配的相关推荐</p>}
+    {run.recommendations_status === "failed" && <p className="mt-2 text-xs text-amber-200">相关推荐暂时未生成，已保留专家结论和最终回复</p>}
     {run.inputs.filter((q) => q.status === "pending").map((q) => {
       const owner = run.nodes.find((n) => n.id === q.owner_task_id);
       const group = run.input_groups?.find((item) => item.id === q.group_id);
