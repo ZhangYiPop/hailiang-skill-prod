@@ -40,7 +40,11 @@ BFF 到算法服务的请求外层与 v2 一致，`input` 必须是 JSON 字符�
 ```
 
 ```json
-{"action":"answer_input_request","request_id":"input_xxx","answers":{"province":"浙江"},"skipped":false,"expert_team_id":["student_growth_expert_team"]}
+{"action":"answer_input_request","assistant_message_id":"msg_xxx","request_id":"input_xxx","answers":{"province":"浙江"},"skipped":false,"expert_team_id":["student_growth_expert_team"]}
+```
+
+```json
+{"action":"resume","assistant_message_id":"msg_xxx","expert_team_id":["student_growth_expert_team"]}
 ```
 
 ```json
@@ -48,7 +52,7 @@ BFF 到算法服务的请求外层与 v2 一致，`input` 必须是 JSON 字符�
 ```
 
 `expert_team_id` 是 `chat` 和 `answer_input_request` 的必填团队边界。推荐类型是 `string[]`，例如 `["student_growth_expert_team"]`；单字符串兼容已有调用。当前 `orchestrator_head` 仅支持单团队编排，数组传入多个团队会返回 `422 MULTI_EXPERT_TEAMS_NOT_ENABLED`，绝不会悄悄选择第一个。服务端验证该团队与协调专家后冻结到本次 run 的 policy。新的 `chat` 可换团队；服务端会取消当前活动 run 并以新团队重新编排。回答必须带所属 run 的同一团队选择，团队不匹配返回 `409 EXPERT_TEAM_MISMATCH`。停止由 BFF 转发，不传团队。
-回答卡不传 `submission_id`、`expected_version`。服务端按 `request_id` 和规范化答案去重：相同答案幂等返回；不同答案在活动任务中作为用户更正写入新事实版本并重新分析依赖旧事实的节点。
+回答卡不传 `submission_id`、`expected_version`，但必须传当前气泡的 `assistant_message_id`。服务端按 `request_id` 和规范化答案去重：相同答案幂等返回；不同答案在活动任务中作为用户更正写入新事实版本并重新分析依赖旧事实的节点。`resume` 用于在 `done_timeout`、App 重启或网络恢复后重新接入同一个尚未结束的任务；它不会重新拆分或分派专家。
 
 ## SSE 响应
 
@@ -100,7 +104,7 @@ data: {"protocol":"hailiang.sse.v3","run_id":"bff_run_xxx","state":{...}}
 }
 ```
 
-同一任务所有帧的 `assistant_message_id` 不变。任务树、表单、专家结论与最终正文都更新一个助手气泡，最终正文不能另建气泡。`run_id` 是 BFF 的请求幂等与恢复键，响应中原样回显；不返回 `client_run_id` 或 `harness_run_id`。`expert_team_id` 是当前实际单团队 ID，`expert_team_ids` 是规范化的请求选择列表，`team_orchestration_version` 当前为 `single_team_v1`。旧记录缺少该字段时也按 `single_team_v1` 处理。
+同一任务所有帧的 `assistant_message_id` 不变。任务树、表单、专家结论与最终正文都更新一个助手气泡，最终正文不能另建气泡。`run_id` 是 BFF 为**本次 HTTP 请求**生成的幂等键，响应中原样回显；它不能判断气泡归属或恢复任务。`assistant_message_id` 才是恢复和关联同一气泡的稳定键；不返回 `client_run_id` 或 `harness_run_id`。`expert_team_id` 是当前实际单团队 ID，`expert_team_ids` 是规范化的请求选择列表，`team_orchestration_version` 当前为 `single_team_v1`。旧记录缺少该字段时也按 `single_team_v1` 处理。
 
 ### 专家执行树：前端如何读取“某位专家正在做什么”
 
@@ -122,7 +126,7 @@ V3 的默认等待上限为 **600 秒（10 分钟）**，可由算法服务环�
 
 用户提交当前卡片后，服务端标记该卡片 `answered` 或 `skipped`。若当前组还有请求，下一张依 `active_request_id` 激活；当前组全部解决后，组变为 `completed`，服务端提升最早的排队组。专家任务在答案写入事实账本后恢复；它可能继续分析，也可能生成下一轮追问。因此前端每次都应以最新完整帧替换状态，再重新查找活动卡片，不能在客户端自行推进。
 
-回答请求继续调用同一 `/api/v3/sessions/chat/stream`，沿用 `run_id`、`session_id` 与 `expert_team_id`，动作是 `answer_input_request`，`request_id` 使用活动输入的 `id`。多字段表单传 `answers`；单个文本字段可传 `text`；整张卡片跳过时传 `skipped=true` 且答案为空。V3 支持部分答案，未提供的字段会被记为跳过；部分字段本身不会触发多次恢复。服务端对相同答案幂等处理。
+回答请求继续调用同一 `/api/v3/sessions/chat/stream`，携带新的或重试中的 `run_id`、`session_id`、`expert_team_id`、当前 `assistant_message_id`，动作是 `answer_input_request`，`request_id` 使用活动输入的 `id`。多字段表单传 `answers`；单个文本字段可传 `text`；整张卡片跳过时传 `skipped=true` 且答案为空。V3 支持部分答案，未提供的字段会被记为跳过；部分字段本身不会触发多次恢复。服务端对相同答案幂等处理。
 
 活动卡片出现时，如果其他专家或工具还在运行，流仍会持续以 `state` 更新；只有没有可运行任务且存在待答卡片时才会结束本次流并发 `done_suspended`。前端应每次收到 `state` 就检查 `input_queue` 和 `inputs`，不要等 `done_suspended` 才展示表单。表单状态由完整快照决定，`event` 名称只决定持久化动作。
 
@@ -138,6 +142,6 @@ V3 的默认等待上限为 **600 秒（10 分钟）**，可由算法服务环�
 
 ### App 或转发链路中断后的续接
 
-本期 BFF 不需要、也不要求调用 Harness 快照读取接口。BFF 在收到每个 `state` 后保留最新完整帧，同时保存原始 `chat` 启动请求和 `run_id`。用户回到 App 且记录为 `running` 时，BFF 用相同启动请求和相同 `run_id` 重试本入口；服务端返回既有任务并先发送新的完整 `state`，不会重复分派专家。若记录为 `waiting_for_user`，App 直接展示该帧中的活动卡片；提交答案仍调用同一入口。
+本期 BFF 不需要、也不要求调用 Harness 快照读取接口。BFF 在收到每个 `state` 后保留最新完整帧、原始 `chat` 请求、`assistant_message_id` 和团队选择。用户回到 App 且记录为 `running` 时，BFF 用新的 `run_id` 和该 `assistant_message_id` 发 `resume`；服务端返回既有任务并先发送新的完整 `state`，不会重复分派专家。若记录为 `waiting_for_user`，App 直接展示该帧中的活动卡片；提交答案以同一 `assistant_message_id` 继续原任务。
 
 前端到 BFF 的完整 cURL 场景（新问题、部分回答、跳过、超时续接、新问题打断和停止）见 [SSE_V3_CURL_TEST_PLAYBOOK.md](SSE_V3_CURL_TEST_PLAYBOOK.md)。

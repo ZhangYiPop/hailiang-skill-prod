@@ -17,7 +17,7 @@ export PROFILE_ID="sse-v3-curl-profile"
 ```
 
 - `SESSION_ID`：BFF 的会话 ID。
-- `RUN_ID`：BFF 为本次用户问题创建的幂等和恢复键。所有回答、停止和重连都使用同一个值。
+- `RUN_ID`：BFF 为一次 HTTP 请求创建的幂等键。重试同一请求时复用；回答和恢复可生成新的值。`assistant_message_id` 才是同一任务和气泡的稳定关联键。
 - `TEAM_ID`：本轮选择的专家团。`chat` 与 `answer_input_request` 必传；本文使用推荐的单元素数组形式。`stop` 不传。
 - 当前编排头只支持一个团队。接口已预留数组类型；传两个或更多团队会返回 `422 MULTI_EXPERT_TEAMS_NOT_ENABLED`，不会只取第一个。
 - 首帧和后续完整帧均应回显 `team_orchestration_version="single_team_v1"`；缺少该字段的历史记录也按此语义处理。
@@ -68,8 +68,9 @@ frames /tmp/sse-v3-chat.sse | jq -c '{run_id, assistant_message_id, expert_team_
 取得当前表单 ID：
 
 ```bash
+export ASSISTANT_MESSAGE_ID="$(frames /tmp/sse-v3-chat.sse | jq -r '.assistant_message_id' | tail -1)"
 export REQUEST_ID="$(frames /tmp/sse-v3-chat.sse | jq -r '.state.inputs[]? | select(.status=="pending") | .id' | tail -1)"
-echo "$REQUEST_ID"
+echo "$ASSISTANT_MESSAGE_ID / $REQUEST_ID"
 ```
 
 ## 3. 回答多字段表单：恢复、分派专家、查看执行树
@@ -80,8 +81,8 @@ echo "$REQUEST_ID"
 cat >/tmp/sse-v3-answer.json <<JSON
 {
   "session_id":"$SESSION_ID",
-  "run_id":"$RUN_ID",
-  "input":"{\"action\":\"answer_input_request\",\"request_id\":\"$REQUEST_ID\",\"expert_team_id\":[\"$TEAM_ID\"],\"answers\":{\"user_role\":\"家长\",\"school_stage\":\"高中\"},\"skipped\":false}",
+  "run_id":"${RUN_ID}-answer-1",
+  "input":"{\"action\":\"answer_input_request\",\"assistant_message_id\":\"$ASSISTANT_MESSAGE_ID\",\"request_id\":\"$REQUEST_ID\",\"expert_team_id\":[\"$TEAM_ID\"],\"answers\":{\"user_role\":\"家长\",\"school_stage\":\"高中\"},\"skipped\":false}",
   "context_data":{"user_id":"$USER_ID","profile_id":"$PROFILE_ID"}
 }
 JSON
@@ -124,8 +125,8 @@ export REQUEST_ID="$(frames /tmp/sse-v3-answer.sse | jq -r '.state.inputs[]? | s
 cat >/tmp/sse-v3-partial.json <<JSON
 {
   "session_id":"$SESSION_ID",
-  "run_id":"$RUN_ID",
-  "input":"{\"action\":\"answer_input_request\",\"request_id\":\"$REQUEST_ID\",\"expert_team_id\":[\"$TEAM_ID\"],\"answers\":{\"province\":\"浙江\"},\"skipped\":false}",
+  "run_id":"${RUN_ID}-partial-1",
+  "input":"{\"action\":\"answer_input_request\",\"assistant_message_id\":\"$ASSISTANT_MESSAGE_ID\",\"request_id\":\"$REQUEST_ID\",\"expert_team_id\":[\"$TEAM_ID\"],\"answers\":{\"province\":\"浙江\"},\"skipped\":false}",
   "context_data":{"user_id":"$USER_ID","profile_id":"$PROFILE_ID"}
 }
 JSON
@@ -140,8 +141,8 @@ curl -sS -N --max-time 620 -H 'Content-Type: application/json' -H 'Accept: text/
 cat >/tmp/sse-v3-skip.json <<JSON
 {
   "session_id":"$SESSION_ID",
-  "run_id":"$RUN_ID",
-  "input":"{\"action\":\"answer_input_request\",\"request_id\":\"$REQUEST_ID\",\"expert_team_id\":[\"$TEAM_ID\"],\"answers\":{},\"skipped\":true}",
+  "run_id":"${RUN_ID}-skip-1",
+  "input":"{\"action\":\"answer_input_request\",\"assistant_message_id\":\"$ASSISTANT_MESSAGE_ID\",\"request_id\":\"$REQUEST_ID\",\"expert_team_id\":[\"$TEAM_ID\"],\"answers\":{},\"skipped\":true}",
   "context_data":{"user_id":"$USER_ID","profile_id":"$PROFILE_ID"}
 }
 JSON
@@ -177,14 +178,22 @@ export REQUEST_ID="$(frames /tmp/sse-v3-partial.sse | jq -r 'select(.state.input
 
 ## 5. `done_timeout` 后恢复同一任务
 
-不调用任何查询接口。直接以**原始 chat 请求文件**和同一 `RUN_ID` 重连：
+不调用任何查询接口。使用保存的 `assistant_message_id` 和新的请求 `run_id` 发 `resume`：
 
 ```bash
+cat >/tmp/sse-v3-resume.json <<JSON
+{
+  "session_id":"$SESSION_ID",
+  "run_id":"${RUN_ID}-resume-1",
+  "input":"{\"action\":\"resume\",\"assistant_message_id\":\"$ASSISTANT_MESSAGE_ID\",\"expert_team_id\":[\"$TEAM_ID\"]}",
+  "context_data":{"user_id":"$USER_ID","profile_id":"$PROFILE_ID"}
+}
+JSON
 curl -sS -N --max-time 620 -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
-  --data-binary @/tmp/sse-v3-chat.json "$API_BASE/api/v3/sessions/chat/stream" | tee /tmp/sse-v3-reconnect.sse
+  --data-binary @/tmp/sse-v3-resume.json "$API_BASE/api/v3/sessions/chat/stream" | tee /tmp/sse-v3-reconnect.sse
 ```
 
-预期：第一帧仍为同一个 `run_id` 和 `assistant_message_id`；已经出现的 `dispatch`、节点、表单和专家结论仍在 `state`，不会重复分派专家。
+预期：第一帧回显新的请求 `run_id`，但仍为同一个 `assistant_message_id`；已经出现的 `dispatch`、节点、表单和专家结论仍在 `state`，不会重复分派专家。
 
 本地要快速复现超时，可在启动算法服务前设置：
 

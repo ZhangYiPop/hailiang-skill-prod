@@ -281,6 +281,7 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         assert '"should_store_snapshot": true' in response.text
         frame = json.loads(next(line.removeprefix('data: ') for line in response.text.splitlines() if line.startswith('data: ')))
         assert frame['run_id'] == 'client-1'
+        assistant_message_id = frame['assistant_message_id']
         assert frame['state']['nodes'][0]['id'] == 'node_1'
         assert 'root_task_id' not in frame['state']
         run = runtime.store.active('s')
@@ -299,9 +300,19 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         assert len(runtime.store.runs('s')) == 1
         advance(runtime, run['run_id'], 4)
         request = next(iter(runtime.store.get(run['run_id'])['inputs'].values()))
+        # A fresh BFF request ID still restores the same task via the stable
+        # assistant bubble ID; it must not require the original chat run_id.
+        resumed = client.post('/api/v3/sessions/chat/stream', json={
+            'session_id': 's', 'run_id': 'resume-1',
+            'input': json.dumps({'action': 'resume', 'assistant_message_id': assistant_message_id, 'expert_team_id': 'team-a'}, ensure_ascii=False),
+            'context_data': {'user_id': 'u', 'profile_id': 'p'},
+        })
+        assert resumed.status_code == 200
+        assert f'"run_id": "resume-1"' in resumed.text
+        assert f'"assistant_message_id": "{assistant_message_id}"' in resumed.text
         answer = {
-            'session_id': 's', 'run_id': 'client-1',
-            'input': json.dumps({'action': 'answer_input_request', 'request_id': request['id'], 'text': '高二', 'expert_team_id': 'team-a'}, ensure_ascii=False),
+            'session_id': 's', 'run_id': 'answer-1',
+            'input': json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高二', 'expert_team_id': 'team-a'}, ensure_ascii=False),
             'context_data': {'user_id': 'u', 'profile_id': 'p'},
         }
         accepted = client.post('/api/v3/sessions/chat/stream', json=answer)
@@ -311,11 +322,13 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         # A different later submission is an explicit correction, without a
         # client submission ID or card version.
         correction = deepcopy(answer)
-        correction['input'] = json.dumps({'action': 'answer_input_request', 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-a'}, ensure_ascii=False)
+        correction['run_id'] = 'answer-2'
+        correction['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-a'}, ensure_ascii=False)
         assert client.post('/api/v3/sessions/chat/stream', json=correction).status_code == 200
         assert runtime.store.scoped_facts('u', 'profile', 'p')['grade']['value'] == '高三'
         mismatch = deepcopy(answer)
-        mismatch['input'] = json.dumps({'action': 'answer_input_request', 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-b'}, ensure_ascii=False)
+        mismatch['run_id'] = 'answer-mismatch'
+        mismatch['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-b'}, ensure_ascii=False)
         assert client.post('/api/v3/sessions/chat/stream', json=mismatch).status_code == 409
         missing_team = deepcopy(body)
         missing_team['run_id'] = 'client-missing-team'

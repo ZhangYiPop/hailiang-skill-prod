@@ -11,13 +11,13 @@ V3 的一帧是一个**完整助手气泡快照**。BFF 将最新帧整体替换
 | 字段 | 来源 | 含义 |
 | --- | --- | --- |
 | `session_id` | BFF | 会话 ID。请求和每个 SSE 帧原样一致。 |
-| `run_id` | BFF | 一次用户任务的幂等与恢复键。BFF 创建；重连必须原样复用。字段名固定为 snake_case `run_id`，不是 `runId`。 |
+| `run_id` | BFF | 一次 HTTP 请求的幂等键。BFF 创建，重试同一请求时复用；恢复或回答可使用新的值。字段名固定为 snake_case `run_id`，不是 `runId`。 |
 | `assistant_message_id` | 算法服务 | 此次 Harness 任务的稳定助手气泡 ID。任务拆解、专家过程、表单、专家结论和最终正文都更新该气泡。 |
 | `expert_team_id` | BFF | 除 `stop` 外每个 `input` 的必填团队选择器。兼容单个字符串；推荐传字符串数组，为多专家团预留。首次 `chat` 选择团队，后续表单回答和重连沿用同一选择。 |
 | `expert_team_ids` | 算法服务 | 每帧回显的规范化团队选择数组。当前与 `expert_team_id` 一一对应；未来多团队编排启用后才可能含多个值。 |
 | `team_orchestration_version` | 算法服务 | 本 run 的团队编排兼容版本。当前固定为 `single_team_v1`；旧记录缺失时也按该单团队语义解释。 |
 
-`assistant_message_id` 不能把两个不同 `run_id` 合并；BFF 改用新 `run_id` 就是新任务和新气泡。算法不在产品帧中暴露 `client_run_id`、`harness_run_id`、数据库运行 ID 或真实节点 ID；这些只属于受控调试接口。
+`assistant_message_id` 是同一任务和气泡的唯一关联键；BFF 改用新 `run_id` 不会创建新任务，只要 `answer_input_request` 或 `resume` 仍携带原 `assistant_message_id`。只有新的 `chat` 才创建新任务和新气泡。算法不在产品帧中暴露 `client_run_id`、`harness_run_id`、数据库运行 ID 或真实节点 ID；这些只属于受控调试接口。
 
 算法不提供点赞、点踩或分享能力。BFF 可以用 `session_id + run_id + assistant_message_id` 关联自己的消息和互动记录。
 
@@ -32,6 +32,7 @@ V3 的一帧是一个**完整助手气泡快照**。BFF 将最新帧整体替换
 ```json
 {
   "action":"answer_input_request",
+  "assistant_message_id":"msg_xxx",
   "request_id":"input_req_xxx",
   "expert_team_id":["student_growth_expert_team"],
   "answers":{"province":"浙江"},
@@ -39,6 +40,12 @@ V3 的一帧是一个**完整助手气泡快照**。BFF 将最新帧整体替换
   "skipped":false
 }
 ```
+
+```json
+{"action":"resume","assistant_message_id":"msg_xxx","expert_team_id":["student_growth_expert_team"]}
+```
+
+`resume` 用于 `done_timeout`、App 重启或网络恢复后重新接入尚未结束的同一任务；使用新的 `run_id` 不会重新分派专家。若任务已终态，服务端只回放原 `done`。
 
 停止仍走现有 BFF 停止接口（例如 `/api/v4/chat/stop`），由 BFF 使用原 `session_id`、`run_id` 转发：
 
@@ -309,13 +316,13 @@ main（主编排器）
 
 ### 回答请求
 
-沿用同一个 `run_id`、`session_id` 和 `expert_team_id` 调用 `answer_input_request`；`request_id` 必须是当前活动卡片的 `id`。多字段卡片使用 `answers`，单个文本字段可以使用 `text`。跳过整张卡片时传 `skipped=true` 且不传答案。V3 当前允许部分答案：已提供字段被保存，缺失字段记为跳过。服务端按规范化答案幂等处理重复提交；用户在 run 仍活动时更正已提交答案，会更新事实版本并让依赖旧答案的任务重新分析。
+调用 `answer_input_request` 时使用任意新的或重试中的 `run_id`，并携带同一 `session_id`、`expert_team_id`、`assistant_message_id`；`request_id` 必须是当前活动卡片的 `id`。多字段卡片使用 `answers`，单个文本字段可以使用 `text`。跳过整张卡片时传 `skipped=true` 且不传答案。V3 当前允许部分答案：已提供字段被保存，缺失字段记为跳过。服务端按规范化答案幂等处理重复提交；用户在 run 仍活动时更正已提交答案，会更新事实版本并让依赖旧答案的任务重新分析。
 
 ```json
-{"action":"answer_input_request","request_id":"input_1","expert_team_id":["student_growth_expert_team"],"answers":{"province":"浙江"},"skipped":false}
+{"action":"answer_input_request","assistant_message_id":"msg_xxx","request_id":"input_1","expert_team_id":["student_growth_expert_team"],"answers":{"province":"浙江"},"skipped":false}
 ```
 
-回答后继续消费 SSE 事件并用每个新帧覆盖同一助手气泡。可能依次出现同组下一张卡、下一问题组、专家运行过程、由恢复后的专家提出的新一轮卡片，最后才出现 `done`。如为 `done_timeout`，任务仍在运行；按合同用原始 `chat` 请求和同一 `run_id` 重连。`done_suspended` 是可以等待用户的检查点，不代表专家团任务已经完成。
+回答后继续消费 SSE 事件并用每个新帧覆盖同一助手气泡。可能依次出现同组下一张卡、下一问题组、专家运行过程、由恢复后的专家提出的新一轮卡片，最后才出现 `done`。如为 `done_timeout`，任务仍在运行；按合同用 `assistant_message_id` 发起 `resume` 重新接入。`done_suspended` 是可以等待用户的检查点，不代表专家团任务已经完成。
 
 ## 8. 事件、保存、超时与恢复
 
@@ -326,7 +333,7 @@ main（主编排器）
 | `done_timeout` | 到达 BFF 的有限连接等待边界 | 用完整快照保存为 `running`。后台可能仍在执行；本期不自动续连。 |
 | `done` | 完成、受限完成、失败或停止 | 按 `persistence` 保存最终记录；停止时丢弃暂存，不写历史。 |
 
-BFF 需要保存：最新完整快照、原始 `chat` 请求和 `run_id`。App 被系统杀进程后回到会话，BFF 用原始请求和相同 `run_id` 重连流入口，服务端先返回此任务的最新完整快照并避免重复分派。前端不需要了解 Harness 查询接口。
+BFF 需要保存：最新完整快照、原始 `chat` 请求、`assistant_message_id` 和团队选择。App 被系统杀进程后回到会话，BFF 用新的 `run_id` 和保存的 `assistant_message_id` 发送 `resume`，服务端先返回此任务的最新完整快照并避免重复分派。前端不需要了解 Harness 查询接口。
 
 `done_timeout` 没有自动续接次数：**本期为 0 次**。它只是让 BFF 在自己的时限前可落库的检查点；UI 保持同一气泡为“仍在处理中”，等待 App 下次进入会话触发 BFF 重连。
 

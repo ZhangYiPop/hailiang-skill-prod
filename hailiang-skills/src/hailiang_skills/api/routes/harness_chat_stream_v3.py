@@ -52,9 +52,16 @@ class ChatInput(TeamBoundInput):
 class AnswerInput(TeamBoundInput):
     action: Literal["answer_input_request"]
     request_id: str = Field(min_length=1, max_length=80)
+    # Stable task/bubble ID. A new request run_id is valid for every answer.
+    assistant_message_id: str = Field(min_length=1, max_length=80)
     answers: dict[str, Any] = Field(default_factory=dict)
     text: str | None = Field(default=None, max_length=120000)
     skipped: bool = False
+
+
+class ResumeInput(TeamBoundInput):
+    action: Literal["resume"]
+    assistant_message_id: str = Field(min_length=1, max_length=80)
 
 
 class StopInput(StrictInput):
@@ -69,7 +76,7 @@ class V3ChatStreamRequest(StrictInput):
     context_data: ContextData
 
 
-def _parse_input(raw: str) -> ChatInput | AnswerInput | StopInput:
+def _parse_input(raw: str) -> ChatInput | AnswerInput | ResumeInput | StopInput:
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -82,6 +89,8 @@ def _parse_input(raw: str) -> ChatInput | AnswerInput | StopInput:
             return ChatInput.model_validate(value)
         if action == "answer_input_request":
             return AnswerInput.model_validate(value)
+        if action == "resume":
+            return ResumeInput.model_validate(value)
         if action == "stop":
             return StopInput.model_validate(value)
     except ValidationError as exc:
@@ -330,8 +339,8 @@ def _project_product_state(snapshot: dict[str, Any], run: dict[str, Any]) -> dic
     return state
 
 
-def _payload(runtime, run, *, event: str, reason: str, cursor: int = 0):
-    """Canonical minimal V3 frame: only BFF IDs plus a complete product state."""
+def _payload(runtime, run, *, request_run_id: str, event: str, reason: str, cursor: int = 0):
+    """Canonical V3 product frame with a request ID and stable bubble ID."""
     snapshot = runtime.store.public_snapshot(run["session_id"], run["user_id"], run["profile_id"])
     state = _project_product_state(snapshot, run)
     requested_team_ids = deepcopy(run.get("requested_expert_team_ids") or [run.get("policy", {}).get("team_id")])
@@ -340,15 +349,13 @@ def _payload(runtime, run, *, event: str, reason: str, cursor: int = 0):
     state["expert_team_ids"] = requested_team_ids
     state["team_orchestration_version"] = team_orchestration_version
     context = deepcopy(run.get("public_context") or {})
-    return {
+    payload = {
         "protocol": SSE_V3_PROTOCOL,
         "session_id": run["session_id"],
-        # The BFF-provided key must round-trip unchanged, including after a
-        # process restart. Internal run IDs only live in persistence/diagnostics.
-        "run_id": run.get("client_run_id"),
+        # This echoes the BFF's current HTTP request id. It is intentionally
+        # distinct from the persistent assistant_message_id below.
+        "run_id": request_run_id,
         "assistant_message_id": run.get("assistant_message_id"),
-        # Singular stays for existing BFFs; the selector list is the forward
-        # compatible contract for a future multi-team orchestrator.
         "expert_team_id": run.get("policy", {}).get("team_id"),
         "expert_team_ids": requested_team_ids,
         "team_orchestration_version": team_orchestration_version,
@@ -357,7 +364,9 @@ def _payload(runtime, run, *, event: str, reason: str, cursor: int = 0):
         "outcome": _outcome(run), "persistence": _persistence(event=event, run=run),
         **context, "state": state,
     }
-
+    if run.get("superseded_assistant_message_id"):
+        payload["superseded_assistant_message_id"] = run["superseded_assistant_message_id"]
+    return payload
 
 def _suspended(run):
     if run["status"] in TERMINAL or not any(item["status"] == "pending" for item in run["inputs"].values()):
@@ -375,24 +384,27 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         except HarnessError as exc:
             raise HTTPException(exc.status, {"code": exc.code, "message": exc.code}) from exc
 
-    async def stream(http_request: Request, harness_run_id: str):
-        # V3 remains a finite BFF request, but ten minutes gives multi-agent
-        # work a practical default before emitting a resumable checkpoint.
+    async def stream(http_request: Request, harness_run_id: str, request_run_id: str):
+        # V3 remains finite for a BFF, but background execution never depends
+        # on this connection remaining open.
         timeout_seconds = max(1, int(os.getenv("HAILIANG_HARNESS_SSE_WAIT_SECONDS", "600")))
         started = time.monotonic()
         run = await asyncio.to_thread(runtime.store.get, harness_run_id)
         initial = await asyncio.to_thread(runtime.store.public_snapshot, run["session_id"], run["user_id"], run["profile_id"])
         cursor = initial["cursor"]
-        yield format_sse_event("state", _payload(runtime, run, event="state", reason="stream_started", cursor=cursor))
+        # A terminal resume must replay only its durable final frame. It may
+        # never make the BFF briefly render an active task again.
+        if run["status"] in TERMINAL:
+            yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
+            return
+        yield format_sse_event("state", _payload(runtime, run, request_run_id=request_run_id, event="state", reason="stream_started", cursor=cursor))
         while not await http_request.is_disconnected():
             run = await asyncio.to_thread(runtime.store.get, harness_run_id)
             if run["status"] in TERMINAL:
-                yield format_sse_event("done", _payload(runtime, run, event="done", reason="terminal", cursor=cursor))
+                yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
                 return
             if _suspended(run):
-                # This is a durable checkpoint: BFF stores it as a pending
-                # assistant record, then resumes with the same client_run_id.
-                yield format_sse_event("done_suspended", _payload(runtime, run, event="done_suspended", reason="waiting_for_user", cursor=cursor))
+                yield format_sse_event("done_suspended", _payload(runtime, run, request_run_id=request_run_id, event="done_suspended", reason="waiting_for_user", cursor=cursor))
                 return
             events = await asyncio.to_thread(runtime.store.public_events, run["session_id"], run["user_id"], run["profile_id"], cursor)
             relevant = [event for event in events if event.get("run_id") == harness_run_id and event.get("type") in {"state", "done"}]
@@ -401,23 +413,54 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 latest = relevant[-1]
                 run = await asyncio.to_thread(runtime.store.get, harness_run_id)
                 event_name = "done" if latest.get("type") == "done" else "state"
-                yield format_sse_event(event_name, _payload(runtime, run, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor))
+                yield format_sse_event(event_name, _payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor))
                 if event_name == "done":
                     return
                 continue
             if time.monotonic() - started >= timeout_seconds:
-                # A finite BFF connection timing out is also a persistence
-                # checkpoint, never a claim that the background task failed.
-                yield format_sse_event("done_timeout", _payload(runtime, run, event="done_timeout", reason="stream_timeout", cursor=cursor))
+                yield format_sse_event("done_timeout", _payload(runtime, run, request_run_id=request_run_id, event="done_timeout", reason="stream_timeout", cursor=cursor))
                 return
             await asyncio.sleep(0.2)
+
+    def authorised_message_run(request: V3ChatStreamRequest, assistant_message_id: str) -> str:
+        return operation(lambda: runtime.store.message_run(
+            request.session_id, request.context_data.user_id, request.context_data.profile_id, assistant_message_id,
+        ))
+
+    def bind_request(request: V3ChatStreamRequest, input_data, harness_run_id: str, fingerprint: str) -> str:
+        return operation(lambda: runtime.store.bind_client_run(
+            request.session_id, request.context_data.user_id, request.context_data.profile_id,
+            request.run_id, harness_run_id, fingerprint,
+        ))
+
+    def bind_public_ids(harness_run_id: str, *, team_ids: list[str], context, profile_data, superseded: str | None = None):
+        def apply(run, changes, _db):
+            changed = False
+            if not run.get("assistant_message_id"):
+                run["assistant_message_id"] = identifier("msg")
+                changed = True
+            if run.get("requested_expert_team_ids") != list(team_ids):
+                run["requested_expert_team_ids"] = list(team_ids)
+                changed = True
+            if not run.get("team_orchestration_version"):
+                run["team_orchestration_version"] = "single_team_v1"
+                changed = True
+            public_context = _public_context(context, profile_data) if context is not None else deepcopy(run.get("public_context") or {})
+            if run.get("public_context") != public_context:
+                run["public_context"] = public_context
+                changed = True
+            if superseded and run.get("superseded_assistant_message_id") != superseded:
+                run["superseded_assistant_message_id"] = superseded
+                changed = True
+            if changed:
+                changes.append({"event": "assistant_message_bound", "node_id": run["root_task_id"]})
+        operation(lambda: runtime.store.mutate(harness_run_id, apply))
 
     @router.post("/sessions/chat/stream")
     async def post_chat_stream(request: V3ChatStreamRequest, http_request: Request):
         input_data = _parse_input(request.input)
         data = request.context_data
         profile_data = data.profile_data
-        context = None
         if profile_data is not None and not isinstance(profile_data, dict):
             raise HTTPException(422, "INVALID_PROFILE_DATA")
 
@@ -429,17 +472,20 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 if bound["request_hash"] != fingerprint:
                     raise HTTPException(409, "CLIENT_RUN_ID_CONFLICT")
                 harness_run_id = bound["harness_run_id"]
-                existing_run = operation(lambda: runtime.store.get(harness_run_id))
-                _assert_run_team(existing_run, team_id)
+                run = operation(lambda: runtime.store.get(harness_run_id))
+                _assert_run_team(run, team_id)
                 try:
                     context = repository.get(request.session_id)
                 except KeyError:
                     context = None
+                bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data)
             else:
                 active = runtime.store.active(request.session_id)
+                superseded = None
                 if active:
-                    if active["user_id"] != data.user_id:
+                    if active["user_id"] != data.user_id or active["profile_id"] != data.profile_id:
                         raise HTTPException(409, "ACTIVE_HARNESS_RUN_OWNED_BY_OTHER")
+                    superseded = active.get("assistant_message_id")
                     runtime.cancel(active["run_id"])
                 _ensure_profile(fact_service, data.user_id, data.profile_id, profile_data)
                 context, created = open_or_resume_session(
@@ -464,61 +510,59 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 for old in sorted(runtime.store.runs(request.session_id), key=lambda item: item["created_at"])[-10:]:
                     if old["profile_id"] == data.profile_id and old["status"] == "completed":
                         history.extend([{"role": "user", "content": old["goal"]}, {"role": "assistant", "content": old.get("result", "")}])
-                harness_run_id = operation(lambda: runtime.create(request.session_id, data.user_id, data.profile_id, input_data.content, policy, _seed_facts(context, runtime, request.session_id, data.user_id, data.profile_id), history, wire_protocol=SSE_V3_PROTOCOL))
-                harness_run_id = operation(lambda: runtime.store.bind_client_run(request.session_id, data.user_id, data.profile_id, request.run_id, harness_run_id, fingerprint))
-            # Stored on the run so a retry, form answer and final reply all
-            # address one stable assistant bubble.
-            def bind_public_ids(run, changes, _db):
-                changed = False
-                if run.get("client_run_id") != request.run_id:
-                    run["client_run_id"] = request.run_id
-                    changed = True
-                legacy_message_id = f"msg_harness_{run['run_id']}"
-                if not run.get("assistant_message_id") or run.get("assistant_message_id") == legacy_message_id:
-                    run["assistant_message_id"] = identifier("msg")
-                    changed = True
-                requested_team_ids = list(team_ids)
-                if run.get("requested_expert_team_ids") != requested_team_ids:
-                    run["requested_expert_team_ids"] = requested_team_ids
-                    changed = True
-                if not run.get("team_orchestration_version"):
-                    # Existing and current V3 runs use one frozen team.  A
-                    # future multi-team runtime will introduce a new version,
-                    # leaving this behaviour readable without a DB migration.
-                    run["team_orchestration_version"] = "single_team_v1"
-                    changed = True
-                public_context = _public_context(context, profile_data) if context is not None else deepcopy(run.get("public_context") or {})
-                if run.get("public_context") != public_context:
-                    run["public_context"] = public_context
-                    changed = True
-                if changed:
-                    changes.append({"event": "assistant_message_bound", "node_id": run["root_task_id"]})
-            operation(lambda: runtime.store.mutate(harness_run_id, bind_public_ids))
-        elif isinstance(input_data, AnswerInput):
-            team_id, _team_ids = _single_supported_team_id(input_data.expert_team_id)
-            harness_run_id = operation(lambda: runtime.store.request_run(input_data.request_id))
-            run = operation(lambda: runtime.store.get(harness_run_id))
-            if run["session_id"] != request.session_id or run["user_id"] != data.user_id or run["profile_id"] != data.profile_id:
-                raise HTTPException(403, "HARNESS_ACCESS_DENIED")
-            if run.get("client_run_id") != request.run_id:
-                raise HTTPException(409, "CLIENT_RUN_ID_MISMATCH")
-            _assert_run_team(run, team_id)
-            if profile_data and data.profile_id:
-                aliases = {"grade": "grade", "province": "student_province", "recent_exam.total_score": "exam_score"}
-                operation(lambda: runtime.store.upsert_portrait(data.user_id, data.profile_id, profile_data, aliases=aliases))
-            submission = InternalAnswerSubmission(user_id=data.user_id, profile_id=data.profile_id, answers=input_data.answers,
-                                                   text=input_data.text, skipped=input_data.skipped)
-            operation(lambda: runtime.answer(input_data.request_id, submission, allow_partial=True, allow_correction=True))
-        else:
+                harness_run_id = operation(lambda: runtime.create(
+                    request.session_id, data.user_id, data.profile_id, input_data.content, policy,
+                    _seed_facts(context, runtime, request.session_id, data.user_id, data.profile_id), history,
+                    wire_protocol=SSE_V3_PROTOCOL,
+                ))
+                bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data, superseded=superseded)
+                bind_request(request, input_data, harness_run_id, fingerprint)
+        elif isinstance(input_data, (AnswerInput, ResumeInput)):
+            team_id, team_ids = _single_supported_team_id(input_data.expert_team_id)
+            fingerprint = _request_hash(input_data, profile_data, team_ids)
             bound = operation(lambda: runtime.store.client_run(request.session_id, data.user_id, data.profile_id, request.run_id))
-            if not bound:
-                raise HTTPException(404, "HARNESS_CLIENT_RUN_NOT_FOUND")
-            harness_run_id = bound["harness_run_id"]
-            run = operation(lambda: runtime.store.get(harness_run_id))
-            if run["session_id"] != request.session_id or run["user_id"] != data.user_id or run["profile_id"] != data.profile_id:
-                raise HTTPException(403, "HARNESS_ACCESS_DENIED")
+            if bound:
+                if bound["request_hash"] != fingerprint:
+                    raise HTTPException(409, "CLIENT_RUN_ID_CONFLICT")
+                harness_run_id = bound["harness_run_id"]
+                run = operation(lambda: runtime.store.get(harness_run_id))
+                if run.get("assistant_message_id") != input_data.assistant_message_id:
+                    raise HTTPException(409, "ASSISTANT_MESSAGE_ID_MISMATCH")
+            else:
+                harness_run_id = authorised_message_run(request, input_data.assistant_message_id)
+                run = operation(lambda: runtime.store.get(harness_run_id))
+                _assert_run_team(run, team_id)
+                if isinstance(input_data, AnswerInput):
+                    if operation(lambda: runtime.store.request_run(input_data.request_id)) != harness_run_id:
+                        raise HTTPException(409, "INPUT_REQUEST_MESSAGE_MISMATCH")
+                    if profile_data and data.profile_id:
+                        aliases = {"grade": "grade", "province": "student_province", "recent_exam.total_score": "exam_score"}
+                        operation(lambda: runtime.store.upsert_portrait(data.user_id, data.profile_id, profile_data, aliases=aliases))
+                    submission = InternalAnswerSubmission(
+                        user_id=data.user_id, profile_id=data.profile_id, answers=input_data.answers,
+                        text=input_data.text, skipped=input_data.skipped,
+                    )
+                    operation(lambda: runtime.answer(input_data.request_id, submission, allow_partial=True, allow_correction=True))
+                bind_request(request, input_data, harness_run_id, fingerprint)
+            _assert_run_team(run, team_id)
+        else:
+            # Existing BFF stop routes may forward an old request ID. A fresh
+            # stop request instead resolves the authorised active task.
+            bound = operation(lambda: runtime.store.client_run(request.session_id, data.user_id, data.profile_id, request.run_id))
+            if bound:
+                harness_run_id = bound["harness_run_id"]
+                run = operation(lambda: runtime.store.get(harness_run_id))
+                if run["session_id"] != request.session_id or run["user_id"] != data.user_id or run["profile_id"] != data.profile_id:
+                    raise HTTPException(403, "HARNESS_ACCESS_DENIED")
+            else:
+                active = runtime.store.active(request.session_id)
+                if not active:
+                    raise HTTPException(404, "ACTIVE_HARNESS_RUN_NOT_FOUND")
+                if active["user_id"] != data.user_id or active["profile_id"] != data.profile_id:
+                    raise HTTPException(403, "HARNESS_ACCESS_DENIED")
+                harness_run_id = active["run_id"]
             runtime.cancel(harness_run_id)
-        return StreamingResponse(stream(http_request, harness_run_id), media_type="text/event-stream", headers={
+        return StreamingResponse(stream(http_request, harness_run_id, request.run_id), media_type="text/event-stream", headers={
             "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no", "X-SSE-Protocol": SSE_V3_PROTOCOL,
         })
 
