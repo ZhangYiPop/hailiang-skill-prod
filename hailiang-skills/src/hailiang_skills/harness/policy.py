@@ -141,6 +141,26 @@ def capture_policy(orchestrator, context):
         skill_data[skill_id]["fact_keys"] = list(field_uses(bundle.contract))
         from .assets import snapshot_assets
         skill_data[skill_id]["assets"] = snapshot_assets(bundle.root_dir)
+        # M-01: 将题库目录注入 Skill 数据，供提示词构建时使用
+        try:
+            from hailiang_skills.runtime_bridge.native_questionnaire import questionnaire_config, available_question_specs
+            qc = questionnaire_config(bundle)
+            if qc.get("enabled") or qc.get("config_path") or qc.get("config_json") or qc.get("fields"):
+                q_specs = available_question_specs(bundle, state)
+                if q_specs:
+                    skill_data[skill_id]["question_catalog"] = [
+                        {"question_id": item["question_id"], "label": item["label"],
+                         "input_type": item["input_type"],
+                         "options": [option["value"] for option in item.get("options", [])],
+                         "max_selections": item.get("max_selections"),
+                         "display_condition": item.get("display_condition", ""),
+                         "rule": item.get("rule", "")}
+                        for item in q_specs
+                    ]
+                    skill_data[skill_id]["max_fields_per_form"] = (
+                        int(qc.get("max_fields_per_form", 6) or 6))
+        except Exception:
+            pass
     if set(independent) - set(skill_data):
         raise HarnessError("INDEPENDENT_SKILL_UNAVAILABLE")
     for expert in expert_data.values():
@@ -218,7 +238,7 @@ def capture_policy(orchestrator, context):
             "direct_expert_id": direct_expert_id,
             "settings": {"context_policy_version": "v2" if os.getenv("HAILIANG_CONTEXT_POLICY", settings.get("context_policy_version", "v1")) == "v2" else "v1",
                          "max_parallel": int(settings.get("max_parallel", 3)), "max_model_calls": int(settings.get("max_model_calls", 24)),
-                         "max_search_calls_per_task": int(settings.get("max_search_calls_per_task", 5)),
+                         "max_search_calls_per_task": int(settings.get("max_search_calls_per_task", 10)),
                          "max_tool_calls": int(settings.get("max_tool_calls", 48)), "context_tokens": int(settings.get("context_tokens", 64000)),
                          "max_tool_evidence_chars": int(settings.get("max_tool_evidence_chars", 8000)),
                          "max_output_tokens": int(settings.get("max_output_tokens", 8192)),

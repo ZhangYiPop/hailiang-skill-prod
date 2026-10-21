@@ -111,6 +111,12 @@ choose_application_port() {
     echo "$preferred"
     return
   fi
+  # 双击重启脚本会设置该变量，避免静默换端口后书签和调试台地址对不上。
+  if [ "${HAILIANG_LOCK_PORTS:-}" = "1" ]; then
+    echo "❌ 应用端口 ${preferred} 已被占用，已停止自动换端口。" >&2
+    echo "   请查看占用进程：lsof -nP -iTCP:${preferred} -sTCP:LISTEN" >&2
+    exit 1
+  fi
   echo "⚠️  应用端口 ${preferred} 已被占用，正在选择本地备用端口。" >&2
   local candidate
   for candidate in "$@"; do
