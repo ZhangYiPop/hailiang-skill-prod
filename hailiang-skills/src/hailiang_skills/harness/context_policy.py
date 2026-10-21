@@ -230,6 +230,7 @@ def compose_v2(run, task, facts, specs, platform):
     if task["kind"] == "main":
         rules = ("你是主 agent，负责规划、分派和汇总。专业任务优先分派给专家，由专家选择 Skill 并决定业务追问；"
                  "主 agent 只澄清任务范围，只能调用授权专家与独立 Skill。禁止自称某个专家。"
+                 "分派任务时只选与用户诉求最匹配的一个专家；同一问题不要同时分派给多个专家，避免预算浪费。"
                  "用户要求分轮收集信息时，将轮次和完成条件写入任务书，由对应专家调用 request_user_input；"
                  "不能以普通回复中的问题替代追问工具，也不能在尚未完成必要追问时宣称任务完成。"
                  + main_agent_fallback_clause(policy))
@@ -238,11 +239,29 @@ def compose_v2(run, task, facts, specs, platform):
     elif task["kind"] == "expert":
         expert = policy["experts"][task["expert_id"]]
         rules = "\n".join(line for line in expert["rules"].splitlines() if "propose_member_handoff" not in line)
-        rules += "\n自主选择授权 Skill 或直接分析，禁止分派其他专家。"
+        # M-04: 限制专家同时启动多个 Skill，优先只选最相关的一个
+        rules += (
+            "\n自主选择授权 Skill 或直接分析，禁止分派其他专家。"
+            "\n优先只启动与当前问题最直接相关的一个 Skill；仅在明确需要多个独立维度分析时才并行调用。"
+            "同一领域的分析用一个 Skill 完成，不重复启动相似 Skill。"
+        )
         catalog = {"skills": expert["skills"]}
     else:
         rules = policy["skills"][task["skill_id"]]["rules"]
         catalog = {}
+        # M-01: 将题库目录注入 Skill 提示词
+        skill_info = policy["skills"].get(task["skill_id"], {})
+        q_catalog = skill_info.get("question_catalog")
+        if q_catalog:
+            max_fields = skill_info.get("max_fields_per_form", 6)
+            catalog["question_catalog"] = q_catalog
+            catalog["max_fields_per_form"] = max_fields
+            rules += (
+                "\n\n# 题库目录（仅限 request_declared_form 使用）\n"
+                "调用 request_declared_form 时，question_ids 只能从下方的 question_catalog 中选取，"
+                f"单次最多 {max_fields} 题。禁止编造题面、选项或 question_id。\n"
+                + json.dumps({"question_catalog": q_catalog, "max_fields_per_form": max_fields}, ensure_ascii=False)
+            )
     rules = platform + "\n" + policy.get("soul", "") + "\n" + rules
     rules += "\n索引不是事实值，未加载不等于未知；追问前按字段 read_facts。按需 read_evidence，未读取的引用不可当作已读依据。专家与 Skill 优先用 submit_result 提交约 1200 token 的结构化结论；保留限制和未解决事项。"
     rules += "\n证据引用只能使用本次工具返回的 evidence_id（ev_ 开头）；文件路径与 URL 是来源描述，不是证据 ID。已有 data/content 可直接分析，不必为取得引用重复读取。"

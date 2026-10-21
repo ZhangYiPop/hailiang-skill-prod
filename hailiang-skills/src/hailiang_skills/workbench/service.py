@@ -3224,6 +3224,15 @@ class WorkbenchService:
                     code="REVISION_VALIDATION_FAILED",
                     details={"errors": list(revision.validation.get("errors") or []), "warnings": list(revision.validation.get("warnings") or [])},
                 )
+            # M-08: 发布前门禁 — 资产可解析、脚本可导入、问卷配置合法
+            if obj.object_type == "skill":
+                gate_errors = self._publish_gate_errors(db, revision)
+                if gate_errors:
+                    raise WorkbenchError(
+                        "发布前门禁未通过：资产或脚本存在问题，请修复后重新提交修订",
+                        code="PUBLISH_GATE_FAILED",
+                        details={"errors": gate_errors},
+                    )
             evidence = self._require_evidence(db, revision_id, evidence_id)
             release_no = (db.scalar(select(func.max(WorkbenchReleaseRow.release_no)).where(WorkbenchReleaseRow.object_id == obj.object_id)) or 0) + 1
             verification = {
@@ -4534,6 +4543,29 @@ class WorkbenchService:
             config_json = questionnaire.get("config_json")
             if config_json is not None:
                 errors.extend(validate_questionnaire_config(config_json))
+            # M-03: 问卷声明与工具声明一致性校验
+            # request_declared_form 在 SKILL.md frontmatter 的 tool_dependency 中声明。
+            markdown = str(payload.get("prompt_markdown") or "")
+            frontmatter, _body = self._standard_frontmatter(markdown)
+            has_declared_form = "request_declared_form" in (
+                list(frontmatter.get("tool_dependency") or [])
+            )
+            has_questions = bool(
+                str(questionnaire.get("config_path") or "").strip()
+                or questionnaire.get("config_json")
+                or questionnaire.get("fields")
+                or str(questionnaire.get("question_catalog_path") or "").strip()
+            )
+            if has_declared_form and not has_questions:
+                errors.append(
+                    "SKILL.md 声明了 request_declared_form 工具依赖，"
+                    "但未配置题库（请在 configuration.questionnaire 中设置 config_path / config_json / fields）"
+                )
+            elif has_questions and not has_declared_form:
+                errors.append(
+                    "配置了题库但未在 SKILL.md frontmatter 的 tool_dependency 中声明 request_declared_form，"
+                    "模型将无法通过工具调用展示表单"
+                )
             known = known_capabilities if known_capabilities is not None else {
                 item["capability_id"] for item in capability_catalog(self.orchestrator)
             }
@@ -4650,6 +4682,62 @@ class WorkbenchService:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(content)
             return [item.detail for item in review_scripts(root) if item.status == "error"]
+
+    @staticmethod
+    def _publish_gate_errors(db, revision) -> list[str]:
+        """M-08: 发布前强制校验 — 资产可解析、脚本可导入、问卷配置一致。"""
+        errors: list[str] = []
+        payload = revision.payload or {}
+        # 1. 所有 JSON 资产可解析
+        for row in db.scalars(
+            select(WorkbenchAssetRow).where(
+                WorkbenchAssetRow.revision_id == revision.revision_id,
+                WorkbenchAssetRow.relative_path.endswith(".json"),
+            )
+        ):
+            try:
+                json.loads(bytes(row.content))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                errors.append(f"资产 JSON 解析失败：{row.relative_path} — {exc}")
+        # 2. 问卷配置合法（防止 revision 创建后配置被破坏）
+        try:
+            decoded = [
+                (row.relative_path, row.media_type, bytes(row.content))
+                for row in db.scalars(
+                    select(WorkbenchAssetRow).where(
+                        WorkbenchAssetRow.revision_id == revision.revision_id
+                    )
+                )
+            ]
+            errors.extend(_questionnaire_asset_errors(payload, decoded))
+        except Exception as exc:
+            errors.append(f"问卷资产校验异常：{exc}")
+        # 3. Python 脚本可导入
+        try:
+            script_files = [
+                (row.relative_path, row.media_type, bytes(row.content))
+                for row in db.scalars(
+                    select(WorkbenchAssetRow).where(
+                        WorkbenchAssetRow.revision_id == revision.revision_id,
+                        WorkbenchAssetRow.relative_path.startswith("scripts/"),
+                        WorkbenchAssetRow.relative_path.endswith(".py"),
+                    )
+                )
+            ]
+            if script_files:
+                with tempfile.TemporaryDirectory(prefix="hailiang-publish-gate-") as temp_dir:
+                    root = Path(temp_dir)
+                    for relative_path, _media_type, content in script_files:
+                        target = root.joinpath(*PurePosixPath(relative_path).parts)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(content)
+                    errors.extend(
+                        item.detail for item in review_scripts(root)
+                        if item.status == "error"
+                    )
+        except Exception as exc:
+            errors.append(f"脚本导入校验异常：{exc}")
+        return errors
 
     @staticmethod
     def _asset_dict(row: WorkbenchAssetRow, *, include_content: bool = False) -> dict[str, Any]:

@@ -70,7 +70,7 @@ def public_round_experts(run):
         if expert_id not in latest:
             order.append(expert_id)
         latest[expert_id] = task
-    assigned, running, completed, failed = [], [], [], []
+    assigned, running, completed, failed, waiting = [], [], [], [], []  # M-07: distinguish waiting
     queued = False
     for expert_id in order:
         assigned.append(expert_id)
@@ -79,6 +79,8 @@ def public_round_experts(run):
             completed.append(expert_id)
         elif status in _EXPERT_FAILED:
             failed.append(expert_id)
+        elif status == "waiting_for_user":
+            waiting.append(expert_id)
         elif status in _EXPERT_RUNNING:
             running.append(expert_id)
         else:
@@ -87,6 +89,8 @@ def public_round_experts(run):
         round_status = "idle"
     elif running:
         round_status = "running"
+    elif waiting:
+        round_status = "waiting_for_user"  # M-07: all active experts waiting for user
     elif queued:
         round_status = "assigned"
     elif completed and failed:
@@ -98,6 +102,7 @@ def public_round_experts(run):
     return {
         "assigned_expert_ids": assigned,
         "running_expert_ids": running,
+        "waiting_expert_ids": waiting,  # M-07
         "completed_expert_ids": completed,
         "failed_expert_ids": failed,
         "status": round_status,
@@ -1273,7 +1278,7 @@ class HarnessRuntime:
                     if tool["name"] in SEARCH_TOOL_NAMES:
                         search_calls = sum(t.get("attempts", 0) for t in run["tools"].values()
                                            if t["name"] in SEARCH_TOOL_NAMES and t["task_id"] == task_id)
-                        if search_calls >= run["policy"]["settings"].get("max_search_calls_per_task", 5):
+                        if search_calls >= run["policy"]["settings"].get("max_search_calls_per_task", 10):
                             raise HarnessError("SEARCH_BUDGET_EXCEEDED")
                     tool.update(status="running", execution_id=token, started_at=tool["started_at"] or now(), attempts=tool["attempts"] + 1)
                     task["tool_calls"] += 1
@@ -1404,7 +1409,52 @@ class HarnessRuntime:
             task["skill_calls"] += 1
             tool.update(status="waiting_for_dependency", children=[child["id"]])
             changes.append({"event": "task_created", "node_id": child["id"]})
-        elif name == "request_user_input":
+        elif name in ("request_user_input", "request_declared_form"):
+            # M-02: 处理 request_declared_form（native questionnaire）的 question_ids 参数
+            if "question_ids" in tool["arguments"] and "fields" not in tool["arguments"]:
+                skill_info = run["policy"]["skills"].get(task.get("skill_id"), {})
+                q_catalog = skill_info.get("question_catalog")
+                if q_catalog:
+                    requested_ids = [str(i).strip() for i in tool["arguments"]["question_ids"]
+                                     if str(i).strip()]
+                    catalog_by_id = {item["question_id"]: item for item in q_catalog}
+                    unknown = [qid for qid in requested_ids if qid not in catalog_by_id]
+                    fields = []
+                    seen = set()
+                    for qid in requested_ids:
+                        item = catalog_by_id.get(qid)
+                        if item is None or qid in seen:
+                            continue
+                        seen.add(qid)
+                        options = [{"label": str(v), "value": str(v)}
+                                   for v in item.get("options", [])]
+                        field = {
+                            "key": qid,
+                            "label": item["label"],
+                            "input_type": item.get("input_type", "text"),
+                            "scope": "task",
+                        }
+                        if options:
+                            field["options"] = options
+                        fields.append(field)
+                    max_fields = skill_info.get("max_fields_per_form", 6)
+                    if fields:
+                        tool["arguments"] = {
+                            "title": str(tool["arguments"].get("title") or "").strip()
+                                     or "补充关键信息",
+                            "fields": fields[:max_fields],
+                        }
+                    elif unknown:
+                        # All requested IDs are unknown; fail the tool call
+                        self._tool_result(tool, {
+                            "error": "UNKNOWN_QUESTION_IDS",
+                            "unknown_question_ids": unknown,
+                            "hint": "question_ids 只能从 question_catalog 中选取",
+                        }, "failed")
+                        changes.append({"event": "tool_failed", "node_id": tool["id"]})
+                        return
+                    # If no fields and no unknowns, fall through to normal flow
+                    # (already-answered questions, etc.)
             self._request(run, task, tool, changes, db)
         elif name == "read_facts":
             facts = self.facts(run, task, db)
@@ -1945,6 +1995,16 @@ class HarnessRuntime:
                     task["messages"].append({"role": "user", "content": "事实更正后的更新结果（替代此前结果）：" + json.dumps(results, ensure_ascii=False)})
                     task.update(review_dependencies=[], status="queued", stale=False)
                     changes.append({"event": "task_resumed", "node_id": task["id"]})
+        # M-07: 同步 run 级别状态，区分 waiting_for_user 和 running
+        active_tasks = [t for t in run["tasks"].values() if t["status"] not in TERMINAL]
+        if active_tasks and all(t["status"] == "waiting_for_user" for t in active_tasks):
+            if any(q["status"] in {"pending", "queued"} for q in run["inputs"].values()):
+                if run["status"] != "waiting_for_user":
+                    run["status"] = "waiting_for_user"
+            elif run["status"] == "waiting_for_user":
+                run["status"] = "running"
+        elif run["status"] == "waiting_for_user":
+            run["status"] = "running"
 
     def _fail(self, run_id, task_id, token, error, response=None):
         def apply(run, changes, db):

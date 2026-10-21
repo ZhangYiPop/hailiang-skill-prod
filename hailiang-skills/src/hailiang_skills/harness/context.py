@@ -48,6 +48,8 @@ def compose(run, task, facts, specs, *, purpose="task"):
         rules = (
             "你是主 agent。负责规划、分派和汇总。专业任务优先分派目标给专家，由专家选择其 Skill 并决定业务追问。"
             "主 agent 只澄清任务范围；只能直接调用独立 Skill。"
+            # M-04: 分派时只选最匹配的一个专家
+            "分派任务时只选与用户诉求最匹配的一个专家；同一问题不要同时分派给多个专家，避免预算浪费。"
             "汇总给用户时直接给结论，禁止交代专家/Skill 失败或预算类内部原因，禁止自称某个专家。"
             + main_agent_fallback_clause(policy)
         )
@@ -56,11 +58,29 @@ def compose(run, task, facts, specs, *, purpose="task"):
     elif task["kind"] == "expert":
         expert = policy["experts"][task["expert_id"]]
         rules = "\n".join(line for line in expert["rules"].splitlines() if "propose_member_handoff" not in line)
-        rules += "\n本模式已授权自主执行本任务，不能自行分派其他专家。自主选择适用 Skill 或直接分析。"
+        # M-04: 限制专家 Skill 选择
+        rules += (
+            "\n本模式已授权自主执行本任务，不能自行分派其他专家。"
+            "自主选择适用 Skill 或直接分析。优先只启动最直接相关的一个 Skill；仅在明确需要多个独立维度分析时才并行调用。"
+            "同一领域的分析用一个 Skill 完成，不重复启动相似 Skill。"
+        )
         catalog = {"skills": [{"skill_id": k, "name": policy["skills"][k]["name"]} for k in allowed_skills(run, task) if k in policy["skills"]]}
     else:
         rules = policy["skills"][task["skill_id"]]["rules"]
         catalog = {}
+        # M-01: 将题库目录注入 Skill 提示词（v1 context policy 路径）
+        skill_info = policy["skills"].get(task["skill_id"], {})
+        q_catalog = skill_info.get("question_catalog")
+        if q_catalog:
+            max_fields = skill_info.get("max_fields_per_form", 6)
+            catalog["question_catalog"] = q_catalog
+            catalog["max_fields_per_form"] = max_fields
+            rules += (
+                "\n\n# 题库目录（仅限 request_declared_form 使用）\n"
+                "调用 request_declared_form 时，question_ids 只能从下方的 question_catalog 中选取，"
+                f"单次最多 {max_fields} 题。禁止编造题面、选项或 question_id。\n"
+                + json.dumps({"question_catalog": q_catalog, "max_fields_per_form": max_fields}, ensure_ascii=False)
+            )
     effective = {identity: {k: v for k, v in record.items() if k != "history"} for identity, record in facts.items() if record["status"] != "candidate"}
     candidates = [{k: v for k, v in record.items() if k != "history"} for record in facts.values() if record["status"] == "candidate"]
     task["fact_versions"] = {k: v["version"] for k, v in facts.items()}
