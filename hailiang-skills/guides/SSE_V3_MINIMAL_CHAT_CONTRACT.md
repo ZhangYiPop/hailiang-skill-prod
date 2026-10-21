@@ -112,6 +112,20 @@ data: {"protocol":"hailiang.sse.v3","run_id":"bff_run_xxx","state":{...}}
 
 V3 的默认等待上限为 **600 秒（10 分钟）**，可由算法服务环境变量 `HAILIANG_HARNESS_SSE_WAIT_SECONDS` 覆盖。到达上限后只发送 `done_timeout` 检查点，后台任务继续运行。
 
+### 表单与动态问题组：前端怎么显示、怎么推进
+
+表单和专家进度在同一助手气泡的 `state` 中。`state.inputs[]` 每项是一张表单卡片，`fields[]` 才是卡片里的字段；一个卡片可含多个字段。前端按 `state.input_queue.active_request_id` 找到 `state.inputs[]` 中同 ID 且 `status="pending"` 的请求，并展示其 `actor`、`title` 和 `fields`。`actor` 是当前发问的专家；需要关联任务树时，用 `owner_node_id` 对应 `state.nodes[].id`。
+
+`state.input_groups[]` 是服务端管理的问题组。组的 `total_count` / `completed_count` 统计组内表单卡片请求数，**不是字段数，也不是本次 run 的全部问题总数**。前端可显示“本组已完成 X/Y 张卡片”；如果要显示字段数，按组的 `request_ids` 关联 `state.inputs[]` 后累加各请求的 `fields.length`。整个 run 的问题总数不固定：专家恢复执行后可能继续追问，所以不能预先显示固定总题数。
+
+`state.input_queue` 是队列快捷摘要：`active_group_id`、`queued_group_ids`、`active_request_id` 指示当前组、排队组与当前卡片；`active_group_total`、`active_group_completed` 是当前组卡片计数；`pending_count`、`queued_count`、`queued_request_ids` 也是卡片请求计数。只有 `status="pending"` 且 ID 等于 `active_request_id` 的卡片可提交；`queued` 卡片只能作为排队提示，不能提前让用户填写。
+
+用户提交当前卡片后，服务端标记该卡片 `answered` 或 `skipped`。若当前组还有请求，下一张依 `active_request_id` 激活；当前组全部解决后，组变为 `completed`，服务端提升最早的排队组。专家任务在答案写入事实账本后恢复；它可能继续分析，也可能生成下一轮追问。因此前端每次都应以最新完整帧替换状态，再重新查找活动卡片，不能在客户端自行推进。
+
+回答请求继续调用同一 `/api/v3/sessions/chat/stream`，沿用 `run_id`、`session_id` 与 `expert_team_id`，动作是 `answer_input_request`，`request_id` 使用活动输入的 `id`。多字段表单传 `answers`；单个文本字段可传 `text`；整张卡片跳过时传 `skipped=true` 且答案为空。V3 支持部分答案，未提供的字段会被记为跳过；部分字段本身不会触发多次恢复。服务端对相同答案幂等处理。
+
+活动卡片出现时，如果其他专家或工具还在运行，流仍会持续以 `state` 更新；只有没有可运行任务且存在待答卡片时才会结束本次流并发 `done_suspended`。前端应每次收到 `state` 就检查 `input_queue` 和 `inputs`，不要等 `done_suspended` 才展示表单。表单状态由完整快照决定，`event` 名称只决定持久化动作。
+
 ### 转发端保存规则
 
 | 事件 | `persistence` 指令 | BFF 行为 |

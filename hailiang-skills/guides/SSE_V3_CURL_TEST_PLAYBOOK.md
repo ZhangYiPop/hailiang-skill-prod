@@ -152,6 +152,29 @@ curl -sS -N --max-time 620 -H 'Content-Type: application/json' -H 'Accept: text/
 
 服务端负责激活同组下一题、下一问题组和恢复绑定节点；调用方只用最新完整帧替换气泡。
 
+查看问题组和活动卡片：
+
+```bash
+frames /tmp/sse-v3-partial.sse | jq -c '
+  {status:.state.status, queue:.state.input_queue,
+   groups:[.state.input_groups[] | {id,status,request_ids,active_request_id,total_count,completed_count,actors}],
+   cards:[.state.inputs[] | {id,title,status,actor,round,group_id,group_position,field_count:(.fields|length)}]}'
+```
+
+用最新完整帧取得活动卡片，而不是取列表中第一个历史请求：
+
+```bash
+export REQUEST_ID="$(frames /tmp/sse-v3-partial.sse | jq -r 'select(.state.input_queue.active_request_id != null) | .state.input_queue.active_request_id' | tail -1)"
+```
+
+验证推进时按以下规则检查：
+
+- `input_queue.active_request_id` 对应 `inputs[].id`，且该输入状态为 `pending`，这才是目前可以提交的卡片。
+- 同一活动组里若还有排队卡片，提交后它会成为新的 `active_request_id`；只展示这张新激活的卡片。
+- 当前组的 `total_count` / `completed_count` 是卡片数。每张卡片的字段数由对应的 `fields | length` 决定；`pending_count` / `queued_count` 也不是字段数。
+- 当前组完成后，最早的 `queued` 组提升为 `active`。对应专家收到答案后继续分析，可能结束，也可能再创建一轮问题组；全 run 没有预先固定的总题数。
+- 即使当前活动卡片还在等待，只要其他专家仍可执行，仍会收到 `state`。应在每个完整帧检查队列，不要只在 `done_suspended` 后更新界面。
+
 ## 5. `done_timeout` 后恢复同一任务
 
 不调用任何查询接口。直接以**原始 chat 请求文件**和同一 `RUN_ID` 重连：

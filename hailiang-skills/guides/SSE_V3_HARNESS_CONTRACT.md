@@ -239,9 +239,51 @@ main（主编排器）
 
 只有 `recommendations_status="completed"` 且 `jump_cards.length > 0` 时展示卡片。完整帧后续更新会替换整个数组，前端不要根据上一次帧追加或保留已消失的推荐卡。
 
-## 7. 表单字段与问题组
+## 7. 表单、问题组与动态追问
 
-当前可填写卡片由活动输入请求决定，使用其 `id` 作为 `request_id`。字段兼容现有 `AIChatDynamicFormField` 的核心形状：
+表单由专家或主编排器通过 `request_user_input` 创建。一个输入请求（`state.inputs[]` 中的一项）对应一张表单卡片；卡片的 `fields[]` 可以包含一个或多个字段。服务端按到达顺序将输入请求组织成问题组（`state.input_groups[]`）并排队；不同专家的请求可以落在同一队列批次。**一个问题组不是一题，也不是整个任务的全部问题；`total_count` / `completed_count` 统计的是卡片请求数，不是 `fields[]` 的字段数。**
+
+问题是动态产生的：专家可能在用户回答当前卡片后继续分析，再提出下一轮问题。因此服务端无法在任务开始时知道整个 run 最终会问几题，前端不得显示“总共 N 题”作为全任务固定总数。前端可以显示“本组第 X 张卡片，共 Y 张”，其中 X/Y 来自组内请求卡片进度；若需要显示字段数，可对该组 `request_ids` 对应的输入请求累加 `fields.length`，不要把它与卡片数混为一谈。
+
+### 前端读取字段
+
+完整帧中的表单状态位于 `state`：
+
+- `state.inputs[]`：每张输入卡片。`id` 是提交时的 `request_id`；`fields` 是本卡片字段；`status` 为 `pending` 时才可填写，`queued` 时尚未轮到用户；`answered`、`skipped` 表示已解决。`actor` 是发问专家名称；`owner_node_id` 可关联到 `state.nodes[]` 中的专家节点；`round` 是所属专家的追问轮次；`group_id`、`group_position` 表示该卡片所在组及组内顺序；`request_version` 是服务端请求版本。
+- `state.input_groups[]`：问题组快照。`id`、`status`、`request_ids` 表示组身份、状态及组内卡片；`active_request_id` 是当前应展示的卡片；`total_count` 是组内卡片总数；`completed_count` 是已回答、已跳过或已过期的卡片数；`actors` 是组内涉及的专家；`version` 用于判断组状态是否更新。
+- `state.input_queue`：便于显示队列进度的摘要。`active_group_id` / `queued_group_ids` 表示当前组与后续组；`active_request_id` 是当前卡片；`active_group_total` / `active_group_completed` 是当前组的卡片总数与已解决数；`queued_request_ids`、`pending_count`、`queued_count` 是当前等待队列摘要。`pending_count` 和 `queued_count` 统计请求卡片，不统计字段。
+
+示例：
+
+```json
+{
+  "input_queue": {
+    "active_group_id": "group_1",
+    "queued_group_ids": ["group_2"],
+    "active_request_id": "input_1",
+    "active_group_total": 2,
+    "active_group_completed": 0,
+    "queued_request_ids": ["input_3"],
+    "pending_count": 1,
+    "queued_count": 1
+  },
+  "inputs": [
+    {"id":"input_1","title":"学生情况","status":"pending","actor":"升学规划专家","group_id":"group_1","group_position":1,"fields":[{"key":"province","label":"所在省份","input_type":"single_select","options":[{"label":"浙江","value":"浙江"}],"required":true,"scope":"profile"}]},
+    {"id":"input_2","title":"目标偏好","status":"queued","actor":"升学规划专家","group_id":"group_1","group_position":2,"fields":[{"key":"goal","label":"目标","input_type":"text","required":false,"scope":"task"}]},
+    {"id":"input_3","title":"家庭情况","status":"queued","actor":"家庭教育专家","group_id":"group_2","group_position":1,"fields":[{"key":"schedule","label":"可投入时间","input_type":"text","required":false,"scope":"task"}]}
+  ],
+  "input_groups": [
+    {"id":"group_1","status":"active","request_ids":["input_1","input_2"],"active_request_id":"input_1","total_count":2,"completed_count":0,"actors":["升学规划专家"],"version":1},
+    {"id":"group_2","status":"queued","request_ids":["input_3"],"active_request_id":null,"total_count":1,"completed_count":0,"actors":["家庭教育专家"],"version":1}
+  ]
+}
+```
+
+查找活动卡片时，优先读取 `state.input_queue.active_request_id`，再在 `state.inputs[]` 中按 `id` 匹配，并确认 `status="pending"`。也可以读取 `state.input_groups[]` 中 `status="active"` 的组，再用其 `active_request_id` 查找卡片。两者都指向同一活动请求；没有活动 ID 或没有对应的 `pending` 请求时，不显示可提交表单。不要把所有 `queued` 输入同时呈现为可填写卡片。
+
+展示追问时读取该卡片的 `actor`；若需要点亮任务树中的所属节点，使用 `owner_node_id` 与 `state.nodes[].id` 关联。所属节点可能是专家，也可能是主编排器。不要从正文、工具名或本地规则推断发问者。
+
+单张卡片字段兼容现有 `AIChatDynamicFormField` 的核心形状：
 
 ```json
 {
@@ -258,11 +300,24 @@ main（主编排器）
 ```
 
 - `fact_key` 缺省时使用 `key`；`options` 固定为 `{label,value}` 数组。
-- 服务端维护问题组和跨专家复用：同一事实身份的答案只填写一次，所有匹配专家得到相同工具结果。
-- 提交可为部分填写；空字段会被服务端作为本次跳过字段处理，不覆盖已有事实。全空提交等同跳过。
-- 前端只展示服务端声明为 `pending` 的活动卡片；不要自行切换同组下一题或下一组。
+- 输入类型为 `text`、`single_select`、`multi_select`、`integer`、`number`；选项和数值边界以服务端字段定义为准。
+- 服务端维护问题组和跨专家复用：同一事实身份的答案只填写一次，所有匹配专家得到相同工具结果。完全相同的问题可能绑定多个专家任务，用户提交一次即可恢复所有绑定任务。
+- 前端在一张卡片内收集答案后，按 `request_id` 提交一次。可以部分填写；未填字段按本次跳过字段处理，不覆盖已有事实。全空提交等同跳过整张卡片。提交一部分字段并不会逐字段触发模型或推进卡片。
+- 当前卡片提交后，服务端更新完整状态帧：若当前组还有卡片，下一张会变为 `pending`；若当前组所有卡片已解决，当前组变为 `completed` 并提升最早的 `queued` 组；相关专家任务随后恢复分析。恢复后专家可能创建新卡片，新卡片进入新的活动组或队列组。
+- 前端始终以最新完整帧替换气泡状态，再按 `input_queue.active_request_id` 重新选择卡片；不要自行切换同组下一题、推进组、移除其他专家的追问，或假设提交后任务已经完成。
+- 如果卡片仍为活动输入，但还有其他专家或工具可运行，SSE 会继续发送 `state`；只有没有可运行任务且仍等待用户时才发送 `done_suspended`。因此前端应在每个 `state` 帧检查活动卡片，不能只在 `done_suspended` 后才显示表单。
 
-## 7. 事件、保存、超时与恢复
+### 回答请求
+
+沿用同一个 `run_id`、`session_id` 和 `expert_team_id` 调用 `answer_input_request`；`request_id` 必须是当前活动卡片的 `id`。多字段卡片使用 `answers`，单个文本字段可以使用 `text`。跳过整张卡片时传 `skipped=true` 且不传答案。V3 当前允许部分答案：已提供字段被保存，缺失字段记为跳过。服务端按规范化答案幂等处理重复提交；用户在 run 仍活动时更正已提交答案，会更新事实版本并让依赖旧答案的任务重新分析。
+
+```json
+{"action":"answer_input_request","request_id":"input_1","expert_team_id":["student_growth_expert_team"],"answers":{"province":"浙江"},"skipped":false}
+```
+
+回答后继续消费 SSE 事件并用每个新帧覆盖同一助手气泡。可能依次出现同组下一张卡、下一问题组、专家运行过程、由恢复后的专家提出的新一轮卡片，最后才出现 `done`。如为 `done_timeout`，任务仍在运行；按合同用原始 `chat` 请求和同一 `run_id` 重连。`done_suspended` 是可以等待用户的检查点，不代表专家团任务已经完成。
+
+## 8. 事件、保存、超时与恢复
 
 | 事件 | 条件 | BFF 行为 |
 | --- | --- | --- |
@@ -277,7 +332,7 @@ BFF 需要保存：最新完整快照、原始 `chat` 请求和 `run_id`。App �
 
 出现表单不必然发 `done_suspended`：只要仍有其他专家或工具可运行，流继续以 `state` 推送。只有没有可运行节点、活动表单等待用户时才结束本次有限流并发送 `done_suspended`。
 
-## 8. 个性化与风控
+## 9. 个性化与风控
 
 V3 沿用 V2 的 `profile_id`、`profile_name`、`context_scope`、`context_label`、`context_notice` 和 `profile_context_status`。仅在：
 
@@ -301,7 +356,7 @@ context_scope = "profile" && profile_context_status = "matched"
 
 不要以 `message.status=blocked` 推断风控，不公开命中词、原始模型文本、审核原始响应或内部推理。
 
-## 9. 2026-10-21 测试服务器验证结果
+## 10. 2026-10-21 测试服务器验证结果
 
 以 `POST http://10.30.6.45:8011/api/v3/sessions/chat/stream` 使用独立会话进行真实验证：首轮出现身份表单；提交后，服务端确实产生了 `main → expert → tool` 层级、编排首 `dispatch`、专家 `brief/action` 和输入组。
 
