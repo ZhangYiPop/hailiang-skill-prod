@@ -53,6 +53,18 @@ def _apply_thinking_options(payload: dict[str, Any], enable_thinking: bool, retu
     payload["return_reasoning"] = bool(return_reasoning)
 
 
+def _apply_search_options(
+    payload: dict[str, Any],
+    enable_search: bool,
+    search_options: dict[str, Any] | None,
+) -> None:
+    if not enable_search:
+        return
+    payload["enable_search"] = True
+    if search_options:
+        payload["search_options"] = search_options
+
+
 class LLMClientError(RuntimeError):
     pass
 
@@ -83,6 +95,11 @@ class LLMClient:
             payload,
             bool(overrides.get("enable_thinking", self.config.enable_thinking)),
             bool(overrides.get("return_reasoning", self.config.return_reasoning)),
+        )
+        _apply_search_options(
+            payload,
+            bool(overrides.get("enable_search", self.config.enable_search)),
+            overrides.get("search_options") or self.config.search_options or None,
         )
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(
@@ -126,6 +143,11 @@ class LLMClient:
             payload,
             bool(overrides.get("enable_thinking", self.config.enable_thinking)),
             bool(overrides.get("return_reasoning", self.config.return_reasoning)),
+        )
+        _apply_search_options(
+            payload,
+            bool(overrides.get("enable_search", self.config.enable_search)),
+            overrides.get("search_options") or self.config.search_options or None,
         )
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(

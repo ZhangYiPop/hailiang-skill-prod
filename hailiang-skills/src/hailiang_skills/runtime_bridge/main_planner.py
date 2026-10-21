@@ -2137,6 +2137,20 @@ class MainPlannerOrchestrator:
             return skill_bundle_from_entry(entry)
         return bundle
 
+    def _workbench_safe_get_bundle(self, skill_id: str, context) -> "SkillBundle | None":
+        """Return the bundle for *skill_id*, using ``get_raw`` in workbench
+        candidate-test mode so that a bundle mounted directly into the
+        registry (without updating ``enabled_by_id``) is still visible.
+
+        In production mode this is equivalent to ``runtime_registry.get()``.
+        """
+        if self.runtime_registry is None:
+            return None
+        meta = getattr(context, "session_meta", {}) or {}
+        if meta.get("workbench_candidate_test"):
+            return self.runtime_registry.get_raw(skill_id)
+        return self.runtime_registry.get(skill_id)
+
     def _load_runtime_registry(self) -> RuntimeSkillRegistry:
         project_registry = load_local_skill_registry(
             PROJECT_RUNTIME_SKILLS_ROOT,
@@ -2198,6 +2212,8 @@ class MainPlannerOrchestrator:
             max_tokens=int(thinking_options.get("max_tokens", llm_config.max_tokens)),
             enable_thinking=bool(thinking_options.get("enable_thinking", llm_config.enable_thinking)),
             return_reasoning=bool(thinking_options.get("return_reasoning", llm_config.return_reasoning)),
+            enable_search=bool(thinking_options.get("enable_search", getattr(llm_config, "enable_search", False))),
+            search_options=thinking_options.get("search_options") or getattr(llm_config, "search_options", None) or {},
         )
         return OpenAICompatibleChatClient(runtime_config)
 
@@ -2621,12 +2637,26 @@ class MainPlannerOrchestrator:
         return {
             "enable_thinking": bool(meta.get("enable_thinking", self.llm_config.enable_thinking)),
             "return_reasoning": bool(meta.get("return_reasoning", self.llm_config.return_reasoning)),
+            "enable_search": bool(meta.get("enable_search", False)),
+            "search_options": meta.get("search_options") or {},
         }
+
+    @staticmethod
+    def _bundle_search_options(bundle) -> dict[str, object]:
+        """Read enable_search / search_options from a skill bundle's SKILL.md frontmatter."""
+        metadata = getattr(bundle, "metadata", None) or {}
+        result: dict[str, object] = {}
+        if "enable_search" in metadata:
+            result["enable_search"] = bool(metadata["enable_search"])
+        opts = metadata.get("search_options")
+        if isinstance(opts, dict):
+            result["search_options"] = opts
+        return result
 
     def _runtime_client_for_context(self, context):
         meta = context.session_meta or {}
         selected_config = self._llm_config_for_context(context)
-        if "enable_thinking" in meta or "return_reasoning" in meta:
+        if "enable_thinking" in meta or "return_reasoning" in meta or "enable_search" in meta or "search_options" in meta:
             return self._build_runtime_client(selected_config, self._runtime_thinking_options(context))
         if selected_config is not self.llm_config:
             return self._build_runtime_client(selected_config)
@@ -3684,6 +3714,7 @@ class MainPlannerOrchestrator:
                 tool_specs,
                 preferred_mode=preferred_mode,
                 logger=logger,
+                **self._bundle_search_options(current_bundle),
             )
             if not turn_result.tool_calls:
                 final_text = _sanitize_assistant_reply(
@@ -4033,6 +4064,7 @@ class MainPlannerOrchestrator:
                 complete_kwargs: dict[str, Any] = {
                     "preferred_mode": "native",
                     "logger": logger,
+                    **self._bundle_search_options(bundle),
                 }
                 if "request_purpose" in inspect.signature(client.complete_with_tools).parameters:
                     complete_kwargs["request_purpose"] = "questionnaire_continuation"
@@ -4554,6 +4586,7 @@ class MainPlannerOrchestrator:
                 (form_tool,),
                 preferred_mode="native",
                 logger=logger,
+                **self._bundle_search_options(bundle),
             )
             raw_reply = str(turn_result.final_text or "")
             declared_form_call = _declared_form_tool_call(turn_result)
@@ -4565,6 +4598,7 @@ class MainPlannerOrchestrator:
                 (form_tool,),
                 preferred_mode="native",
                 logger=logger,
+                **self._bundle_search_options(bundle),
             )
             raw_reply = str(retry_result.final_text or "")
             declared_form_call = _declared_form_tool_call(retry_result)
@@ -4876,7 +4910,7 @@ class MainPlannerOrchestrator:
         started = time.perf_counter()
         if not hasattr(client, "stream_complete"):
             try:
-                turn_result = client.complete_with_tools(messages, (), preferred_mode="none", logger=logger)
+                turn_result = client.complete_with_tools(messages, (), preferred_mode="none", logger=logger, **self._bundle_search_options(bundle))
             except Exception:
                 if int(state.status_flags.get("context_contract_version") or 2) < 3:
                     raise
@@ -5070,7 +5104,7 @@ class MainPlannerOrchestrator:
                 ],
             )
             try:
-                retry_result = client.complete_with_tools(messages, (), preferred_mode="none", logger=logger)
+                retry_result = client.complete_with_tools(messages, (), preferred_mode="none", logger=logger, **self._bundle_search_options(bundle))
                 reply = _sanitize_assistant_reply(
                     retry_result.final_text,
                     response_policy=bundle.runtime_metadata.response_policy,
@@ -5694,7 +5728,14 @@ class MainPlannerOrchestrator:
             return result
         active_bundle = self.runtime_registry.get(runtime_state.active_skill_id)
         if runtime_state.active_skill_id and active_bundle is None:
-            runtime_state.active_skill_id = GENERAL_CHAT_ID
+            # In workbench-candidate mode the bundle was mounted directly
+            # into ``bundles`` without updating ``enabled_by_id``, so
+            # ``get()`` (which checks ``is_enabled()``) may miss it.
+            # Fall back to ``get_raw()`` before giving up.
+            if context.session_meta.get("workbench_candidate_test"):
+                active_bundle = self.runtime_registry.get_raw(runtime_state.active_skill_id)
+            if active_bundle is None:
+                runtime_state.active_skill_id = GENERAL_CHAT_ID
         if runtime_state.active_skill_id == "multi_path_planning":
             # A new user turn invalidates the previous round's path cards. The
             # native response below must repopulate matched_paths for this turn.
@@ -5732,7 +5773,25 @@ class MainPlannerOrchestrator:
         has_expert_skill_selection = bool(
             str(context.session_meta.get("expert_requested_skill_id") or "").strip()
         )
-        if has_expert_skill_selection or self.runtime_registry.is_enabled(MAIN_PLANNER_ID):
+        has_expert_context = bool(
+            context.session_meta.get("expert_id") or context.session_meta.get("active_expert_id")
+        )
+        if (
+            context.session_meta.get("workbench_candidate_test")
+            and not has_expert_context
+        ):
+            # Workbench candidate test of a standalone Skill: the debug target
+            # is already configured in interaction_state by the workbench
+            # service.  Skip planner routing and use it directly so the
+            # operator sees a deterministic response from the selected
+            # revision — no intent routing, no orchestration tail.
+            active_skill_id = str(
+                context.interaction_state.get("active_skill")
+                or runtime_state.active_skill_id
+                or GENERAL_CHAT_ID
+            )
+            runtime_state.active_skill_id = active_skill_id
+        elif has_expert_skill_selection or self.runtime_registry.is_enabled(MAIN_PLANNER_ID):
             active_skill_id = self._route_with_main_planner(runtime_state, context)
         else:
             # A disabled main Skill must not invoke keyword, embedding or LLM
@@ -5834,7 +5893,7 @@ class MainPlannerOrchestrator:
         )
         current_bundle = self._configured_bundle(
             context,
-            self.runtime_registry.get(runtime_state.active_skill_id) or self.main_bundle,
+            self._workbench_safe_get_bundle(runtime_state.active_skill_id, context) or self.main_bundle,
         )
         current_skill_state = runtime_state.skill_facts.get(runtime_state.active_skill_id, {})
         pending_questionnaire = (
@@ -5998,7 +6057,7 @@ class MainPlannerOrchestrator:
         runtime_state.messages.append(ChatMessage(role="assistant", content=reply))
         current_bundle = self._configured_bundle(
             context,
-            self.runtime_registry.get(runtime_state.active_skill_id) or self.main_bundle,
+            self._workbench_safe_get_bundle(runtime_state.active_skill_id, context) or self.main_bundle,
         )
         run_status_hook_if_present(current_bundle, runtime_state, logger=logger)
         sync_runtime_state_to_context(context, runtime_state)

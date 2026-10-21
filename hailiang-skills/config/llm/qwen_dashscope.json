@@ -12,6 +12,8 @@
   "max_tokens": 384000,
   "enable_thinking": false,
   "return_reasoning": false,
+  "enable_search": true,
+  "search_options": {},
   "embedding": {
     "enabled": true,
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",

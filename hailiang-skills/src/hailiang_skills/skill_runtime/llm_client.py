@@ -75,6 +75,8 @@ class OpenAICompatibleChatClient:
         request_purpose: str = "unspecified",
         max_tokens: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        enable_search: bool | None = None,
+        search_options: dict[str, object] | None = None,
     ) -> AssistantTurnResult:
         self._request_metrics.value = {}
         if not messages:
@@ -89,6 +91,8 @@ class OpenAICompatibleChatClient:
                 request_purpose=request_purpose,
                 max_tokens=max_tokens,
                 cancel_check=cancel_check,
+                enable_search=enable_search,
+                search_options=search_options,
             )
             if logger:
                 logger.log("llm.response.none", raw_body_preview=preview_text(raw_body, limit=800))
@@ -104,6 +108,8 @@ class OpenAICompatibleChatClient:
                     request_purpose=request_purpose,
                     max_tokens=max_tokens,
                     cancel_check=cancel_check,
+                    enable_search=enable_search,
+                    search_options=search_options,
                 )
                 if logger:
                     logger.log("llm.response.native", raw_body_preview=preview_text(raw_body, limit=800))
@@ -133,6 +139,8 @@ class OpenAICompatibleChatClient:
             request_purpose=request_purpose,
             max_tokens=max_tokens,
             cancel_check=cancel_check,
+            enable_search=enable_search,
+            search_options=search_options,
         )
         if logger:
             logger.log("llm.response.json_action", raw_body_preview=preview_text(raw_body, limit=800))
@@ -158,6 +166,8 @@ class OpenAICompatibleChatClient:
         request_purpose: str = "unspecified",
         max_tokens: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        enable_search: bool | None = None,
+        search_options: dict[str, object] | None = None,
     ) -> str:
         get_llm_rate_limiter().acquire()
         endpoint = f"{self._config.base_url}/chat/completions"
@@ -170,6 +180,11 @@ class OpenAICompatibleChatClient:
             tool_mode=tool_mode,
         )
         _apply_thinking_options(payload, self._config.enable_thinking, self._config.return_reasoning)
+        _apply_search_options(
+            payload,
+            enable_search if enable_search is not None else self._config.enable_search,
+            search_options if search_options is not None else self._config.search_options,
+        )
         prompt_chars = _prompt_chars(messages)
         audit_record = audit_text("llm_request", json.dumps(payload, ensure_ascii=False))
         if logger:
@@ -263,6 +278,8 @@ class OpenAICompatibleChatClient:
         cancel_check: Callable[[], bool] | None = None,
         request_purpose: str = "unspecified",
         max_tokens: int | None = None,
+        enable_search: bool | None = None,
+        search_options: dict[str, object] | None = None,
     ) -> Iterator[ChatStreamChunk]:
         self._request_metrics.value = {}
         if not messages:
@@ -281,6 +298,11 @@ class OpenAICompatibleChatClient:
         payload["stream"] = True
         payload["stream_options"] = {"include_usage": True}
         _apply_thinking_options(payload, self._config.enable_thinking, self._config.return_reasoning)
+        _apply_search_options(
+            payload,
+            enable_search if enable_search is not None else self._config.enable_search,
+            search_options if search_options is not None else self._config.search_options,
+        )
         prompt_chars = _prompt_chars(messages)
         audit_record = audit_text("llm_stream_request", json.dumps(payload, ensure_ascii=False))
         if logger:
@@ -445,6 +467,18 @@ def _apply_thinking_options(payload: dict[str, object], enable_thinking: bool, r
     # actual runtime instruction rather than a local-only default.
     payload["enable_thinking"] = bool(enable_thinking)
     payload["return_reasoning"] = bool(return_reasoning)
+
+
+def _apply_search_options(
+    payload: dict[str, object],
+    enable_search: bool,
+    search_options: dict[str, object] | None,
+) -> None:
+    if not enable_search:
+        return
+    payload["enable_search"] = True
+    if search_options:
+        payload["search_options"] = search_options
 
 
 def _prompt_chars(messages: Sequence[ChatMessage]) -> int:

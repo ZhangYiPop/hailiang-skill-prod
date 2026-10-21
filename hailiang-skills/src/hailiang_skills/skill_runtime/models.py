@@ -396,6 +396,8 @@ class LLMConfig:
     max_tokens: int
     enable_thinking: bool = False
     return_reasoning: bool = False
+    enable_search: bool = False
+    search_options: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
