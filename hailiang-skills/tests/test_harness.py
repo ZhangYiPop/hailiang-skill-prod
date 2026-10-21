@@ -197,6 +197,13 @@ def test_team_flow_runs_head_expert_and_tail(tmp_path):
     runtime, run, seen = run_orchestrated(tmp_path, head)
     assert run['status'] == 'completed', run.get('error')
     assert run['result'] == '出站正文'
+    # The public SSE projection must not leave the orchestration tail pending
+    # once the run has emitted its final response.
+    assert runtime.public(run)['synthesis_status'] == 'completed'
+    # Runs persisted before the run-level marker existed remain readable.
+    legacy_shape = deepcopy(run)
+    legacy_shape.pop('tail_done', None)
+    assert runtime.public(legacy_shape)['synthesis_status'] == 'completed'
     experts = [t for t in run['tasks'].values() if t['kind'] == 'expert']
     assert [t['expert_id'] for t in experts] == ['b']
     assert seen['purposes'].index('orchestrator_head') < seen['purposes'].index('harness_expert') < seen['purposes'].index('orchestrator_tail')
