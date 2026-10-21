@@ -380,6 +380,43 @@ class WorkbenchService:
         manifest["orchestration_rules"] = self._published_orchestration_rules(db)
         deployment.manifest = manifest
 
+    def _reuse_object_for_import(self, *, object_type: str, object_key: str, actor_id: str) -> dict[str, Any] | None:
+        """Return an existing object of the same type and key, restoring it if archived."""
+        key = str(object_key or "").strip()
+        if object_type not in VALID_OBJECT_TYPES or not key:
+            return None
+        with self.session_factory() as db:
+            row = db.scalar(
+                select(WorkbenchObjectRow).where(
+                    WorkbenchObjectRow.object_type == object_type,
+                    WorkbenchObjectRow.object_key == key,
+                )
+            )
+            if row is None:
+                return None
+            if row.archived:
+                row.archived = False
+                row.updated_at = utc_now()
+                self._audit(
+                    db,
+                    actor_id,
+                    "object.unarchived",
+                    object_type,
+                    row.object_id,
+                    {"reason": "standard_package_import", "object_key": key},
+                )
+            latest = db.scalar(
+                select(WorkbenchRevisionRow)
+                .where(WorkbenchRevisionRow.object_id == row.object_id)
+                .order_by(WorkbenchRevisionRow.revision_no.desc())
+                .limit(1)
+            )
+            db.commit()
+            return {
+                "object_id": row.object_id,
+                "latest_revision_id": latest.revision_id if latest else None,
+            }
+
     def create_object(
         self,
         *,
@@ -587,15 +624,24 @@ class WorkbenchService:
             object_id = target_object_id
             base_revision_id = (detail.get("revisions") or [{}])[0].get("revision_id")
         else:
-            created = self.create_object(
+            existing = self._reuse_object_for_import(
                 object_type=str(draft.get("object_type") or "skill"),
                 object_key=str(draft.get("object_key") or ""),
-                name=str(draft.get("name") or ""),
-                description=str(draft.get("description") or ""),
                 actor_id=actor_id,
             )
-            object_id = created["object_id"]
-            base_revision_id = None
+            if existing is not None:
+                object_id = existing["object_id"]
+                base_revision_id = existing["latest_revision_id"]
+            else:
+                created = self.create_object(
+                    object_type=str(draft.get("object_type") or "skill"),
+                    object_key=str(draft.get("object_key") or ""),
+                    name=str(draft.get("name") or ""),
+                    description=str(draft.get("description") or ""),
+                    actor_id=actor_id,
+                )
+                object_id = created["object_id"]
+                base_revision_id = None
         revision = self.save_revision(
             object_id,
             base_revision_id=base_revision_id,

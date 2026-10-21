@@ -2009,6 +2009,13 @@ def test_standard_agent_skill_zip_preview_and_manual_commit(service: WorkbenchSe
     assert detail["revisions"][0]["revision_no"] == 1
     assert service.list_revision_assets(saved["revision"]["revision_id"])[0]["relative_path"] == "references/guide.md"
 
+    service.archive_object(saved["object_id"], actor_id=actor_id)
+    again = service.commit_standard_skill_conversion(preview["draft"], actor_id=actor_id)
+    restored = service.get_object(again["object_id"])
+    assert again["object_id"] == saved["object_id"]
+    assert restored["archived"] is False
+    assert restored["revisions"][0]["revision_no"] == 2
+
 
 def test_standard_expert_package_preview_reads_brief_from_agent_yaml(service: WorkbenchService):
     actor_id = _actor(service)
