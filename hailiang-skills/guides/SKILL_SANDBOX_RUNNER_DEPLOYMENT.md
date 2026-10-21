@@ -58,6 +58,8 @@ export HAILIANG_SANDBOX_SHARED_TOKEN=local-dev-sandbox-token
 
 本地 API 是裸机进程，但脚本必须由容器内 Runner 执行，才能作为生产一致性验收。仅在显式设置 `HAILIANG_SCRIPT_EXECUTOR=legacy` 时保留旧执行路径，且只能用于开发诊断，不能用于测试或生产验收。
 
+本地 Compose 与裸机 smoke 部署默认使用清华 PyPI 镜像：`https://pypi.tuna.tsinghua.edu.cn/simple/`。该地址于 2026-10-22 验证可访问（HTTP 200）；如网络策略或镜像稳定性要求不同，可通过 `HAILIANG_SANDBOX_PYPI_INDEX_URL` 覆盖。K8s 生产环境仍应使用运维提供的内网 PyPI/制品代理，并保持 NetworkPolicy 仅放通该内网地址。
+
 ## 裸机测试服务器
 
 `./deploy-smoke.sh --env ./env.8010.sh ...` 同样启动裸机 API，但会默认启动或复用 Docker 中的 `skill-sandbox-runner`。测试服务器私有环境文件必须包含：
@@ -67,7 +69,7 @@ export HAILIANG_SCRIPT_EXECUTOR=remote
 export HAILIANG_REQUIRE_REMOTE_SANDBOX=true
 export HAILIANG_SANDBOX_ENDPOINT=http://127.0.0.1:8091
 export HAILIANG_SANDBOX_SHARED_TOKEN='<随机且仅存于私有环境文件的值>'
-export HAILIANG_SANDBOX_PYPI_INDEX_URL=https://<internal-pypi>/simple
+export HAILIANG_SANDBOX_PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
 ```
 
 如 Runner 由运维另行部署，可设置 `HAILIANG_SANDBOX_MANAGE_RUNNER=0`；部署脚本仍会在启动 API 前检查该 endpoint 的 `/healthz`。不要将 `HAILIANG_SCRIPT_EXECUTOR` 改为 `legacy` 来绕过 Runner：smoke 脚本会明确拒绝这种配置。

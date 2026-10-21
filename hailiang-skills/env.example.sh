@@ -57,7 +57,7 @@ export HAILIANG_SCRIPT_EXECUTOR="remote"
 export HAILIANG_REQUIRE_REMOTE_SANDBOX="true"
 export HAILIANG_SANDBOX_ENDPOINT="http://127.0.0.1:8091"
 export HAILIANG_SANDBOX_SHARED_TOKEN="local-dev-sandbox-token"
-export HAILIANG_SANDBOX_PYPI_INDEX_URL="https://mirrors.huaweicloud.com/repository/pypi/simple"
+export HAILIANG_SANDBOX_PYPI_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple/"
 export SANDBOX_RUNNER_PORT="8091"
 
 # 默认由 MS-Agent 同一份 JSON 同时完成规划、工具路由和正文生成。

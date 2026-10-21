@@ -34,7 +34,7 @@ services:
       dockerfile: Dockerfile.sandbox-runner
     environment:
       HAILIANG_SANDBOX_SHARED_TOKEN: ${HAILIANG_SANDBOX_SHARED_TOKEN:-local-dev-sandbox-token}
-      HAILIANG_SANDBOX_PYPI_INDEX_URL: ${HAILIANG_SANDBOX_PYPI_INDEX_URL:-https://mirrors.huaweicloud.com/repository/pypi/simple}
+      HAILIANG_SANDBOX_PYPI_INDEX_URL: ${HAILIANG_SANDBOX_PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple/}
       HAILIANG_SANDBOX_IMAGE_DIGEST: local-compose
     ports:
       - "127.0.0.1:${SANDBOX_RUNNER_PORT:-8091}:8081"

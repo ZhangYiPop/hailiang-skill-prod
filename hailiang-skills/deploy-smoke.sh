@@ -135,7 +135,7 @@ ensure_remote_sandbox_runner() {
     echo "Starting/reusing isolated Skill Sandbox Runner: ${HAILIANG_SANDBOX_ENDPOINT}"
     SANDBOX_RUNNER_PORT="$SANDBOX_RUNNER_PORT" \
       HAILIANG_SANDBOX_SHARED_TOKEN="$HAILIANG_SANDBOX_SHARED_TOKEN" \
-      HAILIANG_SANDBOX_PYPI_INDEX_URL="${HAILIANG_SANDBOX_PYPI_INDEX_URL:-https://mirrors.huaweicloud.com/repository/pypi/simple}" \
+      HAILIANG_SANDBOX_PYPI_INDEX_URL="${HAILIANG_SANDBOX_PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple/}" \
       docker compose -f "$PROJECT_DIR/docker-compose.local.yml" up -d skill-sandbox-runner
   else
     echo "Using externally managed Skill Sandbox Runner: ${HAILIANG_SANDBOX_ENDPOINT}"
