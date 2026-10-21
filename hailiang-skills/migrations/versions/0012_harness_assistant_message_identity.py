@@ -2,7 +2,7 @@
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0012_harness_assistant_message_identity"
+revision = "0012_harness_msg_identity"
 down_revision = "0011_harness_v3_client_portraits"
 branch_labels = None
 depends_on = None
