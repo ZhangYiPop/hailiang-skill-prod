@@ -218,13 +218,20 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
   const end = tickElapsed ? clock : (Number.isFinite(serverUpdatedAt) ? serverUpdatedAt : Date.now());
   const startedAt = Date.parse(run.created_at);
   const elapsedSeconds = Math.max(0, Math.floor((end - startedAt) / 1000));
+  // Do not show created_at → updated_at while waiting: updated_at can be
+  // refreshed by dependency/lease events long after active execution ended,
+  // which makes a wall-clock wait look like a 100+ second task duration.
+  // A run commonly has a parent waiting on dependencies while its child waits
+  // on the user, so user input takes precedence in the public explanation.
   const elapsedLabel = tickElapsed
     ? `流程历时 ${elapsedSeconds}s · ${activeExecutionCount} 项任务执行中`
-    : waitingForDependency
-      ? `流程暂计 ${elapsedSeconds}s · 当前等待前置任务，等待时间不计为执行耗时`
-      : waitingForUser
-        ? `流程暂计 ${elapsedSeconds}s · 等待补充，计时已暂停`
-        : `流程历时 ${elapsedSeconds}s`;
+    : waitingForUser
+      ? "任务计时已暂停 · 等待你补充"
+      : waitingForDependency
+        ? "任务计时已暂停 · 当前等待前置任务"
+        : isHarnessTerminal(run.status)
+          ? `本轮流程历时 ${elapsedSeconds}s`
+          : "任务计时已暂停 · 等待调度";
   const expertAnchorId = expertTransferAnchorId(run.nodes);
   const render = (node: HarnessNode, depth = 0) => {
     const children = sortNodes(run.nodes.filter((n) => n.parent_id === node.id));

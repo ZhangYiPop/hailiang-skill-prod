@@ -152,14 +152,16 @@ describe("Harness task bubble", () => {
     expect(screen.queryByText("执行失败")).toBeNull();
   });
 
-  it("pauses the visible timer while every task is waiting instead of treating dependency wait as execution", () => {
+  it("hides elapsed wall time while every task is waiting and prioritizes the user-input explanation", () => {
     vi.useFakeTimers();
     const run = fixture();
     const { rerender } = render(<TaskProgressBlock run={run} />);
-    expect(screen.getByText(/流程暂计 1s/)).toHaveTextContent("等待前置任务，等待时间不计为执行耗时");
+    expect(screen.getByText(/任务计时已暂停 · 等待你补充/)).toBeInTheDocument();
+    expect(screen.queryByText(/流程暂计/)).toBeNull();
     vi.advanceTimersByTime(120_000);
     rerender(<TaskProgressBlock run={run} />);
-    expect(screen.getByText(/流程暂计 1s/)).toBeInTheDocument();
+    expect(screen.getByText(/任务计时已暂停 · 等待你补充/)).toBeInTheDocument();
+    expect(screen.queryByText(/流程暂计/)).toBeNull();
     vi.useRealTimers();
   });
 });
