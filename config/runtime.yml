@@ -1,0 +1,6 @@
+harness:
+  max_model_calls: 48
+  max_tool_calls: 96
+  max_run_model_calls: 192
+  max_run_tool_calls: 384
+  max_tasks: 64

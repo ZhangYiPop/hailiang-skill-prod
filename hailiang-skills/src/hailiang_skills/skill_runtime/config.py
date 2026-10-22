@@ -57,6 +57,8 @@ def load_llm_config(config_path: str | Path, require_api_key: bool = True) -> LL
         timeout_s=timeout_s,
         temperature=temperature,
         max_tokens=max_tokens,
+        enable_search=bool(data.get("enable_search", False)),
+        search_options=_read_search_options(data),
     )
 
 
@@ -98,3 +100,10 @@ def _read_temperature(data: dict[str, object]) -> float:
     if not 0 <= parsed <= 2:
         raise LLMConfigError("llm_config.json 字段 temperature 必须在 0 到 2 之间")
     return parsed
+
+
+def _read_search_options(data: dict[str, object]) -> dict[str, object]:
+    value = data.get("search_options")
+    if isinstance(value, dict):
+        return value
+    return {}

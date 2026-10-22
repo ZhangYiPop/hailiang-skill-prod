@@ -78,6 +78,8 @@ class LLMConfig:
     max_tokens: int = 8000
     enable_thinking: bool = False
     return_reasoning: bool = False
+    enable_search: bool = False
+    search_options: dict = field(default_factory=dict)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     route_suggestions: RouteSuggestionConfig = field(default_factory=RouteSuggestionConfig)
     selectable_models: tuple[SelectableModel, ...] = ()
