@@ -235,6 +235,13 @@ async def _read_json_body(request: Request) -> dict[str, object] | None:
 
 
 def create_app() -> FastAPI:
+    # K8s/CI deployments must fail fast instead of silently executing a Skill
+    # script in the API Pod when the isolated Runner was configured incorrectly.
+    if os.getenv("HAILIANG_REQUIRE_REMOTE_SANDBOX", "false").lower() in {"1", "true", "yes", "on"}:
+        if os.getenv("HAILIANG_SCRIPT_EXECUTOR", "").strip().lower() != "remote":
+            raise RuntimeError("HAILIANG_REQUIRE_REMOTE_SANDBOX=true 时 HAILIANG_SCRIPT_EXECUTOR 必须为 remote")
+        if not os.getenv("HAILIANG_SANDBOX_ENDPOINT", "").strip() or not os.getenv("HAILIANG_SANDBOX_SHARED_TOKEN", "").strip():
+            raise RuntimeError("远端 Skill 沙箱缺少 HAILIANG_SANDBOX_ENDPOINT 或 HAILIANG_SANDBOX_SHARED_TOKEN")
     configure_otel()
     llm_config = load_llm_config()
     llm_client = LLMClient(llm_config)

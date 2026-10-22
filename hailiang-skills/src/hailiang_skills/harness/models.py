@@ -13,6 +13,8 @@ class HarnessRunRow(Base):
     user_id: Mapped[str] = mapped_column(String(160))
     profile_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     active_session: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
+    # Stable public task/bubble identity; request IDs live in harness_client_runs.
+    assistant_message_id: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True, index=True)
     payload: Mapped[dict] = mapped_column(_json_type())
     version: Mapped[int] = mapped_column(Integer, default=1)
 

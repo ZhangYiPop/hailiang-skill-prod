@@ -91,7 +91,8 @@ class HarnessStore:
                         # the replacement run in this same transaction.
                         db.flush()
                 row = HarnessRunRow(run_id=run["run_id"], session_id=run["session_id"], user_id=run["user_id"],
-                                    profile_id=run["profile_id"], active_session=run["session_id"], payload={}, version=0)
+                                    profile_id=run["profile_id"], active_session=run["session_id"],
+                                    assistant_message_id=run.get("assistant_message_id"), payload={}, version=0)
                 db.add(row)
                 for identity, record in run.get("seed_facts", {}).items():
                     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -105,7 +106,7 @@ class HarnessStore:
     def mutate(self, run_id: str, apply: Callable):
         with self.transaction() as db:
             row = self._locked(db, run_id)
-            run = deepcopy(row.payload)
+            run = self._run_payload(row)
             changes: list[dict] = []
             result = apply(run, changes, db)
             if changes:
@@ -118,6 +119,7 @@ class HarnessStore:
         run["version"] = row.version
         run["updated_at"] = now()
         row.active_session = None if run["status"] in TERMINAL else run["session_id"]
+        row.assistant_message_id = run.get("assistant_message_id")
         for task in run["tasks"].values():
             for index, message in enumerate(task["messages"]):
                 message.setdefault("source_id", f"{task['id']}:message:{len(task.get('archived_messages', [])) + index}")
@@ -225,21 +227,30 @@ class HarnessStore:
             db.info['harness_changed'] = True
             return True
 
+    @staticmethod
+    def _run_payload(row):
+        payload = deepcopy(row.payload)
+        # Keep migrated DB identity visible even before the next mutation
+        # writes it into the legacy JSON payload.
+        if row.assistant_message_id and not payload.get("assistant_message_id"):
+            payload["assistant_message_id"] = row.assistant_message_id
+        return payload
+
     def get(self, run_id):
         with Session(self.engine) as db:
             row = db.get(HarnessRunRow, run_id)
             if row is None:
                 raise HarnessError("HARNESS_RUN_NOT_FOUND", 404)
-            return deepcopy(row.payload)
+            return self._run_payload(row)
 
     def runs(self, session_id):
         with Session(self.engine) as db:
-            return [deepcopy(row.payload) for row in db.scalars(select(HarnessRunRow).where(HarnessRunRow.session_id == session_id))]
+            return [self._run_payload(row) for row in db.scalars(select(HarnessRunRow).where(HarnessRunRow.session_id == session_id))]
 
     def active(self, session_id):
         with Session(self.engine) as db:
             row = db.scalar(select(HarnessRunRow).where(HarnessRunRow.active_session == session_id))
-            return deepcopy(row.payload) if row else None
+            return self._run_payload(row) if row else None
 
     def runnable_runs(self):
         with Session(self.engine) as db:
@@ -250,6 +261,20 @@ class HarnessStore:
             row = db.get(HarnessInputRow, request_id)
             if row is None:
                 raise HarnessError("INPUT_REQUEST_NOT_FOUND", 404)
+            return row.run_id
+
+    def message_run(self, session_id, user_id, profile_id, assistant_message_id):
+        """Resolve a stable product message ID only inside its authorised scope."""
+        with Session(self.engine) as db:
+            query = select(HarnessRunRow).where(
+                HarnessRunRow.session_id == session_id,
+                HarnessRunRow.user_id == user_id,
+                HarnessRunRow.assistant_message_id == assistant_message_id,
+            )
+            query = query.where(HarnessRunRow.profile_id.is_(None) if profile_id is None else HarnessRunRow.profile_id == profile_id)
+            row = db.scalar(query)
+            if row is None:
+                raise HarnessError("HARNESS_ASSISTANT_MESSAGE_NOT_FOUND", 404)
             return row.run_id
 
     def events(self, session_id, after=0, limit=100):

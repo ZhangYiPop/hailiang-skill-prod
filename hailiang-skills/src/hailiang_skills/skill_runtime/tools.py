@@ -8,6 +8,7 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from hailiang_skills.skill_runtime.models import (
 )
 from hailiang_skills.skill_runtime.runtime_logger import RuntimeLogger, preview_text
 from hailiang_skills.skill_runtime.state_tracker import ensure_runtime_state, merge_status_track_updates, snapshot_for_skill
+from hailiang_skills.sandbox_executor import SandboxExecutionResult, SandboxExecutorError, execute_remote_skill_script
 
 MAX_RAG_RESULTS = 3
 MAX_RAG_SNIPPET_CHARS = 1_200
@@ -657,6 +659,27 @@ def make_tool_call_request(name: str, arguments: dict[str, Any] | None = None, *
     return ToolCallRequest(id=call_id or f"call_{uuid4().hex[:8]}", name=name, arguments=arguments or {})
 
 
+def _run_remote_script(
+    bundle: SkillBundle,
+    script_path: Path,
+    payload: dict[str, Any],
+    state: SessionState,
+) -> SandboxExecutionResult | None:
+    """Return the remote result when enabled, otherwise retain legacy dev mode."""
+    try:
+        return execute_remote_skill_script(
+            root_dir=bundle.root_dir,
+            skill_id=str(bundle.metadata.get("skill_id") or bundle.contract.skill_id or bundle.root_name),
+            skill_version=str(bundle.metadata.get("release_id") or bundle.metadata.get("revision_id") or ""),
+            script_path=script_path,
+            input_payload=payload,
+            timeout_seconds=30,
+            trace_id=state.session_id,
+        )
+    except SandboxExecutorError as exc:
+        raise RuntimeError(f"远端 Skill 沙箱不可用: {exc.code}; {exc.detail}") from exc
+
+
 def run_local_rag(bundle: SkillBundle, state: SessionState, *, query_override: str | None = None) -> list[LocalRagResult]:
     if not _is_capability_enabled(bundle, RAG_TOOL_NAME):
         return []
@@ -711,6 +734,21 @@ def run_subject_requirements_lookup(
     payload = build_subject_requirements_payload(state, arguments or {})
     if logger:
         logger.log("subject_requirements.run.start", script_path=str(script_path), payload=payload)
+    remote = _run_remote_script(bundle, script_path, payload, state)
+    if remote is not None:
+        if not remote.ok:
+            raise RuntimeError(f"subject_requirements_lookup.py 沙箱执行失败: {remote.error_code}; {remote.error}")
+        response = remote.json_output
+        if not isinstance(response, dict):
+            raise ValueError("subject_requirements_lookup.py 沙箱输出顶层必须是 JSON 对象")
+        if logger:
+            logger.log(
+                "subject_requirements.run.completed",
+                execution_mode=remote.executor_type,
+                execution_id=remote.execution_id,
+                dependency_cache_hit=remote.cache_hit,
+            )
+        return response
     result = subprocess.run(
         [sys.executable, str(script_path)],
         input=json.dumps(payload, ensure_ascii=False),
@@ -817,6 +855,22 @@ def run_status_track(
     payload = build_status_track_payload(bundle, state)
     if logger:
         logger.log("status_track.run.start", script_path=str(script_path), payload=payload)
+    remote = _run_remote_script(bundle, script_path, payload, state)
+    if remote is not None:
+        if not remote.ok:
+            raise RuntimeError(f"status_track.py 沙箱执行失败: {remote.error_code}; {remote.error}")
+        response = remote.json_output
+        if not isinstance(response, dict):
+            raise ValueError("status_track.py 沙箱输出顶层必须是 JSON 对象")
+        if logger:
+            logger.log(
+                "status_track.run.completed",
+                execution_mode=remote.executor_type,
+                execution_id=remote.execution_id,
+                dependency_cache_hit=remote.cache_hit,
+            )
+        merge_status_track_updates(bundle, state, response)
+        return response
     result = subprocess.run(
         [sys.executable, str(script_path)],
         input=json.dumps(payload, ensure_ascii=False),

@@ -28,7 +28,7 @@
 
 ## 3. 快照 reducer
 
-每个有效帧携带完整 `snapshot`。客户端只做：校验 `protocol/session_id/profile_id`，丢弃 `seq <= cursor` 的重复帧，将状态替换为 `snapshot`。出现 `resync_required`、范围不匹配或解析失败时保留最近可用快照；下次 BFF 重发同一最小 `chat` 请求即可取得服务端当前完整状态，不调用 `/harness`。
+每个有效帧携带完整 `state`。客户端只做：校验 `protocol/session_id/profile_id`，以 `record_version` 忽略旧帧，将当前气泡完整状态替换为 `state`。出现范围不匹配或解析失败时保留最近可用状态；下次 BFF 重发同一最小 `chat` 请求即可取得服务端当前完整状态，不调用 `/harness`。
 
 不要实现实体 upsert、delta 文本拼接、`message.delta` offset 校验或 `run.finalized` 消费；这些是内部 outbox 的行为，不是公开协议。
 
@@ -36,11 +36,11 @@
 
 ## 4. 任务气泡与问题组
 
-渲染顺序固定为“任务拆解 → 主任务/专家/Skill/工具树 → 专家结论 → 汇总与推荐”。编排首完成后，先读取 `runs[].dispatch` 显示已分派的专家数量、业务 brief、具体 `task_brief`、并行关系和依赖；再读取 `nodes` 展示实际执行。节点可显示 `phase`、`action`、`waiting_on`、`outcome`、`result` 和安全错误码。`round_experts` 只用于快速汇总，不替代节点树。
+渲染顺序固定为“任务拆解 → 主任务/专家/Skill/工具树 → 专家结论 → 汇总与推荐”。编排首完成后，先读取 `state.dispatch` 显示已分派的专家数量、业务 brief、具体 `task_brief`、并行关系和依赖；再读取 `state.nodes` 展示实际执行。节点可显示 `phase`、`action`、`waiting_on`、`outcome`、`result` 和安全错误码。`round_experts` 只用于快速汇总，不替代节点树。
 
-主任务阶段使用 `runs[].phase` 和 `runs[].action`：`planning` 表示拆题，`dispatching_completed` 表示已经知道专家计划，`experts_running` 表示专家执行中，`synthesizing` 表示编排尾汇总，`recommending` 表示推荐生成。专家 `result` 只包含结论、依据、限制和未解决事项，不包含内部提示词或思考。
+主任务阶段使用 `state.phase` 和 `state.action`：`planning` 表示拆题，`dispatching_completed` 表示已经知道专家计划，`experts_running` 表示专家执行中，`synthesizing` 表示编排尾汇总，`recommending` 表示推荐生成。专家 `result` 只包含结论、依据、限制和未解决事项，不包含内部提示词或思考。
 
-追问以 `runs[].input_queue` 与 `input_groups` 驱动：
+追问以 `state.input_queue`、`state.inputs` 与 `state.input_groups` 驱动：
 
 - 只有 `active_request_id` 对应的 `pending` 卡片可编辑。
 - 活动组显示“第 N/M 题”；同组其余题只显示进度。
@@ -52,7 +52,7 @@
 
 ## 5. 新问题与终态记录
 
-活动 run 中用户发送新问题时，服务端会终止旧 run 并创建新 run；旧 run 的已发布正文为 `interrupted`，其专家中间态不能带入新 run 的上下文。档案切换由 BFF 的已授权档案上下文控制；专家团队只能由当前 `input.expert_team_id` 指定，前端不选择团队成员。
+活动 run 中用户发送新问题时，服务端会终止旧 run 并创建新 run；旧 run 的已发布正文为 `interrupted`，其专家中间态不能带入新 run 的上下文。档案切换由 BFF 的已授权档案上下文控制；专家团队只能由当前 `input.expert_team_id` 指定，前端不选择团队成员。该字段推荐为单元素数组，当前帧的 `expert_team_ids` 与 `team_orchestration_version="single_team_v1"` 说明本次为单团队运行；传多个团队当前会收到 `422 MULTI_EXPERT_TEAMS_NOT_ENABLED`。
 
 收到 `done` 后，BFF 依照该帧的 `persistence` 与 `record_version` 覆盖同一 `assistant_message_id` 的历史记录；本期不要求 BFF 调用 `/record` 或 `/harness` 拉取快照。不要把公开任务树当作下一轮模型上下文。
 

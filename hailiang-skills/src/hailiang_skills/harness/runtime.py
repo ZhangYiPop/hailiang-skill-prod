@@ -1126,7 +1126,12 @@ class HarnessRuntime:
                 current["recommendations_status"] = "unavailable"
             else:
                 current["recommendations_status"] = "not_available"
+            # `tail_done` belongs to the run as well as the main task: public
+            # state derives synthesis_status from the durable run-level marker.
+            # Without it, a completed final response was incorrectly projected
+            # as synthesis_status=pending.
             live["tail_done"] = True
+            current["tail_done"] = True
             current["phase"] = "completed"
             current["action"] = "已完成最终回复"
             finish_run(current, live, changes, text)
@@ -2247,6 +2252,9 @@ class HarnessRuntime:
                            "total_count": len(request_ids), "completed_count": sum(item["status"] in {"answered", "skipped", "expired"} for item in members),
                            "actors": list(dict.fromkeys(item.get("actor", "主 agent") for item in members))})
         root_task = run["tasks"].get(run["root_task_id"], {})
+        # Pre-fix runs only stored this marker on the main task.  Keep those
+        # persisted histories accurate while new runs use the run-level value.
+        tail_done = bool(run.get("tail_done") or root_task.get("tail_done"))
         fallback_phase, fallback_action = _public_phase(run, root_task) if root_task else ("running", "正在执行")
         return {"run_id": run["run_id"], "client_run_id": run.get("client_run_id"),
                 "assistant_message_id": run.get("assistant_message_id") or f"msg_harness_{run['run_id']}",
@@ -2257,7 +2265,7 @@ class HarnessRuntime:
                 "created_at": run["created_at"], "updated_at": run["updated_at"],
                 "phase": run.get("phase") or fallback_phase, "action": run.get("action") or fallback_action,
                 "dispatch": public_dispatch(run),
-                "synthesis_status": "completed" if run.get("tail_done") else ("running" if run.get("phase") in {"synthesizing", "recommending"} else "pending"),
+                "synthesis_status": "completed" if tail_done else ("running" if run.get("phase") in {"synthesizing", "recommending"} else "pending"),
                 "recommendations_status": run.get("recommendations_status") or ("completed" if run.get("jump_cards") else ("not_started" if not run.get("tail_done") else "not_available")),
                 "result": run.get("result", ""), "error": run.get("error"),
                 "orchestrated": bool(run["policy"].get("orchestrated")),
