@@ -36,7 +36,7 @@ facts:
     allowed_values: ["小学", "初一", "初二", "初三", "高一", "高二", "高三"]
     scope_policy: "profile"
     scenario: "admission_simulation"
-    scenario_group: ["admission_simulation", "multi_path_planning"]
+    scenario_group: ["admission_simulation", "multi_path_planning", "subject_advisor"]
     enabled: true
   family_education_support:
     label: "家庭教育支持"
@@ -56,7 +56,7 @@ facts:
     submit_mode: "manual"
     scope_policy: "profile"
     scenario: "admission_simulation"
-    scenario_group: ["admission_simulation", "multi_path_planning"]
+    scenario_group: ["admission_simulation", "multi_path_planning", "subject_advisor"]
     enabled: true
   student_region:
     label: "所在地区/户籍地"
@@ -279,7 +279,7 @@ facts:
     allowed_values: ["师范类", "军警类", "飞行员", "其他"]
     scope_policy: "profile"
     scenario: "multi_path_planning"
-    scenario_group: ["admission_simulation", "multi_path_planning"]
+    scenario_group: ["admission_simulation", "multi_path_planning", "subject_advisor"]
     enabled: true
   physical_requirements:
     label: "身高"

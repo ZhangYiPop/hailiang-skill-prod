@@ -158,6 +158,7 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                 ) from exc
         context, created = open_or_resume_session(repository, fact_service, session_id=session_id, data=data,
                                                   context_scope="profile" if data.profile_id else "unbound", allow_context_seed=context is None)
+        debug_skill_id = None
         if created:
             context.session_meta["runtime_mode"] = "harness_v1"
             repository.save(context)
@@ -165,7 +166,9 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
             if snapshot:
                 context.session_meta["configuration_snapshot"] = snapshot
                 root = snapshot_root(snapshot)
-                if root.get("object_type") == "expert_team":
+                if root.get("object_type") == "skill":
+                    debug_skill_id = root["object_key"]
+                elif root.get("object_type") == "expert_team":
                     context.session_meta["expert_team_id"] = root["object_key"]
             if request.debug_session_id:
                 context.session_meta["workbench_debug_session_id"] = request.debug_session_id
@@ -219,7 +222,7 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                     history.append({"role": "assistant", "content": run["result"]})
         run_id = operation(lambda: runtime.create(session_id, data.user_id, data.profile_id, request.goal, policy, seed, history,
             wire_protocol="hailiang.sse.v3" if protocol_v3 else None, submission=submission,
-            supersede_active=protocol_v3))
+            supersede_active=protocol_v3, debug_skill_id=debug_skill_id))
         created_run = runtime.store.get(run_id)
         return {"run_id": run_id, "runtime_mode": "harness_v1", "status": "running",
                 "superseded_run_id": created_run.get("supersedes_run_id")}

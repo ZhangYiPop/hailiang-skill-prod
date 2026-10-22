@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from hailiang_skills.core.context_composer import estimate_tokens
 from hailiang_skills.skill_runtime.models import ChatMessage
 from .contracts import HarnessError, TERMINAL
-from .policy import main_agent_fallback_clause
+from .policy import main_agent_fallback_clause, skill_prompt_rules
 
 
 class TaskBrief(BaseModel):
@@ -247,21 +247,8 @@ def compose_v2(run, task, facts, specs, platform):
         )
         catalog = {"skills": expert["skills"]}
     else:
-        rules = policy["skills"][task["skill_id"]]["rules"]
-        catalog = {}
-        # M-01: 将题库目录注入 Skill 提示词
         skill_info = policy["skills"].get(task["skill_id"], {})
-        q_catalog = skill_info.get("question_catalog")
-        if q_catalog:
-            max_fields = skill_info.get("max_fields_per_form", 6)
-            catalog["question_catalog"] = q_catalog
-            catalog["max_fields_per_form"] = max_fields
-            rules += (
-                "\n\n# 题库目录（仅限 request_declared_form 使用）\n"
-                "调用 request_declared_form 时，question_ids 只能从下方的 question_catalog 中选取，"
-                f"单次最多 {max_fields} 题。禁止编造题面、选项或 question_id。\n"
-                + json.dumps({"question_catalog": q_catalog, "max_fields_per_form": max_fields}, ensure_ascii=False)
-            )
+        rules, catalog = skill_prompt_rules(skill_info, task)
     rules = platform + "\n" + policy.get("soul", "") + "\n" + rules
     rules += "\n索引不是事实值，未加载不等于未知；追问前按字段 read_facts。按需 read_evidence，未读取的引用不可当作已读依据。专家与 Skill 优先用 submit_result 提交约 1200 token 的结构化结论；保留限制和未解决事项。"
     rules += "\n证据引用只能使用本次工具返回的 evidence_id（ev_ 开头）；文件路径与 URL 是来源描述，不是证据 ID。已有 data/content 可直接分析，不必为取得引用重复读取。"

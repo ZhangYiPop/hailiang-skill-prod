@@ -3027,10 +3027,17 @@ class WorkbenchService:
         Unpublished candidates are temporarily mounted over the shared
         Runtime registry for the duration of this call, so they use exactly
         the same executor without becoming visible to formal conversations.
+
+        Uses ``get_raw()`` rather than ``get()`` for the candidate bundle
+        lookup because ``_mount_candidate_snapshot_skills`` writes directly
+        into ``bundles`` without updating ``enabled_by_id``.  The ``get()``
+        path would silently return None for any Skill whose deployment
+        happens to be disabled, causing a fallback into the preview codepath
+        that skips questionnaires, tool execution, and the state machine.
         """
         skill_id = str(entry.get("object_key") or "")
         runtime_registry = getattr(self.orchestrator, "runtime_registry", None)
-        bundle = runtime_registry.get(skill_id) if runtime_registry is not None and skill_id else None
+        bundle = runtime_registry.get_raw(skill_id) if runtime_registry is not None and skill_id else None
         formal_executor = getattr(self.orchestrator, "_handle_message_legacy", None)
         temporary_mount = False
         previous_bundle = None
@@ -3056,7 +3063,7 @@ class WorkbenchService:
                 previous_bundle = runtime_registry.bundles.get(registry_key)
                 runtime_registry.bundles[registry_key] = candidate_bundle
                 temporary_mount = True
-                bundle = runtime_registry.get(skill_id)
+                bundle = runtime_registry.get_raw(skill_id)
                 self._record_candidate_turn_event(
                     context,
                     "candidate_runtime_temporary_mount",

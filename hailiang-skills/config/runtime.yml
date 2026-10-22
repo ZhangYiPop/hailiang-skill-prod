@@ -7,6 +7,7 @@ harness:
   independent_skill_ids: []
   max_parallel: 3
   max_model_calls: 24
+  max_search_calls_per_task: 20
   max_tool_calls: 48
   max_run_model_calls: 96
   max_run_tool_calls: 192
@@ -16,7 +17,7 @@ harness:
   max_output_tokens: 8192
   # 0 disables the cumulative input guard, not the per-call context limit.
   # Environment override: HAILIANG_HARNESS_MAX_RUN_INPUT_TOKENS.
-  max_run_input_tokens: 300000
+  max_run_input_tokens: 500000
   main_input_reserve_tokens: 32000
 soul_path: config/soul.md
 memory_enabled: true

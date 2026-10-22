@@ -4,9 +4,97 @@ from dataclasses import asdict
 from pathlib import Path
 import os
 
+import re
+
 import yaml
 
 from hailiang_skills.skill_runtime.models import SessionState
+
+
+def _skill_stage(task: dict) -> str:
+    """Decide which SKILL.md stage slice belongs in this turn.
+
+    The latest engine result wins. Collection continues while the engine is
+    still asking (``next-ask`` or ``need_facts``). A finished ``match`` or a
+    terminal ``match-single`` switches to the analyze slice.
+    """
+    messages = task.get("messages") or []
+    for msg in reversed(messages):
+        if msg.get("role") != "tool":
+            continue
+        content = str(msg.get("content") or "")
+        if '"next-ask"' in content or "need_facts" in content:
+            return "collect"
+        if any(token in content for token in (
+            '"state": "hit"', '"state": "probe"', '"state": "miss"',
+            '"state":"hit"', '"state":"probe"', '"state":"miss"',
+            '"action": "match"', '"action":"match"',
+        )):
+            return "analyze"
+    return "collect"
+
+
+def skill_prompt_rules(skill_info: dict, task: dict) -> tuple[str, dict]:
+    """Stage-sliced skill rules, with the question catalog referenced once."""
+    stage = _skill_stage(task)
+    stage_rules = skill_info.get("stage_rules") or {}
+    rules = stage_rules.get(stage) or skill_info.get("rules") or ""
+    catalog_extra: dict = {}
+    if stage == "collect":
+        q_catalog = skill_info.get("question_catalog")
+        if q_catalog:
+            max_fields = skill_info.get("max_fields_per_form", 6)
+            catalog_extra = {"question_catalog": q_catalog, "max_fields_per_form": max_fields}
+            rules += (
+                "\n\n调用 request_declared_form 时，question_ids 只能从授权目录的 question_catalog 中选取，"
+                f"单次最多 {max_fields} 题。禁止编造题面、选项或 question_id。"
+            )
+    return rules, catalog_extra
+
+
+def _parse_stage_rules(skill_markdown: str) -> dict[str, str]:
+    """Parse SKILL.md ``<!-- stage:X -->`` markers to produce stage-specific rule variants.
+
+    Sections tagged ``<!-- stage:all -->`` appear in every variant.  Sections
+    without any stage marker are treated as ``all`` for backward compatibility.
+    Plays tagged ``<!-- stage:collect -->`` or ``<!-- stage:analyze -->`` are
+    added to the corresponding variant on top of the shared base.
+
+    Returns a dict with keys ``"full"`` (the untouched original), ``"collect"``
+    and ``"analyze"``.  When no markers are present all three values are
+    identical (the full skill_markdown).
+    """
+    # Split on stage markers or `## ` headings; each marker is a solo piece
+    # immediately followed by the section it tags — pair them with a state
+    # machine instead of inspecting each part independently.
+    parts = re.split(r'\n(?=<!--\s*stage:|##\s)', skill_markdown)
+    current_stage = "all"
+    all_sections: list[str] = []
+    collect_extra: list[str] = []
+    analyze_extra: list[str] = []
+
+    for part in parts:
+        stripped = part.strip()
+        if not stripped:
+            continue
+        m = re.search(r'<!--\s*stage:(all|collect|analyze)\s*-->', part)
+        if m:
+            current_stage = m.group(1)
+            continue  # Solo marker line — apply to the next content part
+        # Content part — assign to whichever stage the last marker set
+        if current_stage == "all":
+            all_sections.append(part)
+        elif current_stage == "collect":
+            collect_extra.append(part)
+        elif current_stage == "analyze":
+            analyze_extra.append(part)
+
+    base = '\n'.join(all_sections)
+    return {
+        "full": skill_markdown,
+        "collect": base + ('\n' + '\n'.join(collect_extra) if collect_extra else ''),
+        "analyze": base + ('\n' + '\n'.join(analyze_extra) if analyze_extra else ''),
+    }
 from hailiang_skills.skill_runtime.tools import build_tool_specs
 from hailiang_skills.workbench.orchestration import orchestrator_snapshot_view
 from .contracts import HarnessError
@@ -113,11 +201,12 @@ def capture_policy(orchestrator, context):
         root_skill = normalize_skill(debug_root["object_key"])
         independent = [skill_id for skill_id in independent if skills.get(skill_id)]
         if root_skill not in independent:
-            # A candidate Skill is tested through an explicitly scoped test
-            # expert, never by granting the main router an internal Skill.
-            expert_data["harness_candidate_skill"] = {"name": "候选 Skill 测试专家", "brief": "负责当前候选 Skill 的专项分析与验证",
-                "rules": f"你负责候选能力测试。对分派任务调用授权 Skill {root_skill}，收到结果后继续分析并提交。不得扩大授权。",
-                "skills": [root_skill], "max_skill_calls": 3}
+            # 调试会话中将被测 skill 自动提升为 independent，
+            # 主 agent 可直接调用 execute_skill，跳过专家中转。
+            # 这样 skill 能获得完整上下文（question_catalog、
+            # request_declared_form、engine 脚本等），按 SKILL.md
+            # 的六步流程完整执行。
+            independent.append(root_skill)
     skill_data = {}
     for skill_id in set(independent) | {s for e in expert_data.values() for s in e["skills"]}:
         bundle = skills.get(skill_id)
@@ -135,6 +224,7 @@ def capture_policy(orchestrator, context):
         if _is_capability_enabled(bundle, "web_search") and _get_web_search_http_config(bundle) and not any(s["name"] == "web_search" for s in enabled_specs):
             enabled_specs.append({"name": "web_search", "description": "搜索外部资料", "parameters_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "additionalProperties": False}, "enabled": True})
         skill_data[skill_id] = {"name": bundle.runtime_metadata.name or skill_id, "rules": bundle.skill_markdown,
+                               "stage_rules": _parse_stage_rules(bundle.skill_markdown),
                                "specs": enabled_specs, "root": str(bundle.root_dir), "metadata": bundle.metadata,
                                "tool_registry": asdict(bundle.tool_registry), "contract": asdict(bundle.contract)}
         from hailiang_skills.skill_runtime.skill_contract import field_uses
@@ -143,10 +233,12 @@ def capture_policy(orchestrator, context):
         skill_data[skill_id]["assets"] = snapshot_assets(bundle.root_dir)
         # M-01: 将题库目录注入 Skill 数据，供提示词构建时使用
         try:
-            from hailiang_skills.runtime_bridge.native_questionnaire import questionnaire_config, available_question_specs
+            from hailiang_skills.runtime_bridge.native_questionnaire import questionnaire_config, question_specs
             qc = questionnaire_config(bundle)
             if qc.get("enabled") or qc.get("config_path") or qc.get("config_json") or qc.get("fields"):
-                q_specs = available_question_specs(bundle, state)
+                # 冻结全量题库。按当前答案过滤会把后几轮才显示的题（英语成绩、职业优先级）
+                # 排除在外，模型稍后按 id 发问时表单不会挂起。
+                q_specs = question_specs(bundle)
                 if q_specs:
                     skill_data[skill_id]["question_catalog"] = [
                         {"question_id": item["question_id"], "label": item["label"],
