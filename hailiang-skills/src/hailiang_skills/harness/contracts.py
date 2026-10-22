@@ -101,6 +101,14 @@ def normalize_input_arguments(arguments: dict) -> dict:
             isinstance(label, str) and isinstance(value, str) for label, value in options.items()
         ):
             item["options"] = [{"label": label, "value": value} for label, value in options.items()]
+        elif item.get("input_type") in {"single_select", "multi_select"} and isinstance(options, list):
+            # 模型常生成只有 value 缺 label 的 option；直接用 value 作为 label 兜底。
+            item["options"] = [
+                {"label": o.get("label") or str(o.get("value", "")),
+                 "value": str(o.get("value", ""))}
+                if isinstance(o, dict) else {"label": str(o), "value": str(o)}
+                for o in options
+            ]
         normalized["fields"].append(item)
     return normalized
 
@@ -143,8 +151,7 @@ def validate_answers(fields: list[dict], submission: AnswerSubmission | Internal
     for f in fields:
         value = values.get(f["key"])
         if value is None or value == "" or value == [] or isinstance(value, str) and not value.strip():
-            if f["required"] and not allow_partial:
-                raise HarnessError("REQUIRED_ANSWER_MISSING")
+            # 空着不填和「全部跳过」同一口径：这题本轮未答，不因 required 拒绝提交。
             values.pop(f["key"], None)
             continue
         kind = f["input_type"]

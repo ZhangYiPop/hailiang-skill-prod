@@ -246,7 +246,8 @@ def capture_policy(orchestrator, context):
                          "options": [option["value"] for option in item.get("options", [])],
                          "max_selections": item.get("max_selections"),
                          "display_condition": item.get("display_condition", ""),
-                         "rule": item.get("rule", "")}
+                         "rule": item.get("rule", ""),
+                         "required": bool(item.get("required", True))}
                         for item in q_specs
                     ]
                     skill_data[skill_id]["max_fields_per_form"] = (

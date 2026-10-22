@@ -453,23 +453,30 @@ class HarnessRuntime:
                "created_at": now(), "updated_at": now(), "version": 1}
         # 调试会话：预创建 execute_skill 工具调用，强制主 agent 直接启动 skill 子任务。
         # 不依赖模型自主决策——工具调用已入队，主 task 一启动即处理。
+        # 纯问候/无实质内容的短输入跳过预创建，由 LLM 自行判断是否需要调技能。
         if debug_skill_id and isinstance(debug_skill_id, str) and debug_skill_id.strip():
-            from hailiang_skills.skill_runtime.models import ToolCallRequest
-            skill_id = debug_skill_id.strip()
-            call_id = identifier("call")
-            tool_node_id = identifier("tool")
-            tool_stamp = now()
-            run["tools"][tool_node_id] = {
-                "id": tool_node_id, "call_id": call_id, "task_id": root["id"], "parent_id": root["id"],
-                "name": "execute_skill", "arguments": {"skill_id": skill_id, "task": goal},
-                "status": "queued", "attempts": 0, "created_at": tool_stamp, "started_at": None, "ended_at": None,
-            }
-            root["pending_calls"].append(tool_node_id)
-            root["messages"].append(serialize_message(ChatMessage(
-                role="assistant", content="",
-                tool_calls=(ToolCallRequest(call_id, "execute_skill",
-                                           {"skill_id": skill_id, "task": goal}),),
-            )))
+            import re as _re
+            greeting_like = len(goal.strip()) <= 15 and _re.match(
+                r'^(你好|嗨|hi|hello|早上好|下午好|晚上好|在吗|在不在|1|test|测试)[\s!！。.~～]*$',
+                goal.strip(), _re.IGNORECASE
+            )
+            if not greeting_like:
+                from hailiang_skills.skill_runtime.models import ToolCallRequest
+                skill_id = debug_skill_id.strip()
+                call_id = identifier("call")
+                tool_node_id = identifier("tool")
+                tool_stamp = now()
+                run["tools"][tool_node_id] = {
+                    "id": tool_node_id, "call_id": call_id, "task_id": root["id"], "parent_id": root["id"],
+                    "name": "execute_skill", "arguments": {"skill_id": skill_id, "task": goal},
+                    "status": "queued", "attempts": 0, "created_at": tool_stamp, "started_at": None, "ended_at": None,
+                }
+                root["pending_calls"].append(tool_node_id)
+                root["messages"].append(serialize_message(ChatMessage(
+                    role="assistant", content="",
+                    tool_calls=(ToolCallRequest(call_id, "execute_skill",
+                                               {"skill_id": skill_id, "task": goal}),),
+                )))
         run["context_policy_version"] = policy["settings"].get("context_policy_version", "v1")
         if cp.enabled(run):
             run["execution_contract_version"] = "v1"
@@ -502,8 +509,18 @@ class HarnessRuntime:
                     "depends_on": {"type": "array", "items": {"type": "string"}, "uniqueItems": True}}, ["key", "expert_id", "goal"])}}
                 , ["tasks"])))
         if allowed_skills(run, task):
-            result.append(spec("execute_skill", "执行自己的授权 Skill，并接收结果继续分析。", object_schema({
-                "skill_id": {"enum": allowed_skills(run, task)}, "task": {"type": "string", "minLength": 1}}, ["skill_id", "task"])))
+            skill_ids = allowed_skills(run, task)
+            skills_ctx = run["policy"]["skills"]
+            skill_hints = []
+            for sid in skill_ids[:4]:
+                s = skills_ctx.get(sid, {})
+                name = s.get("name", sid)
+                brief = (s.get("rules") or "")[:120].strip()
+                skill_hints.append(f"{sid}（{name}）：{brief}" if brief else f"{sid}（{name}）")
+            hint = "；".join(skill_hints) if skill_hints else ""
+            desc = f"执行授权 Skill 进行专项分析。仅当用户问题明确属于以下 Skill 领域时才调用，简单问候、闲聊和无明确意图的对话直接回答即可，不要调用技能。可用 Skill：{hint}" if hint else "执行自己的授权 Skill，并接收结果继续分析。仅当用户问题明确属于该 Skill 领域时调用。"
+            result.append(spec("execute_skill", desc, object_schema({
+                "skill_id": {"enum": skill_ids}, "task": {"type": "string", "minLength": 1}}, ["skill_id", "task"])))
         if task["kind"] == "skill":
             for item in run["policy"]["skills"][task["skill_id"]]["specs"]:
                 name = SKILL_ASSET_SEARCH_TOOL if item["name"] == "rag" else item["name"]
@@ -1360,6 +1377,14 @@ class HarnessRuntime:
                                            if t["name"] in SEARCH_TOOL_NAMES and t["task_id"] == task_id and t.get("attempts", 0))
                         if search_calls >= run["policy"]["settings"].get("max_search_calls_per_task", 10):
                             raise HarnessError("SEARCH_BUDGET_EXCEEDED")
+                    # 重复资产读取失败短路保护：同一 source 在同一 task 内连续失败≥3次
+                    # 直接报错拒绝调用，附带切换策略的指引，防止模型烧光预算。
+                    if tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
+                        source_key = tool["arguments"]["source"]
+                        failures = (task.get("runtime_state") or {}).get("_asset_failures", {})
+                        record = failures.get(source_key)
+                        if isinstance(record, dict) and record.get("count", 0) >= 3:
+                            raise HarnessError("ASSET_SOURCE_INCOMPATIBLE")
                     tool.update(status="running", execution_id=token, started_at=tool["started_at"] or now(), attempts=tool["attempts"] + 1)
                     task["tool_calls"] += 1
                     changes.append({"event": "tool_started", "node_id": node_id})
@@ -1382,8 +1407,18 @@ class HarnessRuntime:
                         result["expected"] = str(exc.validator_value) if exc.validator == "type" else str(exc.validator)
                     elif isinstance(exc, ValidationError) and exc.errors():
                         result["field"] = ".".join(str(part) for part in exc.errors()[0]["loc"]) or "$"
+                    if result["error"] == "ASSET_SOURCE_INCOMPATIBLE":
+                        result["next_action"] = "当前 source 文件的数据格式与结构化读取不兼容。改用 search_skill_assets 语义搜索，或调用 read_skill_asset 省略 source 先列目录寻其他文件；不要重复尝试同一 source。"
                     self._tool_result(tool, result, "failed")
                     changes.append({"event": "tool_failed", "node_id": node_id})
+                    # 累计 read_skill_asset 同一 source 的连续失败次数，用于短路保护
+                    if tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
+                        source_key = tool["arguments"]["source"]
+                        state = task.setdefault("runtime_state", {})
+                        failures = state.setdefault("_asset_failures", {})
+                        prev = failures.get(source_key)
+                        count = (prev.get("count", 0) + 1) if isinstance(prev, dict) else 1
+                        failures[source_key] = {"count": count, "last_error": result["error"]}
             self.store.mutate(run_id, begin)
             if external:
                 try:
@@ -1394,6 +1429,8 @@ class HarnessRuntime:
                     result = {"error": error}
                     if error == "ASSET_SOURCE_NOT_FOUND":
                         result["next_action"] = "调用 read_skill_asset 时省略 source，先获取授权资料目录；使用目录返回的 source，不猜测路径。"
+                    if error == "ASSET_SOURCE_INCOMPATIBLE":
+                        result["next_action"] = "当前 source 文件的数据格式与结构化读取不兼容。改用 search_skill_assets 语义搜索，或调用 read_skill_asset 省略 source 先列目录寻其他文件；不要重复尝试同一 source。"
                 def finish(run, changes, db):
                     if not self._valid(run, task_id, token):
                         return
@@ -1417,6 +1454,14 @@ class HarnessRuntime:
                     else:
                         self._tool_result(tool, result, "failed" if error else "completed")
                         changes.append({"event": "tool_failed" if error else "tool_completed", "node_id": node_id})
+                    # 累计 read_skill_asset 同一 source 的连续失败次数，用于短路保护
+                    if error and tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
+                        source_key = tool["arguments"]["source"]
+                        state = run["tasks"][task_id].setdefault("runtime_state", {})
+                        failures = state.setdefault("_asset_failures", {})
+                        prev = failures.get(source_key)
+                        count = (prev.get("count", 0) + 1) if isinstance(prev, dict) else 1
+                        failures[source_key] = {"count": count, "last_error": error}
                 self.store.mutate(run_id, finish)
         def release(run, changes, db):
             if self._valid(run, task_id, token):
@@ -1523,6 +1568,7 @@ class HarnessRuntime:
                             "key": qid,
                             "label": item["label"],
                             "input_type": item.get("input_type", "text"),
+                            "required": bool(item.get("required", True)),
                             "scope": "task",
                         }
                         if options:
@@ -1578,10 +1624,12 @@ class HarnessRuntime:
         elif name == 'finalize_response' and run.get('wire_protocol') == 'hailiang.sse.v3':
             if task['kind'] != 'main' or len(task['pending_calls']) != 1 or any(t['id'] != task['id'] and t['status'] not in TERMINAL for t in run['tasks'].values()):
                 raise HarnessError('RESULT_DEPENDENCIES_UNRESOLVED')
-            if any(t['parent_id'] == task['id'] and t['status'] in {'failed', 'cancelled'} for t in run['tasks'].values()):
-                raise HarnessError('REQUIRED_TASK_FAILED')
+            failed_kids = [t for t in run['tasks'].values() if t['parent_id'] == task['id'] and t['status'] in {'failed', 'cancelled'}]
+            if failed_kids:
+                task['failed_subtasks'] = [{"task_id": t["id"], "kind": t.get("kind"), "error": t.get("error"),
+                    "goal": t.get("goal", "")[:160]} for t in failed_kids]
             task['finalizing'] = True
-            self._tool_result(tool, {'accepted': True})
+            self._tool_result(tool, {'accepted': True, 'failed_subtasks': task.get('failed_subtasks')})
             changes.append({'event': 'finalizing', 'node_id': task['id']})
         elif name == "submit_result" and cp.enabled(run):
             if task["kind"] == "main" or len(task["pending_calls"]) != 1 or any(t["parent_id"] == task["id"] and t["status"] not in TERMINAL for t in run["tasks"].values()):
@@ -1818,6 +1866,13 @@ class HarnessRuntime:
             raise HarnessError("EXTERNAL_SUBJECT_REQUIRES_TASK_SCOPE")
         if not cp.enabled(run):
             fields = [{k: v for k, v in f.items() if k not in {"subject", "applicable_time"}} for f in fields]
+        # 调试会话或未绑定 profile 时，自动将 profile/user 作用域降级为 session，
+        # 避免 fact_identity 因 owner 为空抛出 FACT_SCOPE_UNAVAILABLE。
+        for f in fields:
+            if f.get("scope") == "profile" and not run.get("profile_id"):
+                f["scope"] = "session"
+            elif f.get("scope") == "user" and not run.get("user_id"):
+                f["scope"] = "session"
         facts = self.facts(run, task, db)
         answers = {}
         identities = []
