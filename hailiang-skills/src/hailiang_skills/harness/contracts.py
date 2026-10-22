@@ -102,11 +102,14 @@ def normalize_input_arguments(arguments: dict) -> dict:
         ):
             item["options"] = [{"label": label, "value": value} for label, value in options.items()]
         elif item.get("input_type") in {"single_select", "multi_select"} and isinstance(options, list):
-            # 模型常生成只有 value 缺 label 的 option；直接用 value 作为 label 兜底。
+            # 模型常生成只有 value 缺 label、或只有 label 但 value 为空串的 option。
             item["options"] = [
-                {"label": o.get("label") or str(o.get("value", "")),
-                 "value": str(o.get("value", ""))}
-                if isinstance(o, dict) else {"label": str(o), "value": str(o)}
+                (
+                    lambda o: (
+                        {"label": o.get("label") or str(o.get("value", "")),
+                         "value": str(o.get("value", "")) or o.get("label") or str(o)}
+                    ) if isinstance(o, dict) else {"label": str(o), "value": str(o)}
+                )(o)
                 for o in options
             ]
         normalized["fields"].append(item)
