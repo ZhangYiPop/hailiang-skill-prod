@@ -47,19 +47,17 @@ API 每次需要执行脚本时，向 Runner 发送：
 
 Runner 会校验包摘要、归档大小、路径和静态危险调用，再在临时工作目录中解压并执行。脚本不能通过绝对路径、`..` 路径或任意 shell 命令要求 Runner 执行其它文件。
 
-### 依赖哈希缓存
+### 镜像依赖白名单
 
-依赖环境键为：
+Runner 镜像内保存机器可读的依赖清单，并预装平台允许的固定版本。当前运行资产只使用标准库；兼容基线包含 `pandas==2.2.3`。`scripts/requirements.txt` 只声明对该清单的引用，不能触发安装。
+
+执行环境键为：
 
 ```text
-Runner 镜像标识 + Python 主次版本 + 冻结包摘要 + requirements.txt 摘要
+Runner 镜像标识 + Python 主次版本 + 冻结包摘要
 ```
 
-缓存未命中时，Runner 创建隔离 venv，并仅从 `HAILIANG_SANDBOX_PYPI_INDEX_URL` 安装固定版本依赖；成功后原子写入缓存。命中时直接复用。
-
-因此以下任一变化都会自动新建环境，而不会污染旧环境：Skill 包内容、`requirements.txt`、Python 版本或 Runner 镜像版本。
-
-`requirements.txt` 只允许固定版本的普通包，例如 `pandas==2.2.3`；不允许 VCS、可编辑安装、本地路径、自带 index URL 或未固定版本。
+Runner 为每次调用创建受控工作目录，并以镜像 Python 直接启动 subprocess；不会创建 venv、不会运行 pip、不会访问 PyPI。`requirements.txt` 必须是预装包的精确声明，例如 `pandas==2.2.3`；不允许 VCS、可编辑安装、本地路径、自带 index URL、未固定版本、未预装包或版本不一致。
 
 ### 部署拓扑
 
@@ -105,7 +103,7 @@ export HAILIANG_SANDBOX_SHARED_TOKEN='<private-random-token>'
 
 ## 劣势与已知边界
 
-- **首次调用较慢**：新冻结包或依赖变化会触发 venv/安装；业务侧不应把首次调用当作毫秒级操作。
+- **依赖变更需要镜像发布**：业务侧不能在修订或对话时安装新包；需要新增依赖时先走平台镜像发布流程。
 - **增加运维对象**：本地/测试要有 Docker Runner，K8s 要维护 Service、Secret、NetworkPolicy、资源限制与内部 PyPI。
 - **缓存不跨 K8s Pod**：当前 K8s 每个 Runner Pod 使用 `emptyDir`，扩容或调度到新 Pod 后会重新准备环境；这是用隔离性换共享缓存复杂度的取舍。
 - **Python 依赖受限**：未固定、私有但无内网源、需要编译工具链或需要系统库的依赖，可能安装失败；应在发布校验和镜像基线中提前处理。
@@ -118,7 +116,7 @@ export HAILIANG_SANDBOX_SHARED_TOKEN='<private-random-token>'
 2. 新增脚本调用点时，必须复用 `SandboxExecutor` / `execute_remote_skill_script`，不能自行发 shell 命令。
 3. 只执行冻结包中 `scripts/` 下的 Python 文件；脚本输入由服务端组装，模型不能覆写用户、会话、孩子等受控上下文。
 4. 新增依赖前确认其可被固定版本安装，并能通过配置的 PyPI 源获取；不要在 `requirements.txt` 写 `-e`、Git URL、本地路径或自定义 index。
-5. 诊断“脚本慢”时，先区分 Runner 未就绪、缓存未命中、依赖安装、脚本自身慢、队列等待和最终回复未呈现，不能只看模型耗时。
+5. 诊断“脚本慢”时，先区分 Runner 未就绪、镜像版本、脚本自身慢、队列等待和最终回复未呈现，不能只看模型耗时。
 6. 测试服务器私有配置使用独立 `env.8011.sh`；不得提交 token、数据库地址、API key 或其他私有环境文件。
 7. K8s 生产环境优先使用公司内网 PyPI/制品代理；清华源仅是本地与裸机 smoke 的默认镜像，不应作为生产 NetworkPolicy 的公网放通目标。
 

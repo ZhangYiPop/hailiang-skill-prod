@@ -577,12 +577,6 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         yield format_sse_event("state", _payload(runtime, run, request_run_id=request_run_id, event="state", reason="stream_started", cursor=cursor))
         while not await http_request.is_disconnected():
             run = await asyncio.to_thread(runtime.store.get, harness_run_id)
-            if run["status"] in TERMINAL:
-                yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
-                return
-            if _suspended(run):
-                yield format_sse_event("done_suspended", _payload(runtime, run, request_run_id=request_run_id, event="done_suspended", reason="waiting_for_user", cursor=cursor))
-                return
             events = await asyncio.to_thread(runtime.store.public_events, run["session_id"], run["user_id"], run["profile_id"], cursor)
             relevant = [event for event in events if event.get("run_id") == harness_run_id and event.get("type") in {"state", "done", "message.delta", "message.reset"}]
             if relevant:
@@ -598,6 +592,15 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     if event_name == "done":
                         return
                 continue
+            # Always drain persisted deltas before returning a terminal frame.
+            # A short final answer can emit reset/deltas/done between two SSE
+            # polls; checking terminal status first used to drop those deltas.
+            if run["status"] in TERMINAL:
+                yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
+                return
+            if _suspended(run):
+                yield format_sse_event("done_suspended", _payload(runtime, run, request_run_id=request_run_id, event="done_suspended", reason="waiting_for_user", cursor=cursor))
+                return
             if time.monotonic() - started >= timeout_seconds:
                 yield format_sse_event("done_timeout", _payload(runtime, run, request_run_id=request_run_id, event="done_timeout", reason="stream_timeout", cursor=cursor))
                 return

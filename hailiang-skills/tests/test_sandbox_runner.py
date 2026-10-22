@@ -41,7 +41,6 @@ def _request(archive: str, digest: str) -> sandbox_runner.ExecutionRequest:
 
 def test_runner_executes_frozen_bundle_and_reuses_dependency_environment(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sandbox_runner, "TOKEN", "test-token")
-    monkeypatch.setattr(sandbox_runner, "CACHE_ROOT", tmp_path / "cache")
     monkeypatch.setattr(sandbox_runner, "WORK_ROOT", tmp_path / "work")
     archive, digest = _bundle(tmp_path)
 
@@ -50,7 +49,7 @@ def test_runner_executes_frozen_bundle_and_reuses_dependency_environment(tmp_pat
 
     assert first["ok"] is True
     assert first["json_output"] == {"ok": True, "value": 42}
-    assert first["cache_hit"] is False
+    assert first["cache_hit"] is True
     assert second["ok"] is True
     assert second["cache_hit"] is True
     assert first["environment_key"] == second["environment_key"]
@@ -58,7 +57,6 @@ def test_runner_executes_frozen_bundle_and_reuses_dependency_environment(tmp_pat
 
 def test_runner_rejects_modified_archive_and_unsafe_script_path(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sandbox_runner, "TOKEN", "test-token")
-    monkeypatch.setattr(sandbox_runner, "CACHE_ROOT", tmp_path / "cache")
     monkeypatch.setattr(sandbox_runner, "WORK_ROOT", tmp_path / "work")
     archive, digest = _bundle(tmp_path)
     changed = base64.b64encode(base64.b64decode(archive) + b"changed").decode("ascii")
@@ -74,13 +72,28 @@ def test_runner_rejects_modified_archive_and_unsafe_script_path(tmp_path: Path, 
 
 def test_runner_rejects_uncontrolled_requirements(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sandbox_runner, "TOKEN", "test-token")
-    monkeypatch.setattr(sandbox_runner, "CACHE_ROOT", tmp_path / "cache")
     monkeypatch.setattr(sandbox_runner, "WORK_ROOT", tmp_path / "work")
     archive, digest = _bundle(tmp_path, requirements="-e git+https://example.com/untrusted.git")
 
     result = sandbox_runner.execute(_request(archive, digest), "test-token")
 
     assert result["ok"] is False
+    assert result["error_code"] == "SANDBOX_REQUIREMENTS_INVALID"
+
+
+def test_runner_rejects_import_not_declared_in_platform_baseline(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sandbox_runner, "TOKEN", "test-token")
+    monkeypatch.setattr(sandbox_runner, "WORK_ROOT", tmp_path / "work")
+    archive, digest = _bundle(tmp_path, requirements="pandas==2.2.3\n")
+    # The image package may be absent from this unit-test venv; validation is
+    # static, so change the frozen source to a definitely unsupported import.
+    skill = tmp_path / "unsupported"
+    scripts = skill / "scripts"
+    scripts.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# Demo", encoding="utf-8")
+    (scripts / "calculate.py").write_text("import unsupported_package\n", encoding="utf-8")
+    snapshot = __import__("hailiang_skills.harness.assets", fromlist=["snapshot_assets"]).snapshot_assets(skill)
+    result = sandbox_runner.execute(_request(str(snapshot["archive"]), str(snapshot["digest"])), "test-token")
     assert result["error_code"] == "SANDBOX_REQUIREMENTS_INVALID"
 
 

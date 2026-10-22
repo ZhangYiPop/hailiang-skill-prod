@@ -56,8 +56,6 @@ spec:
                 secretKeyRef:
                   name: ${APP_NAME}-sandbox
                   key: shared-token
-            - name: HAILIANG_SANDBOX_PYPI_INDEX_URL
-              value: ${SANDBOX_PYPI_INDEX_URL}
             - name: HAILIANG_SANDBOX_IMAGE_DIGEST
               value: '${REGISTRY}/${DOCKERHUB_NAMESPACE}/${APP_NAME}-sandbox:${BUILD_NUMBER}'
             - name: HAILIANG_SANDBOX_MAX_CONCURRENT_EXECUTIONS
@@ -77,8 +75,6 @@ spec:
               cpu: ${SANDBOX_LIMIT_CPU}
               memory: ${SANDBOX_LIMIT_MEMORY}
           volumeMounts:
-            - name: cache
-              mountPath: /sandbox/cache
             - name: work
               mountPath: /sandbox/work
             - name: tmp
@@ -92,15 +88,13 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
       volumes:
-        - name: cache
-          emptyDir: {}
         - name: work
           emptyDir: {}
         - name: tmp
           emptyDir: {}
 ---
-# Default deny egress.  The only allowed external destination is the platform
-# managed internal PyPI CIDR supplied by deployment variables.
+# Default deny egress. The runner executes only image-baked dependencies and
+# therefore has no dependency-download egress exception.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -132,9 +126,3 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    - to:
-        - ipBlock:
-            cidr: ${SANDBOX_PYPI_CIDR}
-      ports:
-        - protocol: TCP
-          port: 443

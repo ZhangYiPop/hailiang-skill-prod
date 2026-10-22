@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import base64
-import ast
 import hashlib
 import hmac
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -22,23 +20,19 @@ from io import BytesIO
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
+from hailiang_skills.runtime_bridge.script_review import review_scripts
 
 
 MAX_ARCHIVE_BYTES = int(os.getenv("HAILIANG_SANDBOX_MAX_ARCHIVE_BYTES", str(32 * 1024 * 1024)))
 MAX_EXTRACTED_BYTES = int(os.getenv("HAILIANG_SANDBOX_MAX_EXTRACTED_BYTES", str(64 * 1024 * 1024)))
 MAX_OUTPUT_BYTES = int(os.getenv("HAILIANG_SANDBOX_MAX_OUTPUT_BYTES", str(1024 * 1024)))
 MAX_TIMEOUT_SECONDS = float(os.getenv("HAILIANG_SANDBOX_MAX_TIMEOUT_SECONDS", "60"))
-CACHE_ROOT = Path(os.getenv("HAILIANG_SANDBOX_CACHE_DIR", "/sandbox/cache"))
 WORK_ROOT = Path(os.getenv("HAILIANG_SANDBOX_WORK_DIR", "/sandbox/work"))
-PYPI_INDEX_URL = os.getenv("HAILIANG_SANDBOX_PYPI_INDEX_URL", "https://mirrors.huaweicloud.com/repository/pypi/simple")
 RUNNER_IMAGE_DIGEST = os.getenv("HAILIANG_SANDBOX_IMAGE_DIGEST", "unknown")
 TOKEN = os.getenv("HAILIANG_SANDBOX_SHARED_TOKEN", "")
 MAX_CONCURRENT_EXECUTIONS = max(1, int(os.getenv("HAILIANG_SANDBOX_MAX_CONCURRENT_EXECUTIONS", "2")))
 QUEUE_TIMEOUT_SECONDS = max(0.1, float(os.getenv("HAILIANG_SANDBOX_QUEUE_TIMEOUT_SECONDS", "5")))
 EXECUTION_SEMAPHORE = threading.BoundedSemaphore(MAX_CONCURRENT_EXECUTIONS)
-PINNED_REQUIREMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:\[[A-Za-z0-9_.,-]+\])?==[^\s;@]+(?:\s*;\s*.+)?$")
-BLOCKED_IMPORT_ROOTS = {"subprocess", "socket", "requests", "urllib", "http", "docker", "ctypes"}
-BLOCKED_CALLS = {("os", "system"), ("os", "popen"), ("os", "execv"), ("os", "execve"), ("builtins", "eval"), ("builtins", "exec")}
 
 
 class ExecutionRequest(BaseModel):
@@ -77,16 +71,15 @@ def execute(request: ExecutionRequest, x_hailiang_sandbox_token: str = Header(de
         }
     try:
         archive = _decode_archive(request.bundle_archive, request.bundle_digest)
-        environment_key = _environment_key(request.bundle_digest, archive)
-        cache_hit = (CACHE_ROOT / "venvs" / environment_key / "bin" / "python").is_file()
+        environment_key = _environment_key(request.bundle_digest)
+        # Dependencies are immutable contents of the runner image.
+        cache_hit = True
         workspace = Path(tempfile.mkdtemp(prefix=f"{execution_id}-", dir=_ensure_dir(WORK_ROOT)))
         package_root = workspace / "package"
         _safe_extract(archive, package_root)
         script = _resolve_script(package_root, request.script_path)
-        _validate_script_source(script)
-        requirements = package_root / "scripts" / "requirements.txt"
-        python = _prepare_environment(environment_key, requirements)
-        result = _run_script(python, script, package_root, request.input, request.timeout_seconds)
+        _validate_package(package_root)
+        result = _run_script(Path(sys.executable), script, package_root, request.input, request.timeout_seconds)
         result.update(
             execution_id=execution_id,
             environment_key=environment_key,
@@ -172,86 +165,19 @@ def _resolve_script(root: Path, relative_path: str) -> Path:
     return path
 
 
-def _validate_script_source(script: Path) -> None:
-    """A small defense-in-depth check; publish review remains authoritative."""
-    try:
-        tree = ast.parse(script.read_text(encoding="utf-8"), filename=str(script))
-    except (OSError, SyntaxError) as exc:
-        raise SandboxFailure("SANDBOX_SCRIPT_INVALID", "Skill 脚本无法通过语法校验。") from exc
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            if any(alias.name.split(".")[0] in BLOCKED_IMPORT_ROOTS for alias in node.names):
-                raise SandboxFailure("SANDBOX_SCRIPT_REJECTED", "Skill 脚本包含不允许的系统或网络导入。")
-        elif isinstance(node, ast.ImportFrom):
-            if (node.module or "").split(".")[0] in BLOCKED_IMPORT_ROOTS:
-                raise SandboxFailure("SANDBOX_SCRIPT_REJECTED", "Skill 脚本包含不允许的系统或网络导入。")
-        elif isinstance(node, ast.Call):
-            function = node.func
-            if isinstance(function, ast.Name) and function.id in {"eval", "exec", "__import__"}:
-                raise SandboxFailure("SANDBOX_SCRIPT_REJECTED", "Skill 脚本包含不允许的动态执行。")
-            if isinstance(function, ast.Attribute) and isinstance(function.value, ast.Name):
-                if (function.value.id, function.attr) in BLOCKED_CALLS:
-                    raise SandboxFailure("SANDBOX_SCRIPT_REJECTED", "Skill 脚本包含不允许的系统调用。")
+def _validate_package(package_root: Path) -> None:
+    """Repeat the shared publish validation at the execution boundary."""
+    findings = [item for item in review_scripts(package_root) if item.status == "error"]
+    if not findings:
+        return
+    first = findings[0]
+    code = "SANDBOX_REQUIREMENTS_INVALID" if first.name.startswith("dependency") or first.name == "import_not_supported" else "SANDBOX_SCRIPT_REJECTED"
+    raise SandboxFailure(code, first.detail)
 
 
-def _environment_key(bundle_digest: str, archive: bytes) -> str:
-    requirements_digest = "none"
-    with ZipFile(BytesIO(archive)) as zip_file:
-        for candidate in ("scripts/requirements.txt", "script/requirements.txt"):
-            try:
-                requirements_digest = hashlib.sha256(zip_file.read(candidate)).hexdigest()
-                break
-            except KeyError:
-                continue
-    raw = f"{RUNNER_IMAGE_DIGEST}|{sys.version_info.major}.{sys.version_info.minor}|{bundle_digest}|{requirements_digest}"
+def _environment_key(bundle_digest: str) -> str:
+    raw = f"{RUNNER_IMAGE_DIGEST}|{sys.version_info.major}.{sys.version_info.minor}|{bundle_digest}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _prepare_environment(key: str, requirements: Path) -> Path:
-    target = _ensure_dir(CACHE_ROOT / "venvs") / key
-    python = target / "bin" / "python"
-    if python.is_file():
-        return python
-    lock = target.with_suffix(".lock")
-    try:
-        lock.mkdir()
-    except FileExistsError:
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            if python.is_file():
-                return python
-            time.sleep(0.2)
-        raise SandboxFailure("SANDBOX_DEPENDENCY_PREPARE_TIMEOUT", "等待 Skill 依赖环境准备超时。")
-    staging = target.with_name(f"{target.name}.tmp-{uuid4().hex}")
-    try:
-        subprocess.run([sys.executable, "-m", "venv", str(staging)], check=True, capture_output=True, timeout=30)
-        staged_python = staging / "bin" / "python"
-        if requirements.is_file() and requirements.read_text(encoding="utf-8").strip():
-            _validate_requirements(requirements)
-            completed = subprocess.run(
-                [str(staged_python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--index-url", PYPI_INDEX_URL, "-r", str(requirements)],
-                capture_output=True, text=True, timeout=180, check=False,
-            )
-            if completed.returncode != 0:
-                raise SandboxFailure("SANDBOX_DEPENDENCY_INSTALL_FAILED", (completed.stderr or completed.stdout or "依赖安装失败")[:2_000])
-        staging.rename(target)
-        return python
-    except SandboxFailure:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise SandboxFailure("SANDBOX_DEPENDENCY_PREPARE_FAILED", str(exc)[:2_000]) from exc
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-        shutil.rmtree(lock, ignore_errors=True)
-
-
-def _validate_requirements(path: Path) -> None:
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith(("-", ".", "/")) or "@" in line or "://" in line or not PINNED_REQUIREMENT.fullmatch(line):
-            raise SandboxFailure("SANDBOX_REQUIREMENTS_INVALID", f"不允许的依赖声明: {line[:120]}")
 
 
 def _run_script(python: Path, script: Path, package_root: Path, payload: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:

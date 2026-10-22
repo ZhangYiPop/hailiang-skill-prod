@@ -24,8 +24,6 @@ SANDBOX_REQUEST_CPU=250m
 SANDBOX_REQUEST_MEMORY=512Mi
 SANDBOX_LIMIT_CPU=1
 SANDBOX_LIMIT_MEMORY=1Gi
-SANDBOX_PYPI_INDEX_URL=https://<internal-pypi>/simple
-SANDBOX_PYPI_CIDR=<internal-pypi-cidr>
 ```
 
 创建同名 Secret `${APP_NAME}-sandbox`，其中的 `shared-token` 必须是随机值。API Deployment 和 Runner Deployment 都从该 Secret 读取同一 token；不要将 token 写进 ConfigMap、`.env.example` 或仓库。
@@ -42,9 +40,9 @@ HAILIANG_SANDBOX_ENDPOINT=http://${APP_NAME}-sandbox:8081
 
 ## 网络与依赖
 
-Runner 的 NetworkPolicy 默认拒绝网络，仅允许 API Pod 入站、DNS 和 `SANDBOX_PYPI_CIDR:443` 出站。请将该 CIDR 配置为内部 PyPI/制品代理的固定出口；不要放通公网。
+Runner 的 NetworkPolicy 默认拒绝业务网络，仅允许 API Pod 入站和 DNS。依赖在镜像构建期由平台安装，运行期不允许下载依赖。
 
-业务人员上传的 `scripts/requirements.txt` 必须使用固定版本，例如 `pandas==2.2.3`。Runner 拒绝 VCS、可编辑、本地路径、自带索引地址和未固定版本。依赖缓存键由 Runner 镜像、Python 版本、冻结 Skill 包和 requirements 内容共同决定；同一键命中缓存，不同发布内容不会相互污染。
+业务人员上传的 `scripts/requirements.txt` 是镜像依赖声明，必须使用平台支持的固定版本，例如 `pandas==2.2.3`。Runner 拒绝 VCS、可编辑、本地路径、自带索引地址、未固定版本、未预装包和版本不一致的声明。修订可保存为未通过状态，发布与执行会被阻止，并返回脚本、行号、依赖和建议动作。
 
 ## 本地验收
 
@@ -58,7 +56,7 @@ export HAILIANG_SANDBOX_SHARED_TOKEN=local-dev-sandbox-token
 
 本地 API 是裸机进程，但脚本必须由容器内 Runner 执行，才能作为生产一致性验收。仅在显式设置 `HAILIANG_SCRIPT_EXECUTOR=legacy` 时保留旧执行路径，且只能用于开发诊断，不能用于测试或生产验收。
 
-本地 Compose 与裸机 smoke 部署默认使用清华 PyPI 镜像：`https://pypi.tuna.tsinghua.edu.cn/simple/`。该地址于 2026-10-22 验证可访问（HTTP 200）；如网络策略或镜像稳定性要求不同，可通过 `HAILIANG_SANDBOX_PYPI_INDEX_URL` 覆盖。K8s 生产环境仍应使用运维提供的内网 PyPI/制品代理，并保持 NetworkPolicy 仅放通该内网地址。
+本地 Compose 与 K8s 使用同一 Runner 镜像依赖基线。新增依赖须先更新镜像白名单并发布镜像，不能由本地或生产对话在运行期安装。
 
 ## 裸机测试服务器
 
@@ -69,7 +67,6 @@ export HAILIANG_SCRIPT_EXECUTOR=remote
 export HAILIANG_REQUIRE_REMOTE_SANDBOX=true
 export HAILIANG_SANDBOX_ENDPOINT=http://127.0.0.1:8091
 export HAILIANG_SANDBOX_SHARED_TOKEN='<随机且仅存于私有环境文件的值>'
-export HAILIANG_SANDBOX_PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
 ```
 
 如 Runner 由运维另行部署，可设置 `HAILIANG_SANDBOX_MANAGE_RUNNER=0`；部署脚本仍会在启动 API 前检查该 endpoint 的 `/healthz`。不要将 `HAILIANG_SCRIPT_EXECUTOR` 改为 `legacy` 来绕过 Runner：smoke 脚本会明确拒绝这种配置。

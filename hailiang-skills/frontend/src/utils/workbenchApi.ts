@@ -26,7 +26,12 @@ export type ObjectRevision = {
   change_summary?: string;
   payload: Record<string, unknown>;
   dependency_locks: DependencyLock[];
-  validation: { valid: boolean; errors?: string[]; warnings?: string[] };
+  validation: {
+    valid: boolean;
+    errors?: string[];
+    warnings?: string[];
+    script_findings?: Array<{ name: string; status: string; detail: string; payload?: Record<string, unknown> }>;
+  };
   content_hash: string;
   created_by: string;
   /** Display name resolved from the business actor directory; falls back to ID for historical records. */

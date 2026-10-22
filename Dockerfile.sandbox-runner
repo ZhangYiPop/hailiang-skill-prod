@@ -8,7 +8,6 @@ ENV TZ=Asia/Shanghai \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HOME=/sandbox/work \
     PYTHONPATH=/opt/hailiang_skills \
-    HAILIANG_SANDBOX_CACHE_DIR=/sandbox/cache \
     HAILIANG_SANDBOX_WORK_DIR=/sandbox/work
 
 RUN apt-get update \
@@ -16,15 +15,19 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 sandbox \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /sandbox sandbox \
-    && mkdir -p /sandbox/cache /sandbox/work /opt/hailiang_skills/hailiang_skills \
+    && mkdir -p /sandbox/work /opt/hailiang_skills/hailiang_skills \
     && chown -R sandbox:sandbox /sandbox /opt/hailiang_skills
 
-RUN pip install --no-cache-dir "fastapi>=0.115.0,<1.0.0" "uvicorn>=0.30.0,<1.0.0" "pydantic>=2.8.0,<3.0.0"
+# Platform-owned runtime dependency baseline. Skill packages can only declare
+# these exact versions; the runner never installs user supplied dependencies.
+RUN pip install --no-cache-dir "fastapi>=0.115.0,<1.0.0" "uvicorn>=0.30.0,<1.0.0" "pydantic>=2.8.0,<3.0.0" "pandas==2.2.3"
 
 # Keep the package directory beneath a PYTHONPATH root.  Copying these files
 # directly to /opt/hailiang_skills would make `hailiang_skills` unimportable.
 COPY --chown=10001:10001 hailiang-skills/src/hailiang_skills/__init__.py /opt/hailiang_skills/hailiang_skills/__init__.py
 COPY --chown=10001:10001 hailiang-skills/src/hailiang_skills/sandbox_runner.py /opt/hailiang_skills/hailiang_skills/sandbox_runner.py
+COPY --chown=10001:10001 hailiang-skills/src/hailiang_skills/runtime_bridge/script_review.py /opt/hailiang_skills/hailiang_skills/runtime_bridge/script_review.py
+COPY --chown=10001:10001 hailiang-skills/src/hailiang_skills/runtime_bridge/sandbox_dependencies.json /opt/hailiang_skills/hailiang_skills/runtime_bridge/sandbox_dependencies.json
 
 USER 10001:10001
 WORKDIR /sandbox

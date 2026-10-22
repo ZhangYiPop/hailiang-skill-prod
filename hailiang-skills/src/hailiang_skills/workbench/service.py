@@ -1037,12 +1037,14 @@ class WorkbenchService:
             validation = self._validate_payload(obj.object_type, payload, canonical_locks)
             if obj.object_type == "skill":
                 questionnaire_errors = _questionnaire_asset_errors(payload, decoded_assets)
-                script_errors = self._script_validation_errors(decoded_assets)
+                script_findings = self._script_validation_findings(decoded_assets)
+                script_errors = [item["detail"] for item in script_findings]
                 if questionnaire_errors or script_errors:
                     validation = {
                         **validation,
                         "valid": False,
                         "errors": [*validation.get("errors", []), *questionnaire_errors, *script_errors],
+                        "script_findings": script_findings,
                     }
             revision_no = (latest.revision_no if latest else 0) + 1
             content_hash = _hash({
@@ -4697,7 +4699,7 @@ class WorkbenchService:
         return result
 
     @staticmethod
-    def _script_validation_errors(files: list[tuple[str, str, bytes]]) -> list[str]:
+    def _script_validation_findings(files: list[tuple[str, str, bytes]]) -> list[dict[str, Any]]:
         script_files = [item for item in files if item[0].startswith("scripts/")]
         if not script_files:
             return []
@@ -4707,7 +4709,12 @@ class WorkbenchService:
                 target = root.joinpath(*PurePosixPath(relative_path).parts)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(content)
-            return [item.detail for item in review_scripts(root) if item.status == "error"]
+            return [item.model_dump() for item in review_scripts(root) if item.status == "error"]
+
+    @staticmethod
+    def _script_validation_errors(files: list[tuple[str, str, bytes]]) -> list[str]:
+        """Compatibility helper for standard-package conversion callers."""
+        return [item["detail"] for item in WorkbenchService._script_validation_findings(files)]
 
     @staticmethod
     def _publish_gate_errors(db, revision) -> list[str]:

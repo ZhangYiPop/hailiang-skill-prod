@@ -1,0 +1,6 @@
+{
+  "pandas": {
+    "version": "2.2.3",
+    "modules": ["pandas"]
+  }
+}
