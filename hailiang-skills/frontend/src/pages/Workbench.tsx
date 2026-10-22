@@ -1917,7 +1917,7 @@ export default function Workbench() {
           actor_id: actor.actor_id,
         },
         (event, payload) => {
-          if (event === "state" && payload.protocol === "hailiang.sse.v2") {
+          if (event === "state" && payload.protocol === "hailiang.sse.v3") {
             const state = payload as unknown as SseV2State;
             const lastSeq = candidateLastSeqRef.current[state.run_id] ?? -1;
             if (state.seq <= lastSeq) return;
@@ -1929,8 +1929,8 @@ export default function Workbench() {
             });
             return;
           }
-          if (event === "reply_delta") {
-            const delta = String(payload.delta ?? "");
+          if (event === "message.delta") {
+            const delta = String(payload.text ?? "");
             if (!delta) return;
             queueCandidateStreamUi({
               debugSessionId: session.debug_session_id,
@@ -2014,7 +2014,7 @@ export default function Workbench() {
         candidateConversationState.run_id,
         actor.actor_id,
       );
-      if (stopped.state?.protocol === "hailiang.sse.v2") {
+      if (stopped.state?.protocol === "hailiang.sse.v3") {
         setCandidateConversationState(candidateConversationSummary(stopped.state as unknown as SseV2State));
       }
       candidatePendingUiRef.current = null;

@@ -9,7 +9,7 @@
   body: session_id + run_id + input(JSON 字符串)
 → BFF 校验登录态和孩子归属，注入 context_data
 → BFF POST 算法服务同路径，逐字节转发有限 SSE
-→ 每个 state/done_suspended/done_timeout/done 整体替换同一 assistant_message_id 气泡
+→ `message.delta` 立即追加正文；每个 state/done_suspended/done_timeout/done 更新同一 assistant_message_id 气泡
 → pending 卡片仍 POST BFF 同一路径；其响应主动继续推流
 ```
 
@@ -28,9 +28,9 @@
 
 ## 3. 快照 reducer
 
-每个有效帧携带完整 `state`。客户端只做：校验 `protocol/session_id/profile_id`，以 `record_version` 忽略旧帧，将当前气泡完整状态替换为 `state`。出现范围不匹配或解析失败时保留最近可用状态；下次 BFF 重发同一最小 `chat` 请求即可取得服务端当前完整状态，不调用 `/harness`。
+每个有效 `state` 帧携带完整 `state`。客户端校验 `protocol/session_id/profile_id`，以 `record_version` 忽略旧帧，并替换当前气泡的任务状态。正文则按 `message.delta` 的 `assistant_message_id + revision + offset` 追加；收到 `message.reset` 清空草稿并切换 revision；收到 `done` 必须以 `state.result` 覆盖累计正文。出现范围不匹配或解析失败时保留最近可用状态；下次 BFF 重发同一最小 `chat` 请求即可取得服务端当前完整状态，不调用 `/harness`。
 
-不要实现实体 upsert、delta 文本拼接、`message.delta` offset 校验或 `run.finalized` 消费；这些是内部 outbox 的行为，不是公开协议。
+不要消费内部 outbox 的 `run.finalized` 或实体 upsert；公开 `message.delta` / `message.reset` 是唯一允许的文本增量事件。
 
 仓库参考：[frontend/src/utils/harnessV3.ts](../frontend/src/utils/harnessV3.ts)。
 

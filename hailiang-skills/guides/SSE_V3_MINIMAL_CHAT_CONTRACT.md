@@ -32,6 +32,7 @@ BFF 到算法服务的请求外层与 v2 一致，`input` 必须是 JSON 字符�
 ```
 
 `context_data.user_id` 由 BFF 从登录态注入；前端不得直接提交它。`profile_id` 可在泛聊时省略。`profile_data` 是可选的增量画像字典，可随 `chat` 或表单答案提交：服务端保留原始结构、为叶子字段建立版本化 `profile.*` 事实投影，并仅在任务需要时交给模型。不存在的档案会自动创建；档案属于其他用户时请求被拒绝。`null` 不删除已有画像字段，删除应使用档案或事实接口。
+`profile_data.name` 是 V3 的名称字段；为兼容尚未升级的 V2 转发端，顶层 `context_data.student_name` 也会在 `profile_data.name` 缺失时作为名称写入，但两者同时存在时以 `profile_data.name` 为准。
 
 支持的 `input.action` 只有：
 
@@ -62,6 +63,12 @@ BFF 到算法服务的请求外层与 v2 一致，`input` 必须是 JSON 字符�
 event: state
 data: {"protocol":"hailiang.sse.v3","run_id":"bff_run_xxx","state":{...}}
 
+event: message.delta
+data: {"protocol":"hailiang.sse.v3","assistant_message_id":"msg_xxx","revision":1,"offset":0,"text":"正在为您"}
+
+event: message.reset
+data: {"protocol":"hailiang.sse.v3","assistant_message_id":"msg_xxx","revision":2,"offset":0,"text":""}
+
 event: done_suspended
 data: {"protocol":"hailiang.sse.v3","run_id":"bff_run_xxx","state":{...}}
 
@@ -72,7 +79,9 @@ event: done
 data: {"protocol":"hailiang.sse.v3","run_id":"bff_run_xxx","state":{...}}
 ```
 
-- `state`：任务、画像、专家、工具、问题组、结论或正文发生变化。只更新 BFF 的暂存快照，不作为正式对话历史。
+- `state`：任务、画像、专家、工具、问题组、结论或正文发生变化。只更新 BFF 的暂存快照，不作为正式对话历史；其中 `state.assistant_message.content` 是断线恢复时的正文基线。
+- `message.delta`：同一 `assistant_message_id` 的用户可见正文增量。前端按 `revision + offset` 追加，首个增量必须立即显示；不得把推理、工具输出或专家中间结果写入该事件。
+- `message.reset`：仅在已经流出部分正文后需要受控完整回退时出现。前端清空该气泡草稿并切换到新 `revision`，随后接收新的 delta 或终态 `done`。
 - `done_suspended`：当前存在活动表单，且没有其他可运行节点。它是等待用户操作的检查点，不是任务终态。表单出现时若仍有其他专家或工具可运行，服务端继续发送 `state`，不会提前发送本事件。
 - `done_timeout`：本次有限 SSE 连接达到等待上限，但后台任务仍在执行。它同样不是任务终态。
 - `done`：真正终态。完成、受限完成或失败均由 `outcome` 区分，事件名称不分叉。停止任务时仍为 `done`，但保存指令会要求丢弃暂存记录，沿用既有停止语义。
@@ -104,7 +113,7 @@ data: {"protocol":"hailiang.sse.v3","run_id":"bff_run_xxx","state":{...}}
 }
 ```
 
-同一任务所有帧的 `assistant_message_id` 不变。任务树、表单、专家结论与最终正文都更新一个助手气泡，最终正文不能另建气泡。`run_id` 是 BFF 为**本次 HTTP 请求**生成的幂等键，响应中原样回显；它不能判断气泡归属或恢复任务。`assistant_message_id` 才是恢复和关联同一气泡的稳定键；不返回 `client_run_id` 或 `harness_run_id`。`expert_team_id` 是当前实际单团队 ID，`expert_team_ids` 是规范化的请求选择列表，`team_orchestration_version` 当前为 `single_team_v1`。旧记录缺少该字段时也按 `single_team_v1` 处理。
+同一任务所有帧的 `assistant_message_id` 不变。任务树、表单、专家结论与最终正文都更新一个助手气泡，最终正文不能另建气泡。`done.state.result` 是终态正文唯一权威，应覆盖累计 delta，处理模型降级或断线重连的差异。`run_id` 是 BFF 为**本次 HTTP 请求**生成的幂等键，响应中原样回显；它不能判断气泡归属或恢复任务。`assistant_message_id` 才是恢复和关联同一气泡的稳定键；不返回 `client_run_id` 或 `harness_run_id`。`expert_team_id` 是当前实际单团队 ID，`expert_team_ids` 是规范化的请求选择列表，`team_orchestration_version` 当前为 `single_team_v1`。旧记录缺少该字段时也按 `single_team_v1` 处理。
 
 ### 专家执行树：前端如何读取“某位专家正在做什么”
 

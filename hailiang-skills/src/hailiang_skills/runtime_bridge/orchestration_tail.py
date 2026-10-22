@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from hailiang_skills.skill_runtime.models import ChatMessage
 
 
 class TailLLMClient(Protocol):
     def complete(self, messages: list[ChatMessage], **kwargs: Any) -> str: ...
+
+    def stream_complete(self, messages: list[ChatMessage], **kwargs: Any) -> Any: ...
 
 
 def _expert_rows(expert_results: Any) -> list[dict[str, Any]]:
@@ -97,6 +99,48 @@ def run_tail_merge(
         collaboration_rules=collaboration_rules,
     )
     return str(client.complete(prompt, request_purpose="orchestrator_tail") or "").strip()
+
+
+def run_tail_merge_stream(
+    client: TailLLMClient,
+    *,
+    tail_rules: str = "",
+    expert_results: Any,
+    user_question: str = "",
+    collaboration_rules: str = "",
+    on_delta: Callable[[str], None],
+    cancel_check: Callable[[], bool] | None = None,
+) -> str:
+    """Stream the user-visible orchestration tail without exposing reasoning.
+
+    Some lightweight test and legacy clients intentionally only implement
+    ``complete``.  They retain the historical complete-path behaviour; the
+    Harness caller can still publish that completed text progressively.
+    """
+    prompt = build_tail_prompt(
+        tail_rules=tail_rules,
+        expert_results=expert_results,
+        user_question=user_question,
+        collaboration_rules=collaboration_rules,
+    )
+    stream = getattr(client, "stream_complete", None)
+    if not callable(stream):
+        return str(client.complete(prompt, request_purpose="orchestrator_tail") or "").strip()
+
+    parts: list[str] = []
+    for chunk in stream(
+        prompt,
+        request_purpose="orchestrator_tail",
+        cancel_check=cancel_check,
+    ):
+        if cancel_check and cancel_check():
+            break
+        delta = str(getattr(chunk, "content_delta", "") or "")
+        if not delta:
+            continue
+        parts.append(delta)
+        on_delta(delta)
+    return "".join(parts).strip()
 
 
 def simple_concat_merge(expert_results: Any) -> str:

@@ -212,11 +212,23 @@ class HarnessStore:
             if run['status'] in TERMINAL or task['lease_token'] != token or task['status'] != 'running' or task['lease_until'] <= now():
                 return False
             scope = lock_scope(db, run['session_id'], run['user_id'], run['profile_id'])
-            mid = run_id + ':final'
+            # The product API binds a stable message id before execution.
+            # Streaming must update that exact entity; otherwise a reconnect
+            # sees one partial ``run_id:final`` message while the terminal
+            # projection writes a second ``assistant_message_id`` message.
+            mid = str(run.get("assistant_message_id") or (run_id + ':final'))
             previous = scope.payload['messages'].get(mid, {})
             if reset:
                 upsert(db, scope, 'messages', 'message.updated', run_id, {'id': mid, 'run_id': run_id,
                     'kind': 'final', 'content': '', 'status': 'streaming', 'revision': previous.get('revision', 0) + 1})
+                # ``emit`` requires an entity version.  The preceding upsert
+                # increments exactly once, so expose that same version on the
+                # lightweight reset event without re-projecting the entity.
+                emit(db, scope, run_id, 'message.reset', {
+                    'id': mid,
+                    'version': previous.get('version', 0) + 1,
+                    'revision': previous.get('revision', 0) + 1,
+                })
             elif text:
                 entity = {**previous, 'content': previous.get('content', '') + text, 'version': previous.get('version', 0) + 1}
                 payload = deepcopy(scope.payload)

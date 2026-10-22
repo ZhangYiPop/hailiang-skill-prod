@@ -975,6 +975,36 @@ class HarnessRuntime:
         goal = run["goal"]
         stamped = True
         client = None
+        streamed_parts: list[str] = []
+        stream_started = False
+
+        def begin_final_stream() -> None:
+            nonlocal stream_started
+            if stream_started:
+                return
+            if not self.store.stream_text(run_id, task_id, token, reset=True):
+                raise HarnessError("EXECUTION_EXPIRED")
+            stream_started = True
+
+        def publish_delta(delta: str) -> None:
+            value = str(delta or "")
+            if not value:
+                return
+            begin_final_stream()
+            if not self.store.stream_text(run_id, task_id, token, value):
+                raise HarnessError("EXECUTION_EXPIRED")
+            streamed_parts.append(value)
+
+        def publish_completed_text(value: str) -> None:
+            """Expose already-complete direct-expert output progressively.
+
+            Direct expert runs deliberately have no second LLM tail.  Small
+            chunks still give the product the same incremental message
+            lifecycle without changing the expert's wording or adding cost.
+            """
+            for offset in range(0, len(value), 32):
+                publish_delta(value[offset:offset + 32])
+
         if direct_id:
             # Workbench single-expert object: no head/tail model call; expert text is the reply.
             # Recommend still runs below when a catalog is present.
@@ -988,8 +1018,41 @@ class HarnessRuntime:
             if not stamp_call(prompt, "orchestrate_tail"):
                 return
             client = self.client_factory(run)
-            final = select_final_reply(rows, client=client, tail_rules=view.get("tail_rules", ""), user_question=goal,
-                                       collaboration_rules=view.get("collaboration_rules", ""))
+            def cancelled() -> bool:
+                return not self._valid(self.store.get(run_id), task_id, token)
+
+            try:
+                final = select_final_reply(
+                    rows,
+                    client=client,
+                    tail_rules=view.get("tail_rules", ""),
+                    user_question=goal,
+                    collaboration_rules=view.get("collaboration_rules", ""),
+                    stream_callback=publish_delta,
+                    cancel_check=cancelled,
+                )
+            except Exception:
+                # A stream may fail after text was emitted.  Reset the public
+                # draft and make one complete request so the terminal message
+                # is never a duplicated or truncated synthesis.
+                if stream_started:
+                    if not self.store.stream_text(run_id, task_id, token, reset=True):
+                        raise HarnessError("EXECUTION_EXPIRED")
+                    streamed_parts.clear()
+                log.warning("harness orchestration tail stream degraded", exc_info=True)
+                def record_stream_degraded(current, changes, _db):
+                    if not self._valid(current, task_id, token):
+                        return
+                    live = current["tasks"][task_id]
+                    if live.get("trace"):
+                        live["trace"][-1].setdefault("diagnostics", {})["final_reply_stream_degraded"] = {
+                            "stage": "after_first_delta" if stream_started else "before_first_delta",
+                            "fallback": "complete",
+                        }
+                    changes.append({"event": "final_reply_stream_degraded", "node_id": task_id})
+                self.store.mutate(run_id, record_stream_degraded)
+                final = select_final_reply(rows, client=client, tail_rules=view.get("tail_rules", ""), user_question=goal,
+                                           collaboration_rules=view.get("collaboration_rules", ""))
             text = str(final.get("text") or "").strip()
         else:
             text = "本次分析尚未完成，暂时无法提供有充分依据的完整结论。"
@@ -997,6 +1060,8 @@ class HarnessRuntime:
                 return
         if not text:
             raise HarnessError("EMPTY_MODEL_REPLY")
+        if not streamed_parts:
+            publish_completed_text(text)
         # Recommend after any successful expert reply: team single/multi (post-tail) and
         # workbench direct_expert_id. Skipped when catalog is missing or empty.
         recommend_io = None
@@ -1034,6 +1099,8 @@ class HarnessRuntime:
             live = current["tasks"][task_id]
             if stamped:
                 live["trace"][-1]["output"] = {"final_text": text}
+                if client is not None and callable(getattr(client, "last_request_metrics", None)):
+                    self._record_model_usage(current, live["trace"][-1], client.last_request_metrics() or {})
                 self._record_node(current, live, "orchestrate_tail", {"experts": [r["expert_id"] for r in rows]},
                                   {"mode": "direct" if sum(r["status"] == "completed" for r in rows) == 1 else "merge", "experts": rows}, changes)
             if recommend_io:

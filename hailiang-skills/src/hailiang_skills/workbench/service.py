@@ -1273,8 +1273,20 @@ class WorkbenchService:
                 context.session_meta["stream_final_reply"] = True
                 def reply_delta_callback(text: str) -> None:
                     nonlocal stream_content
-                    stream_content += str(text or "")
-                    on_event("reply_delta", {"delta": str(text or "")})
+                    delta = str(text or "")
+                    if not delta:
+                        return
+                    offset = len(stream_content)
+                    stream_content += delta
+                    on_event("message.delta", {
+                        "protocol": "hailiang.sse.v3",
+                        "session_id": context.session_id,
+                        "run_id": candidate_stream_generation,
+                        "assistant_message_id": f"{candidate_stream_generation}:final",
+                        "revision": 1,
+                        "offset": offset,
+                        "text": delta,
+                    })
                     emit_candidate_state()
 
                 def reasoning_delta_callback(text: str) -> None:
@@ -1982,7 +1994,7 @@ class WorkbenchService:
         team_handoff: dict[str, Any] | None = None,
         error: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Return the fixed SSE v2 presentation shape for a candidate turn."""
+        """Return the candidate presentation in the public SSE v3 shape."""
         state = empty_message_state(session_id=context.session_id, run_id=run_id)
         expert, expert_context = self._candidate_expert_state(context)
         record = assistant_record if isinstance(assistant_record, dict) else {}
@@ -1999,6 +2011,13 @@ class WorkbenchService:
         if bundle is not None and runtime_state is not None:
             questionnaire_plan = questionnaire_plan_summary(bundle, runtime_state)
         state.update({
+            "protocol": "hailiang.sse.v3",
+            # Candidate records acquire a persistent transcript id only at
+            # finalisation.  The stream identity must not change halfway
+            # through, so its public bubble id is derived from this turn's
+            # stable generation id instead of the later transcript record.
+            "assistant_message_id": f"{run_id}:final",
+            "revision": 1,
             "profile_id": None,
             "profile_name": None,
             "context_scope": "unbound",

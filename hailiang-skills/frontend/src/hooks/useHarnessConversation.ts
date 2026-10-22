@@ -6,6 +6,7 @@ import { useChatStore } from "@/store/useChatStore";
 import type { ChatMessage } from "@/utils/api";
 import type { HarnessRun, HarnessSnapshot } from "@/types/harness";
 import { isHarnessTerminal } from "@/types/harness";
+import { postSseStream } from "@/utils/sse";
 
 export const useHarnessState = create<{
   key: string; mode: string; activeRunId: string; connection: string; runs: Record<string, HarnessRun>; cursor: number;
@@ -88,6 +89,7 @@ function applySnapshot(snapshot: HarnessSnapshot, currentKey: string): HarnessSn
 }
 export async function sendHarnessIfEnabled(content: string): Promise<boolean> {
   const state = useChatStore.getState();
+  if (v3) return sendHarnessV3Chat(content);
   let snapshot: HarnessSnapshot;
   try { snapshot = await refreshHarness(); }
   catch (error) {
@@ -124,8 +126,158 @@ export async function sendHarnessIfEnabled(content: string): Promise<boolean> {
   } catch (error) { state.setSending(false); throw error; }
   return true;
 }
+
+/** Product entry for v3: do not start a hidden Harness run and then subscribe
+ * to its internal diagnostic EventSource.  The public stream is both the
+ * command and the authoritative incremental reply channel. */
+async function sendHarnessV3Chat(content: string): Promise<boolean> {
+  const state = useChatStore.getState();
+  const teamId = state.pendingExpertTeamId || state.activeExpertTeam?.team_id || "";
+  if (!teamId) return false;
+  if (state.pendingExpertTeamId) {
+    const team = state.expertTeamCatalog.find((item) => item.team_id === state.pendingExpertTeamId);
+    if (team) state.setActiveExpertTeam({
+      ...team,
+      coordinator_mention_name: team.coordinator_name,
+      active_expert_id: state.pendingExpertId || team.coordinator_expert_id,
+      active_mention_name: team.members.find((member) => member.expert_id === (state.pendingExpertId || team.coordinator_expert_id))?.mention_name || team.coordinator_name,
+    });
+  }
+  if (state.pendingExpertId) state.setActiveExpertId(state.pendingExpertId);
+  state.setPendingExpertId("");
+  state.setPendingExpertTeamId("");
+  state.setPendingExpertClear(false);
+  const who = identity();
+  const requestRunId = createUuid();
+  const assistantId = state.createAssistantPlaceholder();
+  state.updateMessage(assistantId, (message) => ({ ...message, messageType: "harness" }));
+  state.appendMessage({
+    id: `harness-user-${requestRunId}`,
+    role: "user",
+    content,
+    createdAt: new Date().toISOString(),
+    blocks: [],
+    messageType: "harness",
+  });
+  // Keep transcript ordering natural: the placeholder is appended by the
+  // store, so replace the two tail records with user then assistant.
+  const messages = useChatStore.getState().messages;
+  const placeholder = messages.find((item) => item.id === assistantId);
+  if (placeholder) state.setMessages([...messages.filter((item) => item.id !== assistantId && item.id !== `harness-user-${requestRunId}`),
+    messages.find((item) => item.id === `harness-user-${requestRunId}`)!, placeholder]);
+  state.setSending(true);
+  state.setCurrentRunId(requestRunId);
+  const abort = new AbortController();
+  state.setStreamAbortController(abort);
+  let rendered = "";
+  let revision = 0;
+  try {
+    await postSseStream({
+      url: `${state.apiBaseUrl}/api/v3/sessions/chat/stream`,
+      body: {
+        session_id: state.sessionId,
+        run_id: requestRunId,
+        input: JSON.stringify({ action: "chat", content, expert_team_id: teamId }),
+        context_data: {
+          ...who,
+          ...(who.profile_id ? {
+            student_name: state.debugIdentity?.display_name || undefined,
+            grade: state.debugIdentity?.grade || undefined,
+            school_year: state.debugIdentity?.school_year || undefined,
+          } : {}),
+        },
+      },
+      signal: abort.signal,
+      protocol: "hailiang.sse.v3",
+      onEvent: (event) => {
+        const data = event.data as Record<string, unknown>;
+        if (event.event === "message.reset") {
+          revision = Number(data.revision || revision + 1);
+          rendered = "";
+          state.updateMessage(assistantId, (message) => ({ ...message, content: "", streamingStatus: "streaming" }));
+          return;
+        }
+        if (event.event === "message.delta") {
+          const nextRevision = Number(data.revision || 1);
+          const offset = Number(data.offset || 0);
+          const text = String(data.text || "");
+          if (!text || nextRevision < revision || (nextRevision === revision && offset < rendered.length)) return;
+          if (nextRevision > revision) { revision = nextRevision; rendered = ""; }
+          if (offset !== rendered.length) return; // a state/done snapshot will repair a reconnect gap
+          rendered += text;
+          state.appendAssistantDelta(assistantId, text);
+          return;
+        }
+        if (event.event === "state" || event.event === "done") {
+          const product = data.state as Record<string, unknown> | undefined;
+          const serverMessageId = String(data.assistant_message_id || "");
+          const result = String((product?.result as string | undefined) || (product?.assistant_message as { content?: string } | undefined)?.content || "");
+          if (serverMessageId) state.updateMessage(assistantId, (message) => ({ ...message, messageId: serverMessageId }));
+          if (result && result.length >= rendered.length) {
+            rendered = result;
+            state.updateMessage(assistantId, (message) => ({ ...message, content: result, streamingStatus: event.event === "done" ? "completed" : "streaming" }));
+          }
+          if (event.event === "done") state.updateMessage(assistantId, (message) => ({ ...message, streamingStatus: "completed" }));
+        }
+      },
+    });
+    return true;
+  } catch (error) {
+    if (abort.signal.aborted) return true;
+    state.updateMessage(assistantId, (message) => ({ ...message, content: message.content || "本次任务未能完成，请重试。", streamingStatus: "failed" }));
+    throw error;
+  } finally {
+    if (useChatStore.getState().streamAbortController === abort) {
+      state.setStreamAbortController(null);
+      state.setCurrentRunId("");
+      state.setSending(false);
+    }
+  }
+}
 export async function submitHarnessAnswer(sessionId: string, requestId: string, body: unknown): Promise<void> {
   const state = useChatStore.getState();
+  if (v3) {
+    const lastAssistant = [...state.messages].reverse().find((message) => message.role === "assistant" && message.messageType === "harness");
+    const assistantMessageId = lastAssistant?.messageId;
+    const teamId = state.activeExpertTeam?.team_id;
+    if (!lastAssistant || !assistantMessageId || !teamId) throw new Error("当前追问已失效，请重新发起咨询。");
+    const submission = body as { answers?: Record<string, unknown>; skipped?: boolean };
+    let rendered = lastAssistant.content;
+    await postSseStream({
+      url: `${state.apiBaseUrl}/api/v3/sessions/chat/stream`,
+      body: {
+        session_id: sessionId,
+        run_id: createUuid(),
+        input: JSON.stringify({
+          action: "answer_input_request", assistant_message_id: assistantMessageId,
+          request_id: requestId, answers: submission.answers || {}, skipped: Boolean(submission.skipped),
+          expert_team_id: teamId,
+        }),
+        context_data: identity(),
+      },
+      protocol: "hailiang.sse.v3",
+      onEvent: (event) => {
+        const data = event.data as Record<string, unknown>;
+        if (event.event === "message.reset") {
+          rendered = "";
+          state.updateMessage(lastAssistant.id, (message) => ({ ...message, content: "", streamingStatus: "streaming" }));
+        } else if (event.event === "message.delta") {
+          const offset = Number(data.offset || 0);
+          const text = String(data.text || "");
+          if (text && offset === rendered.length) {
+            rendered += text;
+            state.appendAssistantDelta(lastAssistant.id, text);
+          }
+        } else if (event.event === "done") {
+          const product = data.state as Record<string, unknown> | undefined;
+          const result = String((product?.result as string | undefined) || (product?.assistant_message as { content?: string } | undefined)?.content || rendered);
+          rendered = result;
+          state.updateMessage(lastAssistant.id, (message) => ({ ...message, content: result, streamingStatus: "completed" }));
+        }
+      },
+    });
+    return;
+  }
   const response = await fetch(`${state.apiBaseUrl}/api/v3/sessions/${encodeURIComponent(sessionId)}/input-requests/${encodeURIComponent(requestId)}/answers`, {
     method: 'POST', headers: {'Content-Type': 'application/json', 'Accept': 'text/event-stream'}, body: JSON.stringify(body),
   });
@@ -156,8 +308,23 @@ export async function submitHarnessAnswer(sessionId: string, requestId: string, 
 
 export async function cancelHarness(): Promise<boolean> {
   const runId = useHarnessState.getState().activeRunId;
+  const chat = useChatStore.getState();
+  if (v3 && (runId || chat.currentRunId)) {
+    await postSseStream({
+      url: `${chat.apiBaseUrl}/api/v3/sessions/chat/stream`,
+      body: {
+        session_id: chat.sessionId,
+        run_id: createUuid(),
+        input: JSON.stringify({ action: "stop", source: "composer" }),
+        context_data: identity(),
+      },
+      protocol: "hailiang.sse.v3",
+      onEvent: () => {},
+    });
+    return true;
+  }
   if (!runId) return false;
-  const session = useChatStore.getState().sessionId;
+  const session = chat.sessionId;
   await harnessRequest(`/sessions/${encodeURIComponent(session)}/harness/runs/${encodeURIComponent(runId)}/cancel`, identity());
   await refreshHarness();
   return true;
@@ -174,12 +341,10 @@ export function useHarnessConversation() {
     useHarnessState.getState().set({ key: key(), mode: "", activeRunId: "", connection: "connected", runs: {}, cursor: 0 });
     if (!sessionId || !userId) return;
     if (v3) {
-      const currentKey = key();
-      return subscribeV3(
-        () => harnessRequest<V3Snapshot>(`/sessions/${encodeURIComponent(sessionId)}/harness?${identityQuery()}`),
-        `${apiBaseUrl}/api/v3/sessions/${encodeURIComponent(sessionId)}/harness/events?${identityQuery()}`,
-        snapshot => { if (key() === currentKey) { v3Snapshot = snapshot; applySnapshot(legacyView(snapshot), currentKey); } },
-        connection => { if (key() === currentKey) useHarnessState.getState().set({connection}); });
+      // Product v3 is driven solely by POST /sessions/chat/stream.  The
+      // Harness snapshot/EventSource endpoints remain diagnostic surfaces for
+      // the workbench, never a second product subscription.
+      return;
     }
     void refreshHarness().then((snapshot) => {
       if (stopped || snapshot.runtime_mode !== "harness_v1") return;

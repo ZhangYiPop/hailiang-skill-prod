@@ -1417,7 +1417,7 @@ def test_candidate_stream_assigns_a_generation_before_runtime_execution(monkeypa
         assert "stream_cancel_check" not in row.runtime_context["session_meta"]
     states = [payload for event, payload in emitted if event == "state"]
     assert states
-    assert all(state["protocol"] == "hailiang.sse.v2" for state in states)
+    assert all(state["protocol"] == "hailiang.sse.v3" for state in states)
     assert states[-1]["status"] == "completed"
     assert states[-1]["context_scope"] == "unbound"
     assert states[-1]["profile_id"] is None

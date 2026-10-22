@@ -157,7 +157,7 @@ main（主编排器）
 }
 ```
 
-首版专家结论至少保证 `conclusion`；数组不存在或为空时不渲染对应小节。专家结论是整段提交，不逐字流式。最终主回复也以完整 `state.result` / `done` 帧更新；当前 V3 不提供面向产品的 `message.delta`。
+专家结论至少保证 `conclusion`；数组不存在或为空时不渲染对应小节。专家中间结论仍是整段提交，不逐字流式。最终主回复在 `message.delta` 中按 `assistant_message_id + revision + offset` 逐步发送；发生受控完整回退时服务端先发送 `message.reset`，终态始终以 `done.state.result` 覆盖累计正文。
 
 ## 5. 编排首分派、汇总与推荐何时展示
 

@@ -394,7 +394,7 @@ session 级 Agent 时，仍是 `general_chat + Soul`，不会自动开启专家�
 | 场景 | 配置与身份来源 | `context_scope` | 前端状态语义 |
 | --- | --- | --- | --- |
 | 正式聊天 | 已发布部署、登录用户及孩子档案 | `profile` 或 `unbound` | 本文的原始 SSE v2 `state`。 |
-| 候选修订手动测试 | 当前调试会话的不可变候选快照、匿名调试身份 | 固定 `unbound` | 工作台流也发送 `protocol="hailiang.sse.v2"` 的同形 `state`。 |
+| 候选修订手动测试 | 当前调试会话的不可变候选快照、匿名调试身份 | 固定 `unbound` | 工作台流使用 `protocol="hailiang.sse.v3"`，并发送同一助手气泡的 `state`、`message.delta`、`message.reset` 与 `done`。 |
 
 候选测试不得读取、创建或写入孩子档案、正式会话或生产版本；但它必须和正式页使用同一份
 消息投影语义：`assistant`、`form`、`team_handoff`、`expert`、`expert_context`、当前 Skill、

@@ -139,6 +139,24 @@ def _profile_name(profile_data: dict | None, profile_id: str) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else f"未命名孩子-{profile_id}"
 
 
+def _normalise_profile_data(data: ContextData) -> dict[str, Any] | None:
+    """Use the V3 portrait name, while accepting the V2 BFF name alias.
+
+    ``student_name`` remains an accepted ContextData field for V2-compatible
+    forwarders. Without this bridge a V3 request succeeds but silently creates
+    an ``未命名孩子-*`` profile, even when the BFF supplied a child name.
+    """
+    raw = data.profile_data
+    if raw is not None and not isinstance(raw, dict):
+        raise HTTPException(422, "INVALID_PROFILE_DATA")
+    profile_data = deepcopy(raw) if raw else {}
+    legacy_name = str(data.student_name or "").strip()
+    if not isinstance(profile_data.get("name"), str) or not profile_data["name"].strip():
+        if legacy_name:
+            profile_data["name"] = legacy_name
+    return profile_data or None
+
+
 def _public_context(context, profile_data: dict | None = None) -> dict[str, Any]:
     """Persist V2-compatible profile context in the V3 run, never in prompts."""
     profile_id = getattr(context, "profile_id", None) if context is not None else None
@@ -334,9 +352,45 @@ def _project_product_state(snapshot: dict[str, Any], run: dict[str, Any]) -> dic
         "completed_count", "task_count", "input_tokens_estimated", "input_tokens_actual", "input_token_limit",
     )
     state = {key: deepcopy(source_run.get(key)) for key in allowed if key in source_run}
+    # During an active tail stream ``run.result`` is intentionally not yet
+    # committed.  The durable public final-message projection is therefore
+    # the reconnect-safe source of the partial user-visible reply.
+    message_id = str(run.get("assistant_message_id") or (internal_run_id + ":final"))
+    partial_message = next(
+        (
+            item for item in snapshot.get("messages", [])
+            if item.get("id") == message_id and item.get("kind") == "final"
+        ),
+        None,
+    )
+    if partial_message and not state.get("result"):
+        state["result"] = str(partial_message.get("content") or "")
+    state["assistant_message"] = {
+        "id": message_id,
+        "content": str((partial_message or {}).get("content") or state.get("result") or ""),
+        "status": str((partial_message or {}).get("status") or ("completed" if run.get("status") in TERMINAL else "streaming")),
+        "revision": int((partial_message or {}).get("revision") or 1),
+    }
     state.update({"dispatch": dispatch, "nodes": [projected_node(item) for item in source_nodes],
                   "inputs": inputs, "input_groups": groups})
     return state
+
+
+def _message_payload(runtime, run: dict[str, Any], event: dict[str, Any], *, request_run_id: str) -> dict[str, Any]:
+    """Translate a durable Harness text event into the public V3 envelope."""
+    data = deepcopy(event.get("data") or {})
+    message_id = str(data.get("id") or run.get("assistant_message_id") or (run["run_id"] + ":final"))
+    return {
+        "protocol": SSE_V3_PROTOCOL,
+        "session_id": run["session_id"],
+        "run_id": request_run_id,
+        "assistant_message_id": message_id,
+        "cursor": int(event.get("seq") or 0),
+        "record_version": int(run.get("version") or 0),
+        "revision": int(data.get("revision") or 1),
+        "offset": int(data.get("offset") or 0),
+        "text": str(data.get("text") or ""),
+    }
 
 
 def _payload(runtime, run, *, request_run_id: str, event: str, reason: str, cursor: int = 0):
@@ -407,15 +461,19 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 yield format_sse_event("done_suspended", _payload(runtime, run, request_run_id=request_run_id, event="done_suspended", reason="waiting_for_user", cursor=cursor))
                 return
             events = await asyncio.to_thread(runtime.store.public_events, run["session_id"], run["user_id"], run["profile_id"], cursor)
-            relevant = [event for event in events if event.get("run_id") == harness_run_id and event.get("type") in {"state", "done"}]
+            relevant = [event for event in events if event.get("run_id") == harness_run_id and event.get("type") in {"state", "done", "message.delta", "message.reset"}]
             if relevant:
                 cursor = max(event["seq"] for event in events)
-                latest = relevant[-1]
                 run = await asyncio.to_thread(runtime.store.get, harness_run_id)
-                event_name = "done" if latest.get("type") == "done" else "state"
-                yield format_sse_event(event_name, _payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor))
-                if event_name == "done":
-                    return
+                for item in relevant:
+                    event_type = str(item.get("type") or "state")
+                    if event_type in {"message.delta", "message.reset"}:
+                        yield format_sse_event(event_type, _message_payload(runtime, run, item, request_run_id=request_run_id))
+                        continue
+                    event_name = "done" if event_type == "done" else "state"
+                    yield format_sse_event(event_name, _payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=item.get("reason", "updated"), cursor=int(item.get("seq") or cursor)))
+                    if event_name == "done":
+                        return
                 continue
             if time.monotonic() - started >= timeout_seconds:
                 yield format_sse_event("done_timeout", _payload(runtime, run, request_run_id=request_run_id, event="done_timeout", reason="stream_timeout", cursor=cursor))
@@ -460,9 +518,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
     async def post_chat_stream(request: V3ChatStreamRequest, http_request: Request):
         input_data = _parse_input(request.input)
         data = request.context_data
-        profile_data = data.profile_data
-        if profile_data is not None and not isinstance(profile_data, dict):
-            raise HTTPException(422, "INVALID_PROFILE_DATA")
+        profile_data = _normalise_profile_data(data)
 
         if isinstance(input_data, ChatInput):
             team_id, team_ids = _single_supported_team_id(input_data.expert_team_id)

@@ -334,11 +334,11 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
             def emit(event: str, payload: dict[str, Any]):
                 nonlocal latest_state
                 # Candidate transport is independent from formal chat, but a
-                # ``state`` frame has the exact same v2 semantics.  Keeping
+                # ``state`` frame has the same v3 lifecycle semantics. Keeping
                 # the last snapshot lets an error finish with authoritative
                 # context instead of forcing the UI to guess the active
                 # expert or Skill from stale local state.
-                if event == "state" and payload.get("protocol") == "hailiang.sse.v2":
+                if event == "state" and payload.get("protocol") == "hailiang.sse.v3":
                     latest_state = copy.deepcopy(payload)
                 queue.put((event, payload))
 

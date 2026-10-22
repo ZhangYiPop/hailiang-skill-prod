@@ -9,7 +9,7 @@ type StreamOptions = {
   retryDelayMs?: number;
   retryableStatus?: number[];
   onRetry?: (attempt: number, error: Error) => void;
-  protocol?: "hailiang.sse.v2";
+  protocol?: "hailiang.sse.v2" | "hailiang.sse.v3";
 };
 
 const DEFAULT_STREAM_RETRY_COUNT = 3;
@@ -36,18 +36,24 @@ function parseChunk(rawEvent: string): StreamEvent[] {
   try {
     const data = JSON.parse(rawData) as Record<string, unknown>;
     if (eventName === "state") {
-      if (data.protocol !== "hailiang.sse.v2") {
+      if (data.protocol !== "hailiang.sse.v2" && data.protocol !== "hailiang.sse.v3") {
         return [];
       }
       return [{ event: "state", data: data as StreamEvent["data"] }];
     }
     if (
       eventName === "done"
-      && data.protocol === "hailiang.sse.v2"
+      && (data.protocol === "hailiang.sse.v2" || data.protocol === "hailiang.sse.v3")
       && typeof data.session_id === "string"
       && typeof data.run_id === "string"
     ) {
       return [{ event: "done", data: data as StreamEvent["data"] }];
+    }
+    if (
+      (eventName === "message.delta" || eventName === "message.reset")
+      && data.protocol === "hailiang.sse.v3"
+    ) {
+      return [{ event: eventName, data }];
     }
     return [];
   } catch {

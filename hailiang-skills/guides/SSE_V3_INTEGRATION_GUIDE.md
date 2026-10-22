@@ -4,7 +4,7 @@ SSE v3 是 Harness 多 agent 的公开传输协议，与 `context_policy_version
 
 ## 当前公开协议
 
-对外使用单 run 有限 SSE 流。除 `ping` 外，`state`、`done_suspended`、`done_timeout`、`done` 的每一帧都携带完整 `state`；前端整体替换该气泡的状态。`persistence` 是 BFF 保存对话历史的唯一指令：`state` 只暂存，`done_suspended`、`done_timeout` 保存可续接记录，`done` 按 outcome 保存最终记录或在取消时丢弃暂存。回答请求带 `Accept: text/event-stream` 后，同一 HTTP 响应会继续推送状态，无需单独恢复接口。
+对外使用单 run 有限 SSE 流。除 `ping` 外，`state`、`done_suspended`、`done_timeout`、`done` 的每一帧都携带完整 `state`；最终正文在 `message.delta` 中增量输出，发生受控回退时用 `message.reset` 切换 revision，`done.state.result` 为唯一终态权威。`persistence` 是 BFF 保存对话历史的唯一指令：`state` 只暂存，`done_suspended`、`done_timeout` 保存可续接记录，`done` 按 outcome 保存最终记录或在取消时丢弃暂存。回答请求带 `Accept: text/event-stream` 后，同一 HTTP 响应会继续推送状态，无需单独恢复接口。
 
 公开 `state` 包含：运行阶段、`dispatch`、`nodes`、`inputs`、`input_groups`、推荐与最终结果。问题队列由 `state.input_queue`、`state.inputs` 与 `state.input_groups` 表示；只允许 `active_request_id` 对应的 pending 卡片提交。相同事实身份且输入约束兼容的问题由服务端复用答案和绑定，不由前端推断。
 

@@ -10,6 +10,9 @@ export HAILIANG_HARNESS_EMBEDDED_WORKER="true"
 # Formal sessions run the team orchestration (identity gate, head, experts, tail,
 # recommend) when a published team has head rules. false = main-agent delegation.
 export HAILIANG_HARNESS_FORMAL_ORCHESTRATION="true"
+# 正式对话和候选修订测试均使用公开 SSE v3。v2 接口仅保留给历史调用方。
+export HAILIANG_SSE_V3="true"
+export VITE_HAILIANG_SSE_V3="true"
 export DASHSCOPE_API_KEY=""
 export HAILIANG_EXTERNAL_API_KEY=""
 

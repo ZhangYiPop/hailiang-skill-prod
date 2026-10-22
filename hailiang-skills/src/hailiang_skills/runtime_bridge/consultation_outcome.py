@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from hailiang_skills.runtime_bridge.orchestration_tail import run_tail_merge, simple_concat_merge
+from hailiang_skills.runtime_bridge.orchestration_tail import (
+    run_tail_merge,
+    run_tail_merge_stream,
+    simple_concat_merge,
+)
 
 
 CallTail = Callable[..., str]
@@ -104,6 +108,8 @@ def select_final_reply(
     tail_rules: str = "",
     user_question: str = "",
     collaboration_rules: str = "",
+    stream_callback: Callable[[str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Route successful expert answers through the orchestration tail when available.
 
@@ -137,13 +143,24 @@ def select_final_reply(
         return {"mode": mode, "text": text, "source_expert_id": source_expert_id}
 
     if client is not None:
-        text = run_tail_merge(
-            client,
-            tail_rules=tail_rules,
-            expert_results=rows,
-            user_question=user_question,
-            collaboration_rules=collaboration_rules,
-        )
+        if stream_callback is not None:
+            text = run_tail_merge_stream(
+                client,
+                tail_rules=tail_rules,
+                expert_results=rows,
+                user_question=user_question,
+                collaboration_rules=collaboration_rules,
+                on_delta=stream_callback,
+                cancel_check=cancel_check,
+            )
+        else:
+            text = run_tail_merge(
+                client,
+                tail_rules=tail_rules,
+                expert_results=rows,
+                user_question=user_question,
+                collaboration_rules=collaboration_rules,
+            )
         if not text and single:
             text = successful[0]["text"]
         return {"mode": mode, "text": text, "source_expert_id": source_expert_id}
