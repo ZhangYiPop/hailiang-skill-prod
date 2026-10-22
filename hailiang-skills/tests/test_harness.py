@@ -212,6 +212,80 @@ def test_team_flow_runs_head_expert_and_tail(tmp_path):
     runtime.close()
 
 
+@pytest.mark.parametrize("expert_ids", [("b",), ("a", "b")])
+def test_orchestration_tail_streams_final_reply_for_single_and_multiple_experts(tmp_path, expert_ids):
+    from types import SimpleNamespace
+
+    head = json.dumps({"action": "consult", "subtasks": [
+        {"subtask_id": f"st_{index}", "question": f"任务 {expert_id}", "target_expert_id": expert_id, "priority": index}
+        for index, expert_id in enumerate(expert_ids, start=1)
+    ], "reason": "测试"})
+
+    class Client:
+        def complete(self, _messages, request_purpose="", **_kwargs):
+            assert request_purpose == "orchestrator_head"
+            return head
+
+        def complete_with_tools(self, _messages, _specs, request_purpose="", **_kwargs):
+            assert request_purpose == "harness_expert"
+            return AssistantTurnResult(final_text="专家结论")
+
+        def stream_complete(self, _messages, request_purpose="", **_kwargs):
+            assert request_purpose == "orchestrator_tail"
+            yield SimpleNamespace(content_delta="逐步")
+            yield SimpleNamespace(content_delta="输出")
+
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / "harness.sqlite3"), lambda _run: Client())
+    run_id = runtime.create("s", "u", "p", "你好", orchestrated_policy(), identity_seed(), wire_protocol="hailiang.sse.v3")
+    advance(runtime, run_id, 20)
+    run = runtime.store.get(run_id)
+    assert run["status"] == "completed", run.get("error")
+    assert run["result"] == "逐步输出"
+    events = runtime.store.public_events("s", "u", "p", 0)
+    deltas = [event["data"]["text"] for event in events if event["type"] == "message.delta"]
+    assert deltas == ["逐步", "输出"]
+    assert runtime.store.public_snapshot("s", "u", "p")["messages"][-1]["content"] == "逐步输出"
+    runtime.close()
+
+
+def test_orchestration_tail_stream_failure_replays_complete_reply(tmp_path):
+    from types import SimpleNamespace
+
+    head = json.dumps({"action": "consult", "subtasks": [
+        {"subtask_id": "st_1", "question": "任务", "target_expert_id": "b", "priority": 1}
+    ], "reason": "测试"})
+
+    class Client:
+        def complete(self, _messages, request_purpose="", **_kwargs):
+            if request_purpose == "orchestrator_head":
+                return head
+            assert request_purpose == "orchestrator_tail"
+            return "降级后的完整结论"
+
+        def complete_with_tools(self, _messages, _specs, request_purpose="", **_kwargs):
+            assert request_purpose == "harness_expert"
+            return AssistantTurnResult(final_text="专家结论")
+
+        def stream_complete(self, _messages, request_purpose="", **_kwargs):
+            assert request_purpose == "orchestrator_tail"
+            yield SimpleNamespace(content_delta="不完整前缀")
+            raise RuntimeError("simulated provider stream failure")
+
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / "harness.sqlite3"), lambda _run: Client())
+    run_id = runtime.create("s", "u", "p", "你好", orchestrated_policy(), identity_seed(), wire_protocol="hailiang.sse.v3")
+    advance(runtime, run_id, 20)
+    run = runtime.store.get(run_id)
+    assert run["status"] == "completed", run.get("error")
+    assert run["result"] == "降级后的完整结论"
+    events = runtime.store.public_events("s", "u", "p", 0)
+    last_reset = max(index for index, event in enumerate(events) if event["type"] == "message.reset")
+    assert "".join(event["data"]["text"] for event in events[last_reset + 1:] if event["type"] == "message.delta") == run["result"]
+    message = runtime.store.public_snapshot("s", "u", "p")["messages"][-1]
+    assert message["content"] == run["result"]
+    assert message["revision"] == 2
+    runtime.close()
+
+
 def test_team_flow_clarify_skips_experts(tmp_path):
     head = json.dumps({'action': 'clarify', 'clarification_question': '你想了解哪方面？', 'reason': '信息不足'})
     runtime, run, seen = run_orchestrated(tmp_path, head)

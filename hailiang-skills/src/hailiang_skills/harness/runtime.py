@@ -1151,12 +1151,15 @@ class HarnessRuntime:
                 self._publish_final_text(run_id, task_id, token, safe)
                 streamed_parts[:] = [safe]
                 return
-            begin_final_stream()
+            # Do not mark the response as streamed until its first delta is
+            # durably visible to SSE consumers.  A failure while writing the
+            # reset/delta must still fall back to a complete replay below.
             if len(streamed_parts) == 0:
                 if not self.store.stream_text(run_id, task_id, token, reset=True):
                     raise HarnessError("EXECUTION_EXPIRED")
             if not self.store.stream_text(run_id, task_id, token, value):
                 raise HarnessError("EXECUTION_EXPIRED")
+            begin_final_stream()
             streamed_parts.append(value)
 
         def publish_completed_text(value: str) -> None:
@@ -1196,11 +1199,16 @@ class HarnessRuntime:
                     cancel_check=cancelled,
                 )
             except Exception:
-                # Provider deltas are buffered until output moderation has
-                # completed. A failed stream can therefore fall back without
-                # retracting user-visible content.
-                if stream_started:
-                    streamed_parts.clear()
+                # A stream may have already made text visible.  The fallback
+                # therefore publishes a new revision of the complete reply,
+                # rather than leaving a partial result on the client.
+                had_durable_delta = stream_started
+                streamed_parts.clear()
+                # A callback can fail after a provider delta was received but
+                # before its reset/delta was durably persisted.  Treat the
+                # fallback as non-streaming so the verified complete result is
+                # always emitted through ``message.reset`` + ``message.delta``.
+                stream_started = False
                 log.warning("harness orchestration tail stream degraded", exc_info=True)
                 def record_stream_degraded(current, changes, _db):
                     if not self._valid(current, task_id, token):
@@ -1208,7 +1216,7 @@ class HarnessRuntime:
                     live = current["tasks"][task_id]
                     if live.get("trace"):
                         live["trace"][-1].setdefault("diagnostics", {})["final_reply_stream_degraded"] = {
-                            "stage": "after_first_provider_delta" if stream_started else "before_first_provider_delta",
+                            "stage": "after_first_durable_delta" if had_durable_delta else "before_first_durable_delta",
                             "fallback": "complete",
                         }
                     changes.append({"event": "final_reply_stream_degraded", "node_id": task_id})
