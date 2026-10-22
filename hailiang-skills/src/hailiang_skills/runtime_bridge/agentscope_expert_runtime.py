@@ -31,7 +31,7 @@ from hailiang_skills.core.fact_prompt_projection import (
 
 
 AGENT_RUNTIME_STATE_KEY = "agent_runtime"
-DEFAULT_EXPERT_ID = "career_plan_expert"
+DEFAULT_EXPERT_ID = "e_career_planner"
 _FRAMEWORK_FAILURE_REPLY_MARKERS = (
     "maximum reasoning-acting iterations",
     "maximum reasoning acting iterations",

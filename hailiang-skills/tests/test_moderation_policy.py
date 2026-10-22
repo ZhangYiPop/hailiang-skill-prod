@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from hailiang_skills.security.models import ModerationBlockedError, ModerationResult
+from hailiang_skills.security.models import MODERATION_SAFE_REPLY, ModerationBlockedError, ModerationResult, moderation_safe_reply
 from hailiang_skills.security.moderation_config import ModerationPolicyConfig, load_moderation_policy_config
 from hailiang_skills.security.moderation_service import ModerationService
 
@@ -125,3 +125,14 @@ def test_default_config_allows_education_profile_labels() -> None:
         "political_n",
         "inappropriate_discrimination",
     }
+
+
+def test_output_block_uses_provider_advice_then_platform_fallback() -> None:
+    advised = ModerationResult(
+        matched=True,
+        risk_level="high",
+        raw={"windows": [{"Data": {"Advice": [{"Answer": "请换一种安全的方式提问。"}]}}]},
+    )
+    assert moderation_safe_reply(advised) == "请换一种安全的方式提问。"
+
+    assert moderation_safe_reply(ModerationResult(matched=True, risk_level="high")) == MODERATION_SAFE_REPLY

@@ -265,7 +265,9 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
     body = {
         'session_id': 's', 'run_id': 'client-1',
         'input': json.dumps({'action': 'chat', 'content': '请规划', 'expert_team_id': 'team-a'}, ensure_ascii=False),
-        'context_data': {'user_id': 'u', 'profile_id': 'p', 'profile_data': {'name': '小明', 'province': '浙江', 'recent_exam': {'total_score': 620}}},
+        # Existing V2 BFFs send student_name at context_data's top level.
+        # V3 must use it when profile_data.name is absent.
+        'context_data': {'user_id': 'u', 'profile_id': 'p', 'student_name': '小明', 'profile_data': {'province': '浙江', 'recent_exam': {'total_score': 620}}},
     }
     with TestClient(app) as client:
         response = client.post('/api/v3/sessions/chat/stream', json=body)
@@ -282,6 +284,7 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         frame = json.loads(next(line.removeprefix('data: ') for line in response.text.splitlines() if line.startswith('data: ')))
         assert frame['run_id'] == 'client-1'
         assistant_message_id = frame['assistant_message_id']
+        assert frame['profile_name'] == '小明'
         assert frame['state']['nodes'][0]['id'] == 'node_1'
         assert 'root_task_id' not in frame['state']
         run = runtime.store.active('s')

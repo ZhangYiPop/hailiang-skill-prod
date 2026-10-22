@@ -61,6 +61,17 @@ class ModerationService:
                 ",".join(result.labels),
                 stage,
             )
+        self.logger.info(
+            "moderation_checked stage=%s status=%s provider=%s mode=%s risk_level=%s labels=%s request_id=%s failure_reason=%s",
+            stage,
+            "blocked" if result.blocked else "passed",
+            result.provider,
+            result.mode,
+            result.risk_level,
+            ",".join(result.labels),
+            result.request_id or "",
+            result.failure_reason or "",
+        )
         if result.blocked and raise_on_block:
             case_id = self._quarantine(
                 content=content,

@@ -47,6 +47,7 @@ def test_v3_snapshot_carries_expert_id_and_jump_cards(tmp_path):
     assert entity['round_experts'] == {
         'assigned_expert_ids': ['career_plan_expert'],
         'running_expert_ids': [],
+        'waiting_expert_ids': [],
         'completed_expert_ids': ['career_plan_expert'],
         'failed_expert_ids': [],
         'status': 'completed',
@@ -333,7 +334,7 @@ def test_schema_validates_generated_wire_fixture():
     assert any(e['type']=='run.updated' and e['data'].get('outcome')=='partial' for e in events)
 
 
-def test_final_moderation_retracts_published_text(tmp_path):
+def test_final_moderation_replaces_published_text_with_provider_advice(tmp_path):
     from types import SimpleNamespace
     from hailiang_skills.security.models import ModerationBlockedError
     runtime = make_runtime(tmp_path, lambda *_: call('finalize_response', {}))
@@ -345,15 +346,28 @@ def test_final_moderation_retracts_published_text(tmp_path):
         count = 0
         def check(self,text,**kw):
             self.count += 1
-            if self.count == 2: raise ModerationBlockedError(SimpleNamespace(risk_level='blocked'),stage='output')
+            raise ModerationBlockedError(
+                SimpleNamespace(
+                    risk_level='high', labels=['test'], provider='aliyun', request_id='request-test',
+                    raw={'windows': [{'Data': {'Advice': [{'Answer': '请改用安全方式描述该问题。'}]}}]},
+                ),
+                stage='output',
+            )
     runtime.client_factory = lambda _:Client()
     runtime.moderation = Moderation()
     rid = runtime.create('s','u','p','分析',v2_policy(),wire_protocol='hailiang.sse.v3')
     advance(runtime,rid,8)
     run = runtime.store.get(rid)
-    assert run['status']=='failed'
+    assert run['status']=='completed'
     message = runtime.store.public_snapshot('s','u','p')['messages'][0]
-    assert message['status']=='blocked' and message['content']==''
+    assert message['status']=='completed'
+    assert message['content'] == '请改用安全方式描述该问题。'
+    assert runtime.moderation.count == 1
+    assert '待检查内容' not in ''.join(
+        event['data'].get('text', '')
+        for event in runtime.store.public_events('s', 'u', 'p', 0)
+        if event['type'] == 'message.delta'
+    )
     assert run['input_tokens_actual']==20
     runtime.close()
 

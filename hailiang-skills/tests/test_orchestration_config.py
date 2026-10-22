@@ -33,9 +33,9 @@ def test_student_growth_team_publishes_consultation_policy():
     team = load_local_expert_team_registry(ROOT / "runtime_agent_teams", _experts()).require("student_growth_expert_team")
 
     assert team.consultation_policy == ConsultationPolicy(max_subtasks=3, max_parallel=3, max_depth=1)
-    assert team.fallback_expert_id == "career_plan_expert"
+    assert team.fallback_expert_id == "e_career_planner"
     assert "depends_on" in team.collaboration_rules
-    assert team.member_for_expert("family_education_expert").applicable_stages == ("小学", "初中", "高中")
+    assert team.member_for_expert("family_edu_specialist").applicable_stages == ("小学", "初中", "高中")
 
 
 def test_parse_consultation_policy_migrates_allow_parallel():

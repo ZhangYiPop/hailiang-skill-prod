@@ -41,7 +41,7 @@ from hailiang_skills.storage.repositories.session_index_repo import (
     FileBackedSessionIndexRepository,
 )
 from hailiang_skills.storage.repositories.session_repo import InMemorySessionRepository
-from hailiang_skills.security.models import ModerationBlockedError
+from hailiang_skills.security.models import MODERATION_SAFE_REPLY, ModerationBlockedError, moderation_safe_reply
 
 
 def build_session_logs_archive(session_id: str) -> bytes:
@@ -567,27 +567,29 @@ def build_chat_router(
                 )
                 record_security_result(context, stage="output", result=moderation_result)
             except ModerationBlockedError as exc:
-                context.messages = [
-                    message
-                    for message in context.messages
-                    if not (
-                        message.get("role") == "assistant"
-                        and message.get("metadata", {}).get("turn_id") == context.session_meta.get("active_turn_id")
-                    )
-                ]
                 security = record_security_result(context, stage=exc.stage, result=exc.result, case_id=exc.case_id)
-                repository.save(context)
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "code": "CONTENT_BLOCKED",
-                        "message": "该内容检测到非合规内容，当前对话中断，如果需要请重新输入",
-                        "stage": exc.stage,
-                        "case_id": exc.case_id,
-                        **exc.result.to_public_dict(),
-                        "security": security,
-                    },
-                ) from exc
+                # The route has reached the final user-visible answer. Replace
+                # it with the provider's approved answer (or our fixed safe
+                # fallback); do not fail the completed task or invoke a retry.
+                result.assistant_message = moderation_safe_reply(exc.result)
+                for message in reversed(context.messages):
+                    if message.get("role") == "assistant":
+                        message["content"] = result.assistant_message
+                        break
+                if hasattr(orchestrator, "_record_events"):
+                    orchestrator._record_events(
+                        context,
+                        [
+                            make_event("moderation_blocked", {"stage": "output", "case_id": exc.case_id, **exc.result.to_public_dict()}),
+                            make_event("final_reply_moderation_replaced", {
+                                "stage": "output", "case_id": exc.case_id,
+                                "risk_level": exc.result.risk_level, "labels": exc.result.labels,
+                                "provider": exc.result.provider, "request_id": exc.result.request_id,
+                                "replacement": "provider_advice" if result.assistant_message != MODERATION_SAFE_REPLY else "platform_safe_reply",
+                                "security_recorded": bool(security),
+                            }),
+                        ],
+                    )
         fact_service.persist_context(context)
         skill_display = build_skill_display(
             context,

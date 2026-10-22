@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pydantic import ValidationError
 from jsonschema import validate, ValidationError as SchemaError
 
-from hailiang_skills.skill_runtime.models import ChatMessage, ToolCallRequest, ToolSpec
+from hailiang_skills.skill_runtime.models import AssistantTurnResult, ChatMessage, ToolCallRequest, ToolSpec
 from .context import compose, serialize_message
 from .contracts import AnswerSubmission, HarnessError, InputArguments, LEGACY_RAG_SEARCH_TOOL, SEARCH_TOOL_NAMES, SKILL_ASSET_SEARCH_TOOL, TERMINAL, TOOL_TERMINAL, identifier, now, normalize_input_arguments, validate_answers
 from .policy import allowed_skills, check_skill, harness_fallback_expert_id, normalize_skill
@@ -595,31 +595,24 @@ class HarnessRuntime:
                 log.exception("harness heartbeat failed")
 
     def _stream_final(self, client, run, task, token, messages):
-        from time import monotonic
-        from hailiang_skills.skill_runtime.models import AssistantTurnResult
+        """Read a final model stream without exposing it before moderation."""
         run_id, task_id = run['run_id'], task['id']
-        if not self.store.stream_text(run_id, task_id, token, reset=True):
-            raise HarnessError('EXECUTION_EXPIRED')
-        content, buffer, flushed = '', '', monotonic()
+        content = ''
         def cancelled():
             return not self._valid(self.store.get(run_id), task_id, token)
-        def publish():
-            nonlocal buffer, flushed
-            if buffer:
-                if self.moderation:
-                    self.moderation.check(content, stage='output', session_id=run['session_id'], turn_id=task_id)
-                if not self.store.stream_text(run_id, task_id, token, buffer):
-                    raise HarnessError('EXECUTION_EXPIRED')
-                buffer, flushed = '', monotonic()
         for chunk in client.stream_complete(messages, cancel_check=cancelled, request_purpose='harness_main_final',
                                             max_tokens=run['policy']['settings'].get('max_output_tokens', 8192)):
             if chunk.content_delta:
                 content += chunk.content_delta
-                buffer += chunk.content_delta
-                if monotonic() - flushed >= .1:
-                    publish()
-        publish()
         return AssistantTurnResult(final_text=content)
+
+    def _publish_final_text(self, run_id, task_id, token, text):
+        """Publish a verified final answer in small SSE v3 deltas."""
+        if not self.store.stream_text(run_id, task_id, token, reset=True):
+            raise HarnessError("EXECUTION_EXPIRED")
+        for offset in range(0, len(text), 32):
+            if not self.store.stream_text(run_id, task_id, token, text[offset:offset + 32]):
+                raise HarnessError("EXECUTION_EXPIRED")
 
     def execute(self, run_id, task_id, token):
         finished = threading.Event()
@@ -682,17 +675,35 @@ class HarnessRuntime:
             metrics = client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {}
             if not response.tool_calls and not response.final_text.strip():
                 raise HarnessError("EMPTY_MODEL_REPLY")
-            if self.moderation:
-                if response.final_text.strip():
+            # Only the final user-visible answer is moderated.  Planning,
+            # expert results, tool arguments, forms and script output are
+            # internal task nodes and must not invoke the cloud provider.
+            final_moderation_block = None
+            if self.moderation and task.get("finalizing") and response.final_text.strip():
+                try:
                     self.moderation.check(response.final_text, stage="output", session_id=run["session_id"], turn_id=task_id)
-                for call in response.tool_calls:
-                    if call.name == "request_user_input":
-                        self.moderation.check(json.dumps(call.arguments, ensure_ascii=False), stage="output", session_id=run["session_id"], turn_id=task_id)
+                except Exception as exc:
+                    from hailiang_skills.security.models import ModerationBlockedError, moderation_safe_reply
+                    if not isinstance(exc, ModerationBlockedError):
+                        raise
+                    final_moderation_block = {
+                        "stage": "output", "case_id": exc.case_id,
+                        "risk_level": exc.result.risk_level, "labels": list(exc.result.labels),
+                        "provider": exc.result.provider, "request_id": exc.result.request_id,
+                    }
+                    response = AssistantTurnResult(final_text=moderation_safe_reply(exc.result))
+            if task.get("finalizing") and response.final_text.strip():
+                # Finalizing is the only Harness node with user-visible text.
+                # Its provider stream was buffered until the output check.
+                self._publish_final_text(run_id, task_id, token, response.final_text)
             def after(current, changes, db):
                 if not self._valid(current, task_id, token):
                     return
                 live = current["tasks"][task_id]
                 live["trace"][-1]["output"] = asdict(response)
+                if final_moderation_block:
+                    live["trace"][-1].setdefault("diagnostics", {})["final_reply_moderation_replaced"] = final_moderation_block
+                    changes.append({"event": "final_reply_moderation_replaced", "node_id": task_id, **final_moderation_block})
                 self._record_model_usage(current, live["trace"][-1], metrics)
                 if cp.enabled(current) and metrics.get("finish_reason") == "length":
                     # Commit usage and raw output before recording failure.
@@ -982,8 +993,6 @@ class HarnessRuntime:
             nonlocal stream_started
             if stream_started:
                 return
-            if not self.store.stream_text(run_id, task_id, token, reset=True):
-                raise HarnessError("EXECUTION_EXPIRED")
             stream_started = True
 
         def publish_delta(delta: str) -> None:
@@ -991,8 +1000,6 @@ class HarnessRuntime:
             if not value:
                 return
             begin_final_stream()
-            if not self.store.stream_text(run_id, task_id, token, value):
-                raise HarnessError("EXECUTION_EXPIRED")
             streamed_parts.append(value)
 
         def publish_completed_text(value: str) -> None:
@@ -1032,12 +1039,10 @@ class HarnessRuntime:
                     cancel_check=cancelled,
                 )
             except Exception:
-                # A stream may fail after text was emitted.  Reset the public
-                # draft and make one complete request so the terminal message
-                # is never a duplicated or truncated synthesis.
+                # Provider deltas are buffered until output moderation has
+                # completed. A failed stream can therefore fall back without
+                # retracting user-visible content.
                 if stream_started:
-                    if not self.store.stream_text(run_id, task_id, token, reset=True):
-                        raise HarnessError("EXECUTION_EXPIRED")
                     streamed_parts.clear()
                 log.warning("harness orchestration tail stream degraded", exc_info=True)
                 def record_stream_degraded(current, changes, _db):
@@ -1046,7 +1051,7 @@ class HarnessRuntime:
                     live = current["tasks"][task_id]
                     if live.get("trace"):
                         live["trace"][-1].setdefault("diagnostics", {})["final_reply_stream_degraded"] = {
-                            "stage": "after_first_delta" if stream_started else "before_first_delta",
+                            "stage": "after_first_provider_delta" if stream_started else "before_first_provider_delta",
                             "fallback": "complete",
                         }
                     changes.append({"event": "final_reply_stream_degraded", "node_id": task_id})
@@ -1060,8 +1065,27 @@ class HarnessRuntime:
                 return
         if not text:
             raise HarnessError("EMPTY_MODEL_REPLY")
-        if not streamed_parts:
-            publish_completed_text(text)
+        # The orchestration tail is the other final user-visible answer path.
+        # Its expert/task intermediates remain unmoderated; only the composed
+        # reply is checked, then safely replaced without rerunning work.
+        final_moderation_block = None
+        if self.moderation:
+            try:
+                self.moderation.check(text, stage="output", session_id=run["session_id"], turn_id=task_id)
+            except Exception as exc:
+                from hailiang_skills.security.models import ModerationBlockedError, moderation_safe_reply
+                if not isinstance(exc, ModerationBlockedError):
+                    raise
+                streamed_parts.clear()
+                text = moderation_safe_reply(exc.result)
+                final_moderation_block = {
+                    "stage": "output", "case_id": exc.case_id,
+                    "risk_level": exc.result.risk_level, "labels": list(exc.result.labels),
+                    "provider": exc.result.provider, "request_id": exc.result.request_id,
+                }
+        # Replay only verified final content. It remains an SSE v3 delta
+        # sequence, but intermediate model text is never moderated or exposed.
+        self._publish_final_text(run_id, task_id, token, text)
         # Recommend after any successful expert reply: team single/multi (post-tail) and
         # workbench direct_expert_id. Skipped when catalog is missing or empty.
         recommend_io = None
@@ -1099,6 +1123,9 @@ class HarnessRuntime:
             live = current["tasks"][task_id]
             if stamped:
                 live["trace"][-1]["output"] = {"final_text": text}
+                if final_moderation_block:
+                    live["trace"][-1].setdefault("diagnostics", {})["final_reply_moderation_replaced"] = final_moderation_block
+                    changes.append({"event": "final_reply_moderation_replaced", "node_id": task_id, **final_moderation_block})
                 if client is not None and callable(getattr(client, "last_request_metrics", None)):
                     self._record_model_usage(current, live["trace"][-1], client.last_request_metrics() or {})
                 self._record_node(current, live, "orchestrate_tail", {"experts": [r["expert_id"] for r in rows]},

@@ -142,11 +142,11 @@ def resolve_default_expert_id(
     entries: list[dict[str, Any]],
     *,
     preferred_team_id: str = "",
-    fallback_expert_id: str = "career_plan_expert",
+    fallback_expert_id: str = "e_career_planner",
 ) -> str:
     """Resolve the coordinator used when a database-backed session is new.
 
-    The filesystem runtime historically used ``career_plan_expert`` as its
+    The filesystem runtime historically used ``e_career_planner`` as its
     internal coordinator.  Database deployments, however, are authoritative
     expert-team packages and may use a different coordinator ID.  Resolve the
     coordinator from the same immutable entries that will be installed into

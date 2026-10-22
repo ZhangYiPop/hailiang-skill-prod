@@ -7,6 +7,38 @@ from typing import Any, Literal
 RiskLevel = Literal["none", "low", "medium", "high"]
 ModerationMode = Literal["cloud", "local_fallback"]
 
+# This is intentionally a platform-owned safe replacement, not a model retry:
+# a blocked final answer must never trigger another model/tool execution.
+MODERATION_SAFE_REPLY = "抱歉，这个问题涉及不适合直接展开的内容。我可以继续帮助您换成安全、合规的方式梳理相关情况。"
+
+
+def moderation_safe_reply(result: "ModerationResult") -> str:
+    """Return the provider's approved substitute when available.
+
+    This is deliberately kept at the moderation boundary rather than asking a
+    model to rewrite blocked material. Aliyun's advice is already intended as
+    a safe substitute; malformed or empty advice falls back to the stable
+    platform response.
+    """
+    raw = result.raw if isinstance(result.raw, dict) else {}
+    candidates = [raw]
+    windows = raw.get("windows") if isinstance(raw, dict) else None
+    if isinstance(windows, list):
+        candidates.extend(item for item in windows if isinstance(item, dict))
+    for candidate in candidates:
+        data = candidate.get("Data", candidate.get("data", {}))
+        data = data if isinstance(data, dict) else {}
+        advice = data.get("advice", data.get("Advice", [])) or []
+        if not isinstance(advice, list):
+            continue
+        for item in advice:
+            if not isinstance(item, dict):
+                continue
+            answer = item.get("answer", item.get("Answer", ""))
+            if str(answer or "").strip():
+                return str(answer).strip()
+    return MODERATION_SAFE_REPLY
+
 
 @dataclass(slots=True)
 class ModerationResult:
@@ -28,13 +60,20 @@ class ModerationResult:
         return self.matched or self.risk_level in {"low", "medium", "high"}
 
     def to_public_dict(self) -> dict[str, Any]:
-        data = self.raw.get("Data", self.raw.get("data", {})) if isinstance(self.raw, dict) else {}
-        data = data if isinstance(data, dict) else {}
-        advice = data.get("advice", data.get("Advice", [])) or []
-        advice = [item for item in advice if isinstance(item, dict)]
+        raw = self.raw if isinstance(self.raw, dict) else {}
+        raws = [raw]
+        if isinstance(raw.get("windows"), list):
+            raws.extend(item for item in raw["windows"] if isinstance(item, dict))
+        advice = []
+        for item in raws:
+            data = item.get("Data", item.get("data", {}))
+            data = data if isinstance(data, dict) else {}
+            values = data.get("advice", data.get("Advice", [])) or []
+            if isinstance(values, list):
+                advice.extend(value for value in values if isinstance(value, dict))
         categories = sorted({str(item.get("hitLabel", item.get("label", ""))) for item in advice if item.get("hitLabel", item.get("label"))})
         categories = sorted(set(categories).union(self.labels))
-        safe_answers = [str(item.get("answer", "")) for item in advice if item.get("answer")]
+        safe_answers = [str(item.get("answer", item.get("Answer", ""))) for item in advice if item.get("answer", item.get("Answer"))]
         return {
             "matched": self.matched,
             "risk_level": self.risk_level,

@@ -37,7 +37,7 @@ from hailiang_skills.core.telemetry import SSE_ACTIVE, SSE_TTFT, bind_telemetry,
 from hailiang_skills.runtime_bridge.facts import RUNTIME_STATE_KEY
 from hailiang_skills.storage.repositories.session_repo import InMemorySessionRepository
 from hailiang_skills.storage.repositories.postgres_repo import SessionVersionConflict
-from hailiang_skills.security.models import ModerationBlockedError
+from hailiang_skills.security.models import MODERATION_SAFE_REPLY, ModerationBlockedError, moderation_safe_reply
 
 
 def format_sse_event(event: str, data: dict[str, Any]) -> str:
@@ -1436,12 +1436,28 @@ class StreamingRunner:
                         context.session_meta["moderation_mode"] = exc.result.mode
                         context.session_meta["semantic_moderation_unavailable"] = exc.result.mode == "local_fallback"
                         record_security_result(context, stage="output", result=exc.result, case_id=exc.case_id)
+                        # Output review is a terminal presentation boundary:
+                        # retain the completed task state, replace only the
+                        # user-visible final answer, and never ask a model or
+                        # tool to rewrite blocked content.
+                        result.assistant_message = moderation_safe_reply(exc.result)
+                        for message in reversed(context.messages):
+                            if message.get("role") == "assistant":
+                                message["content"] = result.assistant_message
+                                break
                         if hasattr(self.orchestrator, "_record_events"):
                             self.orchestrator._record_events(
                                 context,
-                                [make_event("moderation_blocked", {"stage": "output", "case_id": exc.case_id, **exc.result.to_public_dict()})],
+                                [
+                                    make_event("moderation_blocked", {"stage": "output", "case_id": exc.case_id, **exc.result.to_public_dict()}),
+                                    make_event("final_reply_moderation_replaced", {
+                                        "stage": "output", "case_id": exc.case_id,
+                                        "risk_level": exc.result.risk_level, "labels": exc.result.labels,
+                                        "provider": exc.result.provider, "request_id": exc.result.request_id,
+                                        "replacement": "provider_advice" if result.assistant_message != MODERATION_SAFE_REPLY else "platform_safe_reply",
+                                    }),
+                                ],
                             )
-                        raise
                 if context.session_meta.get("skill_intro") and not context.session_meta.get("skill_intro_emitted"):
                     push_skill_intro(dict(context.session_meta["skill_intro"]))
                 if protocol == UNIFIED_PROTOCOL:
