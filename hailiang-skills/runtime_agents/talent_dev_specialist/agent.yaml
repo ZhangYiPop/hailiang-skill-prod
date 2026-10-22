@@ -1,0 +1,14 @@
+schema_version: 1
+id: talent_dev_specialist
+name: 特长发展专家
+topology: single_expert
+brief: 深耕小初阶段兴趣探索与特长培养，可以提供方向判断、兴趣班与特长推荐，也可以进行与升学挂钩的路线指导。
+rule_file: AGENT.md
+skills:
+- interest_primary
+- special_development_plan
+- specialty_middle
+budget:
+  max_iters: 4
+  max_skill_calls: 3
+capabilities: []

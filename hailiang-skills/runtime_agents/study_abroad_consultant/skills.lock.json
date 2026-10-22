@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "skills": [
+    {
+      "skill_id": "Study_abroad_cost_calculator",
+      "release_id": "rel_357e0ab4ac45478ea5a12c925cbfc041",
+      "version": "v12",
+      "content_hash": "d5e8d84953e7c2b59fc889f41f844d20be58031c847ab8aecc31962593d833c3"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "多元路径推荐",
+  "installedAt": 1788934306902,
+  "source": "userImport",
+  "versionNote": "v2 修复版 + 问卷结构按平台约定调整为 assets/questionnaire.json（config_path 声明）"
+}

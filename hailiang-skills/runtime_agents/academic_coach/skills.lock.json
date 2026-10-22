@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "skills": [
+    {
+      "skill_id": "study_question",
+      "release_id": "rel_080152cc72a54247befe5e38712ca5fc",
+      "version": "v6",
+      "content_hash": "74aabeb564ba42e691173609317035c825f24a39980188181135a2cf4f0b7d5b"
+    }
+  ]
+}

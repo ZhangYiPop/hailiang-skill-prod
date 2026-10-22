@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "skills": [
+    {
+      "skill_id": "user_profiling",
+      "release_id": "rel_fb2d50fadea34d08a7393c91c7278556",
+      "version": "v3",
+      "content_hash": "2bf8c4bb70f4b7ae73f41bc3f0298673c866ded44ed192017a76031ab767b107"
+    }
+  ]
+}

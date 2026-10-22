@@ -9,13 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-_ASSET_ROOT = Path(__file__).resolve().parents[1] / "assets"
-# Prefer nested path; fall back to flat import layouts used by some workbench snapshots.
-_ASSET_CANDIDATES = (
-    _ASSET_ROOT / "subject_selection" / "subject_requirements.json",
-    _ASSET_ROOT / "subject_requirements.json",
-)
-ASSET_PATH = next((path for path in _ASSET_CANDIDATES if path.is_file()), _ASSET_CANDIDATES[0])
+ASSET_PATH = Path(__file__).resolve().parents[1] / "assets" / "subject_selection" / "subject_requirements.json"
 SUBJECTS = ("物理", "历史", "化学", "生物", "政治", "地理", "技术")
 SUBJECT_ABBREVIATIONS = {
     "物": "物理",
@@ -34,13 +28,7 @@ def main() -> None:
     parser.add_argument("--query", default="", help="Natural language query.")
     parser.add_argument("--major", default="", help="Major name or major category.")
     parser.add_argument("--career", default="", help="Career target, for example 医生/程序员/律师/警察.")
-    parser.add_argument(
-        "--subjects",
-        "--selected-subjects",
-        dest="subjects",
-        default="",
-        help="Selected subjects, separated by comma or Chinese punctuation.",
-    )
+    parser.add_argument("--subjects", default="", help="Selected subjects, separated by comma or Chinese punctuation.")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     args = parser.parse_args()
 
@@ -115,13 +103,9 @@ def _read_stdin_payload() -> dict[str, Any]:
 
 
 def _load_asset() -> dict[str, Any]:
-    path = next((candidate for candidate in _ASSET_CANDIDATES if candidate.is_file()), None)
-    if path is None:
-        raise FileNotFoundError(
-            "缺少结构化选科资产，请先运行 build_subject_requirement_asset.py: "
-            + " 或 ".join(str(item) for item in _ASSET_CANDIDATES)
-        )
-    return json.loads(path.read_text(encoding="utf-8"))
+    if not ASSET_PATH.is_file():
+        raise FileNotFoundError(f"缺少结构化选科资产，请先运行 build_subject_requirement_asset.py: {ASSET_PATH}")
+    return json.loads(ASSET_PATH.read_text(encoding="utf-8"))
 
 
 def _infer_target(asset: dict[str, Any], *, query: str, major: str, career: str) -> dict[str, Any]:

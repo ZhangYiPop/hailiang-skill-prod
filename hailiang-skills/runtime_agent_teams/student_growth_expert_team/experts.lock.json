@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "experts": [
+    {
+      "expert_id": "e_career_planner",
+      "release_id": "rel_45a9a77c5936439f84839ec911a8776f",
+      "version": "v22",
+      "content_hash": "3ed698226adf65b4e34c5db52ab5315d723942263640c3f9e25553db11be5e1d"
+    },
+    {
+      "expert_id": "talent_dev_specialist",
+      "release_id": "rel_3badc180137e49f1bba686f8cce2145d",
+      "version": "v12",
+      "content_hash": "798f5dbb0f1d8b78561e9a73cf7ac0743164fd49f09620761c1580e5c416a38a"
+    },
+    {
+      "expert_id": "career_explore_mentor",
+      "release_id": "rel_7e465e2afd3b44fd8aeed170325078c0",
+      "version": "v5",
+      "content_hash": "6881ef6170ad443cc5aae2b788a64f1a82c53907d554626b0752d8d826e5d248"
+    },
+    {
+      "expert_id": "study_abroad_consultant",
+      "release_id": "rel_cbfe31bea10c49398108525a40e5f98f",
+      "version": "v10",
+      "content_hash": "da4ca030fb5f1e9ac7ae4987cb6b0f20eeb5bab3ad487a533f9147b9d0990836"
+    },
+    {
+      "expert_id": "academic_coach",
+      "release_id": "rel_36a226f424cc461a87e5ca4c9869b7d4",
+      "version": "v6",
+      "content_hash": "ead0870d8f7e9bb2fc59c4b60e40db45f460e486cebbef87b9f4e648fb2f54e4"
+    },
+    {
+      "expert_id": "admission_specialist",
+      "release_id": "rel_2b4c7ffe41c74eeba8572f522e95637a",
+      "version": "v10",
+      "content_hash": "bfef45e3159125b7f1997146eb0601dd8ccfa5288955e0ea13b1433d702bfed9"
+    }
+  ]
+}

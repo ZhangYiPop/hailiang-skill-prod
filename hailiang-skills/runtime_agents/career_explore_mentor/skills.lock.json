@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "skills": [
+    {
+      "skill_id": "guess-profession",
+      "release_id": "rel_5b26b03578484f07a84bc7e99cc97aec",
+      "version": "v3",
+      "content_hash": "ea2e1176876efeaa81d5c3abf3848c70e4f42d612eabaa1ad7df3790af29de8e"
+    }
+  ]
+}

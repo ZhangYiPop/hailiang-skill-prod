@@ -1,0 +1,1496 @@
+[
+ {
+  "school_id": 1001,
+  "name_zh": "阿德莱德大学",
+  "accommodation_fee_min": 15000.0,
+  "accommodation_fee_max": 15000.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1002,
+  "name_zh": "澳大利亚国立大学",
+  "accommodation_fee_min": 16000.0,
+  "accommodation_fee_max": 16000.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1003,
+  "name_zh": "昆士兰大学",
+  "accommodation_fee_min": 14000.0,
+  "accommodation_fee_max": 14000.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1004,
+  "name_zh": "麦考瑞大学",
+  "accommodation_fee_min": 19000.0,
+  "accommodation_fee_max": 19000.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1005,
+  "name_zh": "莫纳什大学",
+  "accommodation_fee_min": 16000.0,
+  "accommodation_fee_max": 16000.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1006,
+  "name_zh": "墨尔本大学",
+  "accommodation_fee_min": 18500.0,
+  "accommodation_fee_max": 18500.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1007,
+  "name_zh": "西澳大学",
+  "accommodation_fee_min": 15000.0,
+  "accommodation_fee_max": 15000.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1008,
+  "name_zh": "悉尼大学",
+  "accommodation_fee_min": 18500.0,
+  "accommodation_fee_max": 18500.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1009,
+  "name_zh": "悉尼科技大学",
+  "accommodation_fee_min": 21000.0,
+  "accommodation_fee_max": 21000.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1010,
+  "name_zh": "新南威尔士大学",
+  "accommodation_fee_min": 20000.0,
+  "accommodation_fee_max": 20000.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1011,
+  "name_zh": "海德堡大学",
+  "accommodation_fee_min": 6500.0,
+  "accommodation_fee_max": 6500.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1012,
+  "name_zh": "慕尼黑大学",
+  "accommodation_fee_min": 7200.0,
+  "accommodation_fee_max": 7200.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1013,
+  "name_zh": "慕尼黑工业大学",
+  "accommodation_fee_min": 8400.0,
+  "accommodation_fee_max": 8400.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1014,
+  "name_zh": "莫斯科国立大学",
+  "accommodation_fee_min": 140000.0,
+  "accommodation_fee_max": 140000.0,
+  "currency": "RUB",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1015,
+  "name_zh": "圣彼得堡国立大学",
+  "accommodation_fee_min": 120000.0,
+  "accommodation_fee_max": 120000.0,
+  "currency": "RUB",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1016,
+  "name_zh": "巴黎理工学院",
+  "accommodation_fee_min": 8400.0,
+  "accommodation_fee_max": 8400.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1017,
+  "name_zh": "索邦大学",
+  "accommodation_fee_min": 6000.0,
+  "accommodation_fee_max": 6000.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1018,
+  "name_zh": "成均馆大学",
+  "accommodation_fee_min": 7200000.0,
+  "accommodation_fee_max": 7200000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1019,
+  "name_zh": "高丽大学",
+  "accommodation_fee_min": 7200000.0,
+  "accommodation_fee_max": 7200000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1020,
+  "name_zh": "韩国科学技术院",
+  "accommodation_fee_min": 6000000.0,
+  "accommodation_fee_max": 6000000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1021,
+  "name_zh": "汉阳大学",
+  "accommodation_fee_min": 7000000.0,
+  "accommodation_fee_max": 7000000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1022,
+  "name_zh": "浦项科技大学",
+  "accommodation_fee_min": 6000000.0,
+  "accommodation_fee_max": 6000000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1023,
+  "name_zh": "庆熙大学",
+  "accommodation_fee_min": 7000000.0,
+  "accommodation_fee_max": 7000000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1024,
+  "name_zh": "首尔大学",
+  "accommodation_fee_min": 7000000.0,
+  "accommodation_fee_max": 7000000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1025,
+  "name_zh": "延世大学",
+  "accommodation_fee_min": 7800000.0,
+  "accommodation_fee_max": 7800000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1026,
+  "name_zh": "阿尔伯塔大学",
+  "accommodation_fee_min": 10500.0,
+  "accommodation_fee_max": 10500.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1027,
+  "name_zh": "不列颠哥伦比亚大学",
+  "accommodation_fee_min": 14000.0,
+  "accommodation_fee_max": 14000.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1028,
+  "name_zh": "多伦多大学",
+  "accommodation_fee_min": 16500.0,
+  "accommodation_fee_max": 16500.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1029,
+  "name_zh": "滑铁卢大学",
+  "accommodation_fee_min": 18000.0,
+  "accommodation_fee_max": 18000.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1030,
+  "name_zh": "麦吉尔大学",
+  "accommodation_fee_min": 12000.0,
+  "accommodation_fee_max": 12000.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1031,
+  "name_zh": "麦克马斯特大学",
+  "accommodation_fee_min": 14500.0,
+  "accommodation_fee_max": 14500.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1032,
+  "name_zh": "西安大略大学",
+  "accommodation_fee_min": 17500.0,
+  "accommodation_fee_max": 17500.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1033,
+  "name_zh": "西蒙菲莎大学 SFU",
+  "accommodation_fee_min": 15014.0,
+  "accommodation_fee_max": 15014.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1034,
+  "name_zh": "马来西亚博特拉大学",
+  "accommodation_fee_min": 6000.0,
+  "accommodation_fee_max": 12000.0,
+  "currency": "MYR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1035,
+  "name_zh": "马来西亚国立大学",
+  "accommodation_fee_min": 6000.0,
+  "accommodation_fee_max": 12000.0,
+  "currency": "MYR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1036,
+  "name_zh": "马来西亚理工大学",
+  "accommodation_fee_min": 6000.0,
+  "accommodation_fee_max": 12000.0,
+  "currency": "MYR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1037,
+  "name_zh": "马来西亚理科大学",
+  "accommodation_fee_min": 6000.0,
+  "accommodation_fee_max": 12000.0,
+  "currency": "MYR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1038,
+  "name_zh": "马来亚大学",
+  "accommodation_fee_min": 7200.0,
+  "accommodation_fee_max": 14400.0,
+  "currency": "MYR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1039,
+  "name_zh": "宾夕法尼亚大学",
+  "accommodation_fee_min": 13644.0,
+  "accommodation_fee_max": 13644.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1040,
+  "name_zh": "德州大学奥斯汀分校",
+  "accommodation_fee_min": 10200.0,
+  "accommodation_fee_max": 10200.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1041,
+  "name_zh": "俄亥俄州立大学",
+  "accommodation_fee_min": 10300.0,
+  "accommodation_fee_max": 10300.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1042,
+  "name_zh": "哈佛大学",
+  "accommodation_fee_min": 14250.0,
+  "accommodation_fee_max": 14250.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1043,
+  "name_zh": "华盛顿大学西雅图",
+  "accommodation_fee_min": 11200.0,
+  "accommodation_fee_max": 11200.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1044,
+  "name_zh": "加州大学伯克利分校",
+  "accommodation_fee_min": 16640.0,
+  "accommodation_fee_max": 16640.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1045,
+  "name_zh": "加州大学洛杉矶分校",
+  "accommodation_fee_min": 12299.0,
+  "accommodation_fee_max": 12299.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1046,
+  "name_zh": "麻省理工学院",
+  "accommodation_fee_min": 14090.0,
+  "accommodation_fee_max": 14090.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1047,
+  "name_zh": "南加州大学",
+  "accommodation_fee_min": 13510.0,
+  "accommodation_fee_max": 13510.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1048,
+  "name_zh": "纽约大学",
+  "accommodation_fee_min": 16500.0,
+  "accommodation_fee_max": 16500.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1049,
+  "name_zh": "斯坦福大学",
+  "accommodation_fee_min": 14800.0,
+  "accommodation_fee_max": 14800.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1050,
+  "name_zh": "伊利诺伊大学厄巴纳-香槟",
+  "accommodation_fee_min": 10600.0,
+  "accommodation_fee_max": 10600.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1051,
+  "name_zh": "东北大学",
+  "accommodation_fee_min": 480000.0,
+  "accommodation_fee_max": 720000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1052,
+  "name_zh": "东京大学",
+  "accommodation_fee_min": 720000.0,
+  "accommodation_fee_max": 1080000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1053,
+  "name_zh": "东京科学大学",
+  "accommodation_fee_min": 720000.0,
+  "accommodation_fee_max": 1080000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1054,
+  "name_zh": "京都大学",
+  "accommodation_fee_min": 600000.0,
+  "accommodation_fee_max": 900000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1055,
+  "name_zh": "九州大学",
+  "accommodation_fee_min": 480000.0,
+  "accommodation_fee_max": 720000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1056,
+  "name_zh": "名古屋大学",
+  "accommodation_fee_min": 600000.0,
+  "accommodation_fee_max": 900000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1057,
+  "name_zh": "早稻田大学",
+  "accommodation_fee_min": 720000.0,
+  "accommodation_fee_max": 1080000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1058,
+  "name_zh": "苏黎世大学",
+  "accommodation_fee_min": 7200.0,
+  "accommodation_fee_max": 10800.0,
+  "currency": "CHF",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1059,
+  "name_zh": "苏黎世联邦理工学院",
+  "accommodation_fee_min": 7200.0,
+  "accommodation_fee_max": 10800.0,
+  "currency": "CHF",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1060,
+  "name_zh": "巴塞罗那自治大学",
+  "accommodation_fee_min": 5400.0,
+  "accommodation_fee_max": 5400.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1061,
+  "name_zh": "南洋理工大学",
+  "accommodation_fee_min": 10800.0,
+  "accommodation_fee_max": 18000.0,
+  "currency": "SGD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1062,
+  "name_zh": "新加坡国立大学",
+  "accommodation_fee_min": 10800.0,
+  "accommodation_fee_max": 18000.0,
+  "currency": "SGD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1063,
+  "name_zh": "奥克兰大学",
+  "accommodation_fee_min": 15000.0,
+  "accommodation_fee_max": 23000.0,
+  "currency": "NZD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1064,
+  "name_zh": "奥塔哥大学",
+  "accommodation_fee_min": 10000.0,
+  "accommodation_fee_max": 18000.0,
+  "currency": "NZD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1065,
+  "name_zh": "惠灵顿维多利亚大学",
+  "accommodation_fee_min": 13000.0,
+  "accommodation_fee_max": 18000.0,
+  "currency": "NZD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1066,
+  "name_zh": "梅西大学",
+  "accommodation_fee_min": 10000.0,
+  "accommodation_fee_max": 15000.0,
+  "currency": "NZD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1067,
+  "name_zh": "博洛尼亚大学",
+  "accommodation_fee_min": 6500.0,
+  "accommodation_fee_max": 6500.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1068,
+  "name_zh": "米兰理工大学",
+  "accommodation_fee_min": 8000.0,
+  "accommodation_fee_max": 8000.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1069,
+  "name_zh": "埃克塞特大学",
+  "accommodation_fee_min": 6800.0,
+  "accommodation_fee_max": 6800.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1070,
+  "name_zh": "爱丁堡大学",
+  "accommodation_fee_min": 8000.0,
+  "accommodation_fee_max": 8000.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1071,
+  "name_zh": "巴斯大学",
+  "accommodation_fee_min": 7500.0,
+  "accommodation_fee_max": 7500.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1072,
+  "name_zh": "伯明翰大学",
+  "accommodation_fee_min": 6900.0,
+  "accommodation_fee_max": 6900.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1073,
+  "name_zh": "布里斯托大学",
+  "accommodation_fee_min": 6200.0,
+  "accommodation_fee_max": 6200.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1074,
+  "name_zh": "帝国理工学院",
+  "accommodation_fee_min": 10000.0,
+  "accommodation_fee_max": 10000.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1075,
+  "name_zh": "杜伦大学",
+  "accommodation_fee_min": 7500.0,
+  "accommodation_fee_max": 7500.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1076,
+  "name_zh": "格拉斯哥大学",
+  "accommodation_fee_min": 6800.0,
+  "accommodation_fee_max": 6800.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1077,
+  "name_zh": "华威大学",
+  "accommodation_fee_min": 8000.0,
+  "accommodation_fee_max": 8000.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1078,
+  "name_zh": "剑桥大学",
+  "accommodation_fee_min": 9000.0,
+  "accommodation_fee_max": 9000.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1079,
+  "name_zh": "卡迪夫大学",
+  "accommodation_fee_min": 6200.0,
+  "accommodation_fee_max": 6200.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1080,
+  "name_zh": "拉夫堡大学",
+  "accommodation_fee_min": 6400.0,
+  "accommodation_fee_max": 6400.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1081,
+  "name_zh": "兰卡斯特大学",
+  "accommodation_fee_min": 6400.0,
+  "accommodation_fee_max": 6400.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1082,
+  "name_zh": "利物浦大学",
+  "accommodation_fee_min": 6200.0,
+  "accommodation_fee_max": 6200.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1083,
+  "name_zh": "利兹大学",
+  "accommodation_fee_min": 6800.0,
+  "accommodation_fee_max": 6800.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1084,
+  "name_zh": "伦敦大学学院",
+  "accommodation_fee_min": 10140.0,
+  "accommodation_fee_max": 10140.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1085,
+  "name_zh": "伦敦国王学院",
+  "accommodation_fee_min": 10000.0,
+  "accommodation_fee_max": 10000.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1086,
+  "name_zh": "伦敦玛丽女王大学",
+  "accommodation_fee_min": 9000.0,
+  "accommodation_fee_max": 9000.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1087,
+  "name_zh": "伦敦政治经济学院",
+  "accommodation_fee_min": 11450.0,
+  "accommodation_fee_max": 11450.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1088,
+  "name_zh": "曼彻斯特大学",
+  "accommodation_fee_min": 7500.0,
+  "accommodation_fee_max": 7500.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1089,
+  "name_zh": "南安普顿大学",
+  "accommodation_fee_min": 6800.0,
+  "accommodation_fee_max": 6800.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1090,
+  "name_zh": "牛津大学",
+  "accommodation_fee_min": 7750.0,
+  "accommodation_fee_max": 7750.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1091,
+  "name_zh": "纽卡斯尔大学",
+  "accommodation_fee_min": 7000.0,
+  "accommodation_fee_max": 7000.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1092,
+  "name_zh": "诺丁汉大学",
+  "accommodation_fee_min": 6500.0,
+  "accommodation_fee_max": 6500.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1093,
+  "name_zh": "圣安德鲁斯大学",
+  "accommodation_fee_min": 7800.0,
+  "accommodation_fee_max": 7800.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1094,
+  "name_zh": "谢菲尔德大学",
+  "accommodation_fee_min": 5800.0,
+  "accommodation_fee_max": 5800.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1095,
+  "name_zh": "约克大学",
+  "accommodation_fee_min": 6500.0,
+  "accommodation_fee_max": 6500.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1097,
+  "name_zh": "香港城市大学",
+  "accommodation_fee_min": 38000.0,
+  "accommodation_fee_max": 66000.0,
+  "currency": "HKD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1098,
+  "name_zh": "香港大学",
+  "accommodation_fee_min": 48000.0,
+  "accommodation_fee_max": 84000.0,
+  "currency": "HKD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1099,
+  "name_zh": "香港教育大学",
+  "accommodation_fee_min": 36000.0,
+  "accommodation_fee_max": 60000.0,
+  "currency": "HKD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1100,
+  "name_zh": "香港浸会大学",
+  "accommodation_fee_min": 38000.0,
+  "accommodation_fee_max": 66000.0,
+  "currency": "HKD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1101,
+  "name_zh": "香港科技大学",
+  "accommodation_fee_min": 42000.0,
+  "accommodation_fee_max": 78000.0,
+  "currency": "HKD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1102,
+  "name_zh": "香港理工大学",
+  "accommodation_fee_min": 38000.0,
+  "accommodation_fee_max": 66000.0,
+  "currency": "HKD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1103,
+  "name_zh": "香港岭南大学",
+  "accommodation_fee_min": 36000.0,
+  "accommodation_fee_max": 60000.0,
+  "currency": "HKD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1104,
+  "name_zh": "香港中文大学",
+  "accommodation_fee_min": 40000.0,
+  "accommodation_fee_max": 72000.0,
+  "currency": "HKD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1105,
+  "name_zh": "皇家兽医学院",
+  "accommodation_fee_min": 12062.4,
+  "accommodation_fee_max": 14823.5,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1106,
+  "name_zh": "圣乔治医学院",
+  "accommodation_fee_min": 8652.0,
+  "accommodation_fee_max": 9576.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1107,
+  "name_zh": "白金汉大学",
+  "accommodation_fee_min": 6240.0,
+  "accommodation_fee_max": 11750.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1108,
+  "name_zh": "布朗大学",
+  "accommodation_fee_min": 10710.0,
+  "accommodation_fee_max": 10710.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1109,
+  "name_zh": "凯斯西储大学",
+  "accommodation_fee_min": 11540.0,
+  "accommodation_fee_max": 16550.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1110,
+  "name_zh": "詹姆斯库克大学",
+  "accommodation_fee_min": 9360.0,
+  "accommodation_fee_max": 15600.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1111,
+  "name_zh": "莫道克大学",
+  "accommodation_fee_min": 15288.0,
+  "accommodation_fee_max": 34268.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1112,
+  "name_zh": "查尔斯特大学",
+  "accommodation_fee_min": 9724.0,
+  "accommodation_fee_max": 15860.0,
+  "currency": "AUD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1114,
+  "name_zh": "国际医科大学",
+  "accommodation_fee_min": 9600.0,
+  "accommodation_fee_max": 24000.0,
+  "currency": "MYR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1115,
+  "name_zh": "庆应义塾大学",
+  "accommodation_fee_min": 774000.0,
+  "accommodation_fee_max": 936000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1116,
+  "name_zh": "东京医科大学",
+  "accommodation_fee_min": 684000.0,
+  "accommodation_fee_max": 684000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1117,
+  "name_zh": "日本医科大学",
+  "accommodation_fee_min": 684000.0,
+  "accommodation_fee_max": 684000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1118,
+  "name_zh": "顺天堂大学",
+  "accommodation_fee_min": 360000.0,
+  "accommodation_fee_max": 900000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1119,
+  "name_zh": "东京女子医科大学",
+  "accommodation_fee_min": 684000.0,
+  "accommodation_fee_max": 684000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1120,
+  "name_zh": "汉诺威医学院",
+  "accommodation_fee_min": 3600.0,
+  "accommodation_fee_max": 6000.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1121,
+  "name_zh": "吕贝克大学",
+  "accommodation_fee_min": 4200.0,
+  "accommodation_fee_max": 6000.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1122,
+  "name_zh": "柏林夏里特医学院",
+  "accommodation_fee_min": 4200.0,
+  "accommodation_fee_max": 9000.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1123,
+  "name_zh": "CEU西班牙圣保罗大学",
+  "accommodation_fee_min": 4800.0,
+  "accommodation_fee_max": 9600.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1124,
+  "name_zh": "日内瓦大学",
+  "accommodation_fee_min": 9000.0,
+  "accommodation_fee_max": 15840.0,
+  "currency": "CHF",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1125,
+  "name_zh": "伯尔尼大学",
+  "accommodation_fee_min": 6000.0,
+  "accommodation_fee_max": 12000.0,
+  "currency": "CHF",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1126,
+  "name_zh": "圣拉斐尔大学",
+  "accommodation_fee_min": 7000.0,
+  "accommodation_fee_max": 7000.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1127,
+  "name_zh": "胡曼尼塔斯大学",
+  "accommodation_fee_min": 6765.0,
+  "accommodation_fee_max": 10846.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1128,
+  "name_zh": "谢东诺夫第一医科大学",
+  "accommodation_fee_min": 118800.0,
+  "accommodation_fee_max": 244900.0,
+  "currency": "RUB",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1129,
+  "name_zh": "蒙特利尔大学",
+  "accommodation_fee_min": 3216.0,
+  "accommodation_fee_max": 6056.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1130,
+  "name_zh": "圭尔夫大学",
+  "accommodation_fee_min": 8387.0,
+  "accommodation_fee_max": 11742.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1131,
+  "name_zh": "帕森斯设计学院",
+  "accommodation_fee_min": 16500.0,
+  "accommodation_fee_max": 16500.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1132,
+  "name_zh": "罗德岛设计学院",
+  "accommodation_fee_min": 17590.0,
+  "accommodation_fee_max": 22190.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1133,
+  "name_zh": "普瑞特艺术学院",
+  "accommodation_fee_min": 16500.0,
+  "accommodation_fee_max": 16500.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1134,
+  "name_zh": "芝加哥艺术学院",
+  "accommodation_fee_min": 7000.0,
+  "accommodation_fee_max": 7000.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1135,
+  "name_zh": "加州艺术学院",
+  "accommodation_fee_min": 6254.0,
+  "accommodation_fee_max": 12108.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1136,
+  "name_zh": "纽约视觉艺术学院",
+  "accommodation_fee_min": 18700.0,
+  "accommodation_fee_max": 23300.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1137,
+  "name_zh": "艺术中心设计学院",
+  "accommodation_fee_min": 13200.0,
+  "accommodation_fee_max": 13200.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1138,
+  "name_zh": "马里兰艺术学院",
+  "accommodation_fee_min": 12600.0,
+  "accommodation_fee_max": 14000.0,
+  "currency": "USD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1139,
+  "name_zh": "伦敦艺术大学",
+  "accommodation_fee_min": 7800.0,
+  "accommodation_fee_max": 15600.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1140,
+  "name_zh": "格拉斯哥艺术学院",
+  "accommodation_fee_min": 6552.0,
+  "accommodation_fee_max": 8768.76,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1141,
+  "name_zh": "伦敦大学金史密斯学院",
+  "accommodation_fee_min": 8043.0,
+  "accommodation_fee_max": 16989.0,
+  "currency": "GBP",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1142,
+  "name_zh": "安大略艺术设计大学",
+  "accommodation_fee_min": 17169.0,
+  "accommodation_fee_max": 21192.36,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1143,
+  "name_zh": "艾米丽卡尔艺术大学",
+  "accommodation_fee_min": 11700.0,
+  "accommodation_fee_max": 22800.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1144,
+  "name_zh": "新斯科舍艺术大学",
+  "accommodation_fee_min": 7500.0,
+  "accommodation_fee_max": 24000.0,
+  "currency": "CAD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1145,
+  "name_zh": "香港演艺学院",
+  "accommodation_fee_min": 25000.0,
+  "accommodation_fee_max": 108000.0,
+  "currency": "HKD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1146,
+  "name_zh": "拉萨尔艺术学院",
+  "accommodation_fee_min": 7800.0,
+  "accommodation_fee_max": 21600.0,
+  "currency": "SGD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1147,
+  "name_zh": "南洋艺术学院",
+  "accommodation_fee_min": 7800.0,
+  "accommodation_fee_max": 21600.0,
+  "currency": "SGD",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1148,
+  "name_zh": "东京艺术大学",
+  "accommodation_fee_min": 550800.0,
+  "accommodation_fee_max": 550800.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1149,
+  "name_zh": "多摩美术大学",
+  "accommodation_fee_min": 684000.0,
+  "accommodation_fee_max": 684000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1150,
+  "name_zh": "武藏野美术大学",
+  "accommodation_fee_min": 684000.0,
+  "accommodation_fee_max": 684000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1151,
+  "name_zh": "京都市立艺术大学",
+  "accommodation_fee_min": 300000.0,
+  "accommodation_fee_max": 540000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1152,
+  "name_zh": "女子美术大学",
+  "accommodation_fee_min": 540000.0,
+  "accommodation_fee_max": 552000.0,
+  "currency": "JPY",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1153,
+  "name_zh": "弘益大学",
+  "accommodation_fee_min": 4200000.0,
+  "accommodation_fee_max": 6600000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1154,
+  "name_zh": "梨花女子大学",
+  "accommodation_fee_min": 4200000.0,
+  "accommodation_fee_max": 6600000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1155,
+  "name_zh": "中央大学",
+  "accommodation_fee_min": 4200000.0,
+  "accommodation_fee_max": 4200000.0,
+  "currency": "KRW",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1156,
+  "name_zh": "柏林艺术大学",
+  "accommodation_fee_min": 4200.0,
+  "accommodation_fee_max": 9000.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1157,
+  "name_zh": "魏玛包豪斯大学",
+  "accommodation_fee_min": 4200.0,
+  "accommodation_fee_max": 4200.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1158,
+  "name_zh": "汉堡造型艺术学院",
+  "accommodation_fee_min": 4800.0,
+  "accommodation_fee_max": 4800.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1159,
+  "name_zh": "巴黎国立高等装饰艺术学院",
+  "accommodation_fee_min": 7800.0,
+  "accommodation_fee_max": 16000.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1160,
+  "name_zh": "巴黎国立高等美术学院",
+  "accommodation_fee_min": 7800.0,
+  "accommodation_fee_max": 16000.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1161,
+  "name_zh": "巴黎ESMOD高等时装设计学院",
+  "accommodation_fee_min": 7800.0,
+  "accommodation_fee_max": 16000.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1162,
+  "name_zh": "米兰新美术学院",
+  "accommodation_fee_min": 8388.0,
+  "accommodation_fee_max": 11988.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1163,
+  "name_zh": "马兰欧尼学院",
+  "accommodation_fee_min": 6765.0,
+  "accommodation_fee_max": 10846.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1164,
+  "name_zh": "米兰布雷拉美术学院",
+  "accommodation_fee_min": 6765.0,
+  "accommodation_fee_max": 10846.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1165,
+  "name_zh": "洛桑艺术设计大学",
+  "accommodation_fee_min": 7200.0,
+  "accommodation_fee_max": 10800.0,
+  "currency": "CHF",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1166,
+  "name_zh": "苏黎世艺术学院",
+  "accommodation_fee_min": 6000.0,
+  "accommodation_fee_max": 12000.0,
+  "currency": "CHF",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1167,
+  "name_zh": "巴塞罗那大学",
+  "accommodation_fee_min": 4200.0,
+  "accommodation_fee_max": 9600.0,
+  "currency": "EUR",
+  "period": "year",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1168,
+  "name_zh": "列宾美术学院",
+  "accommodation_fee_min": 37200.0,
+  "accommodation_fee_max": 63600.0,
+  "currency": "RUB",
+  "period": "year",
+  "data_year": 2026
+ }
+]

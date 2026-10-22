@@ -1,0 +1,12 @@
+schema_version: 1
+id: e_career_planner
+name: e生涯规划助手
+topology: single_expert
+brief: 面向中小学家庭的通用规划助手。孩子学习、升学、特长、在家怎么相处，都可以先聊，帮你理清眼下最该关注什么；需要更专业的判断时，把你交给对应的专家。
+rule_file: AGENT.md
+skills:
+- user_profiling
+budget:
+  max_iters: 4
+  max_skill_calls: 3
+capabilities: []

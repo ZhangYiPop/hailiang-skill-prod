@@ -1,13 +1,56 @@
 ---
 name: 猜职业
-skill_id: guess-profession
-version: 1.0.0
-description: >-
-  面向青少年的猜职业互动游戏主持人。【做什么】在用户明确开局后，于十轮内通过 NPC 对话引导猜测当日职业，并严格按脚本状态生成回复。【何时启用】用户说开始猜职业、再来一轮、玩猜职业
-  游戏。【不做什么】不做升学规划或职业测评结论；不在未开局时强行进入游戏。
-tool_dependency: []
+skill_id: "guess-profession"
+description: 主持适合青少年的“猜职业”聊天游戏。用户说“开始”“再来一轮”等明确指令后，在十轮内根据 NPC 对话猜职业；每个用户回合必须执行 scripts/pick_profession.py，并严格按其当日职业、round
+  与 phase 生成回复。
+brief: 通过 NPC 对话进行轻松、安全的猜职业小游戏。
+info: 你将扮演职业侦探，每日偶遇一位神秘NPC，请在10轮内猜出TA的职业。
+version: "v3"
+author: Hailiang Platform
+tags:
+- 游戏
+- 猜职业
+- 职业探索
+skill_type: native
+entrypoint_role: child
+accepts_scenes:
+- 猜职业游戏
+- 职业猜谜
+triggers:
+- 猜职业
+- 玩猜职业
+- 开始猜职业
+- 猜猜我的职业
+routing:
+  scene_name: 猜职业游戏
+  intent_clarity: explicit
+  routing_examples:
+  - 我们玩猜职业
+  - 想玩一个猜职业游戏
+  - 开始猜职业
+prompt_loading:
+  strategy: progressive
+  include_references: on_demand
+  include_local_assets: none
+  include_route_targets: false
+  include_session_state: true
+  include_skill_markdown: full
+  include_generated_assets: none
+  include_tool_capabilities: true
+retrieval:
+  top_k: 2
+  enabled: true
+  sources:
+  - references
+  snippet_chars: 700
+  include_catalog: true
+debug:
+  record_prompt_assembly: true
+  record_retrieval_details: true
+requires:
+  env: []
+  tools: []
 ---
-
 # 猜职业
 
 ## 每个用户回合的固定流程

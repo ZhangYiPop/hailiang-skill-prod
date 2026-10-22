@@ -3,28 +3,24 @@ id: student_growth_expert_team
 name: 学生成长专家团
 topology: team
 rule_file: TEAM.md
+brief: 学生成长专家团，多领域专家，由 e 生涯助手对接，解答成长升学职业各类问题
 coordinator_expert_id: e_career_planner
-consultation_policy:
-  max_subtasks: 3
-  max_parallel: 3
-  max_depth: 1
-fallback_expert_id: e_career_planner
-collaboration_rules: |
-  无信息依赖的子任务可并行；若某一子任务需要另一位专家的结论作为输入，编排首应为其填写 depends_on。
-  例如测评类结论需先产出再做规划时，规划子任务依赖测评子任务；升学规划与家庭教育各自给建议时可并行。
-  不得引用本团以外的专家。
 members:
-  - expert_id: e_career_planner
-    mention_name: e生涯规划助手
-    routing_brief: 负责升学路径、选科、院校专业与学业规划。
-    applicable_stages:
-      - 小学
-      - 初中
-      - 高中
-  - expert_id: family_edu_specialist
-    mention_name: 家庭教育专家
-    routing_brief: 负责亲子沟通、家庭规则、学习习惯与明确请求的 MBTI 自我探索。
-    applicable_stages:
-      - 小学
-      - 初中
-      - 高中
+- expert_id: e_career_planner
+  mention_name: e生涯规划助手
+  routing_brief: 家庭教育与亲子沟通、学校与老师沟通
+- expert_id: talent_dev_specialist
+  mention_name: 特长发展专家
+  routing_brief: 小学兴趣班推荐、初中特长推荐、已有特长怎么培养
+- expert_id: career_explore_mentor
+  mention_name: 职业探索导师
+  routing_brief: 职业相关的问题、猜职业的小游戏
+- expert_id: study_abroad_consultant
+  mention_name: 留学咨询师
+  routing_brief: 留学费用问题；留学申请、院校推荐、材料准备等留学相关问题
+- expert_id: academic_coach
+  mention_name: 学习指导师
+  routing_brief: 学习习惯、方法指导
+- expert_id: admission_specialist
+  mention_name: 升学指导专家
+  routing_brief: 选科怎么选、升学路径科普或匹配、分数定位和院校推荐

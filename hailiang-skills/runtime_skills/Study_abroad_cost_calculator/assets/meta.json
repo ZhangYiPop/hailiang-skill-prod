@@ -1,0 +1,21 @@
+{
+ "skill": "留学费用计算器",
+ "data_year": "2026",
+ "fx_quote_date": "2026-09-08",
+ "source_basename": "新补充+定稿",
+ "source_files": {
+  "schools": "定稿_学校主数据库_2026_医学艺术补充版.xlsx",
+  "tuition": "定稿_学校专业学费表_2026_医学艺术补充版.xlsx",
+  "accommodation": "定稿_学校住宿费表_2026_补充新增学校官网数据_当地租房参考版.xlsx",
+  "city_living": "定稿_留学生城市生活费表_2026_hy4版本.xlsx",
+  "visa_medical": "定稿_本科留学生签证及医疗保障费用表_2026_chatgpt版本.xlsx",
+  "fx": "定稿-汇率换算表_2026 CFETS中间价.xlsx"
+ },
+ "counts": {
+  "schools": 166,
+  "tuition": 551,
+  "accommodation": 166,
+  "city_living": 94,
+  "visa_medical": 16
+ }
+}

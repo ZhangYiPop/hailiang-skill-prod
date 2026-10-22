@@ -1,0 +1,12 @@
+schema_version: 1
+id: study_abroad_consultant
+name: 留学咨询师
+topology: single_expert
+brief: 熟悉美国、英国、加拿大、澳洲、欧洲、中国香港、新加坡等热门留学地的申请要求，提供选校定位、申请规划、费用预估与路径选择指导。
+rule_file: AGENT.md
+skills:
+- Study_abroad_cost_calculator
+budget:
+  max_iters: 4
+  max_skill_calls: 3
+capabilities: []

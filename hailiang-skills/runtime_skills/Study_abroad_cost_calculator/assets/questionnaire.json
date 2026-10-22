@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "title": "留学费用预算信息",
+  "max_fields_per_form": 5,
+  "questions": [
+    {
+      "id": "countries",
+      "label": "目标留学国家/地区",
+      "input_type": "multi_select",
+      "required": true,
+      "max_selections": 17,
+      "options": [
+        { "value": "美国", "label": "美国" },
+        { "value": "英国", "label": "英国" },
+        { "value": "澳大利亚", "label": "澳大利亚" },
+        { "value": "加拿大", "label": "加拿大" },
+        { "value": "新加坡", "label": "新加坡" },
+        { "value": "中国香港", "label": "中国香港" },
+        { "value": "日本", "label": "日本" },
+        { "value": "韩国", "label": "韩国" },
+        { "value": "马来西亚", "label": "马来西亚" },
+        { "value": "新西兰", "label": "新西兰" },
+        { "value": "德国", "label": "德国" },
+        { "value": "法国", "label": "法国" },
+        { "value": "意大利", "label": "意大利" },
+        { "value": "瑞士", "label": "瑞士" },
+        { "value": "西班牙", "label": "西班牙" },
+        { "value": "俄罗斯", "label": "俄罗斯" },
+        { "value": "暂不确定", "label": "暂不确定" }
+      ]
+    },
+    {
+      "id": "major",
+      "label": "专业方向",
+      "input_type": "single_select",
+      "required": true,
+      "options": [
+        { "value": "商科", "label": "商科" },
+        { "value": "文科", "label": "文科" },
+        { "value": "理科", "label": "理科" },
+        { "value": "工科", "label": "工科" },
+        { "value": "医学", "label": "医学" },
+        { "value": "艺术", "label": "艺术" },
+        { "value": "不限", "label": "不限" }
+      ]
+    },
+    {
+      "id": "school_type",
+      "label": "学校类型",
+      "input_type": "single_select",
+      "required": false,
+      "options": [
+        { "value": "公立", "label": "公立" },
+        { "value": "私立", "label": "私立" },
+        { "value": "无偏好", "label": "无偏好" }
+      ]
+    },
+    {
+      "id": "city_tier",
+      "label": "城市层级",
+      "input_type": "single_select",
+      "required": false,
+      "options": [
+        { "value": "一线", "label": "一线" },
+        { "value": "二三线", "label": "二三线" },
+        { "value": "无偏好", "label": "无偏好" }
+      ]
+    },
+    {
+      "id": "budget_range",
+      "label": "预算范围（年）",
+      "input_type": "single_select",
+      "required": false,
+      "options": [
+        { "value": "10万以下", "label": "10万以下" },
+        { "value": "10万-20万", "label": "10万-20万" },
+        { "value": "20万-30万", "label": "20万-30万" },
+        { "value": "30万-50万", "label": "30万-50万" },
+        { "value": "50万以上", "label": "50万以上" },
+        { "value": "暂不确定", "label": "暂不确定" }
+      ]
+    }
+  ]
+}

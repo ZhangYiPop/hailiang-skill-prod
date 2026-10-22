@@ -1,0 +1,466 @@
+[
+  {
+    "province": "北京",
+    "full_marks": "750",
+    "subject": "不限",
+    "TL": "521",
+    "BL": "429",
+    "ZL": "120"
+  },
+  {
+    "province": "天津",
+    "full_marks": "750",
+    "subject": "不限",
+    "TL": "547",
+    "BL": "458",
+    "ZL": "110"
+  },
+  {
+    "province": "上海",
+    "full_marks": "660",
+    "subject": "不限",
+    "TL": "504",
+    "BL": "403",
+    "ZL": "100"
+  },
+  {
+    "province": "浙江",
+    "full_marks": "750",
+    "subject": "不限",
+    "TL": "594",
+    "BL": "494",
+    "ZL": "266"
+  },
+  {
+    "province": "山东",
+    "full_marks": "750",
+    "subject": "不限",
+    "TL": "525",
+    "BL": "442",
+    "ZL": "150"
+  },
+  {
+    "province": "海南",
+    "full_marks": "900",
+    "subject": "不限",
+    "TL": "568",
+    "BL": "479",
+    "ZL": "246"
+  },
+  {
+    "province": "河北",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "510",
+    "BL": "443",
+    "ZL": "200"
+  },
+  {
+    "province": "山西",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "524",
+    "BL": "401",
+    "ZL": "160"
+  },
+  {
+    "province": "辽宁",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "508",
+    "BL": "344",
+    "ZL": "150"
+  },
+  {
+    "province": "吉林",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "473",
+    "BL": "321",
+    "ZL": "160"
+  },
+  {
+    "province": "黑龙江",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "464",
+    "BL": "340",
+    "ZL": "150"
+  },
+  {
+    "province": "江苏",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "513",
+    "BL": "456",
+    "ZL": "220"
+  },
+  {
+    "province": "安徽",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "514",
+    "BL": "451",
+    "ZL": "200"
+  },
+  {
+    "province": "福建",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "528",
+    "BL": "446",
+    "ZL": "235"
+  },
+  {
+    "province": "江西",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "505",
+    "BL": "412",
+    "ZL": "200"
+  },
+  {
+    "province": "河南",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "513",
+    "BL": "419",
+    "ZL": "179"
+  },
+  {
+    "province": "湖北",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "529",
+    "BL": "435",
+    "ZL": "200"
+  },
+  {
+    "province": "湖南",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "481",
+    "BL": "400",
+    "ZL": "200"
+  },
+  {
+    "province": "广东",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "539",
+    "BL": "425",
+    "ZL": "200"
+  },
+  {
+    "province": "广西",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "510",
+    "BL": "368",
+    "ZL": "180"
+  },
+  {
+    "province": "重庆",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "496",
+    "BL": "406",
+    "ZL": "180"
+  },
+  {
+    "province": "四川",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "519",
+    "BL": "435",
+    "ZL": "150"
+  },
+  {
+    "province": "贵州",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "494",
+    "BL": "393",
+    "ZL": "200"
+  },
+  {
+    "province": "云南",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "505",
+    "BL": "435",
+    "ZL": "180"
+  },
+  {
+    "province": "陕西",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "451",
+    "BL": "376",
+    "ZL": "200"
+  },
+  {
+    "province": "甘肃",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "477",
+    "BL": "367",
+    "ZL": "180"
+  },
+  {
+    "province": "青海",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "417",
+    "BL": "344",
+    "ZL": "150"
+  },
+  {
+    "province": "宁夏",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "437",
+    "BL": "360",
+    "ZL": "150"
+  },
+  {
+    "province": "内蒙古",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "488",
+    "BL": "363",
+    "ZL": "160"
+  },
+  {
+    "province": "河北",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "542",
+    "BL": "485",
+    "ZL": "200"
+  },
+  {
+    "province": "山西",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "538",
+    "BL": "409",
+    "ZL": "160"
+  },
+  {
+    "province": "辽宁",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "527",
+    "BL": "442",
+    "ZL": "150"
+  },
+  {
+    "province": "吉林",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "478",
+    "BL": "343",
+    "ZL": "160"
+  },
+  {
+    "province": "黑龙江",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "466",
+    "BL": "385",
+    "ZL": "150"
+  },
+  {
+    "province": "江苏",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "532",
+    "BL": "484",
+    "ZL": "220"
+  },
+  {
+    "province": "安徽",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "522",
+    "BL": "490",
+    "ZL": "200"
+  },
+  {
+    "province": "福建",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "533",
+    "BL": "458",
+    "ZL": "235"
+  },
+  {
+    "province": "江西",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "535",
+    "BL": "479",
+    "ZL": "220"
+  },
+  {
+    "province": "河南",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "534",
+    "BL": "459",
+    "ZL": "179"
+  },
+  {
+    "province": "湖北",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "532",
+    "BL": "443",
+    "ZL": "200"
+  },
+  {
+    "province": "湖南",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "494",
+    "BL": "446",
+    "ZL": "200"
+  },
+  {
+    "province": "广东",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "546",
+    "BL": "440",
+    "ZL": "200"
+  },
+  {
+    "province": "广西",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "520",
+    "BL": "398",
+    "ZL": "180"
+  },
+  {
+    "province": "重庆",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "510",
+    "BL": "415",
+    "ZL": "180"
+  },
+  {
+    "province": "四川",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "525",
+    "BL": "455",
+    "ZL": "150"
+  },
+  {
+    "province": "贵州",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "503",
+    "BL": "439",
+    "ZL": "200"
+  },
+  {
+    "province": "云南",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "545",
+    "BL": "465",
+    "ZL": "180"
+  },
+  {
+    "province": "陕西",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "462",
+    "BL": "385",
+    "ZL": "200"
+  },
+  {
+    "province": "甘肃",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "508",
+    "BL": "405",
+    "ZL": "160"
+  },
+  {
+    "province": "青海",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "427",
+    "BL": "376",
+    "ZL": "150"
+  },
+  {
+    "province": "宁夏",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "474",
+    "BL": "393",
+    "ZL": "150"
+  },
+  {
+    "province": "内蒙古",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "512",
+    "BL": "403",
+    "ZL": "160"
+  },
+  {
+    "province": "西藏（A类）",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "300",
+    "BL": "260",
+    "ZL": "237"
+  },
+  {
+    "province": "西藏（B类）",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "400",
+    "BL": "300",
+    "ZL": "195"
+  },
+  {
+    "province": "新疆",
+    "full_marks": "750",
+    "subject": "物理",
+    "TL": "468",
+    "BL": "304",
+    "ZL": "140"
+  },
+  {
+    "province": "西藏（A类）",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "330",
+    "BL": "294",
+    "ZL": "237"
+  },
+  {
+    "province": "西藏（B类）",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "400",
+    "BL": "304",
+    "ZL": "195"
+  },
+  {
+    "province": "新疆",
+    "full_marks": "750",
+    "subject": "历史",
+    "TL": "451",
+    "BL": "315",
+    "ZL": "140"
+  }
+]

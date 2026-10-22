@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "skills": [
+    {
+      "skill_id": "multi_path_planning",
+      "release_id": "rel_295b168d68de48ad83bfbaa1911c06b9",
+      "version": "v5",
+      "content_hash": "caec8ad7673bf68c354a3de348ded41ffd74bfae15ad6b94e9522685c1e1202f"
+    },
+    {
+      "skill_id": "subject_advisor",
+      "release_id": "rel_9438bc03c66c45578ac9ab4a056cd3aa",
+      "version": "v2",
+      "content_hash": "46908916e01f7da6bf1e55415b781320070e4a007126c29a04c6f274c75ddac6"
+    },
+    {
+      "skill_id": "mock_admission",
+      "release_id": "rel_fa0b8584634447f48e1c2260d2c9e0f9",
+      "version": "v5",
+      "content_hash": "99755077be3477ce634d2eb6ca8b2f3c6ecb3a89d461091c5130e8baf84f55ad"
+    }
+  ]
+}

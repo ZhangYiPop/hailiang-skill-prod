@@ -1,0 +1,3156 @@
+[
+ {
+  "school_id": 1001,
+  "name_zh": "阿德莱德大学",
+  "name_en": "Adelaide University",
+  "aliases": [
+   "Adelaide Uni",
+   "AU",
+   "adelaide uni"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "阿德莱德",
+  "country_city": "澳大利亚-阿德莱德",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前90",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1002,
+  "name_zh": "澳大利亚国立大学",
+  "name_en": "Australian National University",
+  "aliases": [
+   "ANU",
+   "Australian National",
+   "澳国立",
+   "australian national",
+   "anu"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "堪培拉",
+  "country_city": "澳大利亚-堪培拉",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前35",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1003,
+  "name_zh": "昆士兰大学",
+  "name_en": "The University of Queensland",
+  "aliases": [
+   "UQ",
+   "University of Queensland",
+   "昆大",
+   "university of queensland"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "布里斯班",
+  "country_city": "澳大利亚-布里斯班",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前45",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1004,
+  "name_zh": "麦考瑞大学",
+  "name_en": "Macquarie University",
+  "aliases": [
+   "Macquarie",
+   "MQ",
+   "麦考瑞",
+   "macquarie"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "悉尼",
+  "country_city": "澳大利亚-悉尼",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前130",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1005,
+  "name_zh": "莫纳什大学",
+  "name_en": "Monash University",
+  "aliases": [
+   "Monash",
+   "蒙纳士",
+   "蒙大",
+   "莫纳什",
+   "monash"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "墨尔本",
+  "country_city": "澳大利亚-墨尔本",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前40",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1006,
+  "name_zh": "墨尔本大学",
+  "name_en": "The University of Melbourne",
+  "aliases": [
+   "University of Melbourne",
+   "UniMelb",
+   "墨大",
+   "unimelb",
+   "university of melbourne"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "墨尔本",
+  "country_city": "澳大利亚-墨尔本",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前15",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1007,
+  "name_zh": "西澳大学",
+  "name_en": "The University of Western Australia",
+  "aliases": [
+   "UWA",
+   "University of Western Australia",
+   "西澳大",
+   "university of western australia",
+   "uwa"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "珀斯",
+  "country_city": "澳大利亚-珀斯",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前80",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1008,
+  "name_zh": "悉尼大学",
+  "name_en": "The University of Sydney",
+  "aliases": [
+   "USYD",
+   "University of Sydney",
+   "悉大",
+   "university of sydney",
+   "usyd"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "悉尼",
+  "country_city": "澳大利亚-悉尼",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前25",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1009,
+  "name_zh": "悉尼科技大学",
+  "name_en": "University of Technology Sydney",
+  "aliases": [
+   "UTS",
+   "University of Technology Sydney",
+   "悉尼科大",
+   "university of technology sydney",
+   "uts"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "悉尼",
+  "country_city": "澳大利亚-悉尼",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前100(年轻大学全澳第1)",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1010,
+  "name_zh": "新南威尔士大学",
+  "name_en": "UNSW Sydney",
+  "aliases": [
+   "UNSW",
+   "University of New South Wales",
+   "新南",
+   "university of new south wales",
+   "unsw"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "悉尼",
+  "country_city": "澳大利亚-悉尼",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前20",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1011,
+  "name_zh": "海德堡大学",
+  "name_en": "Heidelberg University",
+  "aliases": [
+   "Ruprecht Karl University of Heidelberg",
+   "University of Heidelberg",
+   "海大",
+   "ruprecht karl university of heidelberg",
+   "university of heidelberg"
+  ],
+  "school_type": "公立",
+  "country": "德国",
+  "city": "海德堡",
+  "country_city": "德国-海德堡",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前90",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1012,
+  "name_zh": "慕尼黑大学",
+  "name_en": "Ludwig Maximilian University of Munich",
+  "aliases": [
+   "LMU",
+   "LMU Munich",
+   "Ludwig Maximilian University",
+   "慕大",
+   "lmu munich",
+   "ludwig maximilian university",
+   "lmu"
+  ],
+  "school_type": "公立",
+  "country": "德国",
+  "city": "慕尼黑",
+  "country_city": "德国-慕尼黑",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前60",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1013,
+  "name_zh": "慕尼黑工业大学",
+  "name_en": "Technical University of Munich",
+  "aliases": [
+   "TUM",
+   "TU Munich",
+   "慕工大",
+   "tu munich",
+   "tum"
+  ],
+  "school_type": "公立",
+  "country": "德国",
+  "city": "慕尼黑",
+  "country_city": "德国-慕尼黑",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前40",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1014,
+  "name_zh": "莫斯科国立大学",
+  "name_en": "Lomonosov Moscow State University",
+  "aliases": [
+   "MSU",
+   "Moscow State University",
+   "Lomonosov University",
+   "莫大",
+   "莫斯科大学",
+   "lomonosov university",
+   "moscow state university",
+   "msu"
+  ],
+  "school_type": "公立",
+  "country": "俄罗斯",
+  "city": "莫斯科",
+  "country_city": "俄罗斯-莫斯科",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前100",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1015,
+  "name_zh": "圣彼得堡国立大学",
+  "name_en": "Saint Petersburg State University",
+  "aliases": [
+   "SPbU",
+   "St Petersburg State University",
+   "圣大",
+   "圣彼得堡大学",
+   "st petersburg state university",
+   "spbu"
+  ],
+  "school_type": "公立",
+  "country": "俄罗斯",
+  "city": "圣彼得堡",
+  "country_city": "俄罗斯-圣彼得堡",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前200",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1016,
+  "name_zh": "巴黎理工学院",
+  "name_en": "Institut Polytechnique de Paris",
+  "aliases": [
+   "IP Paris",
+   "Institut Polytechnique",
+   "巴黎理工",
+   "ip paris",
+   "institut polytechnique"
+  ],
+  "school_type": "公立",
+  "country": "法国",
+  "city": "巴黎",
+  "country_city": "法国-巴黎",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前50",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1017,
+  "name_zh": "索邦大学",
+  "name_en": "Sorbonne University",
+  "aliases": [
+   "Sorbonne",
+   "Université Paris-Sorbonne",
+   "索邦",
+   "索大",
+   "sorbonne",
+   "université paris-sorbonne"
+  ],
+  "school_type": "公立",
+  "country": "法国",
+  "city": "巴黎",
+  "country_city": "法国-巴黎",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前70",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1018,
+  "name_zh": "成均馆大学",
+  "name_en": "Sungkyunkwan University",
+  "aliases": [
+   "SKKU",
+   "Sungkyunkwan",
+   "成大",
+   "sungkyunkwan",
+   "skku"
+  ],
+  "school_type": "私立",
+  "country": "韩国",
+  "city": "首尔",
+  "country_city": "韩国-首尔",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前120",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1019,
+  "name_zh": "高丽大学",
+  "name_en": "Korea University",
+  "aliases": [
+   "KU",
+   "Korea Univ.",
+   "高大",
+   "高丽大",
+   "korea univ."
+  ],
+  "school_type": "私立",
+  "country": "韩国",
+  "city": "首尔",
+  "country_city": "韩国-首尔",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前70",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1020,
+  "name_zh": "韩国科学技术院",
+  "name_en": "KAIST",
+  "aliases": [
+   "KAIST",
+   "Korea Advanced Institute of Science and Technology",
+   "韩国科大",
+   "韩科院",
+   "kaist",
+   "korea advanced institute of science and technology"
+  ],
+  "school_type": "公立",
+  "country": "韩国",
+  "city": "大田",
+  "country_city": "韩国-大田",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前60",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1021,
+  "name_zh": "汉阳大学",
+  "name_en": "Hanyang University",
+  "aliases": [
+   "Hanyang",
+   "HYU",
+   "汉大",
+   "汉阳大",
+   "hanyang",
+   "hyu"
+  ],
+  "school_type": "私立",
+  "country": "韩国",
+  "city": "首尔",
+  "country_city": "韩国-首尔",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前160",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1022,
+  "name_zh": "浦项科技大学",
+  "name_en": "Pohang University of Science and Technology",
+  "aliases": [
+   "POSTECH",
+   "Pohang University of Science and Technology",
+   "浦项工大",
+   "postech",
+   "pohang university of science and technology"
+  ],
+  "school_type": "私立",
+  "country": "韩国",
+  "city": "浦项",
+  "country_city": "韩国-浦项",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前100",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1023,
+  "name_zh": "庆熙大学",
+  "name_en": "Kyung Hee University",
+  "aliases": [
+   "KHU",
+   "Kyunghee University",
+   "庆大",
+   "庆熙大",
+   "kyunghee university",
+   "khu"
+  ],
+  "school_type": "私立",
+  "country": "韩国",
+  "city": "首尔",
+  "country_city": "韩国-首尔",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前170",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1024,
+  "name_zh": "首尔大学",
+  "name_en": "Seoul National University",
+  "aliases": [
+   "SNU",
+   "Seoul National",
+   "首大",
+   "首尔大",
+   "首尔大学(美术大学)",
+   "seoul national",
+   "snu"
+  ],
+  "school_type": "公立",
+  "country": "韩国",
+  "city": "首尔",
+  "country_city": "韩国-首尔",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前35",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1025,
+  "name_zh": "延世大学",
+  "name_en": "Yonsei University",
+  "aliases": [
+   "Yonsei",
+   "YU",
+   "延大",
+   "延世大",
+   "yonsei"
+  ],
+  "school_type": "私立",
+  "country": "韩国",
+  "city": "首尔",
+  "country_city": "韩国-首尔",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前60",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1026,
+  "name_zh": "阿尔伯塔大学",
+  "name_en": "University of Alberta",
+  "aliases": [
+   "UAlberta",
+   "University of Alberta",
+   "阿尔伯塔",
+   "ualberta",
+   "university of alberta"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "埃德蒙顿",
+  "country_city": "加拿大-埃德蒙顿",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前100",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1027,
+  "name_zh": "不列颠哥伦比亚大学",
+  "name_en": "University of British Columbia",
+  "aliases": [
+   "UBC",
+   "British Columbia",
+   "英属哥伦比亚大学",
+   "卑诗大学",
+   "british columbia",
+   "ubc"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "温哥华",
+  "country_city": "加拿大-温哥华",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前35",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1028,
+  "name_zh": "多伦多大学",
+  "name_en": "University of Toronto",
+  "aliases": [
+   "U of T",
+   "UToronto",
+   "多大",
+   "UofT",
+   "u of t",
+   "utoronto",
+   "uoft"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "多伦多",
+  "country_city": "加拿大-多伦多",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前25",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1029,
+  "name_zh": "滑铁卢大学",
+  "name_en": "University of Waterloo",
+  "aliases": [
+   "Waterloo",
+   "UWaterloo",
+   "滑大",
+   "uwaterloo",
+   "waterloo"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "滑铁卢",
+  "country_city": "加拿大-滑铁卢",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前120",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1030,
+  "name_zh": "麦吉尔大学",
+  "name_en": "McGill University",
+  "aliases": [
+   "McGill",
+   "麦大",
+   "mcgill"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "蒙特利尔",
+  "country_city": "加拿大-蒙特利尔",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前30",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1031,
+  "name_zh": "麦克马斯特大学",
+  "name_en": "McMaster University",
+  "aliases": [
+   "McMaster",
+   "麦马",
+   "mcmaster"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "汉密尔顿",
+  "country_city": "加拿大-汉密尔顿",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前175",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1032,
+  "name_zh": "西安大略大学",
+  "name_en": "Western University",
+  "aliases": [
+   "Western",
+   "University of Western Ontario",
+   "UWO",
+   "西大",
+   "韦仕敦大学",
+   "university of western ontario",
+   "western",
+   "uwo"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "伦敦",
+  "country_city": "加拿大-伦敦",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前160",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1033,
+  "name_zh": "西蒙菲莎大学 SFU",
+  "name_en": "Simon Fraser University",
+  "aliases": [
+   "SFU",
+   "Simon Fraser",
+   "西蒙菲莎",
+   "西菲",
+   "simon fraser",
+   "sfu"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "本拿比",
+  "country_city": "加拿大-本拿比",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前250(麦考林综合类第1)",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1034,
+  "name_zh": "马来西亚博特拉大学",
+  "name_en": "Universiti Putra Malaysia",
+  "aliases": [
+   "UPM",
+   "Putra Malaysia",
+   "putra malaysia",
+   "upm"
+  ],
+  "school_type": "公立",
+  "country": "马来西亚",
+  "city": "沙登",
+  "country_city": "马来西亚-沙登",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前140",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1035,
+  "name_zh": "马来西亚国立大学",
+  "name_en": "Universiti Kebangsaan Malaysia",
+  "aliases": [
+   "UKM",
+   "National University of Malaysia",
+   "马来西亚国大",
+   "national university of malaysia",
+   "ukm"
+  ],
+  "school_type": "公立",
+  "country": "马来西亚",
+  "city": "万宜",
+  "country_city": "马来西亚-万宜",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前130",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1036,
+  "name_zh": "马来西亚理工大学",
+  "name_en": "Universiti Teknologi Malaysia",
+  "aliases": [
+   "UTM",
+   "University of Technology Malaysia",
+   "马来工大",
+   "university of technology malaysia",
+   "utm"
+  ],
+  "school_type": "公立",
+  "country": "马来西亚",
+  "city": "新山",
+  "country_city": "马来西亚-新山",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前160",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1037,
+  "name_zh": "马来西亚理科大学",
+  "name_en": "Universiti Sains Malaysia",
+  "aliases": [
+   "USM",
+   "Science University Malaysia",
+   "science university malaysia",
+   "usm"
+  ],
+  "school_type": "公立",
+  "country": "马来西亚",
+  "city": "乔治市",
+  "country_city": "马来西亚-乔治市",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前140",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1038,
+  "name_zh": "马来亚大学",
+  "name_en": "University of Malaya",
+  "aliases": [
+   "UM",
+   "University of Malaya",
+   "马大",
+   "university of malaya"
+  ],
+  "school_type": "公立",
+  "country": "马来西亚",
+  "city": "吉隆坡",
+  "country_city": "马来西亚-吉隆坡",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前60",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1039,
+  "name_zh": "宾夕法尼亚大学",
+  "name_en": "University of Pennsylvania",
+  "aliases": [
+   "Penn",
+   "UPenn",
+   "宾大",
+   "宾夕法尼亚",
+   "upenn",
+   "penn"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "费城",
+  "country_city": "美国-费城",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前20",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1040,
+  "name_zh": "德州大学奥斯汀分校",
+  "name_en": "The University of Texas at Austin",
+  "aliases": [
+   "UT Austin",
+   "Texas",
+   "德州奥斯汀",
+   "texas",
+   "ut austin"
+  ],
+  "school_type": "公立",
+  "country": "美国",
+  "city": "奥斯汀",
+  "country_city": "美国-奥斯汀",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前60",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1041,
+  "name_zh": "俄亥俄州立大学",
+  "name_en": "The Ohio State University",
+  "aliases": [
+   "Ohio State",
+   "OSU",
+   "俄亥俄州立",
+   "ohio state",
+   "osu"
+  ],
+  "school_type": "公立",
+  "country": "美国",
+  "city": "哥伦布",
+  "country_city": "美国-哥伦布",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前100",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1042,
+  "name_zh": "哈佛大学",
+  "name_en": "Harvard University",
+  "aliases": [
+   "Harvard",
+   "Harvard University",
+   "哈佛",
+   "harvard",
+   "harvard university"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "剑桥",
+  "country_city": "美国-剑桥",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前10",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1043,
+  "name_zh": "华盛顿大学西雅图",
+  "name_en": "University of Washington",
+  "aliases": [
+   "UW",
+   "University of Washington Seattle",
+   "西雅图华大",
+   "UW Seattle",
+   "uw seattle",
+   "university of washington seattle"
+  ],
+  "school_type": "公立",
+  "country": "美国",
+  "city": "西雅图",
+  "country_city": "美国-西雅图",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前60",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1044,
+  "name_zh": "加州大学伯克利分校",
+  "name_en": "University of California, Berkeley",
+  "aliases": [
+   "UC Berkeley",
+   "Berkeley",
+   "伯克利",
+   "加州伯克利",
+   "UCB",
+   "berkeley",
+   "uc berkeley",
+   "ucb"
+  ],
+  "school_type": "公立",
+  "country": "美国",
+  "city": "伯克利",
+  "country_city": "美国-伯克利",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前10",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1045,
+  "name_zh": "加州大学洛杉矶分校",
+  "name_en": "University of California, Los Angeles",
+  "aliases": [
+   "UCLA",
+   "UC Los Angeles",
+   "加州洛杉矶",
+   "uc los angeles",
+   "ucla"
+  ],
+  "school_type": "公立",
+  "country": "美国",
+  "city": "洛杉矶",
+  "country_city": "美国-洛杉矶",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前30",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1046,
+  "name_zh": "麻省理工学院",
+  "name_en": "Massachusetts Institute of Technology",
+  "aliases": [
+   "MIT",
+   "Massachusetts Institute of Technology",
+   "麻省理工",
+   "麻理工",
+   "massachusetts institute of technology",
+   "mit"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "剑桥",
+  "country_city": "美国-剑桥",
+  "city_tier": "一线",
+  "qs_rank": "QS全球第1",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1047,
+  "name_zh": "南加州大学",
+  "name_en": "University of Southern California",
+  "aliases": [
+   "USC",
+   "University of Southern California",
+   "南加大",
+   "南加州大学 Bacc/MD",
+   "university of southern california",
+   "南加州大学 bacc/md",
+   "usc"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "洛杉矶",
+  "country_city": "美国-洛杉矶",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前100",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1048,
+  "name_zh": "纽约大学",
+  "name_en": "New York University",
+  "aliases": [
+   "NYU",
+   "New York University",
+   "纽大",
+   "new york university",
+   "nyu"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "纽约",
+  "country_city": "美国-纽约",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前40",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1049,
+  "name_zh": "斯坦福大学",
+  "name_en": "Stanford University",
+  "aliases": [
+   "Stanford",
+   "Stanford University",
+   "斯坦福",
+   "stanford",
+   "stanford university"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "斯坦福",
+  "country_city": "美国-斯坦福",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前10",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1050,
+  "name_zh": "伊利诺伊大学厄巴纳-香槟",
+  "name_en": "University of Illinois Urbana-Champaign",
+  "aliases": [
+   "UIUC",
+   "Illinois",
+   "University of Illinois",
+   "伊利诺伊香槟",
+   "香槟分校",
+   "illinois",
+   "university of illinois",
+   "uiuc"
+  ],
+  "school_type": "公立",
+  "country": "美国",
+  "city": "香槟-厄巴纳",
+  "country_city": "美国-香槟-厄巴纳",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前80",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1051,
+  "name_zh": "东北大学",
+  "name_en": "Tohoku University",
+  "aliases": [
+   "Tohoku",
+   "Tohoku Univ.",
+   "东北大",
+   "tohoku",
+   "tohoku univ."
+  ],
+  "school_type": "公立",
+  "country": "日本",
+  "city": "仙台",
+  "country_city": "日本-仙台",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前120",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1052,
+  "name_zh": "东京大学",
+  "name_en": "The University of Tokyo",
+  "aliases": [
+   "UTokyo",
+   "University of Tokyo",
+   "东大",
+   "东京大",
+   "utokyo",
+   "university of tokyo"
+  ],
+  "school_type": "公立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前35",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1053,
+  "name_zh": "东京科学大学",
+  "name_en": "Institute of Science Tokyo",
+  "aliases": [
+   "Science Tokyo",
+   "Tokyo Institute of Technology",
+   "东京科学大",
+   "东工大（旧称）",
+   "science tokyo",
+   "tokyo institute of technology"
+  ],
+  "school_type": "公立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前90",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1054,
+  "name_zh": "京都大学",
+  "name_en": "Kyoto University",
+  "aliases": [
+   "KyotoU",
+   "Kyoto University",
+   "京大",
+   "京都大",
+   "kyoto university",
+   "kyotou"
+  ],
+  "school_type": "公立",
+  "country": "日本",
+  "city": "京都",
+  "country_city": "日本-京都",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前50",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1055,
+  "name_zh": "九州大学",
+  "name_en": "Kyushu University",
+  "aliases": [
+   "Kyushu",
+   "Kyushu Univ.",
+   "九大",
+   "九州大",
+   "kyushu",
+   "kyushu univ."
+  ],
+  "school_type": "公立",
+  "country": "日本",
+  "city": "福冈",
+  "country_city": "日本-福冈",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前170",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1056,
+  "name_zh": "名古屋大学",
+  "name_en": "Nagoya University",
+  "aliases": [
+   "Nagoya",
+   "Nagoya Univ.",
+   "名大",
+   "名古屋大",
+   "nagoya",
+   "nagoya univ."
+  ],
+  "school_type": "公立",
+  "country": "日本",
+  "city": "名古屋",
+  "country_city": "日本-名古屋",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前150",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1057,
+  "name_zh": "早稻田大学",
+  "name_en": "Waseda University",
+  "aliases": [
+   "Waseda",
+   "Waseda Univ.",
+   "早大",
+   "早稻田",
+   "waseda",
+   "waseda univ."
+  ],
+  "school_type": "私立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前200",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1058,
+  "name_zh": "苏黎世大学",
+  "name_en": "University of Zurich",
+  "aliases": [
+   "UZH",
+   "University of Zürich",
+   "苏大",
+   "苏黎世大",
+   "university of zürich",
+   "uzh"
+  ],
+  "school_type": "公立",
+  "country": "瑞士",
+  "city": "苏黎世",
+  "country_city": "瑞士-苏黎世",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前90",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1059,
+  "name_zh": "苏黎世联邦理工学院",
+  "name_en": "ETH Zurich",
+  "aliases": [
+   "ETH",
+   "ETH Zürich",
+   "Swiss Federal Institute of Technology Zurich",
+   "苏黎世联邦理工",
+   "苏黎世理工",
+   "eth zürich",
+   "swiss federal institute of technology zurich"
+  ],
+  "school_type": "公立",
+  "country": "瑞士",
+  "city": "苏黎世",
+  "country_city": "瑞士-苏黎世",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前10",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1060,
+  "name_zh": "巴塞罗那自治大学",
+  "name_en": "Autonomous University of Barcelona",
+  "aliases": [
+   "UAB",
+   "Universitat Autònoma de Barcelona",
+   "巴自治",
+   "universitat autònoma de barcelona",
+   "uab"
+  ],
+  "school_type": "公立",
+  "country": "西班牙",
+  "city": "巴塞罗那",
+  "country_city": "西班牙-巴塞罗那",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前180",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1061,
+  "name_zh": "南洋理工大学",
+  "name_en": "Nanyang Technological University",
+  "aliases": [
+   "NTU",
+   "Nanyang Technological University",
+   "南大",
+   "南洋理工",
+   "nanyang technological university",
+   "ntu"
+  ],
+  "school_type": "公立",
+  "country": "新加坡",
+  "city": "新加坡",
+  "country_city": "新加坡-新加坡",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前20",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1062,
+  "name_zh": "新加坡国立大学",
+  "name_en": "National University of Singapore",
+  "aliases": [
+   "NUS",
+   "National University of Singapore",
+   "新国大",
+   "national university of singapore",
+   "nus"
+  ],
+  "school_type": "公立",
+  "country": "新加坡",
+  "city": "新加坡",
+  "country_city": "新加坡-新加坡",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前10",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1063,
+  "name_zh": "奥克兰大学",
+  "name_en": "University of Auckland",
+  "aliases": [
+   "UoA",
+   "Auckland University",
+   "奥大",
+   "奥克兰大",
+   "auckland university",
+   "uoa"
+  ],
+  "school_type": "公立",
+  "country": "新西兰",
+  "city": "奥克兰",
+  "country_city": "新西兰-奥克兰",
+  "city_tier": "一线",
+  "qs_rank": "QS全球65(新西兰唯一前100)",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1064,
+  "name_zh": "奥塔哥大学",
+  "name_en": "University of Otago",
+  "aliases": [
+   "Otago",
+   "University of Otago",
+   "奥大（新西兰）",
+   "otago",
+   "university of otago"
+  ],
+  "school_type": "公立",
+  "country": "新西兰",
+  "city": "达尼丁",
+  "country_city": "新西兰-达尼丁",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球197(2026回升17位)",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1065,
+  "name_zh": "惠灵顿维多利亚大学",
+  "name_en": "Victoria University of Wellington",
+  "aliases": [
+   "VUW",
+   "Victoria University of Wellington",
+   "惠灵顿维大",
+   "victoria university of wellington",
+   "vuw"
+  ],
+  "school_type": "公立",
+  "country": "新西兰",
+  "city": "惠灵顿",
+  "country_city": "新西兰-惠灵顿",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球240(前200外)",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1066,
+  "name_zh": "梅西大学",
+  "name_en": "Massey University",
+  "aliases": [
+   "Massey",
+   "Massey University",
+   "梅西",
+   "massey",
+   "massey university"
+  ],
+  "school_type": "公立",
+  "country": "新西兰",
+  "city": "北帕默斯顿",
+  "country_city": "新西兰-北帕默斯顿",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球230(前200外)",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1067,
+  "name_zh": "博洛尼亚大学",
+  "name_en": "University of Bologna",
+  "aliases": [
+   "UNIBO",
+   "Alma Mater Studiorum",
+   "博洛尼亚",
+   "alma mater studiorum",
+   "unibo"
+  ],
+  "school_type": "公立",
+  "country": "意大利",
+  "city": "博洛尼亚",
+  "country_city": "意大利-博洛尼亚",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前140",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1068,
+  "name_zh": "米兰理工大学",
+  "name_en": "Politecnico di Milano",
+  "aliases": [
+   "Polimi",
+   "Milan Polytechnic",
+   "米理",
+   "米兰理工",
+   "milan polytechnic",
+   "polimi"
+  ],
+  "school_type": "公立",
+  "country": "意大利",
+  "city": "米兰",
+  "country_city": "意大利-米兰",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前110",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1069,
+  "name_zh": "埃克塞特大学",
+  "name_en": "University of Exeter",
+  "aliases": [
+   "Exeter",
+   "University of Exeter",
+   "埃大",
+   "exeter",
+   "university of exeter"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "埃克塞特",
+  "country_city": "英国-埃克塞特",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前150",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1070,
+  "name_zh": "爱丁堡大学",
+  "name_en": "The University of Edinburgh",
+  "aliases": [
+   "Edinburgh",
+   "University of Edinburgh",
+   "爱大",
+   "edinburgh",
+   "university of edinburgh"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "爱丁堡",
+  "country_city": "英国-爱丁堡",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前30",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1071,
+  "name_zh": "巴斯大学",
+  "name_en": "University of Bath",
+  "aliases": [
+   "Bath",
+   "University of Bath",
+   "巴斯",
+   "university of bath",
+   "bath"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "巴斯",
+  "country_city": "英国-巴斯",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前160",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1072,
+  "name_zh": "伯明翰大学",
+  "name_en": "University of Birmingham",
+  "aliases": [
+   "Birmingham",
+   "University of Birmingham",
+   "伯大",
+   "伯明翰",
+   "birmingham",
+   "university of birmingham"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "伯明翰",
+  "country_city": "英国-伯明翰",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前80",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1073,
+  "name_zh": "布里斯托大学",
+  "name_en": "University of Bristol",
+  "aliases": [
+   "Bristol",
+   "University of Bristol",
+   "布大",
+   "布里斯托",
+   "bristol",
+   "university of bristol"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "布里斯托",
+  "country_city": "英国-布里斯托",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前60",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1074,
+  "name_zh": "帝国理工学院",
+  "name_en": "Imperial College London",
+  "aliases": [
+   "Imperial",
+   "ICL",
+   "帝国理工",
+   "帝国理工大学",
+   "IC",
+   "imperial",
+   "icl"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "伦敦",
+  "country_city": "英国-伦敦",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前10",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1075,
+  "name_zh": "杜伦大学",
+  "name_en": "Durham University",
+  "aliases": [
+   "Durham",
+   "Durham University",
+   "杜伦",
+   "durham",
+   "durham university"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "达勒姆",
+  "country_city": "英国-达勒姆",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前100",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1076,
+  "name_zh": "格拉斯哥大学",
+  "name_en": "University of Glasgow",
+  "aliases": [
+   "Glasgow",
+   "University of Glasgow",
+   "格大",
+   "格拉斯哥",
+   "glasgow",
+   "university of glasgow"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "格拉斯哥",
+  "country_city": "英国-格拉斯哥",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前80",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1077,
+  "name_zh": "华威大学",
+  "name_en": "University of Warwick",
+  "aliases": [
+   "Warwick",
+   "University of Warwick",
+   "华威",
+   "university of warwick",
+   "warwick"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "考文垂",
+  "country_city": "英国-考文垂",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前70",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1078,
+  "name_zh": "剑桥大学",
+  "name_en": "University of Cambridge",
+  "aliases": [
+   "Cambridge",
+   "Cambridge University",
+   "剑桥",
+   "cambridge",
+   "cambridge university"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "剑桥",
+  "country_city": "英国-剑桥",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前10",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1079,
+  "name_zh": "卡迪夫大学",
+  "name_en": "Cardiff University",
+  "aliases": [
+   "Cardiff",
+   "Cardiff University",
+   "卡大",
+   "卡迪夫",
+   "cardiff",
+   "cardiff university"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "卡迪夫",
+  "country_city": "英国-卡迪夫",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前170",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1080,
+  "name_zh": "拉夫堡大学",
+  "name_en": "Loughborough University",
+  "aliases": [
+   "Loughborough",
+   "Lboro",
+   "拉夫堡",
+   "lboro",
+   "loughborough"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "拉夫堡",
+  "country_city": "英国-拉夫堡",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前220(体育类全球第1)",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1081,
+  "name_zh": "兰卡斯特大学",
+  "name_en": "Lancaster University",
+  "aliases": [
+   "Lancaster",
+   "Lancaster University",
+   "兰卡",
+   "兰卡斯特",
+   "lancaster",
+   "lancaster university"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "兰卡斯特",
+  "country_city": "英国-兰卡斯特",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前140",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1082,
+  "name_zh": "利物浦大学",
+  "name_en": "University of Liverpool",
+  "aliases": [
+   "Liverpool",
+   "University of Liverpool",
+   "利物浦",
+   "liverpool",
+   "university of liverpool"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "利物浦",
+  "country_city": "英国-利物浦",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前180",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1083,
+  "name_zh": "利兹大学",
+  "name_en": "University of Leeds",
+  "aliases": [
+   "Leeds",
+   "University of Leeds",
+   "利兹",
+   "利兹大",
+   "leeds",
+   "university of leeds"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "利兹",
+  "country_city": "英国-利兹",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前85",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1084,
+  "name_zh": "伦敦大学学院",
+  "name_en": "University College London",
+  "aliases": [
+   "UCL",
+   "University College London",
+   "university college london",
+   "ucl"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "伦敦",
+  "country_city": "英国-伦敦",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前10",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1085,
+  "name_zh": "伦敦国王学院",
+  "name_en": "King's College London",
+  "aliases": [
+   "KCL",
+   "King's",
+   "国王学院",
+   "伦敦国王",
+   "king's",
+   "kcl"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "伦敦",
+  "country_city": "英国-伦敦",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前40",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1086,
+  "name_zh": "伦敦玛丽女王大学",
+  "name_en": "Queen Mary University of London",
+  "aliases": [
+   "QMUL",
+   "Queen Mary",
+   "伦敦玛丽女王",
+   "玛丽女王",
+   "queen mary",
+   "qmul"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "伦敦",
+  "country_city": "英国-伦敦",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前120",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1087,
+  "name_zh": "伦敦政治经济学院",
+  "name_en": "London School of Economics and Political Science",
+  "aliases": [
+   "LSE",
+   "London School of Economics",
+   "伦敦政经",
+   "伦政经",
+   "london school of economics",
+   "lse"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "伦敦",
+  "country_city": "英国-伦敦",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前40(社科类顶尖)",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1088,
+  "name_zh": "曼彻斯特大学",
+  "name_en": "The University of Manchester",
+  "aliases": [
+   "Manchester",
+   "University of Manchester",
+   "曼大",
+   "曼彻斯特",
+   "UoM",
+   "manchester",
+   "university of manchester",
+   "uom"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "曼彻斯特",
+  "country_city": "英国-曼彻斯特",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前40",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1089,
+  "name_zh": "南安普顿大学",
+  "name_en": "University of Southampton",
+  "aliases": [
+   "Southampton",
+   "University of Southampton",
+   "南安",
+   "南安普顿",
+   "southampton",
+   "university of southampton"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "南安普顿",
+  "country_city": "英国-南安普顿",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前90",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1090,
+  "name_zh": "牛津大学",
+  "name_en": "University of Oxford",
+  "aliases": [
+   "Oxford",
+   "Oxford University",
+   "牛津",
+   "oxford",
+   "oxford university"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "牛津",
+  "country_city": "英国-牛津",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前10",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1091,
+  "name_zh": "纽卡斯尔大学",
+  "name_en": "Newcastle University",
+  "aliases": [
+   "Newcastle",
+   "Newcastle University",
+   "纽卡",
+   "纽大（英国）",
+   "newcastle",
+   "newcastle university"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "纽卡斯尔",
+  "country_city": "英国-纽卡斯尔",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前140",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1092,
+  "name_zh": "诺丁汉大学",
+  "name_en": "University of Nottingham",
+  "aliases": [
+   "Nottingham",
+   "Nottingham University",
+   "诺大",
+   "诺丁汉",
+   "nottingham",
+   "nottingham university"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "诺丁汉",
+  "country_city": "英国-诺丁汉",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前110",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1093,
+  "name_zh": "圣安德鲁斯大学",
+  "name_en": "University of St Andrews",
+  "aliases": [
+   "St Andrews",
+   "St. Andrews",
+   "圣安",
+   "圣安德鲁斯",
+   "st andrews",
+   "st. andrews"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "圣安德鲁斯",
+  "country_city": "英国-圣安德鲁斯",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前100",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1094,
+  "name_zh": "谢菲尔德大学",
+  "name_en": "University of Sheffield",
+  "aliases": [
+   "Sheffield",
+   "University of Sheffield",
+   "谢大",
+   "谢菲",
+   "谢菲尔德",
+   "sheffield",
+   "university of sheffield"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "谢菲尔德",
+  "country_city": "英国-谢菲尔德",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前100",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1095,
+  "name_zh": "约克大学",
+  "name_en": "University of York",
+  "aliases": [
+   "York",
+   "University of York",
+   "约大",
+   "约克",
+   "university of york",
+   "york"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "约克",
+  "country_city": "英国-约克",
+  "city_tier": "二三线",
+  "qs_rank": "QS全球前180",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1097,
+  "name_zh": "香港城市大学",
+  "name_en": "City University of Hong Kong",
+  "aliases": [
+   "CityU",
+   "City University of Hong Kong",
+   "城大",
+   "港城大",
+   "city university of hong kong",
+   "cityu"
+  ],
+  "school_type": "公立",
+  "country": "中国香港",
+  "city": "香港",
+  "country_city": "中国香港-香港",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前60",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1098,
+  "name_zh": "香港大学",
+  "name_en": "The University of Hong Kong",
+  "aliases": [
+   "HKU",
+   "University of Hong Kong",
+   "港大",
+   "university of hong kong",
+   "hku"
+  ],
+  "school_type": "公立",
+  "country": "中国香港",
+  "city": "香港",
+  "country_city": "中国香港-香港",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前20",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1099,
+  "name_zh": "香港教育大学",
+  "name_en": "The Education University of Hong Kong",
+  "aliases": [
+   "EdUHK",
+   "Education University of Hong Kong",
+   "教大",
+   "港教大",
+   "eduhk",
+   "education university of hong kong"
+  ],
+  "school_type": "公立",
+  "country": "中国香港",
+  "city": "香港",
+  "country_city": "中国香港-香港",
+  "city_tier": "一线",
+  "qs_rank": "QS教育学科全球前30",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1100,
+  "name_zh": "香港浸会大学",
+  "name_en": "Hong Kong Baptist University",
+  "aliases": [
+   "HKBU",
+   "Hong Kong Baptist",
+   "浸大",
+   "hong kong baptist",
+   "hkbu"
+  ],
+  "school_type": "公立",
+  "country": "中国香港",
+  "city": "香港",
+  "country_city": "中国香港-香港",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前250",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1101,
+  "name_zh": "香港科技大学",
+  "name_en": "The Hong Kong University of Science and Technology",
+  "aliases": [
+   "HKUST",
+   "Hong Kong University of Science and Technology",
+   "港科大",
+   "hkust",
+   "hong kong university of science and technology"
+  ],
+  "school_type": "公立",
+  "country": "中国香港",
+  "city": "香港",
+  "country_city": "中国香港-香港",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前50",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1102,
+  "name_zh": "香港理工大学",
+  "name_en": "The Hong Kong Polytechnic University",
+  "aliases": [
+   "PolyU",
+   "Hong Kong Polytechnic University",
+   "港理工",
+   "hong kong polytechnic university",
+   "polyu"
+  ],
+  "school_type": "公立",
+  "country": "中国香港",
+  "city": "香港",
+  "country_city": "中国香港-香港",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前60",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1103,
+  "name_zh": "香港岭南大学",
+  "name_en": "Lingnan University",
+  "aliases": [
+   "LU",
+   "Lingnan",
+   "岭大",
+   "嶺南",
+   "lingnan"
+  ],
+  "school_type": "公立",
+  "country": "中国香港",
+  "city": "香港",
+  "country_city": "中国香港-香港",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前640(八大中最低档)",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1104,
+  "name_zh": "香港中文大学",
+  "name_en": "The Chinese University of Hong Kong",
+  "aliases": [
+   "CUHK",
+   "Chinese University of Hong Kong",
+   "港中大",
+   "中大",
+   "chinese university of hong kong",
+   "cuhk"
+  ],
+  "school_type": "公立",
+  "country": "中国香港",
+  "city": "香港",
+  "country_city": "中国香港-香港",
+  "city_tier": "一线",
+  "qs_rank": "QS全球前40",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1105,
+  "name_zh": "皇家兽医学院",
+  "name_en": "Royal Veterinary College",
+  "aliases": [
+   "RVC",
+   "Royal Veterinary College",
+   "royal veterinary college",
+   "rvc"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "伦敦",
+  "country_city": "英国-伦敦",
+  "city_tier": "一线",
+  "qs_rank": "兽医类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1106,
+  "name_zh": "圣乔治医学院",
+  "name_en": "St George's, University of London",
+  "aliases": [
+   "St George's",
+   "City St George's",
+   "city st george's",
+   "st george's"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "伦敦",
+  "country_city": "英国-伦敦",
+  "city_tier": "一线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1107,
+  "name_zh": "白金汉大学",
+  "name_en": "University of Buckingham",
+  "aliases": [
+   "Buckingham",
+   "University of Buckingham",
+   "buckingham",
+   "university of buckingham"
+  ],
+  "school_type": "私立",
+  "country": "英国",
+  "city": "白金汉",
+  "country_city": "英国-白金汉",
+  "city_tier": "二三线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1108,
+  "name_zh": "布朗大学",
+  "name_en": "Brown University",
+  "aliases": [
+   "Brown",
+   "Brown University",
+   "PLME",
+   "brown",
+   "brown university",
+   "plme"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "普罗维登斯",
+  "country_city": "美国-普罗维登斯",
+  "city_tier": "二三线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1109,
+  "name_zh": "凯斯西储大学",
+  "name_en": "Case Western Reserve University",
+  "aliases": [
+   "Case Western",
+   "CWRU",
+   "PPSP",
+   "case western",
+   "cwru",
+   "ppsp"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "克利夫兰",
+  "country_city": "美国-克利夫兰",
+  "city_tier": "二三线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1110,
+  "name_zh": "詹姆斯库克大学",
+  "name_en": "James Cook University",
+  "aliases": [
+   "JCU",
+   "James Cook",
+   "james cook",
+   "jcu"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "汤斯维尔",
+  "country_city": "澳大利亚-汤斯维尔",
+  "city_tier": "二三线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1111,
+  "name_zh": "莫道克大学",
+  "name_en": "Murdoch University",
+  "aliases": [
+   "Murdoch",
+   "Murdoch University",
+   "murdoch",
+   "murdoch university"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "珀斯",
+  "country_city": "澳大利亚-珀斯",
+  "city_tier": "二三线",
+  "qs_rank": "兽医类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1112,
+  "name_zh": "查尔斯特大学",
+  "name_en": "Charles Sturt University",
+  "aliases": [
+   "CSU",
+   "Charles Sturt",
+   "charles sturt",
+   "csu"
+  ],
+  "school_type": "公立",
+  "country": "澳大利亚",
+  "city": "沃加沃加",
+  "country_city": "澳大利亚-沃加沃加",
+  "city_tier": "二三线",
+  "qs_rank": "兽医类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1114,
+  "name_zh": "国际医科大学",
+  "name_en": "International Medical University",
+  "aliases": [
+   "IMU",
+   "International Medical University",
+   "international medical university",
+   "imu"
+  ],
+  "school_type": "私立",
+  "country": "马来西亚",
+  "city": "吉隆坡",
+  "country_city": "马来西亚-吉隆坡",
+  "city_tier": "一线",
+  "qs_rank": "临床/牙医院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1115,
+  "name_zh": "庆应义塾大学",
+  "name_en": "Keio University",
+  "aliases": [
+   "Keio",
+   "Keio University",
+   "庆应",
+   "keio university",
+   "keio"
+  ],
+  "school_type": "私立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1116,
+  "name_zh": "东京医科大学",
+  "name_en": "Tokyo Medical University",
+  "aliases": [
+   "TMU",
+   "Tokyo Medical University",
+   "tokyo medical university",
+   "tmu"
+  ],
+  "school_type": "私立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1117,
+  "name_zh": "日本医科大学",
+  "name_en": "Nippon Medical School",
+  "aliases": [
+   "NMS",
+   "Nippon Medical School",
+   "nippon medical school",
+   "nms"
+  ],
+  "school_type": "私立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1118,
+  "name_zh": "顺天堂大学",
+  "name_en": "Juntendo University",
+  "aliases": [
+   "Juntendo",
+   "Juntendo University",
+   "juntendo",
+   "juntendo university"
+  ],
+  "school_type": "私立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1119,
+  "name_zh": "东京女子医科大学",
+  "name_en": "Tokyo Women's Medical University",
+  "aliases": [
+   "TWMU",
+   "Tokyo Women's Medical University",
+   "tokyo women's medical university",
+   "twmu"
+  ],
+  "school_type": "私立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1120,
+  "name_zh": "汉诺威医学院",
+  "name_en": "Hannover Medical School",
+  "aliases": [
+   "MHH",
+   "Hannover Medical School",
+   "hannover medical school",
+   "mhh"
+  ],
+  "school_type": "公立",
+  "country": "德国",
+  "city": "汉诺威",
+  "country_city": "德国-汉诺威",
+  "city_tier": "二三线",
+  "qs_rank": "临床/牙医类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1121,
+  "name_zh": "吕贝克大学",
+  "name_en": "University of Lübeck",
+  "aliases": [
+   "University of Luebeck",
+   "UzL",
+   "Lübeck",
+   "lübeck",
+   "university of luebeck",
+   "uzl"
+  ],
+  "school_type": "公立",
+  "country": "德国",
+  "city": "吕贝克",
+  "country_city": "德国-吕贝克",
+  "city_tier": "二三线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1122,
+  "name_zh": "柏林夏里特医学院",
+  "name_en": "Charité – Universitätsmedizin Berlin",
+  "aliases": [
+   "Charité",
+   "Charité Berlin",
+   "charité",
+   "charité berlin"
+  ],
+  "school_type": "公立",
+  "country": "德国",
+  "city": "柏林",
+  "country_city": "德国-柏林",
+  "city_tier": "一线",
+  "qs_rank": "临床/牙医类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1123,
+  "name_zh": "CEU西班牙圣保罗大学",
+  "name_en": "Universidad CEU San Pablo",
+  "aliases": [
+   "CEU San Pablo",
+   "USP-CEU",
+   "ceu san pablo",
+   "usp-ceu"
+  ],
+  "school_type": "私立",
+  "country": "西班牙",
+  "city": "马德里",
+  "country_city": "西班牙-马德里",
+  "city_tier": "一线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1124,
+  "name_zh": "日内瓦大学",
+  "name_en": "University of Geneva",
+  "aliases": [
+   "UNIGE",
+   "University of Geneva",
+   "unige",
+   "university of geneva"
+  ],
+  "school_type": "公立",
+  "country": "瑞士",
+  "city": "日内瓦",
+  "country_city": "瑞士-日内瓦",
+  "city_tier": "一线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1125,
+  "name_zh": "伯尔尼大学",
+  "name_en": "University of Bern",
+  "aliases": [
+   "UNIBE",
+   "University of Bern",
+   "unibe",
+   "university of bern"
+  ],
+  "school_type": "公立",
+  "country": "瑞士",
+  "city": "伯尔尼",
+  "country_city": "瑞士-伯尔尼",
+  "city_tier": "一线",
+  "qs_rank": "临床/牙医/兽医类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1126,
+  "name_zh": "圣拉斐尔大学",
+  "name_en": "Vita-Salute San Raffaele University",
+  "aliases": [
+   "UniSR",
+   "San Raffaele",
+   "san raffaele",
+   "unisr"
+  ],
+  "school_type": "私立",
+  "country": "意大利",
+  "city": "米兰",
+  "country_city": "意大利-米兰",
+  "city_tier": "一线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1127,
+  "name_zh": "胡曼尼塔斯大学",
+  "name_en": "Humanitas University",
+  "aliases": [
+   "Hunimed",
+   "Humanitas",
+   "humanitas",
+   "hunimed"
+  ],
+  "school_type": "私立",
+  "country": "意大利",
+  "city": "米兰",
+  "country_city": "意大利-米兰",
+  "city_tier": "一线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1128,
+  "name_zh": "谢东诺夫第一医科大学",
+  "name_en": "Sechenov University",
+  "aliases": [
+   "Sechenov University",
+   "First Moscow State Medical University",
+   "first moscow state medical university",
+   "sechenov university"
+  ],
+  "school_type": "公立",
+  "country": "俄罗斯",
+  "city": "莫斯科",
+  "country_city": "俄罗斯-莫斯科",
+  "city_tier": "一线",
+  "qs_rank": "临床/牙医类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1129,
+  "name_zh": "蒙特利尔大学",
+  "name_en": "Université de Montréal",
+  "aliases": [
+   "UdeM",
+   "Université de Montréal",
+   "University of Montreal",
+   "university of montreal",
+   "université de montréal",
+   "udem"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "蒙特利尔",
+  "country_city": "加拿大-蒙特利尔",
+  "city_tier": "二三线",
+  "qs_rank": "临床类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1130,
+  "name_zh": "圭尔夫大学",
+  "name_en": "University of Guelph",
+  "aliases": [
+   "U of Guelph",
+   "University of Guelph",
+   "u of guelph",
+   "university of guelph"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "圭尔夫",
+  "country_city": "加拿大-圭尔夫",
+  "city_tier": "二三线",
+  "qs_rank": "兽医类院校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1131,
+  "name_zh": "帕森斯设计学院",
+  "name_en": "Parsons School of Design",
+  "aliases": [
+   "Parsons",
+   "Parsons School of Design",
+   "parsons",
+   "parsons school of design"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "纽约",
+  "country_city": "美国-纽约",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1132,
+  "name_zh": "罗德岛设计学院",
+  "name_en": "Rhode Island School of Design",
+  "aliases": [
+   "RISD",
+   "Rhode Island School of Design",
+   "rhode island school of design",
+   "risd"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "普罗维登斯",
+  "country_city": "美国-普罗维登斯",
+  "city_tier": "二三线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1133,
+  "name_zh": "普瑞特艺术学院",
+  "name_en": "Pratt Institute",
+  "aliases": [
+   "Pratt",
+   "Pratt Institute",
+   "pratt",
+   "pratt institute"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "纽约",
+  "country_city": "美国-纽约",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1134,
+  "name_zh": "芝加哥艺术学院",
+  "name_en": "School of the Art Institute of Chicago",
+  "aliases": [
+   "SAIC",
+   "School of the Art Institute of Chicago",
+   "school of the art institute of chicago",
+   "saic"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "芝加哥",
+  "country_city": "美国-芝加哥",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1135,
+  "name_zh": "加州艺术学院",
+  "name_en": "California Institute of the Arts",
+  "aliases": [
+   "CalArts",
+   "California Institute of the Arts",
+   "calarts",
+   "california institute of the arts"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "洛杉矶",
+  "country_city": "美国-洛杉矶",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1136,
+  "name_zh": "纽约视觉艺术学院",
+  "name_en": "School of Visual Arts",
+  "aliases": [
+   "SVA",
+   "School of Visual Arts",
+   "school of visual arts",
+   "sva"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "纽约",
+  "country_city": "美国-纽约",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1137,
+  "name_zh": "艺术中心设计学院",
+  "name_en": "ArtCenter College of Design",
+  "aliases": [
+   "ArtCenter",
+   "Art Center College of Design",
+   "art center college of design",
+   "artcenter"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "帕萨迪纳",
+  "country_city": "美国-帕萨迪纳",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1138,
+  "name_zh": "马里兰艺术学院",
+  "name_en": "Maryland Institute College of Art",
+  "aliases": [
+   "MICA",
+   "Maryland Institute College of Art",
+   "maryland institute college of art",
+   "mica"
+  ],
+  "school_type": "私立",
+  "country": "美国",
+  "city": "巴尔的摩",
+  "country_city": "美国-巴尔的摩",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1139,
+  "name_zh": "伦敦艺术大学",
+  "name_en": "University of the Arts London",
+  "aliases": [
+   "UAL",
+   "University of the Arts London",
+   "university of the arts london",
+   "ual"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "伦敦",
+  "country_city": "英国-伦敦",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1140,
+  "name_zh": "格拉斯哥艺术学院",
+  "name_en": "The Glasgow School of Art",
+  "aliases": [
+   "GSA",
+   "Glasgow School of Art",
+   "glasgow school of art"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "格拉斯哥",
+  "country_city": "英国-格拉斯哥",
+  "city_tier": "二三线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1141,
+  "name_zh": "伦敦大学金史密斯学院",
+  "name_en": "Goldsmiths, University of London",
+  "aliases": [
+   "Goldsmiths",
+   "Goldsmiths University of London",
+   "goldsmiths",
+   "goldsmiths university of london"
+  ],
+  "school_type": "公立",
+  "country": "英国",
+  "city": "伦敦",
+  "country_city": "英国-伦敦",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1142,
+  "name_zh": "安大略艺术设计大学",
+  "name_en": "OCAD University",
+  "aliases": [
+   "OCAD",
+   "OCAD University",
+   "ocad university",
+   "ocad"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "多伦多",
+  "country_city": "加拿大-多伦多",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1143,
+  "name_zh": "艾米丽卡尔艺术大学",
+  "name_en": "Emily Carr University of Art + Design",
+  "aliases": [
+   "Emily Carr",
+   "ECUAD",
+   "ecuad",
+   "emily carr"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "温哥华",
+  "country_city": "加拿大-温哥华",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1144,
+  "name_zh": "新斯科舍艺术大学",
+  "name_en": "NSCAD University",
+  "aliases": [
+   "NSCAD",
+   "Nova Scotia College of Art and Design",
+   "nscad",
+   "nova scotia college of art and design"
+  ],
+  "school_type": "公立",
+  "country": "加拿大",
+  "city": "哈利法克斯",
+  "country_city": "加拿大-哈利法克斯",
+  "city_tier": "二三线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1145,
+  "name_zh": "香港演艺学院",
+  "name_en": "The Hong Kong Academy for Performing Arts",
+  "aliases": [
+   "HKAPA",
+   "Hong Kong Academy for Performing Arts",
+   "hkapa",
+   "hong kong academy for performing arts"
+  ],
+  "school_type": "公立",
+  "country": "中国香港",
+  "city": "香港",
+  "country_city": "中国香港-香港",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1146,
+  "name_zh": "拉萨尔艺术学院",
+  "name_en": "LASALLE College of the Arts",
+  "aliases": [
+   "LASALLE",
+   "LASALLE College of the Arts",
+   "lasalle",
+   "lasalle college of the arts"
+  ],
+  "school_type": "私立",
+  "country": "新加坡",
+  "city": "新加坡",
+  "country_city": "新加坡-新加坡",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1147,
+  "name_zh": "南洋艺术学院",
+  "name_en": "Nanyang Academy of Fine Arts",
+  "aliases": [
+   "NAFA",
+   "Nanyang Academy of Fine Arts",
+   "nanyang academy of fine arts",
+   "nafa"
+  ],
+  "school_type": "公立",
+  "country": "新加坡",
+  "city": "新加坡",
+  "country_city": "新加坡-新加坡",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1148,
+  "name_zh": "东京艺术大学",
+  "name_en": "Tokyo University of the Arts",
+  "aliases": [
+   "Tokyo Geidai",
+   "Geidai",
+   "Tokyo University of the Arts",
+   "geidai",
+   "tokyo geidai",
+   "tokyo university of the arts"
+  ],
+  "school_type": "公立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1149,
+  "name_zh": "多摩美术大学",
+  "name_en": "Tama Art University",
+  "aliases": [
+   "Tama Art University",
+   "Tama Bijutsu Daigaku",
+   "tama art university",
+   "tama bijutsu daigaku"
+  ],
+  "school_type": "私立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1150,
+  "name_zh": "武藏野美术大学",
+  "name_en": "Musashino Art University",
+  "aliases": [
+   "Musashino Art University",
+   "Musabi",
+   "musabi",
+   "musashino art university"
+  ],
+  "school_type": "私立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1151,
+  "name_zh": "京都市立艺术大学",
+  "name_en": "Kyoto City University of Arts",
+  "aliases": [
+   "KCUA",
+   "Kyoto City University of Arts",
+   "kyoto city university of arts",
+   "kcua"
+  ],
+  "school_type": "公立",
+  "country": "日本",
+  "city": "京都",
+  "country_city": "日本-京都",
+  "city_tier": "二三线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1152,
+  "name_zh": "女子美术大学",
+  "name_en": "Joshibi University of Art and Design",
+  "aliases": [
+   "Joshibi",
+   "Joshibi University",
+   "joshibi",
+   "joshibi university"
+  ],
+  "school_type": "私立",
+  "country": "日本",
+  "city": "东京",
+  "country_city": "日本-东京",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1153,
+  "name_zh": "弘益大学",
+  "name_en": "Hongik University",
+  "aliases": [
+   "Hongik",
+   "Hongik University",
+   "hongik",
+   "hongik university"
+  ],
+  "school_type": "私立",
+  "country": "韩国",
+  "city": "首尔",
+  "country_city": "韩国-首尔",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1154,
+  "name_zh": "梨花女子大学",
+  "name_en": "Ewha Womans University",
+  "aliases": [
+   "Ewha",
+   "Ewha Womans University",
+   "ewha womans university",
+   "ewha"
+  ],
+  "school_type": "私立",
+  "country": "韩国",
+  "city": "首尔",
+  "country_city": "韩国-首尔",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1155,
+  "name_zh": "中央大学",
+  "name_en": "Chung-Ang University",
+  "aliases": [
+   "CAU",
+   "Chung-Ang University",
+   "chung-ang university",
+   "cau"
+  ],
+  "school_type": "私立",
+  "country": "韩国",
+  "city": "首尔",
+  "country_city": "韩国-首尔",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1156,
+  "name_zh": "柏林艺术大学",
+  "name_en": "Berlin University of the Arts",
+  "aliases": [
+   "UdK Berlin",
+   "Universität der Künste Berlin",
+   "udk berlin",
+   "universität der künste berlin"
+  ],
+  "school_type": "公立",
+  "country": "德国",
+  "city": "柏林",
+  "country_city": "德国-柏林",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1157,
+  "name_zh": "魏玛包豪斯大学",
+  "name_en": "Bauhaus-Universität Weimar",
+  "aliases": [
+   "Bauhaus University Weimar",
+   "BUW",
+   "bauhaus university weimar",
+   "buw"
+  ],
+  "school_type": "公立",
+  "country": "德国",
+  "city": "魏玛",
+  "country_city": "德国-魏玛",
+  "city_tier": "二三线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1158,
+  "name_zh": "汉堡造型艺术学院",
+  "name_en": "HFBK Hamburg",
+  "aliases": [
+   "HFBK",
+   "Hochschule für bildende Künste Hamburg",
+   "hochschule für bildende künste hamburg",
+   "hfbk"
+  ],
+  "school_type": "公立",
+  "country": "德国",
+  "city": "汉堡",
+  "country_city": "德国-汉堡",
+  "city_tier": "二三线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1159,
+  "name_zh": "巴黎国立高等装饰艺术学院",
+  "name_en": "École nationale supérieure des Arts Décoratifs",
+  "aliases": [
+   "ENSAD",
+   "Les Arts Décoratifs",
+   "ensad",
+   "les arts décoratifs"
+  ],
+  "school_type": "公立",
+  "country": "法国",
+  "city": "巴黎",
+  "country_city": "法国-巴黎",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1160,
+  "name_zh": "巴黎国立高等美术学院",
+  "name_en": "École nationale supérieure des Beaux-Arts",
+  "aliases": [
+   "Beaux-Arts de Paris",
+   "ENSBA",
+   "beaux-arts de paris",
+   "ensba"
+  ],
+  "school_type": "公立",
+  "country": "法国",
+  "city": "巴黎",
+  "country_city": "法国-巴黎",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1161,
+  "name_zh": "巴黎ESMOD高等时装设计学院",
+  "name_en": "ESMOD International",
+  "aliases": [
+   "ESMOD",
+   "École supérieure des arts et techniques de la mode",
+   "esmod",
+   "école supérieure des arts et techniques de la mode"
+  ],
+  "school_type": "私立",
+  "country": "法国",
+  "city": "巴黎",
+  "country_city": "法国-巴黎",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1162,
+  "name_zh": "米兰新美术学院",
+  "name_en": "Nuova Accademia di Belle Arti",
+  "aliases": [
+   "NABA",
+   "Nuova Accademia di Belle Arti",
+   "nuova accademia di belle arti",
+   "naba"
+  ],
+  "school_type": "私立",
+  "country": "意大利",
+  "city": "米兰",
+  "country_city": "意大利-米兰",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1163,
+  "name_zh": "马兰欧尼学院",
+  "name_en": "Istituto Marangoni",
+  "aliases": [
+   "Istituto Marangoni",
+   "Marangoni",
+   "istituto marangoni",
+   "marangoni"
+  ],
+  "school_type": "私立",
+  "country": "意大利",
+  "city": "米兰",
+  "country_city": "意大利-米兰",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1164,
+  "name_zh": "米兰布雷拉美术学院",
+  "name_en": "Brera Academy",
+  "aliases": [
+   "Accademia di Belle Arti di Brera",
+   "Brera",
+   "accademia di belle arti di brera",
+   "brera"
+  ],
+  "school_type": "公立",
+  "country": "意大利",
+  "city": "米兰",
+  "country_city": "意大利-米兰",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1165,
+  "name_zh": "洛桑艺术设计大学",
+  "name_en": "ECAL / University of Art and Design Lausanne",
+  "aliases": [
+   "ECAL",
+   "École cantonale d'art de Lausanne",
+   "école cantonale d'art de lausanne",
+   "ecal"
+  ],
+  "school_type": "公立",
+  "country": "瑞士",
+  "city": "洛桑",
+  "country_city": "瑞士-洛桑",
+  "city_tier": "二三线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1166,
+  "name_zh": "苏黎世艺术学院",
+  "name_en": "Zurich University of the Arts",
+  "aliases": [
+   "ZHdK",
+   "Zürcher Hochschule der Künste",
+   "zürcher hochschule der künste",
+   "zhdk"
+  ],
+  "school_type": "公立",
+  "country": "瑞士",
+  "city": "苏黎世",
+  "country_city": "瑞士-苏黎世",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1167,
+  "name_zh": "巴塞罗那大学",
+  "name_en": "University of Barcelona",
+  "aliases": [
+   "UB",
+   "Universitat de Barcelona",
+   "universitat de barcelona"
+  ],
+  "school_type": "公立",
+  "country": "西班牙",
+  "city": "巴塞罗那",
+  "country_city": "西班牙-巴塞罗那",
+  "city_tier": "一线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ },
+ {
+  "school_id": 1168,
+  "name_zh": "列宾美术学院",
+  "name_en": "Repin Academy of Fine Arts",
+  "aliases": [
+   "Repin Academy",
+   "Repin Institute of Arts",
+   "repin academy",
+   "repin institute of arts"
+  ],
+  "school_type": "公立",
+  "country": "俄罗斯",
+  "city": "圣彼得堡",
+  "country_city": "俄罗斯-圣彼得堡",
+  "city_tier": "二三线",
+  "qs_rank": "艺术与设计名校",
+  "data_year": 2026
+ }
+]

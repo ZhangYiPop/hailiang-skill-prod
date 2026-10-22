@@ -1,0 +1,12 @@
+schema_version: 1
+id: academic_coach
+name: 学习指导师
+topology: single_expert
+brief: 专攻学习习惯与学习方法培养，针对拖拉磨蹭、上课走神、粗心大意、学习动力不足、手机依赖等常见问题，定位具体成因，给出能在日常学习中逐步调整的做法。
+rule_file: AGENT.md
+skills:
+- study_question
+budget:
+  max_iters: 4
+  max_skill_calls: 3
+capabilities: []

@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "title": "高中多元升学路径推荐 - 分阶段收集（profile / preference / supplement）",
+  "max_fields_per_form": 12,
+  "questions": [
+    {
+      "id": "student_type",
+      "label": "学生类型",
+      "input_type": "single_select",
+      "required": true,
+      "options": [
+        { "value": "内地考生", "label": "内地考生" },
+        { "value": "港澳台考生", "label": "港澳台考生" },
+        { "value": "华侨身份考生", "label": "华侨身份考生" }
+      ]
+    },
+    {
+      "id": "gaokao_province",
+      "label": "高考省份",
+      "input_type": "single_select",
+      "required": true,
+      "options": [
+        { "value": "北京", "label": "北京" },
+        { "value": "天津", "label": "天津" },
+        { "value": "河北", "label": "河北" },
+        { "value": "山西", "label": "山西" },
+        { "value": "内蒙古", "label": "内蒙古" },
+        { "value": "辽宁", "label": "辽宁" },
+        { "value": "吉林", "label": "吉林" },
+        { "value": "黑龙江", "label": "黑龙江" },
+        { "value": "上海", "label": "上海" },
+        { "value": "江苏", "label": "江苏" },
+        { "value": "浙江", "label": "浙江" },
+        { "value": "安徽", "label": "安徽" },
+        { "value": "福建", "label": "福建" },
+        { "value": "江西", "label": "江西" },
+        { "value": "山东", "label": "山东" },
+        { "value": "河南", "label": "河南" },
+        { "value": "湖北", "label": "湖北" },
+        { "value": "湖南", "label": "湖南" },
+        { "value": "广东", "label": "广东" },
+        { "value": "广西", "label": "广西" },
+        { "value": "海南", "label": "海南" },
+        { "value": "重庆", "label": "重庆" },
+        { "value": "四川", "label": "四川" },
+        { "value": "贵州", "label": "贵州" },
+        { "value": "云南", "label": "云南" },
+        { "value": "西藏", "label": "西藏" },
+        { "value": "陕西", "label": "陕西" },
+        { "value": "甘肃", "label": "甘肃" },
+        { "value": "青海", "label": "青海" },
+        { "value": "宁夏", "label": "宁夏" },
+        { "value": "新疆", "label": "新疆" },
+        { "value": "不参加内地高考", "label": "不参加内地高考" }
+      ]
+    },
+    {
+      "id": "grade",
+      "label": "当前年级",
+      "input_type": "single_select",
+      "required": true,
+      "options": [
+        { "value": "高一", "label": "高一" },
+        { "value": "高二", "label": "高二" },
+        { "value": "高三", "label": "高三" }
+      ]
+    },
+    {
+      "id": "subject_choice",
+      "label": "（意向）选科科目",
+      "input_type": "multi_select",
+      "required": false,
+      "max_selections": 3,
+      "options": [
+        { "value": "物理", "label": "物理" },
+        { "value": "化学", "label": "化学" },
+        { "value": "生物", "label": "生物" },
+        { "value": "政治", "label": "政治" },
+        { "value": "历史", "label": "历史" },
+        { "value": "地理", "label": "地理" },
+        { "value": "技术", "label": "技术（仅限浙江）" }
+      ]
+    },
+    {
+      "id": "estimated_score",
+      "label": "预估高考总分",
+      "input_type": "number",
+      "required": true,
+      "value_type": "integer",
+      "min": 0,
+      "max": 900,
+      "decimal_places": 0,
+      "unit": "分"
+    },
+    {
+      "id": "foreign_lang",
+      "label": "高考外语科目",
+      "input_type": "single_select",
+      "required": true,
+      "options": [
+        { "value": "英语", "label": "英语" },
+        { "value": "日语", "label": "日语" },
+        { "value": "俄语", "label": "俄语" },
+        { "value": "德语", "label": "德语" },
+        { "value": "法语", "label": "法语" },
+        { "value": "西班牙语", "label": "西班牙语" }
+      ]
+    },
+    {
+      "id": "english_score",
+      "label": "英语大考成绩",
+      "input_type": "number",
+      "required": false,
+      "value_type": "integer",
+      "min": 0,
+      "max": 150,
+      "decimal_places": 0,
+      "unit": "分",
+      "display_condition": {
+        "question_id": "foreign_lang",
+        "operator": "equals",
+        "value": "英语"
+      }
+    },
+    {
+      "id": "ethnicity",
+      "label": "民族",
+      "input_type": "single_select",
+      "required": false,
+      "options": [
+        { "value": "汉族", "label": "汉族" },
+        { "value": "少数民族", "label": "少数民族（非汉族）" }
+      ]
+    },
+    {
+      "id": "border_guard_child",
+      "label": "是否为边防军人子女",
+      "input_type": "single_select",
+      "required": false,
+      "options": [
+        { "value": "是", "label": "是" },
+        { "value": "否", "label": "否" }
+      ]
+    },
+    {
+      "id": "region_preference",
+      "label": "地域偏好（是否接受出国或港澳升学）",
+      "input_type": "single_select",
+      "required": false,
+      "options": [
+        { "value": "接受出国或港澳升学", "label": "接受，出国或港澳都可以考虑" },
+        { "value": "仅考虑内地升学", "label": "不接受，只考虑内地升学" }
+      ]
+    },
+    {
+      "id": "education_budget",
+      "label": "家庭每年学费投入（教育预算）",
+      "input_type": "single_select",
+      "required": false,
+      "options": [
+        { "value": "1万以下", "label": "1万以下" },
+        { "value": "1万~5万", "label": "1万~5万" },
+        { "value": "5万以上", "label": "5万以上" }
+      ]
+    },
+    {
+      "id": "aspiration_goal",
+      "label": "升学目标（可多选）",
+      "input_type": "multi_select",
+      "required": false,
+      "options": [
+        { "value": "冲刺院校层次", "label": "冲刺更好的院校层次" },
+        { "value": "优先考虑特定职业", "label": "优先考虑特定职业" },
+        { "value": "没有明确想法", "label": "没有明确想法" }
+      ]
+    },
+    {
+      "id": "career_priority",
+      "label": "就业优先时的职业方向（可多选）",
+      "input_type": "multi_select",
+      "required": false,
+      "max_selections": 6,
+      "options": [
+        { "value": "军警", "label": "军警（军校/警校）" },
+        { "value": "师范", "label": "师范" },
+        { "value": "农学", "label": "农学（定向）" },
+        { "value": "医学", "label": "医学（定向）" },
+        { "value": "飞行员", "label": "飞行员（招飞）" },
+        { "value": "以上都不感兴趣", "label": "以上都不感兴趣" }
+      ]
+    },
+    {
+      "id": "zhejiang_xuekao",
+      "label": "浙江学考是否全部合格",
+      "input_type": "single_select",
+      "required": false,
+      "options": [
+        { "value": "全部合格", "label": "是，全部合格" },
+        { "value": "有未合格", "label": "否，有科目未合格" },
+        { "value": "未参加", "label": "尚未参加" }
+      ],
+      "display_condition": {
+        "question_id": "gaokao_province",
+        "operator": "equals",
+        "value": "浙江"
+      }
+    },
+    {
+      "id": "olympiad_level",
+      "label": "五大学科竞赛最佳成绩",
+      "input_type": "single_select",
+      "required": false,
+      "options": [
+        { "value": "无", "label": "无" },
+        { "value": "省三", "label": "省三等奖" },
+        { "value": "省二", "label": "省二等奖" },
+        { "value": "省一", "label": "省一等奖" },
+        { "value": "国奖", "label": "国家级奖项（银/铜及以上）" },
+        { "value": "国集", "label": "国家集训队" }
+      ]
+    },
+    {
+      "id": "gender",
+      "label": "性别",
+      "input_type": "single_select",
+      "required": false,
+      "options": [
+        { "value": "男", "label": "男" },
+        { "value": "女", "label": "女" }
+      ],
+      "display_condition": {
+        "question_id": "career_priority",
+        "operator": "in",
+        "value": [
+          "军警",
+          "飞行员"
+        ]
+      }
+    },
+    {
+      "id": "height_cm",
+      "label": "身高（cm）",
+      "input_type": "number",
+      "required": false,
+      "value_type": "integer",
+      "min": 100,
+      "max": 250,
+      "decimal_places": 0,
+      "unit": "cm",
+      "display_condition": {
+        "question_id": "career_priority",
+        "operator": "in",
+        "value": [
+          "军警",
+          "飞行员"
+        ]
+      }
+    },
+    {
+      "id": "vision_left",
+      "label": "左眼裸眼视力（保留一位小数）",
+      "input_type": "number",
+      "required": false,
+      "value_type": "number",
+      "min": 0,
+      "max": 6,
+      "decimal_places": 1,
+      "display_condition": {
+        "question_id": "career_priority",
+        "operator": "in",
+        "value": [
+          "军警",
+          "飞行员"
+        ]
+      }
+    },
+    {
+      "id": "vision_right",
+      "label": "右眼裸眼视力（保留一位小数）",
+      "input_type": "number",
+      "required": false,
+      "value_type": "number",
+      "min": 0,
+      "max": 6,
+      "decimal_places": 1,
+      "display_condition": {
+        "question_id": "career_priority",
+        "operator": "in",
+        "value": [
+          "军警",
+          "飞行员"
+        ]
+      }
+    }
+  ]
+}

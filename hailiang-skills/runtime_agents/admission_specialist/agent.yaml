@@ -1,0 +1,14 @@
+schema_version: 1
+id: admission_specialist
+name: 升学指导专家
+topology: single_expert
+brief: 专注初高中升学规划，面向学生与家长给出新高考选科指导、多元升学路径解读、分数与院校层次定位及清晰务实的规划参考。
+rule_file: AGENT.md
+skills:
+- multi_path_planning
+- subject_advisor
+- mock_admission
+budget:
+  max_iters: 4
+  max_skill_calls: 3
+capabilities: []

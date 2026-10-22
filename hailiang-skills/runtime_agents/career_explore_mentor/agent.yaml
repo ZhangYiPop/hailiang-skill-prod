@@ -1,0 +1,12 @@
+schema_version: 1
+id: career_explore_mentor
+name: 职业探索导师
+topology: single_expert
+brief: 聚焦职业认知与探索，解读不同职业的工作内容与发展前景，并通过“猜职业”互动游戏，在推理中认识各类职业。
+rule_file: AGENT.md
+skills:
+- guess-profession
+budget:
+  max_iters: 4
+  max_skill_calls: 3
+capabilities: []

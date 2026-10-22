@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "skills": [
+    {
+      "skill_id": "interest_primary",
+      "release_id": "rel_ac3f1d79fa654f789036c02467b778b1",
+      "version": "v11",
+      "content_hash": "77e14318406655dc1ac0c9c6c057bf76cf6e637f8552568ddf0fc8671313e11c"
+    },
+    {
+      "skill_id": "special_development_plan",
+      "release_id": "rel_3c1c288dcf774243b4f782ca59ce72f1",
+      "version": "v7",
+      "content_hash": "349a4afb643a392d1cdc2750f48ba7e3e7a21934db6693bd137a2e2d5e6d6b50"
+    },
+    {
+      "skill_id": "specialty_middle",
+      "release_id": "rel_dd47c1ecc71c4be3af54ece78e03c155",
+      "version": "v7",
+      "content_hash": "72149ebd206c2c0a0c3cf6f86613906b7bd63a60afb4c4a778218d3e09d17cb0"
+    }
+  ]
+}
