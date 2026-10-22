@@ -28,10 +28,16 @@ class HarnessError(ValueError):
 
 
 def _normalize_option(option: Any) -> Any:
-    """Accept model-emitted ``key`` as an alias of the required ``value`` field."""
+    """Accept model-emitted ``key`` as an alias of the required ``value`` field.
+    Also handle {option_key: option_text} format like {"A": "跑出去找朋友玩"}."""
     if not isinstance(option, dict):
         return option
     normalized = dict(option)
+    # 处理 {key: text} 格式（如 {"A": "跑出去找朋友玩"}）
+    if "label" not in normalized and "value" not in normalized:
+        for k, v in normalized.items():
+            if k not in ("label", "value") and isinstance(v, str):
+                return {"label": str(k), "value": str(v)}
     if "value" not in normalized and "key" in normalized:
         normalized["value"] = normalized.pop("key")
     elif "key" in normalized and normalized.get("key") == normalized.get("value"):
@@ -72,6 +78,35 @@ class InputField(BaseModel):
         return self
 
 
+def _normalize_option_dict(o: dict) -> dict[str, str]:
+    """将任意 option dict 规范化为 {label, value} 格式。
+
+    处理三种模型常见输出：
+    - {label, value} → 直接返回
+    - {key: text} 如 {"A": "跑出去找朋友玩"} → {label: "A", value: "跑出去找朋友玩"}
+    - 只有 value 缺 label → label 补为 value
+    - 只有 label 缺 value → value 补为 label
+    - 其他格式 → 尽量提取可用的 label/value
+    """
+    # 已经是标准格式
+    if "label" in o and "value" in o:
+        return {"label": str(o["label"]), "value": str(o["value"])}
+    # {key: text} 格式：取第一个非 label/value 的键值对
+    for k, v in o.items():
+        if k not in ("label", "value") and isinstance(v, str):
+            return {"label": str(k), "value": str(v)}
+    # 兜底：互为缺省，避免 str(o) 产生 Python repr 串（如 "{'value': '初三'}"）
+    val = str(o.get("value") or "")
+    lbl = str(o.get("label") or val)
+    if not val:
+        val = lbl
+    if not lbl:
+        lbl = val
+    if not lbl:
+        lbl = val = str(o)
+    return {"label": lbl, "value": val}
+
+
 class InputArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1, max_length=240)
@@ -103,11 +138,11 @@ def normalize_input_arguments(arguments: dict) -> dict:
             item["options"] = [{"label": label, "value": value} for label, value in options.items()]
         elif item.get("input_type") in {"single_select", "multi_select"} and isinstance(options, list):
             # 模型常生成只有 value 缺 label、或只有 label 但 value 为空串的 option。
+            # 也处理 {key: text} 格式（如 {"A": "跑出去找朋友玩"}）。
             item["options"] = [
                 (
                     lambda o: (
-                        {"label": o.get("label") or str(o.get("value", "")),
-                         "value": str(o.get("value", "")) or o.get("label") or str(o)}
+                        _normalize_option_dict(o)
                     ) if isinstance(o, dict) else {"label": str(o), "value": str(o)}
                 )(o)
                 for o in options

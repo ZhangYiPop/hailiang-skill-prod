@@ -68,7 +68,7 @@ def test_plain_question_cannot_silently_complete_expert_or_parent(tmp_path):
     run = runtime.store.get(rid)
     expert = next(t for t in run['tasks'].values() if t['kind'] == 'expert')
     assert expert['error'] == 'RESULT_PROTOCOL_REQUIRED'
-    assert expert['model_calls'] == 2
+    assert expert['model_calls'] == 3
     assert run['status'] == 'failed'
     assert run['error'] == 'REQUIRED_TASK_FAILED'
     assert '未经验证' not in run['result']

@@ -830,15 +830,24 @@ class HarnessRuntime:
                         # must declare their outcome instead of silently treating
                         # a question or draft as a completed task.
                         attempts = live.get("result_protocol_repairs", 0)
-                        if attempts >= 1:
+                        if attempts >= 2:
                             live.update(status="failed", error="RESULT_PROTOCOL_REQUIRED", ended_at=now())
                             changes.append({"event": "task_failed", "node_id": task_id})
                             self._settle(current, changes, db)
                             return
                         live["result_protocol_repairs"] = attempts + 1
+                        has_input = any(t["name"] == "request_user_input" and t["status"] == "completed" for t in current["tools"].values() if t["task_id"] == task_id)
+                        hint = ""
+                        if attempts == 0:
+                            hint = "需要用户信息必须调用 request_user_input；已完成或受限结果必须单独调用 submit_result，准确填写状态与未解决事项。普通文本不构成完成。"
+                        else:
+                            if has_input:
+                                hint = "你已经有用户输入了，不要再重复开场白或问候语。直接读取条目卡做匹配诊断，完成后调用 submit_result。不要输出任何自由文本。"
+                            else:
+                                hint = "必须先调用 request_user_input 获取用户信息，不要输出自由文本替代。需要结论时必须调用 submit_result。"
                         live["messages"].extend([
                             {"role": "assistant", "content": response.final_text},
-                            {"role": "user", "content": "运行协议要求：需要用户信息必须调用 request_user_input；已完成或受限结果必须单独调用 submit_result，准确填写状态与未解决事项。普通文本不构成完成。"}])
+                            {"role": "user", "content": f"运行协议要求：{hint}"}])
                         live["status"] = "queued"
                         changes.append({"event": "result_protocol_retry", "node_id": task_id})
                         return

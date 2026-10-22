@@ -222,8 +222,9 @@
           if ((field.input_type === "single_select" || field.input_type === "multi_select") && options.length) {
             const many = field.input_type === "multi_select" ? "multiple size='4'" : "";
             control = `<select id="${name}" ${many}>${options.map((option) => {
-              const value = typeof option === "string" ? option : (option.value || option.label || "");
-              return `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`;
+              const value = typeof option === "string" ? option : (option.value || "");
+              const text = typeof option === "string" ? option : (option.label || option.value || "");
+              return `<option value="${escapeHtml(value)}">${escapeHtml(text)}</option>`;
             }).join("")}</select>`;
           }
           return `<div class="form-field"><strong>${escapeHtml(field.label || field.question_id)}</strong>${control}</div>`;
