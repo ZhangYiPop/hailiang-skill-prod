@@ -106,6 +106,15 @@ resolve_infra_port() {
   choose_host_port "$preferred" "$@"
 }
 start_local_sandbox_runner() {
+  if [ "${HAILIANG_SANDBOX_MANAGE_RUNNER:-1}" = "0" ]; then
+    export HAILIANG_SCRIPT_EXECUTOR="remote"
+    export HAILIANG_SANDBOX_ENDPOINT="${HAILIANG_SANDBOX_ENDPOINT:-http://127.0.0.1:${SANDBOX_RUNNER_PORT}}"
+    export HAILIANG_REQUIRE_REMOTE_SANDBOX="${HAILIANG_REQUIRE_REMOTE_SANDBOX:-true}"
+    echo "   使用外部 Skill Runner: ${HAILIANG_SANDBOX_ENDPOINT}"
+    if curl --connect-timeout 1 --max-time 2 -fsS "${HAILIANG_SANDBOX_ENDPOINT}/healthz" >/dev/null 2>&1; then return; fi
+    echo "❌ 外部 Skill Runner 未就绪：${HAILIANG_SANDBOX_ENDPOINT}/healthz"
+    exit 1
+  fi
   require_command docker
   if ! docker info >/dev/null 2>&1; then
     echo "❌ Docker Desktop 尚未启动，无法启动本地 Skill 沙箱 Runner。"
