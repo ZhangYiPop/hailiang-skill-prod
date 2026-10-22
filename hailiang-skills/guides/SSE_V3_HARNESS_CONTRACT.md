@@ -13,7 +13,7 @@ V3 的一帧是一个**完整助手气泡快照**。BFF 将最新帧整体替换
 | `session_id` | BFF | 会话 ID。请求和每个 SSE 帧原样一致。 |
 | `run_id` | BFF | 一次 HTTP 请求的幂等键。BFF 创建，重试同一请求时复用；恢复或回答可使用新的值。字段名固定为 snake_case `run_id`，不是 `runId`。 |
 | `assistant_message_id` | 算法服务 | 此次 Harness 任务的稳定助手气泡 ID。任务拆解、专家过程、表单、专家结论和最终正文都更新该气泡。 |
-| `expert_team_id` | BFF | 除 `stop` 外每个 `input` 的必填团队选择器。兼容单个字符串；推荐传字符串数组，为多专家团预留。首次 `chat` 选择团队，后续表单回答和重连沿用同一选择。 |
+| `expert_team_id` | BFF | 专家团模式 `chat`、表单回答和重连的必填团队选择器。省略它的 `chat` 是普通通用对话。兼容单个字符串；推荐传字符串数组，为多专家团预留。 |
 | `expert_team_ids` | 算法服务 | 每帧回显的规范化团队选择数组。当前与 `expert_team_id` 一一对应；未来多团队编排启用后才可能含多个值。 |
 | `team_orchestration_version` | 算法服务 | 本 run 的团队编排兼容版本。当前固定为 `single_team_v1`；旧记录缺失时也按该单团队语义解释。 |
 
@@ -53,7 +53,7 @@ V3 的一帧是一个**完整助手气泡快照**。BFF 将最新帧整体替换
 {"action":"stop","source":"composer"}
 ```
 
-App 不直接调用 stream 入口的停止动作。`chat` 和 `answer_input_request` 缺少或改写 `expert_team_id` 均应被拒绝；要换专家团，创建新的 `run_id` 并发起新的 `chat`。
+App 不直接调用 stream 入口的停止动作。普通 `chat` 可以省略 `expert_team_id`，并且只产生普通助手气泡；专家团 `chat`、`answer_input_request` 与 `resume` 缺少或改写它均应被拒绝。要换专家团，创建新的 `run_id` 并发起新的团队 `chat`。
 
 `expert_team_id` 的推荐类型为 `string[]`，例如 `["student_growth_expert_team"]`；历史 `string` 仍兼容。当前 `orchestrator_head` 只具备**单团队**编排能力，因此数组必须恰好含一个、去重后的合法团队 ID。传入多个团队将返回 `422 MULTI_EXPERT_TEAMS_NOT_ENABLED`，不会静默选择第一个；该限制将在多团队协调能力实现后移除。`stop` 不传该字段。
 

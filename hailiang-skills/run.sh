@@ -274,10 +274,17 @@ fi
 BACKEND_PORT="$(choose_application_port "$BACKEND_PORT" 8010 8011 8012 8013)"
 FRONTEND_PORT="$(choose_application_port "$FRONTEND_PORT" 4175 4176 4177)"
 export BACKEND_PORT FRONTEND_PORT
-# The browser may open Vite as localhost or 127.0.0.1. Keep both local
-# origins explicitly allowed, while the frontend derives the API hostname
-# from the page URL to avoid localhost <-> 127.0.0.1 fetch failures.
+# The browser may open Vite as localhost, 127.0.0.1, or this machine's LAN
+# address. Keep each concrete local origin explicitly allowed, while the
+# frontend derives the API hostname from the page URL to avoid cross-origin
+# fetch failures when the port chooser moves Vite.
 HAILIANG_CORS_ORIGINS="${HAILIANG_CORS_ORIGINS},http://localhost:${FRONTEND_PORT},http://127.0.0.1:${FRONTEND_PORT}"
+for LAN_INTERFACE in en0 en1; do
+  LAN_IP="$(ipconfig getifaddr "$LAN_INTERFACE" 2>/dev/null || true)"
+  if [ -n "$LAN_IP" ]; then
+    HAILIANG_CORS_ORIGINS="${HAILIANG_CORS_ORIGINS},http://${LAN_IP}:${FRONTEND_PORT}"
+  fi
+done
 export HAILIANG_CORS_ORIGINS
 echo "🚀 启动后端：http://127.0.0.1:${BACKEND_PORT}"
 PYTHONPATH="$PROJECT_DIR/src:$AGENT_SKILL_RUNTIME_CORE_PATH" \

@@ -3,7 +3,7 @@
 > 协议：`hailiang.sse.v3`
 > 入口：`POST /api/v3/sessions/chat/stream`
 
-前端（App 或 Web）只发送用户问题、当前追问卡答案或停止指令，以及除停止外每次动作对应的 `expert_team_id`。团队内的专家选择、Skill 选择、任务恢复、问题组推进和任务编排均由算法服务完成。
+前端（App 或 Web）只发送用户问题、当前追问卡答案或停止指令。`chat` 携带 `expert_team_id` 时进入专家团任务模式；省略它时进入普通 `general_chat` 模式。团队内的专家选择、Skill 选择、任务恢复、问题组推进和任务编排均由算法服务完成。
 
 ## 调用层次
 
@@ -52,7 +52,7 @@ BFF 到算法服务的请求外层与 v2 一致，`input` 必须是 JSON 字符�
 {"action":"stop","source":"composer"}
 ```
 
-`expert_team_id` 是 `chat` 和 `answer_input_request` 的必填团队边界。推荐类型是 `string[]`，例如 `["student_growth_expert_team"]`；单字符串兼容已有调用。当前 `orchestrator_head` 仅支持单团队编排，数组传入多个团队会返回 `422 MULTI_EXPERT_TEAMS_NOT_ENABLED`，绝不会悄悄选择第一个。服务端验证该团队与协调专家后冻结到本次 run 的 policy。新的 `chat` 可换团队；服务端会取消当前活动 run 并以新团队重新编排。回答必须带所属 run 的同一团队选择，团队不匹配返回 `409 EXPERT_TEAM_MISMATCH`。停止由 BFF 转发，不传团队。
+`expert_team_id` 对团队模式的 `chat`、`answer_input_request` 与 `resume` 是必填团队边界；省略它的 `chat` 是普通通用对话。推荐类型是 `string[]`，例如 `["student_growth_expert_team"]`；单字符串兼容已有调用。服务端优先使用会话冻结的正式版本；该团队没有冻结版本时使用项目文件中的同 ID 兜底团队。回答必须带所属 run 的同一团队选择，团队不匹配返回 `409 EXPERT_TEAM_MISMATCH`。
 回答卡不传 `submission_id`、`expected_version`，但必须传当前气泡的 `assistant_message_id`。服务端按 `request_id` 和规范化答案去重：相同答案幂等返回；不同答案在活动任务中作为用户更正写入新事实版本并重新分析依赖旧事实的节点。`resume` 用于在 `done_timeout`、App 重启或网络恢复后重新接入同一个尚未结束的任务；它不会重新拆分或分派专家。
 
 ## SSE 响应

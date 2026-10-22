@@ -101,6 +101,7 @@ export type ChatMessage = {
   skillId?: string;
   skillName?: string;
   agentLabel?: string;
+  expertTeamId?: string;
   skillBrief?: string;
   skillInfo?: string;
   sceneName?: string;

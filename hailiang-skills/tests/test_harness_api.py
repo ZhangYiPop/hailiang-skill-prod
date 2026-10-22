@@ -35,6 +35,28 @@ class Facts:
         return None
 
 
+def test_v3_product_state_projects_input_for_task_progress_card():
+    """The public state must be directly renderable by TaskProgressBlock."""
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import _project_product_state
+
+    snapshot = {
+        'runs': [{'id': 'internal-run', 'goal': '规划'}],
+        'nodes': [{'id': 'task-internal', 'run_id': 'internal-run', 'kind': 'main', 'status': 'waiting_for_user', 'title': '主任务'}],
+        'input_requests': [{
+            'id': 'input-1', 'run_id': 'internal-run', 'title': '补充信息', 'status': 'pending', 'round': 1,
+            'version': 3, 'fields': [], 'owner_task_id': 'task-internal',
+            'bindings': [{'task_id': 'task-internal', 'tool_id': 'tool-internal'}],
+        }],
+        'input_groups': [],
+        'messages': [],
+    }
+    state = _project_product_state(snapshot, {'run_id': 'internal-run', 'assistant_message_id': 'msg-1', 'status': 'waiting_for_user'})
+    request = state['inputs'][0]
+    assert request['version'] == 3
+    assert request['owner_task_id'] == 'node_1'
+    assert request['bindings'] == [{'task_id': 'node_1', 'tool_id': 'tool-internal'}]
+
+
 def test_run_api_ownership_idempotence_modes_and_private_trace(tmp_path, monkeypatch):
     import hailiang_skills.api.routes.harness as api
     monkeypatch.setattr(api, 'capture_policy', lambda *_: policy())
@@ -258,10 +280,12 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
     orchestrator = SimpleNamespace(
         expert_registry=SimpleNamespace(get=lambda key: expert if key == 'expert-a' else None),
         expert_team_registry=SimpleNamespace(get=lambda key: team if key == 'team-a' else None),
+        handle_message=lambda content, _context: SimpleNamespace(assistant_message=f'通用回复：{content}'),
     )
     runtime = make_runtime(tmp_path, lambda messages, *_: AssistantTurnResult(final_text='完成') if any(m.role == 'tool' for m in messages) else call('request_user_input', QUESTION))
+    repository = Repository()
     app = FastAPI()
-    app.include_router(build_harness_chat_stream_v3_router(Repository(), V3Facts(), orchestrator, runtime), prefix='/api/v3')
+    app.include_router(build_harness_chat_stream_v3_router(repository, V3Facts(), orchestrator, runtime), prefix='/api/v3')
     body = {
         'session_id': 's', 'run_id': 'client-1',
         'input': json.dumps({'action': 'chat', 'content': '请规划', 'expert_team_id': 'team-a'}, ensure_ascii=False),
@@ -333,10 +357,6 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         mismatch['run_id'] = 'answer-mismatch'
         mismatch['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-b'}, ensure_ascii=False)
         assert client.post('/api/v3/sessions/chat/stream', json=mismatch).status_code == 409
-        missing_team = deepcopy(body)
-        missing_team['run_id'] = 'client-missing-team'
-        missing_team['input'] = json.dumps({'action': 'chat', 'content': '请规划'}, ensure_ascii=False)
-        assert client.post('/api/v3/sessions/chat/stream', json=missing_team).status_code == 422
         stop = {
             'session_id': 's', 'run_id': 'client-1',
             'input': json.dumps({'action': 'stop', 'source': 'composer'}, ensure_ascii=False),
@@ -345,6 +365,16 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         stopped = client.post('/api/v3/sessions/chat/stream', json=stop)
         assert stopped.status_code == 200
         assert runtime.store.get(run['run_id'])['status'] == 'cancelled'
+        general = client.post('/api/v3/sessions/chat/stream', json={
+            'session_id': 's', 'run_id': 'general-1',
+            'input': json.dumps({'action': 'chat', 'content': '普通问题'}, ensure_ascii=False),
+            'context_data': {'user_id': 'u', 'profile_id': 'p'},
+        })
+        assert general.status_code == 200
+        assert '"conversation_mode": "general"' in general.text
+        assert '通用回复：普通问题' in general.text
+        assert repository.get('s').session_meta.get('expert_team_id') is None
+        assert len(runtime.store.runs('s')) == 1
         # The canonical selector form is a list; a single selected team stays
         # compatible with the current single-team orchestration head.
         list_selector = deepcopy(body)

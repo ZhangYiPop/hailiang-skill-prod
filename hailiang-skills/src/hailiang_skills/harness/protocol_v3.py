@@ -101,6 +101,10 @@ def project(db, run):
     scope = lock_scope(db, run['session_id'], run['user_id'], run['profile_id'])
     public = HarnessRuntime.public(run)
     rid = run['run_id']
+    # A restored task card must be able to submit its next answer to the same
+    # team after a browser refresh. This identifier is public configuration,
+    # not a private policy prompt or an internal execution ID.
+    public['expert_team_id'] = run.get('policy', {}).get('team_id')
     nodes, inputs, groups = public.pop('nodes'), public.pop('inputs'), public.pop('input_groups', [])
     # Explicit queue projection keeps card scheduling out of BFF/frontend code.
     ordered_inputs = sorted(inputs, key=lambda item: (item.get('created_at', ''), item['id']))

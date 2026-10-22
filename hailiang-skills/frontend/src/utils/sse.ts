@@ -50,6 +50,14 @@ function parseChunk(rawEvent: string): StreamEvent[] {
       return [{ event: "done", data: data as StreamEvent["data"] }];
     }
     if (
+      (eventName === "done_suspended" || eventName === "done_timeout")
+      && data.protocol === "hailiang.sse.v3"
+      && typeof data.session_id === "string"
+      && typeof data.run_id === "string"
+    ) {
+      return [{ event: eventName, data: data as StreamEvent["data"] }];
+    }
+    if (
       (eventName === "message.delta" || eventName === "message.reset")
       && data.protocol === "hailiang.sse.v3"
     ) {

@@ -168,10 +168,23 @@ def capture_policy(orchestrator, context):
     if entries:
         from hailiang_skills.workbench.catalog import build_runtime_registries
         skills, experts, teams = build_runtime_registries(entries)
+    filesystem_team_id = str(context.session_meta.get("filesystem_team_fallback_id") or "").strip()
+    if filesystem_team_id:
+        # The selected team was absent from the frozen deployment. Freeze the
+        # complete checked-in package for this run so a later deployment edit
+        # cannot change its experts or Skills mid-conversation.
+        from hailiang_skills.runtime_bridge.expert_bundle import load_local_expert_registry
+        from hailiang_skills.runtime_bridge.expert_team_bundle import load_local_expert_team_registry
+        from hailiang_skills.runtime_bridge.main_planner import (
+            PROJECT_RUNTIME_AGENTS_ROOT,
+            PROJECT_RUNTIME_AGENT_TEAMS_ROOT,
+        )
+        skills = orchestrator._load_runtime_registry()
+        experts = load_local_expert_registry(PROJECT_RUNTIME_AGENTS_ROOT, skills)
+        teams = load_local_expert_team_registry(PROJECT_RUNTIME_AGENT_TEAMS_ROOT, experts)
     team_id = context.session_meta.get("expert_team_id")
-    if not team_id:
-        from hailiang_skills.runtime_bridge.default_expert_team import default_expert_team_id
-        team_id = default_expert_team_id()
+    if filesystem_team_id and team_id != filesystem_team_id:
+        raise HarnessError("EXPERT_TEAM_NOT_AUTHORIZED", 403)
     team = teams.get(team_id)
     if context.session_meta.get("expert_team_id") and team is None:
         raise HarnessError("EXPERT_TEAM_NOT_AUTHORIZED", 403)

@@ -53,8 +53,33 @@ function runMessages(run: HarnessRun): ChatMessage[] {
     { id: `harness-user-${run.run_id}`, role: "user", content: run.goal, createdAt: run.created_at, blocks: [], messageType: "harness" },
     { id: run.assistant_message_id || `harness-work-${run.run_id}`, role: "assistant", content: "", createdAt: run.created_at,
       agentLabel: "主 agent", blocks: [{ type: "task_progress", payload: { run } }, ...(result ? [{ type: "markdown" as const, payload: { content: result } }] : [])],
-      streamingStatus: run.message_status === "streaming" ? "streaming" : run.status === "failed" ? "failed" : "completed", messageType: "harness" },
+      streamingStatus: run.message_status === "streaming" ? "streaming" : run.status === "failed" ? "failed" : "completed",
+      messageType: "harness", expertTeamId: run.expert_team_id || undefined },
   ];
+}
+
+function teamRunFromProduct(data: Record<string, unknown>): HarnessRun {
+  const product = (data.state || {}) as Record<string, unknown>;
+  return {
+    ...product,
+    run_id: String(data.assistant_message_id || data.run_id || ""),
+    session_id: String(data.session_id || ""),
+    profile_id: (data.profile_id as string | null | undefined) ?? null,
+    goal: String(product.goal || ""),
+    status: String(product.status || data.stream_status || "running"),
+    version: Number(data.record_version || 0),
+    root_task_id: String(product.root_task_id || ""),
+    nodes: Array.isArray(product.nodes) ? product.nodes as HarnessRun["nodes"] : [],
+    inputs: Array.isArray(product.inputs) ? product.inputs as HarnessRun["inputs"] : [],
+    input_groups: Array.isArray(product.input_groups) ? product.input_groups as HarnessRun["input_groups"] : [],
+    input_queue: product.input_queue as HarnessRun["input_queue"],
+    created_at: String(product.created_at || ""),
+    updated_at: String(product.updated_at || ""),
+    result: String(product.result || (product.assistant_message as { content?: string } | undefined)?.content || ""),
+    completed_count: Number(product.completed_count || 0),
+    task_count: Number(product.task_count || 0),
+    waiting_count: Number(product.waiting_count || 0),
+  } as HarnessRun;
 }
 export async function refreshHarness(): Promise<HarnessSnapshot> {
   const state = useChatStore.getState();
@@ -132,8 +157,10 @@ export async function sendHarnessIfEnabled(content: string): Promise<boolean> {
  * command and the authoritative incremental reply channel. */
 async function sendHarnessV3Chat(content: string): Promise<boolean> {
   const state = useChatStore.getState();
-  const teamId = state.pendingExpertTeamId || state.activeExpertTeam?.team_id || "";
-  if (!teamId) return false;
+  // A team is opt-in per new message. An older team task may remain visible
+  // for answer submission, but must never silently capture ordinary chat.
+  const teamId = state.pendingExpertTeamId;
+  const isTeamChat = Boolean(teamId);
   if (state.pendingExpertTeamId) {
     const team = state.expertTeamCatalog.find((item) => item.team_id === state.pendingExpertTeamId);
     if (team) state.setActiveExpertTeam({
@@ -150,7 +177,7 @@ async function sendHarnessV3Chat(content: string): Promise<boolean> {
   const who = identity();
   const requestRunId = createUuid();
   const assistantId = state.createAssistantPlaceholder();
-  state.updateMessage(assistantId, (message) => ({ ...message, messageType: "harness" }));
+  state.updateMessage(assistantId, (message) => ({ ...message, messageType: isTeamChat ? "harness" : "general_v3", expertTeamId: teamId || undefined }));
   state.appendMessage({
     id: `harness-user-${requestRunId}`,
     role: "user",
@@ -177,7 +204,7 @@ async function sendHarnessV3Chat(content: string): Promise<boolean> {
       body: {
         session_id: state.sessionId,
         run_id: requestRunId,
-        input: JSON.stringify({ action: "chat", content, expert_team_id: teamId }),
+        input: JSON.stringify({ action: "chat", content, ...(isTeamChat ? { expert_team_id: teamId } : {}) }),
         context_data: {
           ...who,
           ...(who.profile_id ? {
@@ -191,6 +218,7 @@ async function sendHarnessV3Chat(content: string): Promise<boolean> {
       protocol: "hailiang.sse.v3",
       onEvent: (event) => {
         const data = event.data as Record<string, unknown>;
+        const isTeamFrame = data.conversation_mode === "team" || (isTeamChat && data.conversation_mode !== "general");
         if (event.event === "message.reset") {
           revision = Number(data.revision || revision + 1);
           rendered = "";
@@ -208,11 +236,16 @@ async function sendHarnessV3Chat(content: string): Promise<boolean> {
           state.appendAssistantDelta(assistantId, text);
           return;
         }
-        if (event.event === "state" || event.event === "done") {
+        if (event.event === "state" || event.event === "done" || event.event === "done_suspended" || event.event === "done_timeout") {
           const product = data.state as Record<string, unknown> | undefined;
           const serverMessageId = String(data.assistant_message_id || "");
           const result = String((product?.result as string | undefined) || (product?.assistant_message as { content?: string } | undefined)?.content || "");
-          if (serverMessageId) state.updateMessage(assistantId, (message) => ({ ...message, messageId: serverMessageId }));
+          if (serverMessageId) state.updateMessage(assistantId, (message) => ({
+            ...message,
+            messageId: serverMessageId,
+            expertTeamId: isTeamFrame ? String(data.expert_team_id || teamId) : undefined,
+            blocks: isTeamFrame ? [{ type: "task_progress", payload: { run: teamRunFromProduct(data) } }] : [],
+          }));
           if (result && result.length >= rendered.length) {
             rendered = result;
             state.updateMessage(assistantId, (message) => ({ ...message, content: result, streamingStatus: event.event === "done" ? "completed" : "streaming" }));
@@ -239,7 +272,9 @@ export async function submitHarnessAnswer(sessionId: string, requestId: string, 
   if (v3) {
     const lastAssistant = [...state.messages].reverse().find((message) => message.role === "assistant" && message.messageType === "harness");
     const assistantMessageId = lastAssistant?.messageId;
-    const teamId = state.activeExpertTeam?.team_id;
+    // `expertTeamId` is persisted in V3 snapshots. The active-team fallback
+    // preserves answer recovery for runs created before that field existed.
+    const teamId = lastAssistant?.expertTeamId || state.activeExpertTeam?.team_id;
     if (!lastAssistant || !assistantMessageId || !teamId) throw new Error("当前追问已失效，请重新发起咨询。");
     const submission = body as { answers?: Record<string, unknown>; skipped?: boolean };
     let rendered = lastAssistant.content;
@@ -268,11 +303,16 @@ export async function submitHarnessAnswer(sessionId: string, requestId: string, 
             rendered += text;
             state.appendAssistantDelta(lastAssistant.id, text);
           }
-        } else if (event.event === "done") {
+        } else if (event.event === "state" || event.event === "done_suspended" || event.event === "done_timeout" || event.event === "done") {
           const product = data.state as Record<string, unknown> | undefined;
           const result = String((product?.result as string | undefined) || (product?.assistant_message as { content?: string } | undefined)?.content || rendered);
           rendered = result;
-          state.updateMessage(lastAssistant.id, (message) => ({ ...message, content: result, streamingStatus: "completed" }));
+          state.updateMessage(lastAssistant.id, (message) => ({
+            ...message,
+            content: result,
+            blocks: [{ type: "task_progress", payload: { run: teamRunFromProduct(data) } }],
+            streamingStatus: event.event === "done" ? "completed" : "streaming",
+          }));
         }
       },
     });

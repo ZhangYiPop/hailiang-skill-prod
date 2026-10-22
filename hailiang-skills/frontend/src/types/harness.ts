@@ -51,6 +51,7 @@ export type HarnessInputGroup = {
 };
 export type HarnessRun = {
   run_id: string; client_run_id?: string | null; assistant_message_id?: string; record_version?: number;
+  expert_team_id?: string | null;
   session_id: string; profile_id: string | null; goal: string; status: string; outcome?: "completed" | "partial" | "failed" | "cancelled" | null; version: number;
   root_task_id: string; nodes: HarnessNode[]; inputs: HarnessInput[];
   input_groups?: HarnessInputGroup[];
