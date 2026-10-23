@@ -16,6 +16,12 @@ export USER_ID="sse-v3-curl-user"
 export PROFILE_ID="sse-v3-curl-profile"
 ```
 
+执行本手册验证正式 Agent Team 路径时，算法服务须以
+`HAILIANG_V3_FORMAL_RUNTIME=true` 启动；该开关只替换 V3 的内部执行器，
+不改变本手册中的请求体或 SSE 帧协议。生产环境还应保持
+`HAILIANG_SCRIPT_EXECUTOR=remote` 与
+`HAILIANG_REQUIRE_REMOTE_SANDBOX=true`，确保 Skill 脚本不回退至 API 进程。
+
 - `SESSION_ID`：BFF 的会话 ID。
 - `RUN_ID`：BFF 为一次 HTTP 请求创建的幂等键。重试同一请求时复用；回答和恢复可生成新的值。`assistant_message_id` 才是同一任务和气泡的稳定关联键。
 - `TEAM_ID`：本轮选择的专家团。`chat` 与 `answer_input_request` 必传；本文使用推荐的单元素数组形式。`stop` 不传。

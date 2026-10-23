@@ -546,7 +546,7 @@ class HarnessRuntime:
         self._pool.shutdown(wait=False, cancel_futures=True)
 
     def create(self, session_id, user_id, profile_id, goal, policy, seed_facts=None, history=None, wire_protocol=None, submission=None,
-               supersede_active=False, debug_skill_id=None):
+               supersede_active=False, debug_skill_id=None, execution_runtime=None):
         if not session_id or len(session_id) > 80 or not user_id or len(user_id) > 160 or profile_id and len(profile_id) > 80:
             raise HarnessError("INVALID_HARNESS_IDENTITY")
         root = task_node("main", goal)
@@ -588,6 +588,8 @@ class HarnessRuntime:
             run["execution_contract_version"] = "v1"
             root["brief"] = cp.brief_for(run, root)
         run.update(wire_protocol=wire_protocol, submission=submission)
+        if execution_runtime:
+            run["execution_runtime"] = execution_runtime
         def supersede(previous, changes, replacement_run_id):
             if previous["status"] in TERMINAL:
                 return
@@ -706,6 +708,13 @@ class HarnessRuntime:
 
     def claim(self, run_id):
         def apply(run, changes, db):
+            # Product SSE v3 can retain the durable Harness record/projection
+            # while delegating the business turn to MainPlannerOrchestrator.
+            # Those runs are driven by FormalV3TurnExecutor, never by the
+            # Harness scheduler.  Claiming their synthetic root task here
+            # would execute the same user turn twice through two runtimes.
+            if run.get("execution_runtime") == "formal":
+                return None
             if run["status"] in TERMINAL:
                 return None
             for task in list(run["tasks"].values()):

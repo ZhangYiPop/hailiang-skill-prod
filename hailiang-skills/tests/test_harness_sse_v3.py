@@ -82,6 +82,7 @@ def test_v3_snapshot_carries_expert_id_and_jump_cards(tmp_path):
     assert entity['round_experts'] == {
         'assigned_expert_ids': ['career_plan_expert'],
         'running_expert_ids': [],
+        'waiting_expert_ids': [],
         'completed_expert_ids': ['career_plan_expert'],
         'failed_expert_ids': [],
         'status': 'completed',
