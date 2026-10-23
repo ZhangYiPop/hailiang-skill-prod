@@ -456,6 +456,52 @@ class WorkbenchService:
             db.commit()
             return self._object_dict(row, latest_revision_no=0, latest_release_no=0)
 
+    def update_object(
+        self,
+        object_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Update an object's display name and/or description.
+
+        The object_key (machine identifier) cannot be changed here — use
+        migrate_object_id to create a successor with a different key.
+        """
+        with self.session_factory() as db:
+            obj = self._require_object(db, object_id)
+            updated = False
+            new_name = str(name or "").strip()
+            new_description = str(description or "").strip()
+            if new_name and new_name != obj.name:
+                obj.name = new_name
+                updated = True
+            if new_description and new_description != obj.description:
+                obj.description = new_description
+                updated = True
+            if not updated:
+                return self._object_dict(
+                    obj,
+                    self._latest_revision_no(db, object_id),
+                    self._latest_release_no(db, object_id),
+                )
+            obj.updated_at = utc_now()
+            self._audit(
+                db,
+                actor_id,
+                "object.updated",
+                obj.object_type,
+                object_id,
+                {"name": obj.name, "description": obj.description},
+            )
+            db.commit()
+            return self._object_dict(
+                obj,
+                self._latest_revision_no(db, object_id),
+                self._latest_release_no(db, object_id),
+            )
+
     def preview_standard_skill_package(self, package_bytes: bytes, *, actor_id: str) -> dict[str, Any]:
         """Parse an Agent Skills ZIP without executing its code or creating revisions."""
         files = self._normalize_standard_package_files(self._read_zip(package_bytes))
@@ -632,6 +678,24 @@ class WorkbenchService:
             if existing is not None:
                 object_id = existing["object_id"]
                 base_revision_id = existing["latest_revision_id"]
+                # Update name and description if the draft carries new values.
+                with self.session_factory() as db:
+                    obj = self._require_object(db, object_id)
+                    updated = False
+                    draft_name = str(draft.get("name") or "").strip()
+                    draft_description = str(draft.get("description") or "").strip()
+                    if draft_name and draft_name != obj.name:
+                        obj.name = draft_name
+                        updated = True
+                    if draft_description and draft_description != obj.description:
+                        obj.description = draft_description
+                        updated = True
+                    if updated:
+                        obj.updated_at = utc_now()
+                        self._audit(db, actor_id, "object.updated", obj.object_type, object_id, {
+                            "name": draft_name, "description": draft_description,
+                        })
+                        db.commit()
             else:
                 created = self.create_object(
                     object_type=str(draft.get("object_type") or "skill"),
@@ -5268,6 +5332,26 @@ class WorkbenchService:
                     object_type,
                     obj.object_id,
                     {"reason": "recursive_package_import", "object_key": object_key},
+                )
+            # Update name and description from the imported package so that
+            # re-uploading with modified metadata takes effect immediately.
+            imported_name = str(entry.get("name") or "").strip()
+            imported_description = str(entry.get("description") or "").strip()
+            previous_name = obj.name
+            name_changed = imported_name and imported_name != obj.name
+            if imported_name and imported_name != obj.name:
+                obj.name = imported_name
+            if imported_description and imported_description != obj.description:
+                obj.description = imported_description
+            if name_changed:
+                obj.updated_at = utc_now()
+                self._audit(
+                    db,
+                    actor_id,
+                    "object.name_updated_from_import",
+                    object_type,
+                    obj.object_id,
+                    {"previous_name": previous_name, "imported_name": imported_name, "object_key": object_key},
                 )
         decoded_assets = self._decode_assets(
             entry.get("files") if isinstance(entry.get("files"), list) else [],

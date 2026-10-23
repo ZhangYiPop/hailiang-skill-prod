@@ -31,6 +31,7 @@ import {
   ListChecks,
   MoonStar,
   PackageCheck,
+  Pencil,
   Plus,
   RefreshCcw,
   Rocket,
@@ -608,6 +609,9 @@ export default function Workbench() {
   const [idMigrationTarget, setIdMigrationTarget] = useState<WorkbenchObject | null>(null);
   const [idMigrationConfirmation, setIdMigrationConfirmation] = useState("");
   const [nextObjectKey, setNextObjectKey] = useState("");
+  const [renameTarget, setRenameTarget] = useState<WorkbenchObject | null>(null);
+  const [newObjectName, setNewObjectName] = useState("");
+  const [renameConfirmation, setRenameConfirmation] = useState("");
   const [referenceMigrationTarget, setReferenceMigrationTarget] = useState<WorkbenchObject | null>(null);
   const [referenceMigrationConfirmation, setReferenceMigrationConfirmation] = useState("");
   const [referenceFromReleaseId, setReferenceFromReleaseId] = useState("");
@@ -1642,6 +1646,28 @@ export default function Workbench() {
       });
     } catch (error) {
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "修改 ID 失败" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function renameObject() {
+    if (!actor || !renameTarget || !newObjectName.trim() || renameConfirmation !== renameTarget.name) return;
+    setBusy(true);
+    try {
+      const updated = await workbenchApi.updateObject(apiBaseUrl, renameTarget.object_id, {
+        name: newObjectName.trim(), actor_id: actor.actor_id,
+      });
+      setRenameTarget(null);
+      setNewObjectName("");
+      setRenameConfirmation("");
+      await loadAll();
+      if (selectedObject?.object_id === renameTarget.object_id) {
+        await openObject(renameTarget.object_id);
+      }
+      setNotice({ tone: "ok", text: `名称已更新为“${updated.name}”。` });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "修改名称失败" });
     } finally {
       setBusy(false);
     }
@@ -2763,6 +2789,19 @@ export default function Workbench() {
                             归档
                           </button>
                         )}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            setRenameTarget(selectedObject);
+                            setNewObjectName(selectedObject.name);
+                            setRenameConfirmation("");
+                          }}
+                          className="inline-flex items-center gap-2 rounded-xl border border-sky-400/25 bg-sky-400/[0.06] px-4 py-2.5 text-sm font-medium text-sky-100 hover:bg-sky-400/10 disabled:opacity-40"
+                        >
+                          <Pencil size={16} />
+                          修改名称
+                        </button>
                         <button
                           type="button"
                           disabled={busy}
@@ -3927,6 +3966,33 @@ export default function Workbench() {
               <input autoFocus value={deactivateTeamConfirmation} onChange={(event) => setDeactivateTeamConfirmation(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && deactivateTeamConfirmation === deactivateDeploymentTarget.expert_team_id && !busy) void deactivateDeployment(); }} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 font-mono outline-none focus:border-rose-400/50" />
             </label>
             <div className="mt-6 grid grid-cols-2 gap-3"><button type="button" disabled={busy} onClick={() => setDeactivateDeploymentTarget(null)} className="rounded-xl border border-white/10 px-4 py-3 text-sm text-slate-300 hover:bg-white/5">取消</button><button type="button" disabled={busy || deactivateTeamConfirmation !== deactivateDeploymentTarget.expert_team_id} onClick={() => void deactivateDeployment()} className="rounded-xl bg-rose-500 px-4 py-3 text-sm font-semibold text-white disabled:opacity-35">确认下线</button></div>
+          </div>
+        </div>
+      ) : null}
+      {renameTarget ? (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
+          <div role="dialog" aria-modal="true" className="w-full max-w-lg rounded-3xl border border-sky-400/20 bg-[#151923] p-6 shadow-2xl shadow-black/50">
+            <div className="flex items-start justify-between gap-5">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-200">修改对象名称</p>
+                <h2 className="mt-1 text-xl font-semibold">重命名"{renameTarget.name}"</h2>
+              </div>
+              <button type="button" aria-label="关闭名称修改" onClick={() => { setRenameTarget(null); setNewObjectName(""); setRenameConfirmation(""); }} className="rounded-xl p-2 text-slate-500 hover:bg-white/5 hover:text-white"><X size={18} /></button>
+            </div>
+            <div className="mt-5 rounded-2xl border border-sky-400/15 bg-sky-400/[0.05] p-4 text-sm leading-6 text-sky-50/80">
+              <p>当前名称：<strong className="text-white">{renameTarget.name}</strong></p>
+              <p className="mt-2 text-xs text-sky-100/65">修改名称仅影响显示，不会改变对象的 ID 或已发布版本。</p>
+            </div>
+            <label className="mt-5 block text-sm text-slate-300">新的显示名称
+              <input autoFocus value={newObjectName} onChange={(event) => setNewObjectName(event.target.value)} placeholder="输入新的显示名称" className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none focus:border-sky-400/50" />
+            </label>
+            <label className="mt-4 block text-sm text-slate-300">请输入当前名称 <strong className="text-white">{renameTarget.name}</strong> 以确认
+              <input value={renameConfirmation} onChange={(event) => setRenameConfirmation(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && renameConfirmation === renameTarget.name && newObjectName.trim() && !busy) void renameObject(); }} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none focus:border-sky-400/50" />
+            </label>
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <button type="button" disabled={busy} onClick={() => { setRenameTarget(null); setNewObjectName(""); setRenameConfirmation(""); }} className="rounded-xl border border-white/10 px-4 py-3 text-sm text-slate-300 hover:bg-white/5">取消</button>
+              <button type="button" disabled={busy || renameConfirmation !== renameTarget.name || !newObjectName.trim()} onClick={() => void renameObject()} className="rounded-xl bg-sky-400 px-4 py-3 text-sm font-semibold text-slate-950 disabled:opacity-35">确认修改名称</button>
+            </div>
           </div>
         </div>
       ) : null}
