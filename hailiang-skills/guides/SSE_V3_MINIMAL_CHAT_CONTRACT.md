@@ -57,7 +57,7 @@ BFF 到算法服务的请求外层与 v2 一致，`input` 必须是 JSON 字符�
 
 ## SSE 响应
 
-转发端逐字节转发，不聚合、不重排、不改写。每个业务事件都包含可独立渲染的完整状态，并显式说明该帧应如何保存；转发端不必从事件名称或连接关闭状态猜测。
+转发端逐字节转发，不聚合、不重排、不改写。`state`、`done_suspended`、`done_timeout` 与 `done` 包含可独立渲染的完整状态，并显式说明该帧应如何保存；`message.delta` / `message.reset` 只更新最终正文，`ping` 只保活连接。转发端不必从连接关闭状态猜测任务状态。
 
 ```text
 event: state
@@ -86,7 +86,7 @@ data: {"protocol":"hailiang.sse.v3","run_id":"bff_run_xxx","state":{...}}
 - `done_timeout`：本次有限 SSE 连接达到等待上限，但后台任务仍在执行。它同样不是任务终态。
 - `done`：真正终态。完成、受限完成或失败均由 `outcome` 区分，事件名称不分叉。停止任务时仍为 `done`，但保存指令会要求丢弃暂存记录，沿用既有停止语义。
 
-每个事件的数据都是完整可渲染状态；没有 `snapshot` 包装，也不暴露内部 Harness ID：
+完整状态事件没有 `snapshot` 包装，也不暴露内部 Harness ID；`message.delta`、`message.reset` 与 `ping` 是上述完整状态规则的例外：
 
 ```json
 {

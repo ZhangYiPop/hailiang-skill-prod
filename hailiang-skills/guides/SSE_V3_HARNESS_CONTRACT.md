@@ -4,7 +4,7 @@
 > 产品入口：`POST /api/v3/sessions/chat/stream`
 > 面向对象：BFF 与 App 前端
 
-V3 的一帧是一个**完整助手气泡快照**。BFF 将最新帧整体替换暂存，前端以同一个 `assistant_message_id` 更新同一个气泡；不读取 Harness 调试接口、不拼接内部事件、不根据本地操作推断任务是否推进。
+V3 的 `state`、`done_suspended`、`done_timeout` 与 `done` 是**完整助手气泡快照**。BFF 将最新完整帧整体替换暂存，前端以同一个 `assistant_message_id` 更新同一个气泡；不读取 Harness 调试接口、不根据本地操作推断任务是否推进。`message.delta` / `message.reset` 是最终正文的增量协议，`ping` 仅用于连接保活，均不是完整快照。
 
 ## 1. 对外关联 ID 与职责
 
@@ -157,7 +157,7 @@ main（主编排器）
 }
 ```
 
-专家结论至少保证 `conclusion`；数组不存在或为空时不渲染对应小节。专家中间结论仍是整段提交，不逐字流式。最终主回复在 `message.delta` 中按 `assistant_message_id + revision + offset` 逐步发送；发生受控完整回退时服务端先发送 `message.reset`，终态始终以 `done.state.result` 覆盖累计正文。
+专家结论至少保证 `conclusion`；数组不存在或为空时不渲染对应小节。专家中间结论仍是整段提交，不逐字流式。最终主回复在 `message.delta` 中按 `assistant_message_id + revision + offset` 逐步发送；发生受控完整回退时服务端先发送 `message.reset`，终态始终以 `done.state.result` 覆盖累计正文。前端希望显示最终正文逐字/分段生成时必须处理这两个事件；不要求流式效果时可忽略它们，等待后续完整帧或 `done` 覆盖正文。
 
 ## 5. 编排首分派、汇总与推荐何时展示
 
