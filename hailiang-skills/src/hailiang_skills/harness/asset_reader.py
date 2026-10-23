@@ -32,7 +32,7 @@ def read_asset(run, task, args, bundle_loader):
         raise HarnessError('SKILL_NOT_AUTHORIZED', 403)
     documents = list(_iter_local_documents(bundle_loader(run, sid)))
     source = args.get('source')
-    offset, limit = args.get('offset', 0), args.get('limit', 5)
+    offset, limit = args.get('offset', 0), args.get('limit', 20)
     if not source:
         page = documents[offset:offset + limit]
         return {'skill_id': sid, 'documents': [{'title': title, 'source': src, 'chars': len(body)} for title, src, body in page],
@@ -68,4 +68,8 @@ def read_asset(run, task, args, bundle_loader):
             'notice': '资料匹配记录，不代表当年录取保证；年份与口径以记录来源为准。'}
     if not selected:
         result['filter_hints'] = _field_hints(payload)
+    # 高吞吐提示：剩余记录较多时，建议加大 limit 一次取完，避免逐页翻查浪费调用预算。
+    remaining = len(selected) - offset - len(page)
+    if remaining > len(page):
+        result['notice'] += f' 当前返回{len(page)}条，剩余{remaining}条；可增大 limit（最大10）一次读取更多，减少逐页调用。'
     return result

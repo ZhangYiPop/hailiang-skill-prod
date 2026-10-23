@@ -657,11 +657,11 @@ class HarnessRuntime:
             from .asset_reader import readable_skills
             readable = readable_skills(run, task)
             if readable:
-                result.append(spec("read_skill_asset", "精确读取授权 Skill 资料。source 省略时分页列目录；JSON 数组可 filters 精确匹配字段，score 匹配 min_score/max_score 闭区间；offset 为过滤后记录偏移，文本则为字符偏移。优先用于已定位资料，避免反复关键词搜索。", object_schema({
+                result.append(spec("read_skill_asset", "精确读取授权 Skill 资料。source 省略时分页列目录；JSON 数组可 filters 精确匹配字段，score 匹配 min_score/max_score 闭区间；offset 为过滤后记录偏移，文本则为字符偏移。优先用较大 limit 一次读完匹配记录，matched_count 较大时不要逐页小批量读取浪费调用预算。", object_schema({
                     "skill_id": {"enum": readable}, "source": {"type": "string"},
                     "filters": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean", "null"]}},
                     "score": {"type": "number"}, "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                     "max_chars": {"type": "integer", "minimum": 1, "maximum": 8000}}, ["skill_id"])))
             if task["kind"] == "main":
                 result.append(spec("set_task_subject", "分派前确认本任务讨论当前档案还是其他对象。evidence 必须逐字来自用户问题或已提交答案。external 隔离当前档案，不能切换到其他用户档案。", object_schema({
@@ -939,42 +939,6 @@ class HarnessRuntime:
                         live['messages'].append({'role': 'user', 'content': '最终回答必须先单独调用 finalize_response；需要信息则调用 request_user_input。'})
                         live['status'] = 'queued'
                         changes.append({'event': 'finalize_retry', 'node_id': task_id})
-                        return
-                    if current.get("execution_contract_version") == "v1" and live["kind"] != "main":
-                        # 子任务尚未调用 request_user_input 获取用户信息时，
-                        # 提示先收集信息；已收集后不再强制结构化提交，
-                        # 子任务自然文本回复即为最终结果。
-                        attempts = live.get("result_protocol_repairs", 0)
-                        if attempts >= 2:
-                            live.update(status="failed", error="RESULT_PROTOCOL_REQUIRED", ended_at=now())
-                            changes.append({"event": "task_failed", "node_id": task_id})
-                            self._settle(current, changes, db)
-                            return
-                        has_input = any(t["name"] == "request_user_input" and t["status"] == "completed" for t in current["tools"].values() if t["task_id"] == task_id)
-                        if has_input:
-                            # 已收集用户信息，允许子任务以自然文本完成。
-                            live.update(status="completed", result=str(response.final_text or "").strip(), ended_at=now())
-                            changes.append({"event": "task_completed", "node_id": task_id})
-                            return
-                        live["result_protocol_repairs"] = attempts + 1
-                        if attempts == 0:
-                            # 首次：保留模型回复并追加协议提示
-                            hint = "需要用户信息必须调用 request_user_input 收集；不要用自然语言问题替代。完成后直接回复用户，无需调用额外工具。"
-                            live["messages"].extend([
-                                {"role": "assistant", "content": str(response.final_text or "")},
-                                {"role": "user", "content": f"运行协议要求：{hint}"}])
-                        else:
-                            # 最后一次机会：不追加模型自然语言回复，仅注入明确指令，打断重复模式
-                            live["messages"].append(
-                                {"role": "user", "content": (
-                                    "运行协议要求：你必须调用 request_user_input 向用户收集所需信息，"
-                                    "不能以自然语言问题代替。根据之前的分析，你现在明确需要问用户什么信息？"
-                                    "请立即构造一个 request_user_input 调用，包含 title 和 fields 列表。"
-                                    "例如：request_user_input(title='补充信息', fields=[{'key': 'grade', 'label': '年级', 'input_type': 'select', 'options': ['高一','高二','高三']}])。"
-                                    "调用后任务将挂起等待用户回答，回答会作为工具结果返回给你。这是最后一次机会。"
-                                )})
-                        live["status"] = "queued"
-                        changes.append({"event": "result_protocol_retry", "node_id": task_id})
                         return
                     if current.get("execution_contract_version") == "v1" and live["kind"] == "main":
                         failed = [t["id"] for t in current["tasks"].values() if t["parent_id"] == task_id and t["status"] in {"failed", "cancelled"}]
@@ -1352,7 +1316,8 @@ class HarnessRuntime:
             eid = projection.get("evidence_id")
             record = run.get("evidence", {}).get(eid)
             if record and record["status"] == "completed" and estimate_tokens(message.get("content", "")) > 300:
-                message["content"] = json.dumps({"evidence_ref": eid, "status": record["status"], "note": "已完成工具交互；按需读取原文"}, ensure_ascii=False)
+                note = cp.evidence_project_note(record)
+                message["content"] = json.dumps({"evidence_ref": eid, "status": record["status"], "note": note}, ensure_ascii=False)
                 changed = True
         _, projected = compose(run, candidate, facts, specs)
         if changed:
@@ -1596,6 +1561,20 @@ class HarnessRuntime:
                         prev = failures.get(source_key)
                         count = (prev.get("count", 0) + 1) if isinstance(prev, dict) else 1
                         failures[source_key] = {"count": count, "last_error": error}
+                    # 追踪同一 source 的成功读取次数：超过阈值时注入提示防止逐页翻查浪费预算
+                    if not error and tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
+                        source_key = tool["arguments"]["source"]
+                        state = run["tasks"][task_id].setdefault("runtime_state", {})
+                        reads = state.setdefault("_asset_reads", {})
+                        prev = reads.get(source_key, 0) if isinstance(reads.get(source_key), int) else 0
+                        reads[source_key] = prev + 1
+                        if prev >= 2:  # 第3次及以上读取同一文件
+                            hint = f'系统提示：你已读取 "{source_key}" {prev + 1} 次。请整合已有数据，用较大 limit 一次读完剩余记录；不要逐页重复读取同一资料文件，这会浪费调用预算。'
+                            task_msgs = run["tasks"][task_id]["messages"]
+                            # 避免重复注入相同的提示
+                            last_msg = task_msgs[-1] if task_msgs else {}
+                            if last_msg.get("role") != "user" or last_msg.get("content", "")[:4] != "系统提示":
+                                task_msgs.append({"role": "user", "content": hint})
                 self.store.mutate(run_id, finish)
         def release(run, changes, db):
             if self._valid(run, task_id, token):
