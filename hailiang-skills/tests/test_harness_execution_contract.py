@@ -55,11 +55,13 @@ def test_escaped_evidence_envelope_has_bound_and_lossless_continuation(tmp_path)
     runtime.close()
 
 
-def test_plain_question_cannot_silently_complete_expert_or_parent(tmp_path):
+def test_plain_question_can_complete_expert_naturally(tmp_path):
+    """Expert tasks may respond with natural language without forced request_user_input.
+    A conversational reply (e.g. asking grade) is a valid task completion."""
     def respond(messages, specs, purpose):
         if purpose == 'harness_main':
             if any(m.role == 'tool' for m in messages):
-                return AssistantTurnResult(final_text='未经验证的推荐')
+                return AssistantTurnResult(final_text='推荐结果')
             return call('delegate_tasks', {'tasks': [{'key': 'a', 'expert_id': 'a', 'goal': '分析'}]})
         return AssistantTurnResult(final_text='请问孩子几年级？')
     runtime = make_runtime(tmp_path, respond)
@@ -67,11 +69,12 @@ def test_plain_question_cannot_silently_complete_expert_or_parent(tmp_path):
     advance(runtime, rid, 16)
     run = runtime.store.get(rid)
     expert = next(t for t in run['tasks'].values() if t['kind'] == 'expert')
-    assert expert['error'] == 'RESULT_PROTOCOL_REQUIRED'
-    assert expert['model_calls'] == 3
-    assert run['status'] == 'failed'
-    assert run['error'] == 'REQUIRED_TASK_FAILED'
-    assert '未经验证' not in run['result']
+    assert expert['status'] == 'completed'
+    assert expert.get('error') is None
+    assert expert['result'] == '请问孩子几年级？'
+    assert expert['model_calls'] == 1
+    assert run['status'] == 'completed'
+    assert not run.get('error')
     assert not run['inputs']  # No fabricated request from model failure.
     runtime.close()
 

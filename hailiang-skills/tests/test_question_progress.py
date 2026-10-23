@@ -1,6 +1,9 @@
 from hailiang_skills.runtime_bridge.question_progress import (
     detect_answered_question_repetition,
     question_ledger_projection,
+    cross_skill_projection,
+    merge_question_ledgers,
+    canonical_skill_key,
     record_assistant_questions,
     reconcile_user_answer,
     same_user_message_streak,
@@ -237,3 +240,177 @@ def test_record_skipped_fields_persists_in_ledger_projection():
     answered_texts = [a.get("question") for a in projection["answered"]]
     assert any("家庭预算" in t for t in answered_texts), \
         "skipped field should appear in answered projection"
+
+
+# ── cross-skill dedup tests ──
+
+
+def _skill_a_state() -> SessionState:
+    state = SessionState(
+        session_id="cross-skill-test",
+        messages=[
+            ChatMessage(
+                role="assistant",
+                content="孩子的英语水平怎么样？目前有考过雅思或托福吗？",
+            )
+        ],
+    )
+    record_assistant_questions(state, "skill_a", state.messages[0].content)
+    return state
+
+
+def _skill_a_with_answer() -> SessionState:
+    """Set up Skill A with a directly reconciled answer."""
+    state = SessionState(
+        session_id="cross-skill-direct",
+        messages=[
+            ChatMessage(
+                role="assistant",
+                content="孩子的英语水平怎么样？目前有考过雅思或托福吗？",
+            )
+        ],
+    )
+    record_assistant_questions(state, "skill_a", state.messages[0].content)
+    # Directly mark the second question as answered to avoid natural-language
+    # answer-matching edge cases in tests. In production, reconcile_user_answer
+    # handles this through option/substring matching.
+    ledger = state.status_flags["runtime_question_ledger"]["skill_a"]
+    asked = ledger.get("asked", [])
+    if len(asked) >= 2 and asked[1].get("options"):
+        ledger["answered"] = [{
+            "question_id": asked[1]["question_id"],
+            "question": asked[1]["text"],
+            "answer": "考过雅思",
+            "source_turn_id": "answer-turn",
+        }]
+        ledger["unresolved"] = [asked[0]]
+    return state
+
+
+def test_cross_skill_projection_sees_other_skills_answers():
+    """Skill B can see Skill A's answered questions via cross_skill_projection."""
+    state = _skill_a_with_answer()
+
+    # Skill B runs now — check cross-skill projection
+    cross = cross_skill_projection(state)
+    assert len(cross["answered"]) >= 1
+    assert any("英语水平" in str(a.get("question", "")) for a in cross["answered"]) or \
+           any("雅思" in str(a.get("question", "")) for a in cross["answered"])
+    assert "skill_a" in cross.get("skill_ids", [])
+
+
+def test_cross_skill_detection_blocks_reask_from_other_skill():
+    """Skill B's re-ask of Skill A's answered question is detected."""
+    state = _skill_a_with_answer()
+
+    # Skill B drafts a reply re-asking the same question
+    repeated = detect_answered_question_repetition(
+        "目前有考过雅思或托福吗？", state, "skill_b", cross_skill=True,
+    )
+    assert repeated, "cross-skill detection should catch Skill A's answered question"
+
+
+def test_cross_skill_detection_with_skipped_fields():
+    """Skipped form fields in Skill A block Skill B's prose re-ask."""
+    state = SessionState(session_id="cross-skip")
+    record_skipped_fields_from_tool(state, "skill_a", {
+        "skipped_fields": [
+            {"key": "math_score", "label": "数学成绩"},
+        ]
+    })
+
+    # Check that the skipped field text "数学成绩" is picked up cross-skill
+    # "你的数学成绩大概多少分？" has high semantic overlap with "数学成绩"
+    # "你的数学成绩怎么样？" extracts as a question (has "怎么"),
+    # and has high semantic overlap with "数学成绩"
+    repeated = detect_answered_question_repetition(
+        "你的数学成绩怎么样？", state, "skill_b", cross_skill=True,
+    )
+    assert repeated, "cross-skill should catch skipped field from another skill"
+
+
+def test_cross_skill_exclude_omits_own_skill():
+    """cross_skill_projection with exclude_skill_id omits the caller."""
+    state = _skill_a_state()
+    reconcile_user_answer(state, "skill_a", "雅思6分")
+
+    cross = cross_skill_projection(state, exclude_skill_id="skill_a")
+    assert all(
+        canonical_skill_key(sid) != canonical_skill_key("skill_a")
+        for sid in cross.get("skill_ids", [])
+    ), "excluded skill should not appear"
+
+
+def test_merge_question_ledgers_transfers_answered():
+    """merge_question_ledgers copies answered questions between skills."""
+    state = _skill_a_with_answer()
+
+    merge_question_ledgers(state, "skill_a", "skill_b")
+
+    proj_b = question_ledger_projection(state, "skill_b")
+    assert len(proj_b["answered"]) >= 1
+    assert any(
+        "雅思" in str(a.get("question", "")) or "托福" in str(a.get("question", ""))
+        for a in proj_b["answered"]
+    )
+
+
+def test_merge_question_ledgers_transfers_skipped_fields():
+    """merge_question_ledgers copies skipped field fingerprints."""
+    state = SessionState(session_id="merge-skipped")
+    record_skipped_fields_from_tool(state, "skill_a", {
+        "skipped_fields": [
+            {"key": "budget", "label": "家庭预算"},
+        ]
+    })
+
+    merge_question_ledgers(state, "skill_a", "skill_b")
+
+    # "你的家庭预算是怎么规划的？" extracts as a question (has "怎么"),
+    # and has high semantic overlap with "家庭预算"
+    repeated = detect_answered_question_repetition(
+        "你的家庭预算是怎么规划的？", state, "skill_b",
+    )
+    assert repeated, "merged skipped field should be detected in target skill"
+
+
+def test_cross_skill_detection_semantic_overlap():
+    """Semantically similar but differently worded questions are caught cross-skill."""
+    state = SessionState(
+        session_id="cross-semantic",
+        messages=[
+            ChatMessage(
+                role="assistant",
+                content="你平时的学习方法是什么？",
+            )
+        ],
+    )
+    record_assistant_questions(state, "skill_a", state.messages[0].content)
+    # Directly mark as answered
+    ledger = state.status_flags["runtime_question_ledger"]["skill_a"]
+    asked = ledger.get("asked", [])
+    if asked:
+        ledger["answered"] = [{
+            "question_id": asked[0]["question_id"],
+            "question": asked[0]["text"],
+            "answer": "每天做题加复习",
+            "source_turn_id": "answer-turn",
+        }]
+        ledger["unresolved"] = []
+
+    # Skill B re-asks with slightly different wording that shares key content
+    repeated = detect_answered_question_repetition(
+        "你平时的学习方法一般是什么？", state, "skill_b", cross_skill=True,
+    )
+    assert repeated, "semantic overlap should catch reworded cross-skill question"
+
+
+def test_non_overlapping_questions_not_detected_cross_skill():
+    """Completely different questions are NOT falsely detected as duplicates."""
+    state = _skill_a_state()
+    reconcile_user_answer(state, "skill_a", "雅思6分")
+
+    repeated = detect_answered_question_repetition(
+        "你希望报考哪个专业方向？", state, "skill_b", cross_skill=True,
+    )
+    assert not repeated, "unrelated question should not be flagged as duplicate"
