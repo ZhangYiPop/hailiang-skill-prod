@@ -678,8 +678,6 @@ class HarnessRuntime:
             result.append(spec("read_evidence", "读取未提供的授权证据片段；已有 data/content 无需重复读取。只接受工具返回的 evidence_id，不接受文件路径或 URL。", object_schema({
                 "evidence_id": {"type": "string", "pattern": "^ev_[a-f0-9]{64}$"}, "offset": {"type": "integer", "minimum": 0},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 8000}}, ["evidence_id"])))
-            if task["kind"] != "main":
-                result.append(spec("submit_result", "单独调用以提交结构化结果；不得与其他工具同时调用。", cp.TaskResult.model_json_schema()))
             result = [spec(item.name, item.description, cp.compact_schema(item.parameters_schema)) for item in result]
             if cp.task_phase(run, task) == 'synthesis':
                 result = [item for item in result if item.name in {'read_facts', 'read_evidence', 'request_user_input', 'propose_fact_updates'}]
@@ -933,19 +931,26 @@ class HarnessRuntime:
                         changes.append({'event': 'finalize_retry', 'node_id': task_id})
                         return
                     if current.get("execution_contract_version") == "v1" and live["kind"] != "main":
-                        # Legacy text results remain readable, but new executions
-                        # must declare their outcome instead of silently treating
-                        # a question or draft as a completed task.
+                        # 子任务尚未调用 request_user_input 获取用户信息时，
+                        # 提示先收集信息；已收集后不再强制结构化提交，
+                        # 子任务自然文本回复即为最终结果。
                         attempts = live.get("result_protocol_repairs", 0)
-                        if attempts >= 1:
+                        if attempts >= 2:
                             live.update(status="failed", error="RESULT_PROTOCOL_REQUIRED", ended_at=now())
                             changes.append({"event": "task_failed", "node_id": task_id})
                             self._settle(current, changes, db)
                             return
+                        has_input = any(t["name"] == "request_user_input" and t["status"] == "completed" for t in current["tools"].values() if t["task_id"] == task_id)
+                        if has_input:
+                            # 已收集用户信息，允许子任务以自然文本完成。
+                            live.update(status="completed", result=str(response.final_text or "").strip(), ended_at=now())
+                            changes.append({"event": "task_completed", "node_id": task_id})
+                            return
                         live["result_protocol_repairs"] = attempts + 1
+                        hint = "需要用户信息必须调用 request_user_input 收集；不要用自然语言问题替代。完成后直接回复用户，无需调用额外工具。"
                         live["messages"].extend([
-                            {"role": "assistant", "content": response.final_text},
-                            {"role": "user", "content": "运行协议要求：需要用户信息必须调用 request_user_input；已完成或受限结果必须单独调用 submit_result，准确填写状态与未解决事项。普通文本不构成完成。"}])
+                            {"role": "assistant", "content": str(response.final_text or "")},
+                            {"role": "user", "content": f"运行协议要求：{hint}"}])
                         live["status"] = "queued"
                         changes.append({"event": "result_protocol_retry", "node_id": task_id})
                         return
@@ -1738,29 +1743,6 @@ class HarnessRuntime:
             task['finalizing'] = True
             self._tool_result(tool, {'accepted': True, 'failed_subtasks': task.get('failed_subtasks')})
             changes.append({'event': 'finalizing', 'node_id': task['id']})
-        elif name == "submit_result" and cp.enabled(run):
-            if task["kind"] == "main" or len(task["pending_calls"]) != 1 or any(t["parent_id"] == task["id"] and t["status"] not in TERMINAL for t in run["tasks"].values()):
-                raise HarnessError("RESULT_DEPENDENCIES_UNRESOLVED")
-            result = cp.TaskResult.model_validate(args).model_dump()
-            blockers = [t for t in run["tasks"].values() if t["parent_id"] == task["id"] and
-                        (t["status"] != "completed" or t.get("structured_result", {}).get("status") in {"partial", "failed"})]
-            if result["status"] == "completed" and (result["unresolved"] or blockers):
-                self._tool_result(tool, {
-                    "error": "RESULT_COMPLETION_NOT_SATISFIED",
-                    "unresolved": result["unresolved"],
-                    "blocking_tasks": [{"task_id": t["id"], "status": t["status"],
-                        "result_status": t.get("structured_result", {}).get("status"),
-                        "unresolved": t.get("structured_result", {}).get("unresolved", []),
-                        "limitations": t.get("structured_result", {}).get("limitations", [])} for t in blockers],
-                    "next_action": "先检查已有事实及问答状态。当前目标确需且用户可补充的信息，调用 request_user_input 生成表单，回答后继续；已跳过的信息不要重复追问。用户跳过或仅能完成部分时，用 submit_result(status=partial) 保留结论、限制和未解决事项。只影响未请求的后续建议的信息记为 limitations，不必追问。子任务 partial 时保留其限制并提交 partial。工具或模型故障不是用户缺信息，不得虚构追问。"
-                }, "failed")
-                changes.append({"event": "tool_failed", "node_id": tool["id"]})
-                return True
-            for ref in result["evidence_refs"]:
-                cp.authorize_evidence(run, task, ref)
-            task["pending_result"] = result
-            self._tool_result(tool, {"accepted": True})
-            changes.append({"event": "tool_completed", "node_id": tool["id"]})
         elif name == "propose_fact_updates":
             results = []
             sources = [run["goal"]] + [json.dumps(q.get("answer", {}).get("answers", {}), ensure_ascii=False) for q in run["inputs"].values() if q["status"] == "answered"]
@@ -2039,7 +2021,12 @@ class HarnessRuntime:
             parent = run["tasks"][parent].get("parent_id")
         skipped_identities = set()
         for previous in run["inputs"].values():
-            if previous["status"] not in {"skipped", "answered"} or args.clarification_reason or (not cp.enabled(run) and not any(b["task_id"] in ancestors for b in previous["bindings"])):
+            # A previous request counts toward dedup if it was answered or
+            # skipped by the user.  A clarification_reason on the *current*
+            # call does not excuse re-asking fields that were already shown
+            # and skipped — the model can still ask genuinely new fields, but
+            # previously-skipped ones are removed from visibility here.
+            if previous["status"] not in {"skipped", "answered"} or (not cp.enabled(run) and not any(b["task_id"] in ancestors for b in previous["bindings"])):
                 continue
             skipped_keys = previous.get("answer", {}).get("skipped_fields", [f["key"] for f in previous["fields"]] if previous["status"] == "skipped" else [])
             skipped_identities.update(identity for field, identity in zip(previous["fields"], previous["identities"]) if field["key"] in skipped_keys)
@@ -2048,12 +2035,24 @@ class HarnessRuntime:
             tool["existing_skipped_fields"] = skipped_fields
             remaining = [(f, identity) for f, identity in zip(fields, identities) if identity not in skipped_identities]
             if not remaining:
+                # All requested fields were already skipped.  Auto-complete the
+                # tool so the model receives the skip signal and must
+                # complete the task instead of looping on the same form.
                 self._tool_result(tool, {"skipped": not bool(answers), "answers": answers, "skipped_fields": skipped_fields,
                                          "source": "question_ledger"}, "completed" if answers else "skipped")
                 changes.append({"event": "tool_completed", "node_id": tool["id"]})
                 return
+            # Some fields are new; show only those.  Inject a reminder into
+            # the task messages so the model knows which fields were already
+            # skipped and should not be re-asked in prose either.
             fields, identities = map(list, zip(*remaining))
             question_identities = [self._question_identity(run, task, field) for field in fields]
+            if skipped_fields and args.clarification_reason:
+                skipped_labels = [f.get("label", f["key"]) for f in tool["arguments"].get("fields", []) if f["key"] in skipped_fields]
+                task["messages"].append({
+                    "role": "user",
+                    "content": f"以下字段此前已向用户展示并被跳过：{'、'.join(skipped_labels)}。请勿在回复中再次追问这些信息，必要时在结论末尾注明信息限制。"
+                })
         signature = json.dumps({"fields": sorted([{ "identity": identity, **{k: v for k, v in field.items() if k not in {"key", "label", "fact_key", "scope"}}} for field, identity in zip(fields, identities)], key=lambda f: f["identity"]), "reason": args.clarification_reason}, ensure_ascii=False, sort_keys=True)
         for request in run["inputs"].values():
             if request["signature"] == signature and request["status"] == "skipped":
@@ -2259,14 +2258,6 @@ class HarnessRuntime:
                     content, projection = cp.tool_projection(run, task, tool) if cp.enabled(run) else project_evidence(tool, evidence_limit)
                     task["messages"].append({"role": "tool", "tool_call_id": tool["call_id"], "name": tool["name"], "content": content, "projection": projection})
                 task["pending_calls"] = []
-                if cp.enabled(run) and task.get("pending_result"):
-                    result = task.pop("pending_result")
-                    task.update(structured_result=result, result=result["conclusion"],
-                                status="failed" if result["status"] == "failed" else "completed", ended_at=now())
-                    if result["status"] == "failed":
-                        task["error"] = "TASK_REPORTED_FAILURE"
-                    changes.append({"event": "task_completed" if task["status"] == "completed" else "task_failed", "node_id": task["id"]})
-                    continue
                 task["status"] = "queued"
                 changes.append({"event": "task_resumed", "node_id": task["id"]})
             elif any(t["status"] == "waiting_for_user" for t in pending):

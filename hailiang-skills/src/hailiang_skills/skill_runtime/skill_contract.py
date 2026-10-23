@@ -53,7 +53,7 @@ def parse_skill_contract(
     fields_payload = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
     facts_schema = _parse_facts_schema(payload.get("facts"), fields_payload=fields_payload)
     routes_payload = payload.get("routes", metadata.get("routes", []))
-    routes = tuple(_parse_route(item) for item in routes_payload if isinstance(item, dict))
+    routes = tuple(r for r in (_parse_route(item) for item in routes_payload if isinstance(item, dict)) if r is not None)
     accepts_scenes = tuple(
         str(item).strip()
         for item in payload.get("accepts_scenes", metadata.get("accepts_scenes", []))
@@ -112,11 +112,13 @@ def _parse_stage(payload: dict[str, Any]) -> StageContract:
     )
 
 
-def _parse_route(payload: dict[str, Any]) -> RouteTarget:
+def _parse_route(payload: dict[str, Any]) -> RouteTarget | None:
     target_skill_id = str(payload.get("target_skill_id") or "").strip()
-    scene = str(payload.get("scene") or "").strip() or target_skill_id
     if not target_skill_id:
-        raise ValueError("runtime_contract.json 中的 route.target_skill_id 不能为空")
+        # 兼容旧格式路由（如 action/from/to/trigger 或 id/condition/flow/description），
+        # 这些是 skill 内部状态机描述，不是跨 skill 交接路由，静默跳过。
+        return None
+    scene = str(payload.get("scene") or "").strip() or target_skill_id
     if not scene:
         raise ValueError("runtime_contract.json 中的 route 需要 scene 或 target_skill_id")
     return RouteTarget(

@@ -412,6 +412,16 @@ export const workbenchApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  updateObject: (
+    baseUrl: string,
+    objectId: string,
+    input: { name?: string; description?: string; actor_id: string },
+  ) =>
+    request<WorkbenchObject>(
+      baseUrl,
+      `/workbench/v1/objects/${objectId}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    ),
   archiveObject: (baseUrl: string, objectId: string, actorId: string) =>
     request<{ object_id: string; archived: true }>(
       baseUrl,

@@ -203,7 +203,7 @@ def result_for(run, child, consumer):
 
 def tool_projection(run, task, tool):
     # Child results have separate envelopes: never truncate a combined array.
-    if tool["name"] in {"delegate_tasks", "execute_skill", "submit_result", "read_evidence"}:
+    if tool["name"] in {"delegate_tasks", "execute_skill", "read_evidence"}:
         return json.dumps(tool["result"], ensure_ascii=False), None
     raw = json.dumps(tool["result"], ensure_ascii=False, default=str)
     version = tool.get("source_version", tool["id"])
@@ -250,13 +250,13 @@ def compose_v2(run, task, facts, specs, platform):
         skill_info = policy["skills"].get(task["skill_id"], {})
         rules, catalog = skill_prompt_rules(skill_info, task)
     rules = platform + "\n" + policy.get("soul", "") + "\n" + rules
-    rules += "\n索引不是事实值，未加载不等于未知；追问前按字段 read_facts。按需 read_evidence，未读取的引用不可当作已读依据。专家与 Skill 优先用 submit_result 提交约 1200 token 的结构化结论；保留限制和未解决事项。"
+    rules += "\n索引不是事实值，未加载不等于未知；追问前按字段 read_facts。按需 read_evidence，未读取的引用不可当作已读依据。完成分析后直接以自然文本回复用户，保留完整判断和限制声明。"
     rules += "\n证据引用只能使用本次工具返回的 evidence_id（ev_ 开头）；文件路径与 URL 是来源描述，不是证据 ID。已有 data/content 可直接分析，不必为取得引用重复读取。"
     rules += "\n分数表等 JSON 资料优先用 read_skill_asset 按字段和分数定位记录；已知来源用精确读取和分页，不要反复换关键词搜索同一段。资料没有年份或适用口径时不能推断为当年录取依据。"
     rules += "\n确认替其他对象询问时，主 agent 必须在分派前调用 set_task_subject(external)，不得沿用当前档案事实。"
     if run.get("execution_contract_version") == "v1":
-        rules += "\n专家与 Skill 必须用 submit_result 结束任务，普通文本不构成结果提交；未解决项非空时不能提交 completed。主 agent 汇总时直接给结论，不重述已答问题。"
-        rules += "\n缺信息不等于执行失败：若信息会影响当前任务结论，先检查事实与已答/跳过状态，再调用 request_user_input 生成表单等待回答，不要直接提交缺信息结果或在结论正文追问。回答后继续当前任务；用户跳过时不反复追问，提交 partial 并说明有效结论、限制和未解决事项。仅影响未请求的后续建议的信息放入 limitations，不强行收集。子任务 partial 不等于技术失败，所属专家可提交 partial，主 agent 汇总可完成部分并明确限制，不宣称全部完成。工具异常、模型异常不能伪装成用户缺信息。"
+        rules += "\n专家与 Skill 完成分析后直接以自然文本回复用户，不调用额外提交工具。主 agent 汇总时直接给完整结论，不重述已答问题。"
+        rules += "\n缺信息不等于执行失败：若信息会影响当前任务结论，先检查事实与已答/跳过状态，再调用 request_user_input 生成表单等待回答，不要直接提交缺信息结果或在结论正文追问。回答后继续当前任务；用户跳过时不反复追问，完整给出已有信息下的有效结论和限制声明。仅影响未请求的后续建议的信息放入 limitations，不强行收集。子任务 partial 不等于技术失败，所属专家可给出部分结论，主 agent 汇总可完成部分并明确限制，不宣称全部完成。工具异常、模型异常不能伪装成用户缺信息。"
     if task.get('finalizing'):
         rules += "\n当前是最终正文生成阶段，直接给用户回答，不调用工具，不暴露内部分析；以有效事实和已完成结果为依据，明确部分完成的限制。"
     if run.get("subject_mode") == "external":

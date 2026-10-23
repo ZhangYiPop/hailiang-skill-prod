@@ -88,6 +88,12 @@ class DeleteObjectInput(StrictModel):
     actor_id: str = Field(min_length=1)
 
 
+class UpdateObjectInput(StrictModel):
+    name: str | None = Field(default=None, max_length=256)
+    description: str | None = Field(default=None, max_length=2000)
+    actor_id: str = Field(min_length=1)
+
+
 class IdMigrationInput(DeleteObjectInput):
     new_object_key: str = Field(min_length=1, max_length=160)
 
@@ -241,6 +247,10 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
     @router.delete("/objects/{object_id}")
     def delete_object(object_id: str, body: DeleteObjectInput):
         return _call(lambda: service.delete_object(object_id, **body.model_dump()))
+
+    @router.patch("/objects/{object_id}")
+    def update_object(object_id: str, body: UpdateObjectInput):
+        return _call(lambda: service.update_object(object_id, **body.model_dump(exclude_none=True)))
 
     @router.post("/objects/{object_id}/id-migrations", status_code=201)
     def migrate_object_id(object_id: str, body: IdMigrationInput):
