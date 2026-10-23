@@ -406,6 +406,112 @@ def debug_step_io(run):
     return steps
 
 
+def _diagnostic_timestamp(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _diagnostic_duration(start, end, *, current=None):
+    start_at = _diagnostic_timestamp(start)
+    end_at = _diagnostic_timestamp(end) or _diagnostic_timestamp(current)
+    if start_at is None or end_at is None:
+        return None
+    return max(0, int((end_at - start_at).total_seconds() * 1000))
+
+
+def execution_diagnostics(run):
+    """Project scheduler timing for workbench-only Harness diagnostics.
+
+    This deliberately consumes the durable run payload rather than public SSE
+    projections, so it can be exposed only from the protected trace endpoint.
+    A queued runnable task cannot prove whether a worker is offline or every
+    worker slot is busy; callers receive that conservative classification.
+    """
+    generated_at = now()
+    tasks = run.get("tasks", {})
+    tools = run.get("tools", {})
+    inputs = run.get("inputs", {})
+    root = tasks.get(run.get("root_task_id"), {})
+    worker_claimed_at = root.get("started_at")
+    running_count = sum(item.get("status") == "running" for item in tasks.values())
+    max_parallel = int((run.get("policy", {}).get("settings", {}) or {}).get("max_parallel", 1) or 1)
+
+    model_entries = []
+    for task in tasks.values():
+        for trace in task.get("trace") or []:
+            started_at = trace.get("started_at")
+            if started_at:
+                model_entries.append({
+                    "task_id": task.get("id"),
+                    "purpose": str(trace.get("purpose") or (trace.get("diagnostics") or {}).get("phase") or "model"),
+                    "started_at": started_at,
+                    "completed_at": trace.get("completed_at"),
+                    "duration_ms": _diagnostic_duration(started_at, trace.get("completed_at"), current=generated_at),
+                })
+    model_entries.sort(key=lambda item: (item["started_at"], str(item["task_id"])))
+
+    def waiting_reason(task):
+        status = task.get("status")
+        if status == "waiting_for_dependency":
+            return "waiting_for_dependency"
+        if status == "waiting_for_user":
+            return "waiting_for_user_input"
+        if status != "queued":
+            return None
+        dependencies = task.get("depends_on") or []
+        if any(tasks.get(dep, {}).get("status") not in TERMINAL for dep in dependencies):
+            return "waiting_for_dependency"
+        if any(
+            request.get("status") in {"pending", "queued"}
+            and any(binding.get("task_id") == task.get("id") for binding in request.get("bindings") or [])
+            for request in inputs.values()
+        ):
+            return "waiting_for_user_input"
+        if running_count >= max_parallel:
+            return "run_parallelism_limit"
+        return "awaiting_worker_claim"
+
+    nodes = []
+    for task in tasks.values():
+        task_end = task.get("ended_at") if task.get("status") in TERMINAL else None
+        nodes.append({
+            "id": task.get("id"), "kind": task.get("kind"), "title": task.get("goal") or "主任务",
+            "status": task.get("status"), "created_at": task.get("created_at"),
+            "started_at": task.get("started_at"), "ended_at": task.get("ended_at"),
+            "duration_ms": _diagnostic_duration(task.get("started_at"), task_end, current=generated_at),
+            "queue_reason": waiting_reason(task),
+        })
+    for tool in tools.values():
+        parent = tasks.get(tool.get("task_id"), {})
+        tool_end = tool.get("ended_at") if tool.get("status") in TOOL_TERMINAL else None
+        nodes.append({
+            "id": tool.get("id"), "kind": "tool", "title": tool.get("name") or "tool",
+            "status": tool.get("status"), "created_at": tool.get("created_at"),
+            "started_at": tool.get("started_at"), "ended_at": tool.get("ended_at"),
+            "duration_ms": _diagnostic_duration(tool.get("started_at"), tool_end, current=generated_at),
+            "queue_reason": "waiting_for_parent_task" if tool.get("status") == "queued" and parent.get("status") != "running" else None,
+        })
+    nodes.sort(key=lambda item: (item.get("created_at") or item.get("started_at") or "", str(item["id"])))
+    return {
+        "generated_at": generated_at,
+        "total_elapsed_ms": _diagnostic_duration(
+            run.get("created_at"), run.get("updated_at") if run.get("status") in TERMINAL else None, current=generated_at,
+        ),
+        "worker_claimed_at": worker_claimed_at,
+        "worker_wait_ms": _diagnostic_duration(run.get("created_at"), worker_claimed_at, current=generated_at),
+        "first_model_phase": model_entries[0] if model_entries else None,
+        "first_output_at": run.get("first_output_at"),
+        "first_output_ms": _diagnostic_duration(run.get("created_at"), run.get("first_output_at"), current=generated_at),
+        "max_parallel": max_parallel,
+        "running_task_count": running_count,
+        "phases": nodes,
+    }
+
+
 def task_node(kind, goal, parent_id=None, expert_id=None, skill_id=None, completion="完成指定任务", depends_on=()):
     return {"id": identifier("task"), "parent_id": parent_id, "kind": kind, "expert_id": expert_id, "skill_id": skill_id,
             "goal": goal, "completion": completion, "depends_on": list(depends_on), "status": "queued", "messages": [{"role": "user", "content": goal}],
@@ -655,6 +761,7 @@ class HarnessRuntime:
 
     @staticmethod
     def _record_model_usage(run, trace, metrics):
+        trace.setdefault("completed_at", now())
         if cp.enabled(run) and trace.get("usage_reconciled"):
             return
         usage = {key: metrics.get(key) for key in ("input_tokens", "output_tokens", "total_tokens", "finish_reason", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "duration_ms") if metrics.get(key) is not None}
@@ -751,7 +858,7 @@ class HarnessRuntime:
                 self._reserve_model_input(current, live, diagnostics)
                 live["model_calls"] += 1
                 live["fact_versions"] = diagnostics["fact_versions"]
-                live["trace"].append({"execution_id": token, "input": [serialize_message(m) for m in messages], "tools": [asdict(s) for s in specs], "diagnostics": diagnostics})
+                live["trace"].append({"execution_id": token, "started_at": now(), "input": [serialize_message(m) for m in messages], "tools": [asdict(s) for s in specs], "diagnostics": diagnostics})
                 changes.append({"event": "model_started", "node_id": task_id})
                 return True
             if not self.store.mutate(run_id, before):
@@ -946,7 +1053,7 @@ class HarnessRuntime:
                     raise HarnessError("RUN_MODEL_BUDGET_EXCEEDED")
                 live = current["tasks"][task_id]
                 live["model_calls"] += 1
-                live["trace"].append({"execution_id": token, "input": [serialize_message(m) for m in prompt], "tools": [],
+                live["trace"].append({"execution_id": token, "started_at": now(), "input": [serialize_message(m) for m in prompt], "tools": [],
                                       "diagnostics": {"phase": output_key, "estimated_tokens": 0, "fact_versions": {}}})
                 changes.append({"event": "model_started", "node_id": task_id})
                 return True
@@ -1272,7 +1379,7 @@ class HarnessRuntime:
                 raise HarnessError("RUN_MODEL_BUDGET_EXCEEDED")
             self._reserve_model_input(current, live, diagnostics)
             live["model_calls"] += 1
-            live["trace"].append({"execution_id": token, "purpose": "summary", "input": [serialize_message(m) for m in summary_messages], "tools": [], "diagnostics": diagnostics})
+            live["trace"].append({"execution_id": token, "started_at": now(), "purpose": "summary", "input": [serialize_message(m) for m in summary_messages], "tools": [], "diagnostics": diagnostics})
             changes.append({"event": "model_started", "node_id": task_id})
             return True
         if not self.store.mutate(run_id, admit):
@@ -1329,7 +1436,7 @@ class HarnessRuntime:
             live = current["tasks"][task_id]
             self._reserve_model_input(current, live, diagnostics)
             live["model_calls"] += 1
-            live["trace"].append({"execution_id": token, "purpose": "summary", "input": [serialize_message(m) for m in messages], "tools": [], "diagnostics": diagnostics})
+            live["trace"].append({"execution_id": token, "started_at": now(), "purpose": "summary", "input": [serialize_message(m) for m in messages], "tools": [], "diagnostics": diagnostics})
             changes.append({"event": "model_started", "node_id": task_id})
             return True
         if not self.store.mutate(run_id, admit):

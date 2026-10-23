@@ -218,6 +218,9 @@ class HarnessStore:
                 upsert(db, scope, 'messages', 'message.updated', run_id, {'id': mid, 'run_id': run_id,
                     'kind': 'final', 'content': '', 'status': 'streaming', 'revision': previous.get('revision', 0) + 1})
             elif text:
+                if not run.get('first_output_at'):
+                    run['first_output_at'] = now()
+                    row.payload = run
                 entity = {**previous, 'content': previous.get('content', '') + text, 'version': previous.get('version', 0) + 1}
                 payload = deepcopy(scope.payload)
                 payload['messages'][mid] = entity

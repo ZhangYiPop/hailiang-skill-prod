@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentInputRequest, TaskProgressBlock, type StepIo, type SubmitHarnessAnswer } from "@/components/message-blocks/TaskProgressBlock";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { HarnessContextDiagnostics } from "./HarnessContextDiagnostics";
+import { HarnessExecutionDiagnostics, type HarnessExecutionDiagnosticsData } from "./HarnessExecutionDiagnostics";
 import type { HarnessRun, HarnessSnapshot } from "@/types/harness";
 import { isHarnessTerminal } from "@/types/harness";
 
@@ -71,6 +72,7 @@ export function HarnessDebugPanel({
   const [busy, setBusy] = useState(false);
   const [trace, setTrace] = useState("");
   const [stepsByRun, setStepsByRun] = useState<Record<string, Record<string, StepIo>>>({});
+  const [executionDiagnosticsByRun, setExecutionDiagnosticsByRun] = useState<Record<string, HarnessExecutionDiagnosticsData>>({});
   const [rightPane, setRightPane] = useState<"reply" | "trace">("reply");
   const [conclusion, setConclusion] = useState("");
   const [evidenceSaved, setEvidenceSaved] = useState(false);
@@ -166,6 +168,7 @@ export function HarnessDebugPanel({
     setRuns([]);
     setTrace("");
     setStepsByRun({});
+    setExecutionDiagnosticsByRun({});
     setEvidenceSaved(false);
     setConclusion("");
   }, [persistenceKey, knownKey]);
@@ -206,6 +209,7 @@ export function HarnessDebugPanel({
     setError("");
     setTrace("");
     setStepsByRun({});
+    setExecutionDiagnosticsByRun({});
     setRightPane("reply");
     setConclusion("");
     setEvidenceSaved(false);
@@ -226,11 +230,12 @@ export function HarnessDebugPanel({
     void (async () => {
       try {
         const loaded = await Promise.all(runs.map(async (run) => {
-          const data = await request<{ steps?: Record<string, StepIo> }>(`${api}/sessions/${sessionId}/harness/runs/${run.run_id}/trace?user_id=${encodeURIComponent(userId)}`);
+          const data = await request<{ steps?: Record<string, StepIo>; execution_diagnostics?: HarnessExecutionDiagnosticsData }>(`${api}/sessions/${sessionId}/harness/runs/${run.run_id}/trace?user_id=${encodeURIComponent(userId)}`);
           return [run.run_id, data] as const;
         }));
         if (cancelled) return;
         setStepsByRun(Object.fromEntries(loaded.map(([id, data]) => [id, data.steps || {}])));
+        setExecutionDiagnosticsByRun(Object.fromEntries(loaded.map(([id, data]) => [id, data.execution_diagnostics]).filter(([, value]) => Boolean(value))));
         const latest = loaded[loaded.length - 1]?.[1];
         setTrace(latest ? JSON.stringify(latest, null, 2) : "");
       } catch (e) {
@@ -433,7 +438,10 @@ export function HarnessDebugPanel({
                 <div className="space-y-2 rounded-xl border border-white/10 bg-black/20 p-3">
                   <p className="text-xs font-medium text-slate-300">任务树与执行过程</p>
                   {runs.map((run) => (
-                    <TaskProgressBlock key={`trace-${run.run_id}`} run={run} connection={connection} steps={stepsByRun[run.run_id]} />
+                    <div key={`trace-${run.run_id}`} className="space-y-2">
+                      <TaskProgressBlock run={run} connection={connection} steps={stepsByRun[run.run_id]} />
+                      <HarnessExecutionDiagnostics diagnostics={executionDiagnosticsByRun[run.run_id]} />
+                    </div>
                   ))}
                 </div>
               ) : null}

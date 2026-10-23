@@ -23,6 +23,41 @@ def test_public_events_are_immutable_and_scope_isolated(tmp_path):
     runtime.close()
 
 
+def test_execution_diagnostics_classifies_worker_parallel_dependency_and_input_waits(tmp_path):
+    from hailiang_skills.harness.runtime import execution_diagnostics, task_node
+
+    runtime = make_runtime(tmp_path, lambda *_: call('finalize_response', {}))
+    test_policy = v2_policy()
+    test_policy['settings']['max_parallel'] = 1
+    rid = runtime.create('s', 'u', 'p', '分析', test_policy, wire_protocol='hailiang.sse.v3')
+    before_claim = execution_diagnostics(runtime.store.get(rid))
+    assert before_claim['worker_wait_ms'] is not None
+    root = next(item for item in before_claim['phases'] if item['id'] == runtime.store.get(rid)['root_task_id'])
+    assert root['queue_reason'] == 'awaiting_worker_claim'
+
+    def attach(run, changes, _db):
+        root = run['tasks'][run['root_task_id']]
+        root.update(status='running', started_at=run['created_at'])
+        running = task_node('expert', '正在分析', root['id'], expert_id='career_plan_expert')
+        running.update(status='running', started_at=run['created_at'])
+        blocked = task_node('expert', '依赖分析', root['id'], expert_id='career_plan_expert', depends_on=[running['id']])
+        blocked['status'] = 'queued'
+        queued = task_node('expert', '并行分析', root['id'], expert_id='career_plan_expert')
+        queued['status'] = 'queued'
+        waiting = task_node('expert', '等待补充', root['id'], expert_id='career_plan_expert')
+        waiting['status'] = 'waiting_for_user'
+        run['tasks'].update({running['id']: running, blocked['id']: blocked, queued['id']: queued, waiting['id']: waiting})
+        changes.append({'event': 'diagnostic_fixture', 'node_id': root['id']})
+
+    runtime.store.mutate(rid, attach)
+    diagnostics = execution_diagnostics(runtime.store.get(rid))
+    reasons = {item['title']: item['queue_reason'] for item in diagnostics['phases']}
+    assert reasons['依赖分析'] == 'waiting_for_dependency'
+    assert reasons['并行分析'] == 'run_parallelism_limit'
+    assert reasons['等待补充'] == 'waiting_for_user_input'
+    runtime.close()
+
+
 def test_v3_snapshot_carries_expert_id_and_jump_cards(tmp_path):
     from hailiang_skills.harness.runtime import task_node
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
