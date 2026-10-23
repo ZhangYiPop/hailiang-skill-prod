@@ -215,8 +215,11 @@ export type ExpertTeamMember = {
   is_coordinator: boolean;
 };
 
+export type ExpertTeamSource = "deployed" | "filesystem_fallback";
+
 export type ExpertTeamCatalogItem = {
   team_id: string;
+  source?: ExpertTeamSource;
   name: string;
   brief?: string;
   description: string;
@@ -228,6 +231,7 @@ export type ExpertTeamCatalogItem = {
 
 export type SelectedExpertTeam = {
   team_id: string;
+  source?: ExpertTeamSource;
   name: string;
   brief?: string;
   coordinator_expert_id: string;
@@ -811,10 +815,22 @@ export async function listExperts(baseUrl: string): Promise<ExpertCatalogItem[]>
   return Array.isArray(payload.experts) ? payload.experts : [];
 }
 
-export async function listExpertTeams(baseUrl: string): Promise<ExpertTeamCatalogItem[]> {
+export type ExpertTeamCatalogResponse = {
+  expert_teams: ExpertTeamCatalogItem[];
+  local_fallback_team?: ExpertTeamCatalogItem;
+};
+
+export async function listExpertTeamCatalog(baseUrl: string): Promise<ExpertTeamCatalogResponse> {
   const response = await fetchWithRetry(`${baseUrl}/api/v1/expert-teams`, { method: "GET" });
-  const payload = await parseResponse<{ expert_teams?: ExpertTeamCatalogItem[] }>(response);
-  return Array.isArray(payload.expert_teams) ? payload.expert_teams : [];
+  const payload = await parseResponse<{ expert_teams?: ExpertTeamCatalogItem[]; local_fallback_team?: ExpertTeamCatalogItem }>(response);
+  return {
+    expert_teams: Array.isArray(payload.expert_teams) ? payload.expert_teams : [],
+    local_fallback_team: payload.local_fallback_team,
+  };
+}
+
+export async function listExpertTeams(baseUrl: string): Promise<ExpertTeamCatalogItem[]> {
+  return (await listExpertTeamCatalog(baseUrl)).expert_teams;
 }
 
 export async function sendMessage(

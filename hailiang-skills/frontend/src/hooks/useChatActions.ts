@@ -13,7 +13,7 @@ import {
   getSessionContext,
   getUserFacts,
   listExperts,
-  listExpertTeams,
+  listExpertTeamCatalog,
   listUserSessions,
   listProfiles,
   listRuntimeSkills,
@@ -465,16 +465,18 @@ export function useChatActions() {
       const [skills, experts, teams] = await Promise.all([
         listRuntimeSkills(state.apiBaseUrl, state.debugIdentity?.grade ?? ""),
         listExperts(state.apiBaseUrl),
-        listExpertTeams(state.apiBaseUrl),
+        listExpertTeamCatalog(state.apiBaseUrl),
       ]);
       store.setSkillCatalog(skills);
       store.setExpertCatalog(experts);
-      store.setExpertTeamCatalog(teams);
+      store.setExpertTeamCatalog(teams.expert_teams);
+      store.setLocalFallbackExpertTeam(teams.local_fallback_team ?? null);
       return skills;
     } catch {
       store.setSkillCatalog([]);
       store.setExpertCatalog([]);
       store.setExpertTeamCatalog([]);
+      store.setLocalFallbackExpertTeam(null);
       return [];
     }
   }, [store]);
@@ -1367,6 +1369,7 @@ export function useChatActions() {
                 }
                 if (requestedExpertTeamId) {
                   store.setPendingExpertTeamId("");
+                  store.setPendingExpertTeamSource("deployed");
                 }
                 if (clearExpert) {
                   store.setPendingExpertClear(false);
@@ -1906,6 +1909,7 @@ export function useChatActions() {
       // so the request atomically enters that team at the selected member.
       if (!isSelectedTeamMember) {
         store.setPendingExpertTeamId("");
+        store.setPendingExpertTeamSource("deployed");
       }
       store.setPendingExpertClear(false);
       store.setPendingExpertId(normalizedExpertId);
@@ -1917,6 +1921,7 @@ export function useChatActions() {
     if (useHarnessState.getState().activeRunId) return;
     store.setPendingExpertId("");
     store.setPendingExpertTeamId("");
+    store.setPendingExpertTeamSource("deployed");
     store.setPendingExpertClear(true);
   }, [store]);
 
@@ -1935,9 +1940,20 @@ export function useChatActions() {
       store.setPendingExpertId("");
       store.setPendingExpertClear(false);
       store.setPendingExpertTeamId(team?.team_id ?? "");
+      store.setPendingExpertTeamSource("deployed");
     },
     [store],
   );
+
+  const handleSelectLocalFallbackExpertTeam = useCallback(async () => {
+    if (useHarnessState.getState().activeRunId) return;
+    const team = useChatStore.getState().localFallbackExpertTeam;
+    if (!team) throw new Error("当前环境未提供本地兜底专家团");
+    store.setPendingExpertId("");
+    store.setPendingExpertClear(false);
+    store.setPendingExpertTeamId(team.team_id);
+    store.setPendingExpertTeamSource("filesystem_fallback");
+  }, [store]);
 
   const handleConfirmTeamHandoff = useCallback(
     async (messageId: string, targetExpertId: string, mentionName: string) => {
@@ -2278,6 +2294,7 @@ export function useChatActions() {
     handleSelectExpert,
     handleExitExpert,
     handleSelectExpertTeam,
+    handleSelectLocalFallbackExpertTeam,
     handleConfirmTeamHandoff,
     handleStopGeneration,
     handleClearUserFactsBySource,

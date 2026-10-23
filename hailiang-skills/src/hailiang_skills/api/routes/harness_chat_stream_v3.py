@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
+from hailiang_skills.core.deployment import deployment_environment
 from hailiang_skills.harness.contracts import InternalAnswerSubmission, HarnessError, TERMINAL, identifier
 from hailiang_skills.harness.policy import capture_policy
 
@@ -45,9 +46,12 @@ class TeamBoundInput(StrictInput):
 
 
 class ChatInput(TeamBoundInput):
-    # Product chat may omit the selector for a standalone general_chat turn.
-    # Answer and resume actions remain explicitly team-bound.
+    # A selector starts or replaces the session's team binding.  When omitted,
+    # a bound session continues with its frozen team; ``clear_expert_team`` is
+    # the explicit transition back to standalone general_chat.
     expert_team_id: ExpertTeamSelector | None = None
+    expert_team_source: Literal["filesystem_fallback"] | None = None
+    clear_expert_team: bool = False
     action: Literal["chat"]
     content: str = Field(min_length=1, max_length=120000)
 
@@ -206,18 +210,37 @@ def _ensure_profile(fact_service, user_id: str, profile_id: str | None, profile_
     creator(user_id, profile_id=profile_id, name=_profile_name(profile_data, profile_id), shared_facts_initialized=False)
 
 
-def _team_for_context(context, orchestrator, team_id: str):
-    """Resolve a selected team from its frozen release, then local fallback."""
-    snapshot = context.session_meta.get("configuration_snapshot")
-    entries = snapshot.get("entries") if isinstance(snapshot, dict) else None
-    if isinstance(entries, list) and entries:
-        from hailiang_skills.workbench.catalog import build_runtime_registries
-        _skills, experts, teams = build_runtime_registries(entries)
+def _team_for_context(context, orchestrator, team_id: str, *, source: str | None = None):
+    """Resolve a selected team from deployment or an explicit local test package."""
+    force_filesystem = source == "filesystem_fallback"
+    used_filesystem = force_filesystem
+    if force_filesystem:
+        if deployment_environment().startswith("prod"):
+            raise HTTPException(403, "FILESYSTEM_FALLBACK_NOT_AVAILABLE")
+        from hailiang_skills.runtime_bridge.expert_bundle import load_local_expert_registry
+        from hailiang_skills.runtime_bridge.expert_team_bundle import load_local_expert_team_registry
+        from hailiang_skills.runtime_bridge.main_planner import (
+            PROJECT_RUNTIME_AGENTS_ROOT,
+            PROJECT_RUNTIME_AGENT_TEAMS_ROOT,
+        )
+        local_skills = orchestrator._load_runtime_registry()
+        experts = load_local_expert_registry(PROJECT_RUNTIME_AGENTS_ROOT, local_skills)
+        teams = load_local_expert_team_registry(PROJECT_RUNTIME_AGENT_TEAMS_ROOT, experts)
+        team = teams.get(team_id)
+        if team is not None:
+            context.session_meta["filesystem_team_fallback_id"] = team_id
+            context.session_meta["expert_team_source"] = "filesystem_fallback"
     else:
-        experts = getattr(orchestrator, "expert_registry", None)
-        teams = getattr(orchestrator, "expert_team_registry", None)
-    team = teams.get(team_id) if teams is not None else None
-    if team is None:
+        snapshot = context.session_meta.get("configuration_snapshot")
+        entries = snapshot.get("entries") if isinstance(snapshot, dict) else None
+        if isinstance(entries, list) and entries:
+            from hailiang_skills.workbench.catalog import build_runtime_registries
+            _skills, experts, teams = build_runtime_registries(entries)
+        else:
+            experts = getattr(orchestrator, "expert_registry", None)
+            teams = getattr(orchestrator, "expert_team_registry", None)
+        team = teams.get(team_id) if teams is not None else None
+    if team is None and not force_filesystem:
         # A deployment is only authoritative for teams it actually contains.
         # An explicitly selected team without a frozen release must use the
         # checked-in runtime package, never another database team's release.
@@ -232,9 +255,11 @@ def _team_for_context(context, orchestrator, team_id: str):
         teams = load_local_expert_team_registry(PROJECT_RUNTIME_AGENT_TEAMS_ROOT, experts)
         team = teams.get(team_id)
         if team is not None:
+            used_filesystem = True
             context.session_meta["filesystem_team_fallback_id"] = team_id
-    else:
+    if team is not None and not used_filesystem:
         context.session_meta.pop("filesystem_team_fallback_id", None)
+        context.session_meta.pop("expert_team_source", None)
     if team is None:
         raise HTTPException(422, "EXPERT_TEAM_NOT_FOUND")
     coordinator_id = str(getattr(team, "coordinator_expert_id", "") or "")
@@ -244,9 +269,9 @@ def _team_for_context(context, orchestrator, team_id: str):
     return team
 
 
-def _bind_input_team(context, orchestrator, team_id: str):
+def _bind_input_team(context, orchestrator, team_id: str, *, source: str | None = None):
     """Persist an input-selected team without narrowing policy to one expert."""
-    team = _team_for_context(context, orchestrator, team_id)
+    team = _team_for_context(context, orchestrator, team_id, source=source)
     coordinator_id = team.coordinator_expert_id
     context.session_meta["expert_team_id"] = team.team_id
     # Legacy components still require an active coordinator marker.  The
@@ -254,6 +279,9 @@ def _bind_input_team(context, orchestrator, team_id: str):
     context.session_meta["expert_id"] = coordinator_id
     context.session_meta["active_expert_id"] = coordinator_id
     context.session_meta["expert_selection_source"] = "input_team"
+    if source != "filesystem_fallback":
+        context.session_meta.pop("filesystem_team_fallback_id", None)
+        context.session_meta.pop("expert_team_source", None)
     context.session_meta.pop("branch_expert_override", None)
     context.set_session_agent_selection(
         expert_team_id=team.team_id,
@@ -272,6 +300,7 @@ def _activate_general_chat(context):
     context.session_meta.pop("active_expert_id", None)
     context.session_meta.pop("expert_selection_source", None)
     context.session_meta.pop("filesystem_team_fallback_id", None)
+    context.session_meta.pop("expert_team_source", None)
     context.session_meta.pop("harness_v3_minimal", None)
     context.set_session_agent_selection(
         expert_team_id=None,
@@ -476,6 +505,7 @@ def _message_payload(runtime, run: dict[str, Any], event: dict[str, Any], *, req
         "assistant_message_id": message_id,
         "cursor": int(event.get("seq") or 0),
         "record_version": int(run.get("version") or 0),
+        "expert_team_source": run.get("policy", {}).get("team_source", "deployed"),
         "revision": int(data.get("revision") or 1),
         "offset": int(data.get("offset") or 0),
         "text": str(data.get("text") or ""),
@@ -490,6 +520,7 @@ def _payload(runtime, run, *, request_run_id: str, event: str, reason: str, curs
     team_orchestration_version = str(run.get("team_orchestration_version") or "single_team_v1")
     state["expert_team_id"] = run.get("policy", {}).get("team_id")
     state["expert_team_ids"] = requested_team_ids
+    state["expert_team_source"] = run.get("policy", {}).get("team_source", "deployed")
     state["team_orchestration_version"] = team_orchestration_version
     context = deepcopy(run.get("public_context") or {})
     payload = {
@@ -502,6 +533,7 @@ def _payload(runtime, run, *, request_run_id: str, event: str, reason: str, curs
         "assistant_message_id": run.get("assistant_message_id"),
         "expert_team_id": run.get("policy", {}).get("team_id"),
         "expert_team_ids": requested_team_ids,
+        "expert_team_source": run.get("policy", {}).get("team_source", "deployed"),
         "team_orchestration_version": team_orchestration_version,
         "record_version": run["version"], "cursor": cursor, "reason": reason,
         "stream_status": "waiting_for_user" if event == "done_suspended" else ("running" if event == "done_timeout" else run["status"]),
@@ -565,7 +597,13 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         # V3 remains finite for a BFF, but background execution never depends
         # on this connection remaining open.
         timeout_seconds = max(1, int(os.getenv("HAILIANG_HARNESS_SSE_WAIT_SECONDS", "600")))
+        # Like SSE v2's ``ping`` frame, this is transport-only and therefore
+        # neither changes the task snapshot nor asks the BFF/frontend to
+        # re-render. It keeps a quiet model/tool call from being mistaken for
+        # a dead HTTP connection by a proxy.
+        heartbeat_seconds = max(1, int(os.getenv("HAILIANG_HARNESS_SSE_HEARTBEAT_SECONDS", "15")))
         started = time.monotonic()
+        last_wire_activity = started
         run = await asyncio.to_thread(runtime.store.get, harness_run_id)
         initial = await asyncio.to_thread(runtime.store.public_snapshot, run["session_id"], run["user_id"], run["profile_id"])
         cursor = initial["cursor"]
@@ -575,6 +613,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
             yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
             return
         yield format_sse_event("state", _payload(runtime, run, request_run_id=request_run_id, event="state", reason="stream_started", cursor=cursor))
+        last_wire_activity = time.monotonic()
         while not await http_request.is_disconnected():
             run = await asyncio.to_thread(runtime.store.get, harness_run_id)
             events = await asyncio.to_thread(runtime.store.public_events, run["session_id"], run["user_id"], run["profile_id"], cursor)
@@ -586,9 +625,11 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     event_type = str(item.get("type") or "state")
                     if event_type in {"message.delta", "message.reset"}:
                         yield format_sse_event(event_type, _message_payload(runtime, run, item, request_run_id=request_run_id))
+                        last_wire_activity = time.monotonic()
                         continue
                     event_name = "done" if event_type == "done" else "state"
                     yield format_sse_event(event_name, _payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=item.get("reason", "updated"), cursor=int(item.get("seq") or cursor)))
+                    last_wire_activity = time.monotonic()
                     if event_name == "done":
                         return
                 continue
@@ -604,6 +645,9 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
             if time.monotonic() - started >= timeout_seconds:
                 yield format_sse_event("done_timeout", _payload(runtime, run, request_run_id=request_run_id, event="done_timeout", reason="stream_timeout", cursor=cursor))
                 return
+            if time.monotonic() - last_wire_activity >= heartbeat_seconds:
+                yield format_sse_event("ping", {})
+                last_wire_activity = time.monotonic()
             await asyncio.sleep(0.2)
 
     def authorised_message_run(request: V3ChatStreamRequest, assistant_message_id: str) -> str:
@@ -647,26 +691,51 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         profile_data = _normalise_profile_data(data)
 
         if isinstance(input_data, ChatInput):
+            if input_data.clear_expert_team and input_data.expert_team_id is not None:
+                raise HTTPException(422, "CLEAR_EXPERT_TEAM_CONFLICT")
             if input_data.expert_team_id is None:
-                active = runtime.store.active(request.session_id)
-                if active:
-                    raise HTTPException(409, "ACTIVE_HARNESS_RUN_EXISTS")
-                _ensure_profile(fact_service, data.user_id, data.profile_id, profile_data)
-                context, created = open_or_resume_session(
-                    repository, fact_service, session_id=request.session_id, data=data,
-                    context_scope="profile" if data.profile_id else "unbound", allow_context_seed=False,
-                )
-                if created and snapshot_resolver:
-                    snapshot = snapshot_resolver()
-                    if snapshot:
-                        context.session_meta["configuration_snapshot"] = snapshot
-                _activate_general_chat(context)
-                repository.save(context)
-                return StreamingResponse(
-                    general_stream(context, input_data, request.run_id),
-                    media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no", "X-SSE-Protocol": SSE_V3_PROTOCOL},
-                )
+                if input_data.expert_team_source is not None:
+                    raise HTTPException(422, "EXPERT_TEAM_SOURCE_REQUIRES_TEAM")
+                # Team binding is a conversation property, rather than a
+                # one-message UI selection.  Preserve it across refreshes and
+                # clients; only an explicit exit returns the session to the
+                # general-chat path.
+                if not input_data.clear_expert_team:
+                    try:
+                        bound_context = repository.get(request.session_id)
+                    except KeyError:
+                        bound_context = None
+                    bound_team_id = str((bound_context.session_meta if bound_context else {}).get("expert_team_id") or "").strip()
+                    bound_source = (bound_context.session_meta if bound_context else {}).get("expert_team_source")
+                    if bound_team_id:
+                        input_data = input_data.model_copy(update={
+                            "expert_team_id": bound_team_id,
+                            "expert_team_source": "filesystem_fallback" if bound_source == "filesystem_fallback" else None,
+                        })
+                if input_data.expert_team_id is not None:
+                    # Continue through the team branch below with the
+                    # persisted binding and the same source marker.
+                    pass
+                else:
+                    active = runtime.store.active(request.session_id)
+                    if active:
+                        raise HTTPException(409, "ACTIVE_HARNESS_RUN_EXISTS")
+                    _ensure_profile(fact_service, data.user_id, data.profile_id, profile_data)
+                    context, created = open_or_resume_session(
+                        repository, fact_service, session_id=request.session_id, data=data,
+                        context_scope="profile" if data.profile_id else "unbound", allow_context_seed=False,
+                    )
+                    if created and snapshot_resolver:
+                        snapshot = snapshot_resolver()
+                        if snapshot:
+                            context.session_meta["configuration_snapshot"] = snapshot
+                    _activate_general_chat(context)
+                    repository.save(context)
+                    return StreamingResponse(
+                        general_stream(context, input_data, request.run_id),
+                        media_type="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no", "X-SSE-Protocol": SSE_V3_PROTOCOL},
+                    )
             bound = operation(lambda: runtime.store.client_run(request.session_id, data.user_id, data.profile_id, request.run_id))
             if bound:
                 run = operation(lambda: runtime.store.get(bound["harness_run_id"]))
@@ -701,9 +770,9 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     if snapshot:
                         context.session_meta["configuration_snapshot"] = snapshot
                 team_id, team_ids = _single_supported_team_id(input_data.expert_team_id)
-                _team_for_context(context, orchestrator, team_id)
+                _team_for_context(context, orchestrator, team_id, source=input_data.expert_team_source)
                 fingerprint = _request_hash(input_data, profile_data, team_ids)
-                _bind_input_team(context, orchestrator, team_id)
+                _bind_input_team(context, orchestrator, team_id, source=input_data.expert_team_source)
                 repository.save(context)
                 if profile_data and data.profile_id:
                     aliases = {"grade": "grade", "province": "student_province", "recent_exam.total_score": "exam_score"}
@@ -713,7 +782,10 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 policy = operation(lambda: capture_policy(orchestrator, context))
                 history = []
                 for old in sorted(runtime.store.runs(request.session_id), key=lambda item: item["created_at"])[-10:]:
-                    if old["profile_id"] == data.profile_id and old["status"] == "completed":
+                    old_policy = old.get("policy") or {}
+                    if (old["profile_id"] == data.profile_id and old["status"] == "completed"
+                            and old_policy.get("team_id") == team_id
+                            and old_policy.get("team_source", "deployed") == policy.get("team_source", "deployed")):
                         history.extend([{"role": "user", "content": old["goal"]}, {"role": "assistant", "content": old.get("result", "")}])
                 harness_run_id = operation(lambda: runtime.create(
                     request.session_id, data.user_id, data.profile_id, input_data.content, policy,

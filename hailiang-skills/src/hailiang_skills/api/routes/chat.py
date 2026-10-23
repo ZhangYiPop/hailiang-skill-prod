@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from hailiang_skills.core.context import SessionContext, UNBOUND_CONTEXT_BRANCH_ID
+from hailiang_skills.core.deployment import deployment_environment
 from hailiang_skills.core.fact_service import FactService, serialize_known_facts
 from hailiang_skills.core.fact_prompt_builder import build_missing_fact_form_block
 from hailiang_skills.core.skill_display import build_skill_display
@@ -465,7 +466,7 @@ def build_chat_router(
     def list_expert_teams() -> dict:
         _, expert_registry, team_registry = active_catalog_registries()
         metadata = active_catalog_metadata()
-        return {
+        response = {
             "expert_teams": build_expert_team_catalog(
                 team_registry,
                 expert_registry,
@@ -474,6 +475,24 @@ def build_chat_router(
                 metadata_by_skill_id={key: value for (kind, key), value in metadata.items() if kind == "skill"},
             )
         }
+        # This catalog entry is deliberately test-only. It lets the product
+        # tester choose the checked-in package even when a deployment contains
+        # the same team id, without making filesystem assets selectable in prod.
+        if not deployment_environment().startswith("prod"):
+            from hailiang_skills.runtime_bridge.expert_bundle import load_local_expert_registry
+            from hailiang_skills.runtime_bridge.expert_team_bundle import load_local_expert_team_registry
+            from hailiang_skills.runtime_bridge.main_planner import (
+                PROJECT_RUNTIME_AGENTS_ROOT,
+                PROJECT_RUNTIME_AGENT_TEAMS_ROOT,
+            )
+            local_skills = orchestrator._load_runtime_registry()
+            local_experts = load_local_expert_registry(PROJECT_RUNTIME_AGENTS_ROOT, local_skills)
+            local_teams = load_local_expert_team_registry(PROJECT_RUNTIME_AGENT_TEAMS_ROOT, local_experts)
+            local_entries = build_expert_team_catalog(local_teams, local_experts)
+            local = next((item for item in local_entries if item.get("team_id") == "student_growth_expert_team"), None)
+            if local is not None:
+                response["local_fallback_team"] = {**local, "source": "filesystem_fallback"}
+        return response
 
     @router.get("/users/{user_id}/profiles/{profile_id}/sessions")
     def list_profile_sessions(user_id: str, profile_id: str) -> dict:

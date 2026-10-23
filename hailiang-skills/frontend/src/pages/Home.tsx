@@ -53,9 +53,11 @@ export default function Home() {
     skillCatalog,
     expertCatalog,
     expertTeamCatalog,
+    localFallbackExpertTeam,
     activeExpertId,
     pendingExpertId,
     pendingExpertTeamId,
+    pendingExpertTeamSource,
     pendingExpertClear,
     activeExpertTeam,
     messages,
@@ -96,6 +98,7 @@ export default function Home() {
     handleSelectExpert,
     handleExitExpert,
     handleSelectExpertTeam,
+    handleSelectLocalFallbackExpertTeam,
     handleStopGeneration,
     handleRefreshEvents,
     handleDownloadSessionLogs,
@@ -349,14 +352,17 @@ export default function Home() {
           onSubmit={handleSendMessage}
           expertCatalog={expertCatalog}
           expertTeamCatalog={expertTeamCatalog}
+          localFallbackExpertTeam={localFallbackExpertTeam}
           activeExpertId={activeExpertId}
           pendingExpertId={pendingExpertId}
           pendingExpertTeamId={pendingExpertTeamId}
+          pendingExpertTeamSource={pendingExpertTeamSource}
           pendingExpertClear={pendingExpertClear}
           activeExpertTeam={activeExpertTeam}
           onSelectExpert={handleSelectExpert}
           onExitExpert={handleExitExpert}
           onSelectExpertTeam={handleSelectExpertTeam}
+          onSelectLocalFallbackExpertTeam={handleSelectLocalFallbackExpertTeam}
           onExitExpertTeam={handleExitExpert}
           isGenerating={isSending}
           isCancelling={isCancellingRun}

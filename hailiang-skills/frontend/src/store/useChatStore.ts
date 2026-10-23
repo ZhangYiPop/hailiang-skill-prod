@@ -142,9 +142,11 @@ type ChatStore = {
   skillCatalog: SkillCatalogItem[];
   expertCatalog: ExpertCatalogItem[];
   expertTeamCatalog: ExpertTeamCatalogItem[];
+  localFallbackExpertTeam: ExpertTeamCatalogItem | null;
   activeExpertId: string;
   pendingExpertId: string;
   pendingExpertTeamId: string;
+  pendingExpertTeamSource: "deployed" | "filesystem_fallback";
   pendingExpertClear: boolean;
   activeExpertTeam: SelectedExpertTeam | null;
   profileBranches: Record<string, {
@@ -197,9 +199,11 @@ type ChatStore = {
   setSkillCatalog: (value: SkillCatalogItem[]) => void;
   setExpertCatalog: (value: ExpertCatalogItem[]) => void;
   setExpertTeamCatalog: (value: ExpertTeamCatalogItem[]) => void;
+  setLocalFallbackExpertTeam: (value: ExpertTeamCatalogItem | null) => void;
   setActiveExpertId: (value: string) => void;
   setPendingExpertId: (value: string) => void;
   setPendingExpertTeamId: (value: string) => void;
+  setPendingExpertTeamSource: (value: "deployed" | "filesystem_fallback") => void;
   setPendingExpertClear: (value: boolean) => void;
   setActiveExpertTeam: (value: SelectedExpertTeam | null) => void;
   setProfileBranch: (profileId: string, value: {
@@ -423,9 +427,11 @@ export const useChatStore = create<ChatStore>((set) => ({
   skillCatalog: [],
   expertCatalog: [],
   expertTeamCatalog: [],
+  localFallbackExpertTeam: null,
   activeExpertId: "",
   pendingExpertId: "",
   pendingExpertTeamId: "",
+  pendingExpertTeamSource: "deployed",
   pendingExpertClear: false,
   activeExpertTeam: null,
   profileBranches: {},
@@ -497,9 +503,11 @@ export const useChatStore = create<ChatStore>((set) => ({
   setSkillCatalog: (value) => set({ skillCatalog: value }),
   setExpertCatalog: (value) => set({ expertCatalog: value }),
   setExpertTeamCatalog: (value) => set({ expertTeamCatalog: value }),
+  setLocalFallbackExpertTeam: (value) => set({ localFallbackExpertTeam: value }),
   setActiveExpertId: (value) => set({ activeExpertId: value }),
   setPendingExpertId: (value) => set({ pendingExpertId: value }),
   setPendingExpertTeamId: (value) => set({ pendingExpertTeamId: value }),
+  setPendingExpertTeamSource: (value) => set({ pendingExpertTeamSource: value }),
   setPendingExpertClear: (value) => set({ pendingExpertClear: value }),
   setActiveExpertTeam: (value) => set({ activeExpertTeam: value }),
   setProfileBranch: (profileId, value) => set((state) => ({
@@ -691,6 +699,7 @@ export const useChatStore = create<ChatStore>((set) => ({
       activeExpertId: "",
       pendingExpertId: "",
       pendingExpertTeamId: "",
+      pendingExpertTeamSource: "deployed",
       pendingExpertClear: false,
       activeExpertTeam: null,
       profileBranches: {},

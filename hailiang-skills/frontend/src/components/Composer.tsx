@@ -10,14 +10,17 @@ type ComposerProps = {
   onSubmit: (value: string, options?: { teamMemberSwitch?: { targetExpertId: string } }) => Promise<void>;
   expertCatalog?: ExpertCatalogItem[];
   expertTeamCatalog?: ExpertTeamCatalogItem[];
+  localFallbackExpertTeam?: ExpertTeamCatalogItem | null;
   activeExpertId?: string;
   pendingExpertId?: string;
   pendingExpertTeamId?: string;
+  pendingExpertTeamSource?: "deployed" | "filesystem_fallback";
   pendingExpertClear?: boolean;
   activeExpertTeam?: SelectedExpertTeam | null;
   onSelectExpert?: (expertId: string) => Promise<void>;
   onExitExpert?: () => Promise<void>;
   onSelectExpertTeam?: (teamId: string) => Promise<void>;
+  onSelectLocalFallbackExpertTeam?: () => Promise<void>;
   onExitExpertTeam?: () => Promise<void>;
   isGenerating?: boolean;
   isCancelling?: boolean;
@@ -30,11 +33,13 @@ const quickPrompts = [
   "强基计划详细讲讲，我现在适合吗",
 ];
 
-export function Composer({ disabled, selectionDisabled = false, showQuickPrompts = false, onSubmit, expertCatalog = [], expertTeamCatalog = [], activeExpertId = "", pendingExpertId = "", pendingExpertTeamId = "", pendingExpertClear = false, activeExpertTeam = null, onSelectExpert, onExitExpert, onSelectExpertTeam, onExitExpertTeam, isGenerating = false, isCancelling = false, onStopGeneration }: ComposerProps) {
+export function Composer({ disabled, selectionDisabled = false, showQuickPrompts = false, onSubmit, expertCatalog = [], expertTeamCatalog = [], localFallbackExpertTeam = null, activeExpertId = "", pendingExpertId = "", pendingExpertTeamId = "", pendingExpertTeamSource = "deployed", pendingExpertClear = false, activeExpertTeam = null, onSelectExpert, onExitExpert, onSelectExpertTeam, onSelectLocalFallbackExpertTeam, onExitExpertTeam, isGenerating = false, isCancelling = false, onStopGeneration }: ComposerProps) {
   const { composerValue, setComposerValue } = useChatStore();
   const [toolbarTargetExpertId, setToolbarTargetExpertId] = useState("");
   const toolbarTarget = activeExpertTeam?.members.find((member) => member.expert_id === toolbarTargetExpertId);
-  const pendingTeam = expertTeamCatalog.find((team) => team.team_id === pendingExpertTeamId);
+  const pendingTeam = pendingExpertTeamSource === "filesystem_fallback"
+    ? localFallbackExpertTeam
+    : expertTeamCatalog.find((team) => team.team_id === pendingExpertTeamId);
 
   useEffect(() => {
     if (!activeExpertTeam?.members.some((member) => member.expert_id === toolbarTargetExpertId)) {
@@ -81,7 +86,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
 
       {activeExpertTeam ? (
         <div className="space-y-2">
-          <p className="px-1 text-xs text-violet-200">已进入专家团：{activeExpertTeam.name}</p>
+          <p className="px-1 text-xs text-violet-200">已进入专家团：{activeExpertTeam.name}{activeExpertTeam.source === "filesystem_fallback" ? "（本地兜底）" : ""}</p>
           <div className="flex flex-wrap gap-2">
             {onExitExpertTeam ? (
               <button
@@ -120,9 +125,9 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
           </p>
         </div>
       ) : (
-      expertCatalog.length || expertTeamCatalog.length || (activeExpertId && onExitExpert) ? (
+      expertCatalog.length || expertTeamCatalog.length || localFallbackExpertTeam || (activeExpertId && onExitExpert) ? (
         <div className="space-y-2">
-          <p className="px-1 text-xs text-slate-500">{expertTeamCatalog.length ? "选择专家团" : "选择专家"}</p>
+          <p className="px-1 text-xs text-slate-500">{expertTeamCatalog.length || localFallbackExpertTeam ? "选择专家团" : "选择专家"}</p>
           <div className="flex flex-wrap gap-2">
             {activeExpertId && onExitExpert ? (
               <button
@@ -134,6 +139,25 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
                 {pendingExpertClear ? "退出专家模式（待下条发送）" : "退出专家模式"}
               </button>
             ) : null}
+            {localFallbackExpertTeam ? (() => {
+              const selected = pendingExpertTeamSource === "filesystem_fallback" && pendingExpertTeamId === localFallbackExpertTeam.team_id;
+              return (
+                <button
+                  type="button"
+                  disabled={disabled || selectionDisabled || selected || !onSelectLocalFallbackExpertTeam}
+                  title="使用项目文件中的专家团，不绑定已部署或会话冻结版本"
+                  onClick={() => void onSelectLocalFallbackExpertTeam?.()}
+                  className={[
+                    "rounded-full border px-3 py-2 text-xs transition disabled:cursor-not-allowed disabled:opacity-40",
+                    selected
+                      ? "border-amber-200/70 bg-amber-200/15 text-amber-50"
+                      : "border-amber-300/35 bg-amber-300/10 text-amber-100 hover:bg-amber-300/20",
+                  ].join(" ")}
+                >
+                  使用本地兜底专家团：{localFallbackExpertTeam.name}{selected ? "（待下次发送）" : ""}
+                </button>
+              );
+            })() : null}
             {expertTeamCatalog.map((team) => {
               const selected = pendingExpertTeamId === team.team_id;
               return (
@@ -154,7 +178,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
                 </button>
               );
             })}
-            {pendingTeam?.members.map((member) => {
+            {pendingExpertTeamSource !== "filesystem_fallback" && pendingTeam?.members.map((member) => {
               const selected = pendingExpertId === member.expert_id;
               return (
                 <button
@@ -201,7 +225,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
               );
             })}
           </div>
-          <p className="px-1 text-[11px] leading-5 text-slate-500">{pendingExpertClear ? "下一条消息将退出专家模式并按普通聊天处理。" : pendingTeam ? "可在首条消息前直接选择团内成员；不选则由主协调专家承接。" : "专家能力由专家包锁定；专家团由主协调专家决定是否建议转交。"}</p>
+          <p className="px-1 text-[11px] leading-5 text-slate-500">{pendingExpertClear ? "下一条消息将退出专家模式并按普通聊天处理。" : pendingExpertTeamSource === "filesystem_fallback" ? "下一条消息将使用本地文件中的兜底专家团，不绑定已部署版本。" : pendingTeam ? "可在首条消息前直接选择团内成员；不选则由主协调专家承接。" : "专家能力由专家包锁定；专家团由主协调专家决定是否建议转交。"}</p>
         </div>
       ) : null
       )}

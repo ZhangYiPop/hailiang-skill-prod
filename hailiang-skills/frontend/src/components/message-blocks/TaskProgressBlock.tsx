@@ -265,7 +265,7 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
     </div>;
   };
   return <section aria-label="任务动态状态" className="rounded-2xl border border-cyan-300/20 bg-cyan-950/20 p-4">
-    <p className="text-sm text-cyan-100">{run.goal} · {labels[run.status] || "处理中"}</p>
+    <p className="text-sm text-cyan-100">{run.goal} · {labels[run.status] || "处理中"}{run.expert_team_source === "filesystem_fallback" ? " · 本地兜底专家团" : ""}</p>
     {(run.action || run.phase) && !isHarnessTerminal(run.status) && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-300">{run.action || run.phase}</p>}
     <p className="mt-1 text-xs text-slate-400">已完成 {run.completed_count} / {run.task_count} 项任务 · {run.waiting_count} 项等待补充 · {elapsedLabel}</p>
     {run.input_token_limit && <p className="mt-1 text-xs text-slate-400">累计模型输入估算 {run.input_tokens_estimated?.toLocaleString() ?? 0} / {run.input_token_limit.toLocaleString()} token{run.input_tokens_actual != null ? ` · 已回报实际输入 ${run.input_tokens_actual.toLocaleString()} token` : ""}</p>}

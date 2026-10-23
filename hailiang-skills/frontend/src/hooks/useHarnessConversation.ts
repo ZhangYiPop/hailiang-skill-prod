@@ -146,7 +146,7 @@ export async function sendHarnessIfEnabled(content: string): Promise<boolean> {
     }
     if (state.pendingExpertId) state.setActiveExpertId(state.pendingExpertId);
     if (state.pendingExpertClear) { state.setActiveExpertTeam(null); state.setActiveExpertId(""); }
-    state.setPendingExpertId(""); state.setPendingExpertTeamId(""); state.setPendingExpertClear(false);
+    state.setPendingExpertId(""); state.setPendingExpertTeamId(""); state.setPendingExpertTeamSource("deployed"); state.setPendingExpertClear(false);
     await refreshHarness();
   } catch (error) { state.setSending(false); throw error; }
   return true;
@@ -157,14 +157,22 @@ export async function sendHarnessIfEnabled(content: string): Promise<boolean> {
  * command and the authoritative incremental reply channel. */
 async function sendHarnessV3Chat(content: string): Promise<boolean> {
   const state = useChatStore.getState();
-  // A team is opt-in per new message. An older team task may remain visible
-  // for answer submission, but must never silently capture ordinary chat.
-  const teamId = state.pendingExpertTeamId;
+  // An explicit selection starts or replaces a binding.  Afterwards the
+  // session's active team owns ordinary follow-up messages until the user
+  // explicitly exits the team.
+  const pendingTeamId = state.pendingExpertTeamId;
+  const clearTeam = state.pendingExpertClear;
+  const teamId = clearTeam ? "" : (pendingTeamId || state.activeExpertTeam?.team_id || "");
+  const teamSource = pendingTeamId
+    ? state.pendingExpertTeamSource
+    : (state.activeExpertTeam?.source === "filesystem_fallback" ? "filesystem_fallback" : "deployed");
   const isTeamChat = Boolean(teamId);
-  if (state.pendingExpertTeamId) {
-    const team = state.expertTeamCatalog.find((item) => item.team_id === state.pendingExpertTeamId);
+  const selectedTeam = teamSource === "filesystem_fallback" ? state.localFallbackExpertTeam : state.expertTeamCatalog.find((item) => item.team_id === teamId);
+  if (teamId) {
+    const team = selectedTeam;
     if (team) state.setActiveExpertTeam({
       ...team,
+      source: teamSource,
       coordinator_mention_name: team.coordinator_name,
       active_expert_id: state.pendingExpertId || team.coordinator_expert_id,
       active_mention_name: team.members.find((member) => member.expert_id === (state.pendingExpertId || team.coordinator_expert_id))?.mention_name || team.coordinator_name,
@@ -173,7 +181,12 @@ async function sendHarnessV3Chat(content: string): Promise<boolean> {
   if (state.pendingExpertId) state.setActiveExpertId(state.pendingExpertId);
   state.setPendingExpertId("");
   state.setPendingExpertTeamId("");
+  state.setPendingExpertTeamSource("deployed");
   state.setPendingExpertClear(false);
+  if (clearTeam) {
+    state.setActiveExpertTeam(null);
+    state.setActiveExpertId("");
+  }
   const who = identity();
   const requestRunId = createUuid();
   const assistantId = state.createAssistantPlaceholder();
@@ -184,7 +197,7 @@ async function sendHarnessV3Chat(content: string): Promise<boolean> {
     content,
     createdAt: new Date().toISOString(),
     blocks: [],
-    messageType: "harness",
+    messageType: isTeamChat ? "harness" : "general_v3",
   });
   // Keep transcript ordering natural: the placeholder is appended by the
   // store, so replace the two tail records with user then assistant.
@@ -204,7 +217,12 @@ async function sendHarnessV3Chat(content: string): Promise<boolean> {
       body: {
         session_id: state.sessionId,
         run_id: requestRunId,
-        input: JSON.stringify({ action: "chat", content, ...(isTeamChat ? { expert_team_id: teamId } : {}) }),
+        input: JSON.stringify({ action: "chat", content, ...(isTeamChat ? {
+          expert_team_id: teamId,
+          ...(teamSource === "filesystem_fallback" ? { expert_team_source: "filesystem_fallback" } : {}),
+        } : {}),
+        ...(clearTeam ? { clear_expert_team: true } : {}),
+      }),
         context_data: {
           ...who,
           ...(who.profile_id ? {

@@ -365,16 +365,27 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         stopped = client.post('/api/v3/sessions/chat/stream', json=stop)
         assert stopped.status_code == 200
         assert runtime.store.get(run['run_id'])['status'] == 'cancelled'
+        # Omitting the selector continues the session's bound team rather
+        # than silently falling through to general_chat.
+        continued = client.post('/api/v3/sessions/chat/stream', json={
+            'session_id': 's', 'run_id': 'team-follow-up',
+            'input': json.dumps({'action': 'chat', 'content': '继续这个规划'}, ensure_ascii=False),
+            'context_data': {'user_id': 'u', 'profile_id': 'p'},
+        })
+        assert continued.status_code == 200
+        assert '"conversation_mode": "team"' in continued.text
+        assert len(runtime.store.runs('s')) == 2
+        runtime.cancel(runtime.store.active('s')['run_id'])
         general = client.post('/api/v3/sessions/chat/stream', json={
             'session_id': 's', 'run_id': 'general-1',
-            'input': json.dumps({'action': 'chat', 'content': '普通问题'}, ensure_ascii=False),
+            'input': json.dumps({'action': 'chat', 'content': '普通问题', 'clear_expert_team': True}, ensure_ascii=False),
             'context_data': {'user_id': 'u', 'profile_id': 'p'},
         })
         assert general.status_code == 200
         assert '"conversation_mode": "general"' in general.text
         assert '通用回复：普通问题' in general.text
         assert repository.get('s').session_meta.get('expert_team_id') is None
-        assert len(runtime.store.runs('s')) == 1
+        assert len(runtime.store.runs('s')) == 2
         # The canonical selector form is a list; a single selected team stays
         # compatible with the current single-team orchestration head.
         list_selector = deepcopy(body)
@@ -391,3 +402,34 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         assert multi_response.status_code == 422
         assert multi_response.json()['detail'] == 'MULTI_EXPERT_TEAMS_NOT_ENABLED'
     runtime.close()
+
+
+def test_v3_explicit_filesystem_team_source_bypasses_snapshot_and_is_test_only(monkeypatch):
+    """The tester's local-team switch must never resolve a deployed same-id team."""
+    import hailiang_skills.api.routes.harness_chat_stream_v3 as v3
+    from hailiang_skills.runtime_bridge.main_planner import PROJECT_RUNTIME_SKILLS_ROOT
+    from hailiang_skills.skill_runtime.skill_registry import load_local_skill_registry
+
+    class Orchestrator:
+        expert_registry = None
+        expert_team_registry = None
+
+        @staticmethod
+        def _load_runtime_registry():
+            return load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
+
+    context = SessionContext(session_id="local-team", user_id="u")
+    # A malformed frozen deployment would fail if this path attempted to read
+    # it. The explicit source has to go straight to the checked-in package.
+    context.session_meta["configuration_snapshot"] = {"entries": [{"not": "a runtime entry"}]}
+    monkeypatch.setattr(v3, "deployment_environment", lambda: "test")
+    team = v3._team_for_context(context, Orchestrator(), "student_growth_expert_team", source="filesystem_fallback")
+    assert team.team_id == "student_growth_expert_team"
+    assert context.session_meta["filesystem_team_fallback_id"] == team.team_id
+    assert context.session_meta["expert_team_source"] == "filesystem_fallback"
+
+    prod_context = SessionContext(session_id="local-team-prod", user_id="u")
+    monkeypatch.setattr(v3, "deployment_environment", lambda: "prod")
+    with pytest.raises(Exception) as error:
+        v3._team_for_context(prod_context, Orchestrator(), "student_growth_expert_team", source="filesystem_fallback")
+    assert getattr(error.value, "detail", None) == "FILESYSTEM_FALLBACK_NOT_AVAILABLE"

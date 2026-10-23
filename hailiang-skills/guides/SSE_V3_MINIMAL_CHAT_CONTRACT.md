@@ -125,6 +125,8 @@ data: {"protocol":"hailiang.sse.v3","run_id":"bff_run_xxx","state":{...}}
 
 V3 的默认等待上限为 **600 秒（10 分钟）**，可由算法服务环境变量 `HAILIANG_HARNESS_SSE_WAIT_SECONDS` 覆盖。到达上限后只发送 `done_timeout` 检查点，后台任务继续运行。
 
+`state` 是状态变化驱动的完整快照，并非定时心跳：模型或工具执行期间没有公开状态变化时，可能数十秒都没有新的 `state`。服务端会在连接空闲 **15 秒**后发送与 V2 一致的保活帧 `event: ping`、`data: {}`；可通过 `HAILIANG_HARNESS_SSE_HEARTBEAT_SECONDS` 调整。`ping` 是传输事件，不改变 `state`，BFF 与前端无需存储或渲染。
+
 ### 表单与动态问题组：前端怎么显示、怎么推进
 
 表单和专家进度在同一助手气泡的 `state` 中。`state.inputs[]` 每项是一张表单卡片，`fields[]` 才是卡片里的字段；一个卡片可含多个字段。前端按 `state.input_queue.active_request_id` 找到 `state.inputs[]` 中同 ID 且 `status="pending"` 的请求，并展示其 `actor`、`title` 和 `fields`。`actor` 是当前发问的专家；需要关联任务树时，用 `owner_node_id` 对应 `state.nodes[].id`。

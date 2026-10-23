@@ -333,6 +333,8 @@ main（主编排器）
 | `done_timeout` | 到达 BFF 的有限连接等待边界 | 用完整快照保存为 `running`。后台可能仍在执行；本期不自动续连。 |
 | `done` | 完成、受限完成、失败或停止 | 按 `persistence` 保存最终记录；停止时丢弃暂存，不写历史。 |
 
+`state` 没有固定推送周期：它只在公开任务状态发生变化时发送，模型或工具长时间执行而状态未改变时可能没有新的 `state`。服务端在连接空闲 15 秒后发送与 V2 相同的 `event: ping`、`data: {}` 保活，可通过 `HAILIANG_HARNESS_SSE_HEARTBEAT_SECONDS` 调整。`ping` 是传输事件，BFF 与前端不保存、不渲染，也不应把它当作状态变化。
+
 BFF 需要保存：最新完整快照、原始 `chat` 请求、`assistant_message_id` 和团队选择。App 被系统杀进程后回到会话，BFF 用新的 `run_id` 和保存的 `assistant_message_id` 发送 `resume`，服务端先返回此任务的最新完整快照并避免重复分派。前端不需要了解 Harness 查询接口。
 
 `done_timeout` 没有自动续接次数：**本期为 0 次**。它只是让 BFF 在自己的时限前可落库的检查点；UI 保持同一气泡为“仍在处理中”，等待 App 下次进入会话触发 BFF 重连。

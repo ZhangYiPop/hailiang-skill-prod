@@ -351,7 +351,9 @@ def capture_policy(orchestrator, context):
                          "max_run_input_tokens": max(0, int(os.getenv("HAILIANG_HARNESS_MAX_RUN_INPUT_TOKENS", settings.get("max_run_input_tokens", 300000)))),
                          "main_input_reserve_tokens": int(settings.get("main_input_reserve_tokens", 32000)),
                          "max_run_model_calls": int(settings.get("max_run_model_calls", 96)), "max_run_tool_calls": int(settings.get("max_run_tool_calls", 192)), "max_tasks": int(settings.get("max_tasks", 64))},
-            "team_id": team_id, "snapshot": policy_snapshot,
+            "team_id": team_id,
+            "team_source": "filesystem_fallback" if filesystem_team_id else "deployed",
+            "snapshot": policy_snapshot,
             "model_config": model_config,
             "soul": orchestrator._soul_context(context).get("content", ""),
             "orchestrator": orchestrator_view}
