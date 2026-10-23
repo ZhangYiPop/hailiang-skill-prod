@@ -1747,6 +1747,7 @@ class HarnessRuntime:
         elif name == "propose_fact_updates":
             results = []
             sources = [run["goal"]] + [json.dumps(q.get("answer", {}).get("answers", {}), ensure_ascii=False) for q in run["inputs"].values() if q["status"] == "answered"]
+            existing_facts = self.facts(run, task, db)
             for update in args["updates"]:
                 if cp.enabled(run) and run.get("subject_mode") == "external" and update["scope"] != "task":
                     raise HarnessError("EXTERNAL_SUBJECT_REQUIRES_TASK_SCOPE")
@@ -1754,12 +1755,22 @@ class HarnessRuntime:
                     raise HarnessError("FACT_EVIDENCE_REQUIRED")
                 if update["status"] == "assumption" and update["scope"] != "task":
                     raise HarnessError("ASSUMPTION_MUST_BE_LOCAL")
-                self.store.fact_identity(run, task, update["scope"], update["key"])
+                identity = self.store.fact_identity(run, task, update["scope"], update["key"])
+                existing = existing_facts.get(identity)
+                if existing and existing.get("status") == "confirmed" and existing.get("value") == update["value"]:
+                    update["_idempotent_skip"] = True
+                    continue
                 if update["status"] == "user_statement":
                     values = update["value"] if isinstance(update["value"], list) else [update["value"]]
                     if not any(update["evidence"] in source for source in sources) or not all(str(value) in update["evidence"] for value in values):
                         raise HarnessError("USER_FACT_EVIDENCE_INVALID")
             for update in sorted(args["updates"], key=lambda u: (u["scope"], u["key"])):
+                if update.pop("_idempotent_skip", False):
+                    identity = self.store.fact_identity(run, task, update["scope"], update["key"])
+                    record = existing_facts.get(identity)
+                    if record:
+                        results.append(record)
+                    continue
                 if update["status"] == "user_statement":
                     evidence = update["evidence"]
                     identity = self.store.fact_identity(run, task, update["scope"], update["key"])
