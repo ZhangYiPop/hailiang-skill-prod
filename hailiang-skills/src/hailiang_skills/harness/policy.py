@@ -46,7 +46,7 @@ def skill_prompt_rules(skill_info: dict, task: dict) -> tuple[str, dict]:
             max_fields = skill_info.get("max_fields_per_form", 6)
             catalog_extra = {"question_catalog": q_catalog, "max_fields_per_form": max_fields}
             rules += (
-                "\n\n调用 request_declared_form 时，question_ids 只能从授权目录的 question_catalog 中选取，"
+                "\n\n调用 request_user_input 时，question_ids 只能从授权目录的 question_catalog 中选取，"
                 f"单次最多 {max_fields} 题。禁止编造题面、选项或 question_id。"
             )
     return rules, catalog_extra

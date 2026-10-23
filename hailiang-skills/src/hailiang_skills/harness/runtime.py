@@ -748,7 +748,17 @@ class HarnessRuntime:
         settings = run["policy"]["settings"]
         limit = settings.get("max_run_input_tokens", 300000)
         reserve = settings.get("main_input_reserve_tokens", 32000) if task["kind"] != "main" else 0
-        projected = run.get("input_tokens_charged", run.get("input_tokens_estimated", 0)) + diagnostics["estimated_tokens"] if cp.enabled(run) else run.get("input_tokens_estimated", 0) + diagnostics["estimated_tokens"]
+        estimate = diagnostics["estimated_tokens"]
+        # 用实际 measurement 校准 token 估算，减少启发式估算偏差导致的预算误判。
+        # estimate_tokens() 对英文/JSON 约高估 2.5-3x，对中文约低估 0.5-0.75x，
+        # 净效果通常为高估。校准因子在 0.5~2.0 之间防止单次离群校正。
+        estimated = run.get("input_tokens_estimated", 0)
+        actual = run.get("input_tokens_actual")
+        measurements = run.get("input_token_measurements", 0)
+        if isinstance(actual, int) and estimated > 0 and measurements >= 3:
+            calibration = max(0.5, min(2.0, actual / estimated))
+            estimate = int(diagnostics["estimated_tokens"] * calibration)
+        projected = run.get("input_tokens_charged", run.get("input_tokens_estimated", 0)) + estimate if cp.enabled(run) else run.get("input_tokens_estimated", 0) + diagnostics["estimated_tokens"]
         # Zero explicitly disables only the cumulative input cost guard. Per-call
         # context and model/tool invocation limits remain independently enforced.
         if limit != 0 and projected > limit - reserve:
@@ -947,10 +957,22 @@ class HarnessRuntime:
                             changes.append({"event": "task_completed", "node_id": task_id})
                             return
                         live["result_protocol_repairs"] = attempts + 1
-                        hint = "需要用户信息必须调用 request_user_input 收集；不要用自然语言问题替代。完成后直接回复用户，无需调用额外工具。"
-                        live["messages"].extend([
-                            {"role": "assistant", "content": str(response.final_text or "")},
-                            {"role": "user", "content": f"运行协议要求：{hint}"}])
+                        if attempts == 0:
+                            # 首次：保留模型回复并追加协议提示
+                            hint = "需要用户信息必须调用 request_user_input 收集；不要用自然语言问题替代。完成后直接回复用户，无需调用额外工具。"
+                            live["messages"].extend([
+                                {"role": "assistant", "content": str(response.final_text or "")},
+                                {"role": "user", "content": f"运行协议要求：{hint}"}])
+                        else:
+                            # 最后一次机会：不追加模型自然语言回复，仅注入明确指令，打断重复模式
+                            live["messages"].append(
+                                {"role": "user", "content": (
+                                    "运行协议要求：你必须调用 request_user_input 向用户收集所需信息，"
+                                    "不能以自然语言问题代替。根据之前的分析，你现在明确需要问用户什么信息？"
+                                    "请立即构造一个 request_user_input 调用，包含 title 和 fields 列表。"
+                                    "例如：request_user_input(title='补充信息', fields=[{'key': 'grade', 'label': '年级', 'input_type': 'select', 'options': ['高一','高二','高三']}])。"
+                                    "调用后任务将挂起等待用户回答，回答会作为工具结果返回给你。这是最后一次机会。"
+                                )})
                         live["status"] = "queued"
                         changes.append({"event": "result_protocol_retry", "node_id": task_id})
                         return
