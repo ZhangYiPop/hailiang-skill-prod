@@ -225,6 +225,52 @@ def tool_projection(run, task, tool):
                        "total_chars": len(raw), "action": "read_evidence 获取本任务需要的片段"}, ensure_ascii=False), metadata
 
 
+def _extract_key_values(data, max_items=5, max_chars=300):
+    """从工具结果中提取关键数值和简短文本，用于投影时保留概要。"""
+    try:
+        if isinstance(data, str):
+            data = json.loads(data)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+
+    # 优先从 records 列表提取
+    records = data.get("records") or []
+    if not isinstance(records, list):
+        records = []
+
+    items = []
+    for entry in records[:10]:
+        if not isinstance(entry, dict):
+            continue
+        rec = entry.get("record") or entry
+        if not isinstance(rec, dict):
+            continue
+        parts = []
+        for key, value in rec.items():
+            if isinstance(value, (int, float)) and key not in ("record_index", "index", "id", "min_score", "max_score", "rank"):
+                parts.append(f"{key}={value}")
+            elif isinstance(value, str) and len(value) < 50 and key in ("name", "school", "city", "level", "degree", "major", "tuition_range", "living_cost_range", "total_range"):
+                val = value[:30]
+                parts.append(f"{key}={val}")
+        if parts and len(items) < max_items:
+            line = ", ".join(parts[:5])
+            items.append(line[:120])
+
+    result = "; ".join(items) if items else ""
+    return result[:max_chars]
+
+
+def evidence_project_note(record):
+    """为被投影的证据生成内联概要，保留关键数值避免模型回头重读。"""
+    summary = _extract_key_values(record.get("content", ""))
+    note = "已完成；按需读取原文"
+    if summary:
+        note = f"概要: {summary} —— 原文可按需读取"
+    return note
+
+
 def compose_v2(run, task, facts, specs, platform):
     policy = run["policy"]
     if task["kind"] == "main":

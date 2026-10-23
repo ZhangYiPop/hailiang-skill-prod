@@ -86,6 +86,8 @@ from hailiang_skills.runtime_bridge.ms_agent_adapter import MSAgentRuntimeAdapte
 from hailiang_skills.runtime_bridge.question_progress import (  # noqa: E402
     detect_answered_question_repetition,
     question_ledger_projection,
+    cross_skill_projection,
+    merge_question_ledgers,
     record_assistant_questions,
     record_skipped_fields_from_tool,
     reconcile_user_answer,
@@ -380,6 +382,7 @@ def _annotate_answered_question_repetition(
         reply,
         state,
         skill_id,
+        cross_skill=True,
     )
 
 
@@ -944,6 +947,8 @@ class _RuntimePlannerLLM:
             f"{'需要将用户口语归一化时，事实值使用 {value:归一化值,evidence:用户原话短引}；不得把推测写为事实。' if context_contract_version() >= 3 else ''}"
             "先根据用户原话、上下文和已有事实理解本轮回答，再决定后续动作；普通对话不以问题ID匹配或账本关闭作为推进条件。"
             "question_progress 仅为可能过时的历史证据，不是待完成任务清单；若与用户原话冲突，以用户原话为准。"
+            "cross_skill_question_progress 来自其他 Skill 已提问/已跳过的问题汇总：其 answered 列表中的问题无论用户是否回答都不应再重复提问；"
+            "skipped_texts 中的话题已被用户跳过，同样不应重新追问。跨 Skill 去重不计较来源 Skill ID，只做语义匹配。\n"
             "skill_progress 可增加 question_answers 数组用于诊断留证，不要求填写才能推进。"
             "每项为 {question_id:待答账本中的ID,status:answered|partial|unanswered|conflict,evidence:本轮用户原话连续短引,missing:仍缺少的信息}。"
             "不要因同义改写或否定表达而忽略已回答内容，不得发明问题ID或用户证据。"
@@ -2882,6 +2887,9 @@ class MainPlannerOrchestrator:
                 else {}
             ),
             "question_progress": question_ledger_projection(state, skill_name),
+            "cross_skill_question_progress": cross_skill_projection(
+                state, exclude_skill_id=skill_name,
+            ),
             "same_user_message_streak": same_user_message_count,
             "repeated_user_turn_allowed": int(state.status_flags.get("context_contract_version") or 2) < 3 and 1 < same_user_message_count <= 2,
         }
@@ -3073,6 +3081,7 @@ class MainPlannerOrchestrator:
             str(getattr(loaded_context, "combined_response", "") or planner_llm.last_combined_response or ""),
             state,
             skill_name,
+            cross_skill=True,
         )
         if repeated_questions and int(state.status_flags.get("context_contract_version") or 2) < 3:
             # A combined planner response can otherwise bypass the normal
@@ -6353,14 +6362,7 @@ class MainPlannerOrchestrator:
             previous_skill_id = state.active_skill_id or GENERAL_CHAT_ID
             state.active_skill_id = expert_selected
             if int(state.status_flags.get("context_contract_version") or 2) >= 3 and previous_skill_id != expert_selected:
-                ledgers = state.status_flags.setdefault("runtime_question_ledger", {})
-                source = ledgers.get(previous_skill_id, {})
-                target = ledgers.setdefault(expert_selected, {})
-                for key in ("asked", "answered", "unresolved"):
-                    records = {str(item.get("question_id")): item for item in [
-                        *list(target.get(key) or []), *list(source.get(key) or []),
-                    ] if isinstance(item, dict)}
-                    target[key] = list(records.values())[-24:]
+                merge_question_ledgers(state, previous_skill_id, expert_selected)
             state.status_flags["expert_selected_skill_id"] = expert_selected
             if previous_skill_id != expert_selected and expert_selected not in {MAIN_PLANNER_ID, GENERAL_CHAT_ID}:
                 # A card-confirmed AgentScope selection is a true Skill entry.
@@ -6816,6 +6818,8 @@ class MainPlannerOrchestrator:
             }
         )
         state.active_skill_id = target_skill_id
+        if int(state.status_flags.get("context_contract_version") or 2) >= 3:
+            merge_question_ledgers(state, previous_skill_id, target_skill_id)
         target_bundle = self.runtime_registry.get(target_skill_id)
         if target_bundle and target_bundle.contract.stages:
             state.stage = target_bundle.contract.stages[0].id
