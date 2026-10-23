@@ -31,7 +31,7 @@
     },
     "rag": {
       "enabled": true,
-      "description": "受控本地检索增强：仅检索已加载的 skill references 与仓库级 data/generated 资产。"
+      "description": "本地 Skill 资料搜索：仅搜索已加载的 Skill references 与 data/generated 资产，不调用独立 RAG 服务。"
     },
     "status_track": {
       "enabled": true,
@@ -66,6 +66,90 @@
           ]
         }
       ]
+    },
+    "query_training_plan": {
+      "enabled": true,
+      "description": "按方向与学段查询培养方案和起步建议。查询字段等线上库表结构确定后再配置。",
+      "provider": "sql_readonly",
+      "connection": "",
+      "connection_env": "",
+      "connection_note": "线上只读库尚未接入，connection 与 connection_env 请留空；留空时工具不会启用。接入时填写 SQLAlchemy URL（如 postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME），或只填写 connection_env 为环境变量名，由环境变量提供连接串。环境变量优先，不要把账号密码写入仓库。allowed_views 等线上表结构确定后再填：视图名对应 purpose、columns、filterable、filters(exact|like)、required。在此之前不要写入查询字段。",
+      "read_only": true,
+      "default_limit": 5,
+      "max_limit": 20,
+      "allowed_views": {}
+    },
+    "query_selection_requirements": {
+      "enabled": true,
+      "description": "查询专业选科要求或省份选科模式。查询字段等线上库表结构确定后再配置。",
+      "provider": "sql_readonly",
+      "connection": "",
+      "connection_env": "",
+      "connection_note": "线上只读库尚未接入，connection 与 connection_env 请留空；留空时工具不会启用。接入时填写 SQLAlchemy URL（如 postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME），或只填写 connection_env 为环境变量名，由环境变量提供连接串。环境变量优先，不要把账号密码写入仓库。allowed_views 等线上表结构确定后再填：视图名对应 purpose、columns、filterable、filters(exact|like)、required。在此之前不要写入查询字段。",
+      "read_only": true,
+      "default_limit": 5,
+      "max_limit": 20,
+      "allowed_views": {}
+    },
+    "query_score_lines": {
+      "enabled": true,
+      "description": "查询各省高考分数线。查询字段等线上库表结构确定后再配置。",
+      "provider": "sql_readonly",
+      "connection": "",
+      "connection_env": "",
+      "connection_note": "线上只读库尚未接入，connection 与 connection_env 请留空；留空时工具不会启用。接入时填写 SQLAlchemy URL（如 postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME），或只填写 connection_env 为环境变量名，由环境变量提供连接串。环境变量优先，不要把账号密码写入仓库。allowed_views 等线上表结构确定后再填：视图名对应 purpose、columns、filterable、filters(exact|like)、required。在此之前不要写入查询字段。",
+      "read_only": true,
+      "default_limit": 5,
+      "max_limit": 20,
+      "allowed_views": {}
+    },
+    "query_policy": {
+      "enabled": true,
+      "description": "按省份、年份或类型筛选升学政策。查询字段等线上库表结构确定后再配置。",
+      "provider": "sql_readonly",
+      "connection": "",
+      "connection_env": "",
+      "connection_note": "线上只读库尚未接入，connection 与 connection_env 请留空；留空时工具不会启用。接入时填写 SQLAlchemy URL（如 postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME），或只填写 connection_env 为环境变量名，由环境变量提供连接串。环境变量优先，不要把账号密码写入仓库。allowed_views 等线上表结构确定后再填：视图名对应 purpose、columns、filterable、filters(exact|like)、required。在此之前不要写入查询字段。",
+      "read_only": true,
+      "default_limit": 5,
+      "max_limit": 20,
+      "allowed_views": {}
+    },
+    "query_competition_catalog": {
+      "enabled": true,
+      "description": "按特长方向、学段或赛事类型查询赛事。查询字段等线上库表结构确定后再配置。",
+      "provider": "sql_readonly",
+      "connection": "",
+      "connection_env": "",
+      "connection_note": "线上只读库尚未接入，connection 与 connection_env 请留空；留空时工具不会启用。接入时填写 SQLAlchemy URL（如 postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME），或只填写 connection_env 为环境变量名，由环境变量提供连接串。环境变量优先，不要把账号密码写入仓库。allowed_views 等线上表结构确定后再填：视图名对应 purpose、columns、filterable、filters(exact|like)、required。在此之前不要写入查询字段。",
+      "read_only": true,
+      "default_limit": 5,
+      "max_limit": 20,
+      "allowed_views": {}
+    },
+    "query_diagnosis_cards": {
+      "enabled": true,
+      "description": "按行为信号定位学习问题条目。查询字段等线上库表结构确定后再配置。",
+      "provider": "sql_readonly",
+      "connection": "",
+      "connection_env": "",
+      "connection_note": "线上只读库尚未接入，connection 与 connection_env 请留空；留空时工具不会启用。接入时填写 SQLAlchemy URL（如 postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME），或只填写 connection_env 为环境变量名，由环境变量提供连接串。环境变量优先，不要把账号密码写入仓库。allowed_views 等线上表结构确定后再填：视图名对应 purpose、columns、filterable、filters(exact|like)、required。在此之前不要写入查询字段。",
+      "read_only": true,
+      "default_limit": 5,
+      "max_limit": 20,
+      "allowed_views": {}
+    },
+    "query_action_methods": {
+      "enabled": true,
+      "description": "按方法或问题类型查询行动建议。查询字段等线上库表结构确定后再配置。",
+      "provider": "sql_readonly",
+      "connection": "",
+      "connection_env": "",
+      "connection_note": "线上只读库尚未接入，connection 与 connection_env 请留空；留空时工具不会启用。接入时填写 SQLAlchemy URL（如 postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME），或只填写 connection_env 为环境变量名，由环境变量提供连接串。环境变量优先，不要把账号密码写入仓库。allowed_views 等线上表结构确定后再填：视图名对应 purpose、columns、filterable、filters(exact|like)、required。在此之前不要写入查询字段。",
+      "read_only": true,
+      "default_limit": 5,
+      "max_limit": 20,
+      "allowed_views": {}
     },
     "user_profile": {
       "enabled": false,

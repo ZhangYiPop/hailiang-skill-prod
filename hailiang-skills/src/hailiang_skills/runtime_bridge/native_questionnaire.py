@@ -165,13 +165,12 @@ def build_questionnaire_protocol(bundle: Any, state: Any) -> str:
     ]
     protocol = (
         "# Native Questionnaire Protocol\n"
-        "Always return JSON only, including when no follow-up is needed: "
-        '{"assistant_message":"...","state_patch":{"mode":"...","stage":"..."},'
-        '"question_ids":["catalog item"]}. '
-        "Use only catalog question_id values and return at most "
-        f"{_max_fields_per_form(bundle)} question_ids. Never invent a question type, option, or condition. "
-        "Use an empty question_ids array when no follow-up is needed. Do not write follow-up questions "
-        "as Markdown or plain text; the runtime renders all selected questions as a form. "
+        "Write the user-visible reply as ordinary text. To ask declared questions, call "
+        "request_declared_form with question_ids taken only from question_catalog, at most "
+        f"{_max_fields_per_form(bundle)} ids. Never invent a question type, option, or condition. "
+        "Do not call the tool when no follow-up is needed. Do not write follow-up questions "
+        "as Markdown or plain text; the runtime renders the selected questions as a form. "
+        "Unknown question_ids are rejected and are not replaced with other catalog items. "
         "For multi_path_planning, when the response is a matching/output conclusion, also put the "
         "canonical path_id values from path_catalog into state_patch.matched_paths; use [] when no "
         "path option should be shown. The runtime, not the model, builds UI cards from those IDs.\n"
@@ -186,6 +185,32 @@ def build_questionnaire_protocol(bundle: Any, state: Any) -> str:
         ]
         protocol += f"path_catalog={json.dumps(path_items, ensure_ascii=False)}\n"
     return protocol
+
+
+def declared_form_tool_spec() -> Any:
+    """Tool the model calls when a declared questionnaire form should be shown."""
+    from hailiang_skills.skill_runtime.models import ToolSpec
+
+    return ToolSpec(
+        name="request_declared_form",
+        description=(
+            "展示当前 Skill 题库中已声明的提问表单。"
+            "question_ids 只能来自 question_catalog，不能编造题面或选项。"
+            "调用成功后立即停止，不要在正文里重复这些问题。"
+        ),
+        parameters_schema={
+            "type": "object",
+            "properties": {
+                "question_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "题库 question_id，按展示顺序排列",
+                }
+            },
+            "required": ["question_ids"],
+        },
+        enabled=True,
+    )
 
 
 def question_specs(bundle: Any) -> list[dict[str, Any]]:
@@ -690,7 +715,12 @@ def resolve_questionnaire_continuation(
     # A well-formed model envelope already contains reviewed evidence. The
     # deterministic matcher is a resilience path for malformed/empty output,
     # not a second competing extractor.
-    resolved = [] if isinstance(payload, dict) and isinstance(payload.get("resolved_answers"), list) else _apply_explicit_message_answers(bundle, state, reconciliation)
+    model_resolved = payload.get("resolved_answers") if isinstance(payload, dict) else None
+    resolved = (
+        []
+        if isinstance(model_resolved, list) and model_resolved
+        else _apply_explicit_message_answers(bundle, state, reconciliation)
+    )
     resolved.extend(_apply_reconciled_answers(bundle, state, payload, reconciliation))
     refreshed = questionnaire_continuation_context(bundle, state)
     if refreshed is None:
@@ -1063,6 +1093,68 @@ def decode_questionnaire_reply(bundle: Any, state: Any, reply: str) -> tuple[str
     return text, _form_block(skill_id, selected)
 
 
+def resolve_declared_form_request(
+    bundle: Any,
+    state: Any,
+    arguments: Any,
+    *,
+    prose: str = "",
+) -> tuple[str, dict[str, Any] | None, dict[str, Any]]:
+    """Build a fact_form from a request_declared_form call.
+
+    Unknown ids are rejected. Already-answered ids are skipped. This path does
+    not substitute another catalog question when the requested ids cannot be shown.
+    """
+    raw_ids = arguments.get("question_ids") if isinstance(arguments, dict) else None
+    requested = [
+        str(item).strip()
+        for item in (raw_ids if isinstance(raw_ids, list) else [])
+        if str(item).strip()
+    ]
+    skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
+    continuation = questionnaire_continuation_context(bundle, state)
+    if isinstance(continuation, dict):
+        _apply_explicit_message_answers(bundle, state, continuation.get("answer_reconciliation"))
+    declared_ids = {str(item.get("question_id") or "") for item in question_specs(bundle)}
+    unknown = [item for item in requested if item not in declared_ids]
+    text = unwrap_questionnaire_assistant_message(prose).strip()
+    if unknown:
+        return text or "这些题不在题库里，我先不展示表单。", None, {
+            "valid": False,
+            "fallback_used": False,
+            "form_source": "request_declared_form",
+            "selected_question_ids": [],
+            "rejected_question_ids": unknown,
+            "error": "unknown_question_ids",
+        }
+    answers = _answers(state, skill_id)
+    available = {
+        str(item["question_id"]): item
+        for item in available_question_specs(bundle, state)
+    }
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for question_id in requested:
+        spec = available.get(question_id)
+        if spec is None or question_id in answers or question_id in seen:
+            continue
+        seen.add(question_id)
+        selected.append(spec)
+        if len(selected) >= _max_fields_per_form(bundle):
+            break
+    block = _form_block(skill_id, selected) if selected else None
+    if not text:
+        text = "请填写下面的信息，我再继续。" if block else "好的，我按已有信息继续。"
+    return text, block, {
+        "valid": True,
+        "fallback_used": False,
+        "form_source": "request_declared_form",
+        "selected_question_ids": [str(item["question_id"]) for item in selected],
+        "rejected_question_ids": [],
+        "error": "",
+    }
+
+
 def questionnaire_reply_is_valid(reply: str) -> bool:
     """Return whether a model reply follows the internal questionnaire envelope."""
     payload = _json_object(reply)
@@ -1100,6 +1192,25 @@ def deterministic_questionnaire_fallback(
         visible_text = str(invalid_replies[-1] if invalid_replies else "").strip()
         return visible_text, None
     return "请通过下面的表单补充关键信息。", _form_block(skill_id, selected)
+
+
+def stage_declared_form(bundle: Any, state: Any, question_ids: list[str]) -> dict[str, Any] | None:
+    """P11: stage a fact_form for question ids requested via request_declared_form."""
+    ids = [str(item).strip() for item in question_ids if str(item).strip()]
+    if not ids:
+        return None
+    specs_by_id = {
+        str(item.get("question_id") or ""): item
+        for item in question_specs(bundle)
+        if str(item.get("question_id") or "").strip()
+    }
+    selected = [specs_by_id[item] for item in ids if item in specs_by_id]
+    if not selected:
+        return None
+    skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
+    block = _form_block(skill_id, selected)
+    stage_questionnaire_form(state, bundle, block)
+    return block
 
 
 def stage_questionnaire_form(state: Any, bundle: Any, block: dict[str, Any] | None) -> None:
@@ -1697,8 +1808,9 @@ def _promote(
     persistence = questionnaire_config(bundle).get("persistence", {})
     mappings = persistence.get("mappings", {}) if isinstance(persistence, dict) else {}
     mapping = mappings.get(question_id) if isinstance(mappings, dict) else None
+    # P6: when no transitional mapping exists, treat question_id as the field key.
     if not isinstance(mapping, dict):
-        return []
+        return _write_promotion(bundle, question_id, value, context, skill_id)
     timing = str(mapping.get("submit_timing") or mapping.get("write_timing") or "on_submit")
     if timing == "on_completion":
         state.skill_facts.setdefault(skill_id, {}).setdefault("_deferred_questionnaire_promotions", []).append(
@@ -1720,16 +1832,29 @@ def _write_promotion(
     persistence = questionnaire_config(bundle).get("persistence", {})
     mappings = persistence.get("mappings", {}) if isinstance(persistence, dict) else {}
     mapping = mappings.get(question_id) if isinstance(mappings, dict) else None
-    if not isinstance(mapping, dict):
-        return []
-    scope = _SCOPE_BY_TARGET.get(str(mapping.get("target") or ""))
-    fact_key = str(mapping.get("fact_key") or "")
+    if isinstance(mapping, dict):
+        scope = _SCOPE_BY_TARGET.get(str(mapping.get("target") or ""))
+        fact_key = str(mapping.get("fact_key") or "")
+        value_type = str(mapping.get("value_type") or "string")
+    else:
+        # P6 default: question id == field key; prefer profile scope for unified facts.
+        package_fields = getattr(getattr(bundle, "contract", None), "package_fields", {}) or {}
+        field_def = package_fields.get(question_id) if isinstance(package_fields, dict) else None
+        scope_policy = ""
+        value_type = "string"
+        if isinstance(field_def, dict):
+            scope_policy = str(field_def.get("scope_policy") or "")
+            value_type = str(field_def.get("value_type") or "string")
+        scope = {"shared": "shared", "profile": "profile", "session": "session", "user": "user"}.get(
+            scope_policy, "profile"
+        )
+        fact_key = question_id
     if not scope or not fact_key:
         return []
     normalized = FactService.validate_configured_update(
         fact_key,
-        _fact_value(value, str(mapping.get("value_type") or "string")),
-        declared_value_type=str(mapping.get("value_type") or "") or None,
+        _fact_value(value, value_type),
+        declared_value_type=value_type or None,
     )
     if normalized is None:
         return []

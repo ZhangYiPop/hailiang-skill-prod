@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hailiang:sse:v3:event",
+  "type": "object",
+  "required": [
+    "protocol",
+    "type",
+    "session_id",
+    "profile_id",
+    "data"
+  ],
+  "properties": {
+    "protocol": {
+      "const": "hailiang.sse.v3"
+    },
+    "type": {
+      "enum": [
+        "snapshot",
+        "run.updated",
+        "run.finalized",
+        "run.suspended",
+        "stream.timeout",
+        "node.updated",
+        "input_request.updated",
+        "message.updated",
+        "message.delta",
+        "resync_required"
+      ]
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "profile_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "entity_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "entity_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "run.updated",
+              "run.finalized",
+              "node.updated",
+              "input_request.updated",
+              "message.updated",
+              "message.delta"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "seq",
+          "event_id",
+          "run_id",
+          "entity_id",
+          "entity_version",
+          "timestamp"
+        ],
+        "properties": {
+          "data": {
+            "required": [
+              "id",
+              "version"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "message.delta"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "required": [
+              "revision",
+              "offset",
+              "text"
+            ],
+            "properties": {
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "snapshot"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "seq"
+        ],
+        "properties": {
+          "data": {
+            "required": [
+              "protocol",
+              "session_id",
+              "profile_id",
+              "cursor",
+              "runs",
+              "nodes",
+              "input_requests",
+              "messages"
+            ],
+            "properties": {
+              "runs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "phase": {"type": "string"},
+                    "action": {"type": "string"},
+                    "dispatch": {"type": ["object", "null"]},
+                    "synthesis_status": {"type": "string"},
+                    "recommendations_status": {"type": "string"}
+                  }
+                }
+              },
+              "nodes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "brief": {},
+                    "phase": {"type": "string"},
+                    "action": {"type": "string"},
+                    "waiting_on": {"type": "array", "items": {"type": "string"}},
+                    "result": {"type": ["object", "null"]}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

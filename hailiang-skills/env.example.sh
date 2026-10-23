@@ -2,6 +2,14 @@
 # 私有环境变量模板：复制为 env.local.sh 后填写，切勿提交真实密钥。
 
 # 必填：模型服务密钥。
+# Shared context v3 for deployed and Workbench conversations; false restores v2.
+export HAILIANG_UNIFIED_CONTEXT_ENABLED="true"
+export HAILIANG_HARNESS_NEW_SESSIONS="true"
+# Local development embeds a worker; production uses the separate systemd worker.
+export HAILIANG_HARNESS_EMBEDDED_WORKER="true"
+# Formal sessions run the team orchestration (identity gate, head, experts, tail,
+# recommend) when a published team has head rules. false = main-agent delegation.
+export HAILIANG_HARNESS_FORMAL_ORCHESTRATION="true"
 export DASHSCOPE_API_KEY=""
 export HAILIANG_EXTERNAL_API_KEY=""
 
@@ -42,6 +50,15 @@ export AGENT_SKILL_RUNTIME_CORE_PATH="/absolute/path/to/agent_skill_runtime_core
 # 从沙箱执行切换为快速子进程执行，减少首次思考阶段等待；未知脚本仍走沙箱。
 # 生产环境如不需要可设为 false。
 export HAILIANG_MS_AGENT_LOCAL_FAST_PATH="true"
+
+# Skill 脚本统一由独立 Runner 执行。本地 ./run.sh 会通过 Docker Compose
+# 启动同一 Runner 镜像；生产使用集群内的 ClusterIP 地址和 Secret Token。
+export HAILIANG_SCRIPT_EXECUTOR="remote"
+export HAILIANG_REQUIRE_REMOTE_SANDBOX="true"
+export HAILIANG_SANDBOX_ENDPOINT="http://127.0.0.1:8091"
+export HAILIANG_SANDBOX_SHARED_TOKEN="local-dev-sandbox-token"
+export HAILIANG_SANDBOX_PYPI_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple/"
+export SANDBOX_RUNNER_PORT="8091"
 
 # 默认由 MS-Agent 同一份 JSON 同时完成规划、工具路由和正文生成。
 # 如需人工回退到独立工具分类模型，可设为 standalone 并重启服务。

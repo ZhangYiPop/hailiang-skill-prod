@@ -1,5 +1,7 @@
 # SSE v2 前端与转发后端联调指南
 
+> Harness 多 agent 新接入请见 [SSE v3 联调协议](SSE_V3_INTEGRATION_GUIDE.md)。本文仅描述旧 SSE v2，不适用于 v3 的任务订阅和独立回答接口。
+
 > 文档状态：当前实现（2026-09-01）
 >
 > 协议名称：`hailiang.sse.v2`
@@ -470,7 +472,7 @@ data: {与最后一个 state 相同的完整 SseV2State JSON}
 | `streaming` | 否 | 继续接收快照，显示生成中和停止按钮。 |
 | `completed` | 是 | 结束 loading，保留正文和有效交互。 |
 | `stopped` | 是 | 保留已收到正文，标记“已停止”。 |
-| `superseded` | 是 | 旧 run 被新动作替代，清空旧 run 未完成交互。 |
+| `superseded` | 是 | 旧 run 被新动作替代，清空旧 run 未完成交互；算法服务会将已展示的部分回答及已确认信息保存在会话上下文供新 run 使用。 |
 | `blocked` | 是 | 只展示 `risk.message`，不恢复旧正文或卡片。 |
 | `failed` | 是 | 展示 `error.code + error.message`，按 `retryable` 决定是否提供重试入口。 |
 
@@ -615,6 +617,7 @@ proxy_read_timeout 180s;
 - 明确收到建流前 HTTP 错误时，由前端根据状态码决定是否重新提交；重新提交业务动作使用新的 `run_id`。
 - 如果连接是否已到达算法服务无法确认，即使尚未收到 `state`，也不要透明重放同一 `run_id`。
 - 收到任意 `state` 后断线，调用 `/api/v1/sessions/{session_id}/context` 恢复历史；不要断点续传或重放旧 run。
+- App 重进后不恢复旧回复流。用户发送新消息时，算法服务自动替换该会话的活动 run，并将旧 run 已展示的部分回答及已确认信息承接到新一轮；调用方无需先发送 `stop` 或探测旧 run 状态。
 
 ## 9. 错误处理
 

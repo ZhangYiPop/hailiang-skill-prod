@@ -1,0 +1,433 @@
+..                                                                       [100%]
+2 passed, 116 deselected in 4.42s
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 60, in runner
+    loop.run_until_complete(open_context())
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 706, in run_until_complete
+    self.run_forever()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 677, in run_forever
+    self._run_once()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 2034, in _run_once
+    handle._run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 53, in open_context
+    enclave = self.container._get_sandbox()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 726, in _get_sandbox
+    self._sandbox = EnclaveSandbox(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 47, in __init__
+    self._init()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 82, in _init
+    logger.info('Installing ms-enclave package...')
+Message: 'Installing ms-enclave package...'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 60, in runner
+    loop.run_until_complete(open_context())
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 706, in run_until_complete
+    self.run_forever()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 677, in run_forever
+    self._run_once()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 2034, in _run_once
+    handle._run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 53, in open_context
+    enclave = self.container._get_sandbox()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 726, in _get_sandbox
+    self._sandbox = EnclaveSandbox(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 47, in __init__
+    self._init()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 84, in _init
+    install_package(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/utils/utils.py", line 659, in install_package
+    logger.info(f'Package {import_name} is already installed.')
+Message: 'Package ms_enclave is already installed.'
+Arguments: ()
+[ERROR:ms_enclave] Failed to start Docker sandbox: cannot schedule new futures after interpreter shutdown
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py", line 93, in _worker
+    work_item.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py", line 65, in run
+    self.future.set_result(result)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/_base.py", line 550, in set_result
+    self._invoke_callbacks()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/_base.py", line 340, in _invoke_callbacks
+    callback(self)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 943, in <lambda>
+    lambda _future, sid=skill_id, sdir=Path(skill_dir): self._prewarm_worker_after_prepare(sid, sdir)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 967, in _prewarm_worker_after_prepare
+    self._get_or_create_worker(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 427, in _get_or_create_worker
+    worker, _wait_ms = self._acquire_worker(**kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 602, in _acquire_worker
+    container = core.create_sandbox_container(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 532, in create_sandbox_container
+    container = container_cls(workspace_dir=workspace_dir, use_sandbox=True)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/skill/container.py", line 402, in __init__
+    logger.info(f'SkillContainer initialized at: {self.workspace_dir} '
+Message: 'SkillContainer initialized at: /Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/runtime/workspace_workers/4d3ffd4a2264141754ba65dbd06378bc/f1ddbbd5dad04d0691f91b53a2174cf6 [mode: sandbox]'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 60, in runner
+    loop.run_until_complete(open_context())
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 706, in run_until_complete
+    self.run_forever()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 677, in run_forever
+    self._run_once()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 2034, in _run_once
+    handle._run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 53, in open_context
+    enclave = self.container._get_sandbox()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 726, in _get_sandbox
+    self._sandbox = EnclaveSandbox(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 47, in __init__
+    self._init()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 82, in _init
+    logger.info('Installing ms-enclave package...')
+Message: 'Installing ms-enclave package...'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 60, in runner
+    loop.run_until_complete(open_context())
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 706, in run_until_complete
+    self.run_forever()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 677, in run_forever
+    self._run_once()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 2034, in _run_once
+    handle._run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 53, in open_context
+    enclave = self.container._get_sandbox()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 726, in _get_sandbox
+    self._sandbox = EnclaveSandbox(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 47, in __init__
+    self._init()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 84, in _init
+    install_package(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/utils/utils.py", line 659, in install_package
+    logger.info(f'Package {import_name} is already installed.')
+Message: 'Package ms_enclave is already installed.'
+Arguments: ()
+[ERROR:ms_enclave] Failed to start Docker sandbox: cannot schedule new futures after interpreter shutdown
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py", line 93, in _worker
+    work_item.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 1126, in _prepare_sandbox_sync
+    warmup_result = self._warm_sandbox(skill_id, skill_dir, prepare_key)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 1154, in _warm_sandbox
+    container = container_cls(workspace_dir=workspace_dir, use_sandbox=True)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/skill/container.py", line 402, in __init__
+    logger.info(f'SkillContainer initialized at: {self.workspace_dir} '
+Message: 'SkillContainer initialized at: /Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/runtime/sandbox_warmups/94ff8c77dfd6824ef529725f [mode: sandbox]'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py", line 93, in _worker
+    work_item.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 1126, in _prepare_sandbox_sync
+    warmup_result = self._warm_sandbox(skill_id, skill_dir, prepare_key)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 1154, in _warm_sandbox
+    container = container_cls(workspace_dir=workspace_dir, use_sandbox=True)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/skill/container.py", line 402, in __init__
+    logger.info(f'SkillContainer initialized at: {self.workspace_dir} '
+Message: 'SkillContainer initialized at: /Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/runtime/sandbox_warmups/2591d45665d5e2721800febb [mode: sandbox]'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py", line 93, in _worker
+    work_item.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py", line 65, in run
+    self.future.set_result(result)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/_base.py", line 550, in set_result
+    self._invoke_callbacks()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/_base.py", line 340, in _invoke_callbacks
+    callback(self)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 943, in <lambda>
+    lambda _future, sid=skill_id, sdir=Path(skill_dir): self._prewarm_worker_after_prepare(sid, sdir)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 967, in _prewarm_worker_after_prepare
+    self._get_or_create_worker(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 427, in _get_or_create_worker
+    worker, _wait_ms = self._acquire_worker(**kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 602, in _acquire_worker
+    container = core.create_sandbox_container(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 532, in create_sandbox_container
+    container = container_cls(workspace_dir=workspace_dir, use_sandbox=True)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/skill/container.py", line 402, in __init__
+    logger.info(f'SkillContainer initialized at: {self.workspace_dir} '
+Message: 'SkillContainer initialized at: /Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/runtime/workspace_workers/c1907cea01c2cdcd7e450e7a8455ab68/978a4d703a5d495fb777fb03188d0b1a [mode: sandbox]'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 60, in runner
+    loop.run_until_complete(open_context())
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 706, in run_until_complete
+    self.run_forever()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 677, in run_forever
+    self._run_once()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 2034, in _run_once
+    handle._run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 53, in open_context
+    enclave = self.container._get_sandbox()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 726, in _get_sandbox
+    self._sandbox = EnclaveSandbox(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 47, in __init__
+    self._init()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 82, in _init
+    logger.info('Installing ms-enclave package...')
+Message: 'Installing ms-enclave package...'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 60, in runner
+    loop.run_until_complete(open_context())
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 706, in run_until_complete
+    self.run_forever()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 677, in run_forever
+    self._run_once()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 2034, in _run_once
+    handle._run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 53, in open_context
+    enclave = self.container._get_sandbox()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 726, in _get_sandbox
+    self._sandbox = EnclaveSandbox(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 47, in __init__
+    self._init()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 84, in _init
+    install_package(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/utils/utils.py", line 659, in install_package
+    logger.info(f'Package {import_name} is already installed.')
+Message: 'Package ms_enclave is already installed.'
+Arguments: ()
+[ERROR:ms_enclave] Failed to start Docker sandbox: cannot schedule new futures after interpreter shutdown
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py", line 93, in _worker
+    work_item.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/thread.py", line 65, in run
+    self.future.set_result(result)
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/_base.py", line 550, in set_result
+    self._invoke_callbacks()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/concurrent/futures/_base.py", line 340, in _invoke_callbacks
+    callback(self)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 943, in <lambda>
+    lambda _future, sid=skill_id, sdir=Path(skill_dir): self._prewarm_worker_after_prepare(sid, sdir)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 967, in _prewarm_worker_after_prepare
+    self._get_or_create_worker(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 427, in _get_or_create_worker
+    worker, _wait_ms = self._acquire_worker(**kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/src/hailiang_skills/runtime_bridge/ms_agent_adapter.py", line 602, in _acquire_worker
+    container = core.create_sandbox_container(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 532, in create_sandbox_container
+    container = container_cls(workspace_dir=workspace_dir, use_sandbox=True)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/skill/container.py", line 402, in __init__
+    logger.info(f'SkillContainer initialized at: {self.workspace_dir} '
+Message: 'SkillContainer initialized at: /Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/runtime/workspace_workers/e1574e0a72abe43c20354351e7d9ed93/405a7d581b6042389e3d23e3c5238cbf [mode: sandbox]'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 60, in runner
+    loop.run_until_complete(open_context())
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 706, in run_until_complete
+    self.run_forever()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 677, in run_forever
+    self._run_once()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 2034, in _run_once
+    handle._run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 53, in open_context
+    enclave = self.container._get_sandbox()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 726, in _get_sandbox
+    self._sandbox = EnclaveSandbox(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 47, in __init__
+    self._init()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 82, in _init
+    logger.info('Installing ms-enclave package...')
+Message: 'Installing ms-enclave package...'
+Arguments: ()
+--- Logging error ---
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/logging/__init__.py", line 1153, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: I/O operation on closed file.
+Call stack:
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1012, in _bootstrap
+    self._bootstrap_inner()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 1041, in _bootstrap_inner
+    self.run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/threading.py", line 992, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 60, in runner
+    loop.run_until_complete(open_context())
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 706, in run_until_complete
+    self.run_forever()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 677, in run_forever
+    self._run_once()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 2034, in _run_once
+    handle._run()
+  File "/opt/homebrew/Cellar/python@3.13/3.13.3_1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 53, in open_context
+    enclave = self.container._get_sandbox()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/agent_skill_runtime_core/agent_skill_runtime_core/core.py", line 726, in _get_sandbox
+    self._sandbox = EnclaveSandbox(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 47, in __init__
+    self._init()
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/sandbox/sandbox.py", line 84, in _init
+    install_package(
+  File "/Users/ayi/Project/hailiang-skill_sensitive_v02121/hailiang-skills/.venv/lib/python3.13/site-packages/ms_agent/utils/utils.py", line 659, in install_package
+    logger.info(f'Package {import_name} is already installed.')
+Message: 'Package ms_enclave is already installed.'
+Arguments: ()
+[ERROR:ms_enclave] Failed to start Docker sandbox: cannot schedule new futures after interpreter shutdown

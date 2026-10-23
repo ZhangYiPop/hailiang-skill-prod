@@ -70,7 +70,7 @@ def build_effective_fact_ledger(
         "deduplicated_current_skill_fact_count": pruned_current,
         "deduplicated_memory_fact_count": pruned,
         "dedupe_sources": dedupe_sources,
-        "context_contract_version": CONTEXT_CONTRACT_V2 if is_v2 else 1,
+        "context_contract_version": int(context_contract_version or CONTEXT_CONTRACT_V2),
         "memory_facts_excluded": is_v2 and bool(_public_mapping(memory_facts)),
     }
     return ledger, diagnostics

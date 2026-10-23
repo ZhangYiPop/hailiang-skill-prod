@@ -86,8 +86,7 @@ def test_family_education_expert_reuses_only_the_two_central_runtime_skills():
     registry = load_local_expert_registry(ROOT / "runtime_agents", _runtime_registry())
     expert = registry.require("family_education_expert")
 
-    assert expert.authorized_skill_ids == ("parenting_action_planner", "mbti_self_exploration")
-    assert all(_runtime_registry().get(skill_id) is not None for skill_id in expert.authorized_skill_ids)
+    assert expert.authorized_skill_ids == ()
 
 
 def test_expert_direct_reply_keeps_expert_identity_outside_general_chat():
@@ -122,7 +121,7 @@ def test_expert_direct_reply_keeps_expert_identity_outside_general_chat():
     assert result == "expert-direct-result"
     assert legacy_calls == ["孩子总熬夜"]
     assert context.skill_states["agent_runtime"]["execution_mode"] == "expert_direct"
-    assert context.skill_states["agent_runtime"]["expert_name"] == "家庭教育专家"
+    assert context.skill_states["agent_runtime"]["expert_name"] == "家庭教育专家顾问"
 
 
 def test_shared_expert_runtime_instructs_agent_to_route_or_continue_active_skill():
@@ -130,8 +129,8 @@ def test_shared_expert_runtime_instructs_agent_to_route_or_continue_active_skill
     experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
     runtime = AgentScopeExpertRuntime(experts, skill_registry)
     context = SessionContext()
-    context.session_meta["active_expert_id"] = "family_education_expert"
-    context.interaction_state["active_skill"] = "mbti_self_exploration"
+    context.session_meta["active_expert_id"] = "career_plan_expert"
+    context.interaction_state["active_skill"] = "subject_advisor"
     runtime._available = True
     runtime.client_factory = lambda _context: object()
     runtime._is_supported_client = lambda _client: True
@@ -145,7 +144,7 @@ def test_shared_expert_runtime_instructs_agent_to_route_or_continue_active_skill
     runtime.handle_message("我更想解决亲子冲突", context, lambda _message, _context: "legacy-result")
 
     assert instructions
-    assert "mbti_self_exploration" in instructions[0]
+    assert "subject_advisor" in instructions[0]
     assert "另一已授权 Skill" in instructions[0]
     assert "AGENT.md 是本轮选择的最高业务策略" in instructions[0]
 
@@ -258,7 +257,7 @@ def test_expert_catalog_has_no_out_of_band_session_mutation_api():
     catalog = client.get("/api/v1/experts")
     assert catalog.status_code == 200
     family = next(item for item in catalog.json()["experts"] if item["expert_id"] == "family_education_expert")
-    assert family["skill_ids"] == ["parenting_action_planner", "mbti_self_exploration"]
+    assert family["skill_ids"] == []
 
     selected = client.put("/api/v1/sessions/expert-selection/expert", json={"expert_id": "family_education_expert"})
     assert selected.status_code == 404
@@ -451,7 +450,10 @@ def test_single_skill_expert_still_uses_agent_rules_for_a_direct_reply():
 
 def test_structured_route_selects_authorized_skill_before_any_expert_reply():
     class RouteClient:
+        calls = 0
+
         def complete(self, _messages, **_kwargs):
+            self.calls += 1
             return json.dumps({
                 "mode": "execute_skill",
                 "skill_id": "score_improve",
@@ -474,15 +476,19 @@ def test_structured_route_selects_authorized_skill_before_any_expert_reply():
     state = runtime._state(context, definition)
     state["budget"] = {"max_iters": 4, "max_skill_calls": 3, "skill_calls": 0}
 
-    runtime._route_answering_expert_turn(definition, "怎么提高数学成绩", context, RouteClient(), state)
+    client = RouteClient()
+    state["agent_reply"] = "上一轮的旧回复"
+    runtime._route_answering_expert_turn(definition, "怎么提高数学成绩", context, client, state)
 
     assert context.session_meta["expert_requested_skill_id"] == "score_improve"
+    assert client.calls == 1
     assert "agent_reply" not in state
     assert any(event["event_type"] == "expert_skill_route_selected" for event in context.event_trace)
     assert any(event["event_type"] == "expert_skill_executed" for event in context.event_trace)
 
 
-def test_pending_questionnaire_does_not_lock_unrelated_expert_question_to_skill():
+def test_pending_questionnaire_does_not_lock_unrelated_expert_question_to_skill(monkeypatch):
+    monkeypatch.setenv("HAILIANG_UNIFIED_CONTEXT_ENABLED", "false")
     class RouteClient:
         def __init__(self):
             self.calls = 0
@@ -613,7 +619,144 @@ def test_expert_explicit_grade_is_saved_to_session_scope_without_overwriting_pro
     assert any(event["event_type"] == "expert_explicit_fact_captured" for event in context.event_trace)
 
 
-def test_high_relevance_direct_reply_without_agent_quote_is_scope_checked_not_forced():
+def test_explicit_child_interest_is_saved_to_session_scope():
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
+    context = SessionContext(profile_id="profile_001")
+
+    runtime._capture_explicit_user_facts(context, "孩子喜欢画画，可以培养什么特长？", source_turn_id="turn_001")
+
+    assert context.session_facts.get_value("interests") == ["画画"]
+    assert context.profile_facts.get_value("interests") is None
+    captured = [event["payload"] for event in context.event_trace if event["event_type"] == "expert_explicit_fact_captured"]
+    assert any(item["fact_key"] == "interests" and item["scope"] == "session" for item in captured)
+
+
+def test_recent_user_turns_restore_identity_and_interest_for_expert_handoff():
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
+    context = SessionContext()
+    context.add_message("user", "孩子喜欢画画可以培养什么特长？")
+    context.add_message("assistant", "孩子现在几年级？")
+    context.add_message("user", "孩子现在初二")
+
+    runtime._capture_recent_user_context(context, "孩子现在初二", source_turn_id="turn_002")
+
+    assert context.session_meta["conversation_identity"]["role"] == "parent"
+    assert context.session_facts.get_value("interests") == ["画画"]
+    assert context.session_facts.get_value("grade") == "初二"
+
+
+def test_conversation_identity_is_branch_scoped_captured_and_correctable():
+    runtime = AgentScopeExpertRuntime(ExpertRegistry(definitions={}), _runtime_registry())
+    context = SessionContext(profile_id="profile_001")
+
+    runtime._capture_conversation_identity(context, "孩子喜欢画画", source_turn_id="turn_000")
+    assert context.session_meta["conversation_identity"]["role"] == "parent"
+    assert context.session_meta["conversation_identity"]["source"] == "child_reference_inference"
+
+    runtime._capture_conversation_identity(context, "我是家长，孩子现在初二", source_turn_id="turn_001")
+    assert context.session_meta["conversation_identity"]["role"] == "parent"
+    assert context.profile_facts.get_value("conversation_identity") is None
+
+    runtime._capture_conversation_identity(context, "我是学生本人", source_turn_id="turn_002")
+    assert context.session_meta["conversation_identity"]["role"] == "student"
+    runtime._capture_conversation_identity(context, "孩子喜欢画画", source_turn_id="turn_003")
+    assert context.session_meta["conversation_identity"]["role"] == "student"
+
+    context.sync_active_branch()
+    assert context.profile_branches["profile_001"]["session_meta"]["conversation_identity"]["role"] == "student"
+
+
+def test_confirmed_handoff_includes_identity_facts_and_recent_context():
+    skill_registry = _runtime_registry()
+    experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
+    teams = load_local_expert_team_registry(ROOT / "runtime_agent_teams", experts)
+    runtime = AgentScopeExpertRuntime(experts, skill_registry, team_registry=teams)
+    context = SessionContext()
+    context.add_message("user", "孩子喜欢画画")
+    context.add_message("assistant", "孩子现在几年级？")
+    context.add_message("user", "我是家长，孩子现在初二")
+    runtime._capture_conversation_identity(context, "我是家长，孩子现在初二", source_turn_id="turn_001")
+    context.update_fact("grade", "初二", source_skill="test", scope="session")
+    context.update_fact("interest_domains", ["画画"], source_skill="test", scope="session")
+    team = teams.require("student_growth_expert_team")
+    target = team.members[0]
+    context.session_meta.update({
+        "expert_team_id": team.team_id,
+        "team_member_switch": {
+            "source": "team_handoff",
+            "target_expert_id": target.expert_id,
+            "source_user_message": "孩子喜欢画画可以培养什么特长？",
+            "coordinator_reason": "适合专项指导",
+        },
+    })
+
+    content = runtime._apply_structured_team_switch(context, team, "@专家")
+
+    assert "当前发言者身份：家长" in content
+    assert '"grade": "初二"' in content
+    assert "孩子喜欢画画" in content
+    switched = next(event for event in context.event_trace if event["event_type"] == "team_member_switched")
+    assert switched["payload"]["handoff_identity_present"] is True
+    assert set(switched["payload"]["handoff_fact_keys"]) >= {"grade", "interest_domains"}
+    grade_source = next(item for item in switched["payload"]["handoff_fact_sources"] if item["fact_key"] == "grade")
+    assert grade_source["scope"] == "session"
+    assert grade_source["source_skill"] == "test"
+
+
+def test_cross_profile_handoff_does_not_import_source_identity_or_excerpt():
+    skill_registry = _runtime_registry()
+    experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
+    teams = load_local_expert_team_registry(ROOT / "runtime_agent_teams", experts)
+    runtime = AgentScopeExpertRuntime(experts, skill_registry, team_registry=teams)
+    context = SessionContext(profile_id="target_profile")
+    context.add_message("user", "目标孩子自己的问题")
+    team = teams.require("student_growth_expert_team")
+    context.session_meta["team_member_switch"] = {
+        "source": "team_handoff",
+        "target_expert_id": team.members[0].expert_id,
+        "source_user_message": "另一个孩子的问题",
+        "conversation_excerpt": "来源孩子的隐私信息",
+        "cross_profile": True,
+    }
+
+    content = runtime._apply_structured_team_switch(context, team, "@专家")
+
+    assert "当前发言者身份：未确认" in content
+    assert "来源孩子的隐私信息" not in content
+    assert "目标孩子自己的问题" not in content
+
+
+def test_handoff_without_prebuilt_excerpt_uses_active_branch_history():
+    skill_registry = _runtime_registry()
+    experts = load_local_expert_registry(ROOT / "runtime_agents", skill_registry)
+    teams = load_local_expert_team_registry(ROOT / "runtime_agent_teams", experts)
+    runtime = AgentScopeExpertRuntime(experts, skill_registry, team_registry=teams)
+    context = SessionContext()
+    context.add_message("user", "孩子喜欢画画")
+    context.add_message("assistant", "孩子现在几年级？")
+    context.add_message("user", "我是家长，孩子现在初二")
+    runtime._capture_conversation_identity(context, "我是家长，孩子现在初二", source_turn_id="turn_001")
+    context.update_fact("grade", "初二", source_skill="test", scope="session")
+    team = teams.require("student_growth_expert_team")
+    context.session_meta.update({
+        "expert_team_id": team.team_id,
+        "team_member_switch": {
+            "source": "team_handoff",
+            "target_expert_id": team.members[0].expert_id,
+            "source_user_message": "孩子喜欢画画可以培养什么特长？",
+        },
+    })
+
+    content = runtime._apply_structured_team_switch(context, team, "@专家")
+
+    assert "当前发言者身份：家长" in content
+    assert "孩子喜欢画画" in content
+    assert "孩子现在几年级？" in content
+    assert '"grade": "初二"' in content
+
+
+def test_high_relevance_direct_reply_without_agent_quote_is_scope_checked_not_forced(monkeypatch):
+    monkeypatch.setenv("HAILIANG_UNIFIED_CONTEXT_ENABLED", "false")
     class RouteClient:
         def __init__(self):
             self.calls = 0
@@ -652,7 +795,8 @@ def test_high_relevance_direct_reply_without_agent_quote_is_scope_checked_not_fo
     assert any(event["event_type"] == "expert_direct_reply_preserved" for event in context.event_trace)
 
 
-def test_scope_check_allows_skill_only_when_full_skill_confirms_in_scope():
+def test_scope_check_allows_skill_only_when_full_skill_confirms_in_scope(monkeypatch):
+    monkeypatch.setenv("HAILIANG_UNIFIED_CONTEXT_ENABLED", "false")
     class RouteClient:
         def __init__(self):
             self.calls = 0
@@ -1348,3 +1492,95 @@ def test_expert_prompt_includes_active_profile_facts_and_forbids_reasking_them()
     assert "当前孩子的有效事实" in prompt
     assert "不得重复询问" in prompt
     assert "初中" in prompt
+
+
+# --- M-02: 同一专家一轮内调用两个 Skill（串行 / 并行 / 预算上限） ---
+
+def _multi_skill_runtime(skill_registry):
+    """挂两个已授权 Skill 的调试专家：多元路径规划 + 学科参谋。"""
+    definition = ExpertDefinition(
+        agent_id="path_subject_expert",
+        name="路径与学科专家",
+        rules_markdown="先做选科判断，再按结论匹配升学路径；两类信息独立时可分别调用。",
+        skills=(LockedSkill("multi_path_planning", "v1"), LockedSkill("subject_advisor", "v1")),
+        max_skill_calls=8,
+    )
+    runtime = AgentScopeExpertRuntime(
+        ExpertRegistry(definitions={definition.agent_id: definition}),
+        skill_registry,
+    )
+    return definition, runtime
+
+
+def test_expert_serial_skill_calls_bill_both_and_record_handoff():
+    """串行：先收回 Skill A 的结论，再用该结论作为任务调 Skill B。"""
+    skill_registry = _runtime_registry()
+    definition, runtime = _multi_skill_runtime(skill_registry)
+    context = SessionContext()
+    state = runtime._state(context, definition)
+    state["budget"] = {"max_iters": 4, "max_skill_calls": 8, "skill_calls": 0}
+
+    first = runtime._execute_skill(
+        definition, state, context, "multi_path_planning",
+        "孩子初二，想知道适合走哪条升学路径，给推荐方向。", None)
+    assert first["status"] == "scheduled"
+    assert state["budget"]["skill_calls"] == 1
+
+    # 串行第二步：以第一个 Skill 的结论为输入调第二个 Skill
+    second_task = f"基于上述路径结论（{state['handoff_summary'][:80]}），看选科该怎么定。"
+    second = runtime._execute_skill(
+        definition, state, context, "subject_advisor", second_task, None)
+    assert second["status"] == "scheduled"
+    assert state["budget"]["skill_calls"] == 2
+
+    trace = state["call_trace"]
+    assert [item["skill_id"] for item in trace] == ["multi_path_planning", "subject_advisor"]
+    assert trace[1]["task"].startswith("基于上述路径结论")
+    # 串行第二步以第一个 Skill 的结论作为输入，两次调用都计费
+    assert sum(1 for e in context.event_trace if e["event_type"] == "expert_skill_executed") == 2
+    assert context.session_meta["expert_requested_skill_id"] == "subject_advisor"
+
+
+def test_expert_parallel_independent_skill_calls_bill_both():
+    """并行：两个互不依赖的 Skill 在同一轮内分别调用，各自计费。"""
+    skill_registry = _runtime_registry()
+    definition, runtime = _multi_skill_runtime(skill_registry)
+    context = SessionContext()
+    state = runtime._state(context, definition)
+    state["budget"] = {"max_iters": 4, "max_skill_calls": 8, "skill_calls": 0}
+
+    a = runtime._execute_skill(
+        definition, state, context, "multi_path_planning",
+        "孩子适合走哪条升学路径？", None)
+    b = runtime._execute_skill(
+        definition, state, context, "subject_advisor",
+        "数学这个学科一般怎么规划？", None)
+
+    assert a["status"] == "scheduled" and b["status"] == "scheduled"
+    assert state["budget"]["skill_calls"] == 2
+    trace = state["call_trace"]
+    assert [item["skill_id"] for item in trace] == ["multi_path_planning", "subject_advisor"]
+    # 并行两步互不引用对方结论
+    assert "基于上述" not in trace[0]["task"]
+    assert "基于上述" not in trace[1]["task"]
+    assert sum(1 for e in context.event_trace if e["event_type"] == "expert_skill_executed") == 2
+
+
+def test_expert_skill_calls_stop_at_budget_ceiling():
+    """预算上限：本轮预算 max_skill_calls=2，第三次调用必须被拒。"""
+    skill_registry = _runtime_registry()
+    definition, runtime = _multi_skill_runtime(skill_registry)
+    context = SessionContext()
+    state = runtime._state(context, definition)
+    state["budget"] = {"max_iters": 4, "max_skill_calls": 2, "skill_calls": 0}
+
+    runtime._execute_skill(definition, state, context, "multi_path_planning", "路径推荐", None)
+    runtime._execute_skill(definition, state, context, "subject_advisor", "选科判断", None)
+    assert state["budget"]["skill_calls"] == 2
+
+    with pytest.raises(ValueError, match="已达到本轮 Skill 调用上限"):
+        runtime._execute_skill(definition, state, context, "multi_path_planning", "再要一次路径推荐", None)
+
+    # 未授权 Skill 仍然先被拒，不看预算
+    with pytest.raises(ValueError, match="未授权 Skill"):
+        runtime._execute_skill(definition, state, context, "score_improve", "提分", None)

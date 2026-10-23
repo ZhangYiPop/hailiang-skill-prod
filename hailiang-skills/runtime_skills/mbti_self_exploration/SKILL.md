@@ -2,45 +2,11 @@
 name: MBTI 自我探索
 skill_id: mbti_self_exploration
 version: 1.0.0
-author: Hailiang Platform
-description: 基于 93 道 A/B 题的 MBTI 自我探索问卷，分页收集答案，使用本地 Python 计分并生成结构化报告。
-brief: 用 93 道题做一次非诊断性的自我探索。
-tags: [MBTI, 人格探索, 自我认知, 家庭教育]
-skill_type: native
-entrypoint_role: child
-accepts_scenes: [MBTI人格探索, MBTI测评]
-triggers: [测一下我的MBTI, 做个MBTI测试, MBTI测评, 人格测试, 性格测试, 我是什么人格]
-tool_policy:
-  allow_tool_call_first: true
-  allow_direct_answer: true
-  max_tool_calls: 1
-prompt_loading:
-  strategy: progressive
-  include_skill_markdown: full
-  include_session_state: true
-  include_tool_capabilities: true
-  include_route_targets: false
-  include_references: on_demand
-  include_local_assets: summary
-  include_generated_assets: none
-retrieval:
-  enabled: true
-  sources: [local_assets]
-  top_k: 2
-  snippet_chars: 700
-  include_catalog: true
-assets:
-  local_enabled: true
-  local_dir: assets
-  local_prompt_policy: summary
-  generated_domains: []
-debug:
-  record_prompt_assembly: true
-  record_retrieval_details: true
-routing:
-  scene_name: MBTI 人格探索
-  intent_clarity: explicit
-  routing_examples: [测一下我的MBTI, 做个MBTI测试, 我是什么人格类型]
+description: >-
+  面向自愿参与者的 MBTI 自我探索问卷助手。【做什么】分页收集 93 道 A/B 题，调用本地脚本计分并生成非诊断性结构化报告。【何时启用】用户明确要求做 MBTI 测评或自我探
+  索。【不做什么】不做心理疾病诊断、能力高低评判或升学处方；未成年人须本人自愿，不可由家长代答贴标签。
+tool_dependency:
+  - request_declared_form
 questionnaire:
   enabled: true
   question_catalog_path: assets/mbti_93_questions.json
@@ -48,10 +14,8 @@ questionnaire:
   max_fields_per_form: 10
   answer_reuse:
     enabled: false
-requires:
-  tools: []
-  env: []
 ---
+
 # MBTI 自我探索
 
 这是非诊断性的自我探索，不是心理疾病、能力高低、职业或升学结论。仅当用户明确希望进行 MBTI 测评时启用；未成年人应获得本人理解与自愿参与，不可由家长代答或据此给孩子贴标签。

@@ -1,6 +1,7 @@
 import { useCallback, useRef } from "react";
 
 import { useChatStore } from "@/store/useChatStore";
+import { cancelHarness, harnessV3Enabled, refreshHarness, sendHarnessIfEnabled, useHarnessState } from "@/hooks/useHarnessConversation";
 import {
   clearUserFactsBySource,
   createProfile,
@@ -579,6 +580,7 @@ export function useChatActions() {
       store.setSkillStates(sessionResult.skill_states);
       store.setEvents(eventsResult.events);
       store.setLastResponse(null);
+      await refreshHarness();
     },
     [store],
   );
@@ -843,6 +845,10 @@ export function useChatActions() {
   const selectProfile = useCallback(
     async (profileId: string) => {
       const state = useChatStore.getState();
+      if (useHarnessState.getState().activeRunId) {
+        state.setErrorMessage("请先停止当前任务再切换孩子。");
+        return;
+      }
       if (!profileId) {
         // The absence of a child is an explicit context selection, not an
         // incomplete profile selection.  Never leave the previous child as
@@ -1062,6 +1068,18 @@ export function useChatActions() {
       if (!trimmed) {
         return;
       }
+      if (useHarnessState.getState().activeRunId && !harnessV3Enabled) {
+        store.setErrorMessage("任务进行中，请回答卡片或停止任务。");
+        return;
+      }
+      if (!options.transition && !options.teamHandoff && !options.teamMemberSwitch && !options.reuseAssistantMessageId) {
+        try {
+          if (await sendHarnessIfEnabled(trimmed)) return;
+        } catch (error) {
+          store.setErrorMessage(error instanceof Error ? error.message : "任务启动失败");
+          return;
+        }
+      }
       const activeTeam = useChatStore.getState().activeExpertTeam;
       const toolbarTarget = options.teamMemberSwitch
         ? activeTeam?.members.find((member) => member.expert_id === options.teamMemberSwitch?.targetExpertId)
@@ -1106,6 +1124,7 @@ export function useChatActions() {
       let assistantMessageId = options.reuseAssistantMessageId ?? "";
       const exitTransition = options.transition?.action === "exit";
       const thinkingEnabledForTurn = options.enableThinkingOverride ?? useChatStore.getState().enableThinking;
+      const selectedModelId = useChatStore.getState().selectedModelId;
       const retryRequest: ChatRetryRequest = {
         content: trimmed,
         enableThinking: thinkingEnabledForTurn,
@@ -1267,6 +1286,7 @@ export function useChatActions() {
               source_interaction_id: options.transition.sourceInteractionId,
               enable_thinking: thinkingEnabledForTurn,
               return_reasoning: thinkingEnabledForTurn,
+              model: selectedModelId,
             }
           : options.teamHandoff
             ? {
@@ -1278,6 +1298,7 @@ export function useChatActions() {
                 source: "team_handoff",
                 enable_thinking: thinkingEnabledForTurn,
                 return_reasoning: thinkingEnabledForTurn,
+                model: selectedModelId,
               }
             : options.teamMemberSwitch
               ? {
@@ -1289,6 +1310,7 @@ export function useChatActions() {
                   content: trimmed,
                   enable_thinking: thinkingEnabledForTurn,
                   return_reasoning: thinkingEnabledForTurn,
+                  model: selectedModelId,
                 }
             : {
                 action: "chat",
@@ -1299,6 +1321,7 @@ export function useChatActions() {
                 context_activation: "auto" as const,
                 enable_thinking: thinkingEnabledForTurn,
                 return_reasoning: thinkingEnabledForTurn,
+                model: selectedModelId,
               };
         const runId = makeMessageId("run");
         let latestStateSeq = -1;
@@ -1867,6 +1890,7 @@ export function useChatActions() {
   const handleSelectExpert = useCallback(
     async (expertId: string) => {
       const state = useChatStore.getState();
+      if (useHarnessState.getState().activeRunId) return;
       const normalizedExpertId = expertId.trim();
       const selectedTeam = state.expertTeamCatalog.find(
         (team) => team.team_id === state.pendingExpertTeamId,
@@ -1890,6 +1914,7 @@ export function useChatActions() {
   );
 
   const handleExitExpert = useCallback(async () => {
+    if (useHarnessState.getState().activeRunId) return;
     store.setPendingExpertId("");
     store.setPendingExpertTeamId("");
     store.setPendingExpertClear(true);
@@ -1897,6 +1922,7 @@ export function useChatActions() {
 
   const handleSelectExpertTeam = useCallback(
     async (teamId: string) => {
+      if (useHarnessState.getState().activeRunId) return;
       const state = useChatStore.getState();
       const normalizedTeamId = teamId.trim();
       const team = state.expertTeamCatalog.find((item) => item.team_id === normalizedTeamId);
@@ -2008,6 +2034,13 @@ export function useChatActions() {
 
   const handleStopGeneration = useCallback(async () => {
     const state = useChatStore.getState();
+    if (useHarnessState.getState().activeRunId) {
+      state.setCancellingRun(true);
+      try { await cancelHarness(); }
+      catch (error) { state.setErrorMessage(error instanceof Error ? error.message : "停止失败"); }
+      finally { state.setCancellingRun(false); }
+      return;
+    }
     const stream = state.streamAbortController;
     if (!state.sessionId || !stream || state.isCancellingRun) {
       return;

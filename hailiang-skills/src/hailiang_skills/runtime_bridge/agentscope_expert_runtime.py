@@ -12,10 +12,16 @@ from uuid import uuid4
 
 from pydantic import BaseModel, SecretStr
 
-from hailiang_skills.runtime_bridge.expert_bundle import ExpertDefinition, ExpertRegistry, LockedSkill
+from hailiang_skills.runtime_bridge.expert_bundle import (
+    ExpertDefinition,
+    ExpertRegistry,
+    LockedSkill,
+    _normalize_capabilities,
+)
 from hailiang_skills.runtime_bridge.expert_team_bundle import ExpertTeamDefinition, ExpertTeamMember, ExpertTeamRegistry
 from hailiang_skills.runtime_bridge.expert_models import ExpertMember, SkillObservation
 from hailiang_skills.runtime_bridge.native_skill_executor import NativeSkillExecutor
+from hailiang_skills.runtime_bridge.context_contract import context_contract_version, GENERATION_FAILURE_REPLY
 from hailiang_skills.runtime_bridge.agent_frontmatter import AgentFrontMatter, AgentRoutingRule, parse_agent_frontmatter
 from hailiang_skills.core.fact_prompt_projection import (
     build_effective_fact_ledger,
@@ -194,6 +200,25 @@ class AgentScopeExpertRuntime:
             )
         state = self._state(context, definition, team=team)
         state["turn_id"] = f"expert_turn_{uuid4().hex[:12]}"
+        for key in ("agent_reply", "agent_reply_error", "selected_skill_id", "skill_route_decision", "execution_mode"):
+            state.pop(key, None)
+        context.session_meta.pop("expert_direct_reply", None)
+        context.session_meta["active_expert_turn_id"] = state["turn_id"]
+        if context_contract_version() >= 3:
+            from types import SimpleNamespace
+            from hailiang_skills.runtime_bridge.question_progress import reconcile_user_answer
+            from hailiang_skills.skill_runtime.models import ChatMessage
+
+            persisted = context.skill_states.get("skill_runtime", {})
+            flags = persisted.setdefault("status_flags", {})
+            flags["active_turn_id"] = state["turn_id"]
+            conversation = SimpleNamespace(status_flags=flags, messages=[
+                ChatMessage(role=item["role"], content=str(item.get("content") or ""))
+                for item in context.messages if item.get("role") in {"user", "assistant"}
+            ])
+            context.session_meta["question_answer_context"] = reconcile_user_answer(
+                conversation, str(persisted.get("active_skill_id") or "expert_direct"), user_message,
+            )
         state["budget"] = {
             "max_iters": definition.max_iters,
             "max_skill_calls": definition.max_skill_calls,
@@ -207,7 +232,7 @@ class AgentScopeExpertRuntime:
         state.pop("team_handoff", None)
         state["member_runs"] = []  # Reserved: v1 never creates members.
         state["delegation_trace"] = []  # Reserved: v1 never delegates.
-        self._capture_explicit_user_facts(context, user_message, source_turn_id=state["turn_id"])
+        self._capture_recent_user_context(context, user_message, source_turn_id=state["turn_id"])
         event_payload = {"expert_id": definition.agent_id, "topology": definition.topology}
         if team is not None:
             event_payload.update({"team_id": team.team_id, "is_coordinator": definition.agent_id == team.coordinator_expert_id})
@@ -421,6 +446,14 @@ class AgentScopeExpertRuntime:
             context.session_meta["expert_direct_reply"] = {
                 "expert_id": definition.agent_id,
                 "reply": agent_reply,
+                "expert_turn_id": state["turn_id"],
+            }
+        pending_form = state.get("pending_form")
+        if isinstance(pending_form, dict) and pending_form.get("question_ids") and handoff is None:
+            context.session_meta["expert_declared_form"] = {
+                "skill_id": str(pending_form.get("skill_id") or ""),
+                "question_ids": list(pending_form.get("question_ids") or []),
+                "lead_in": agent_reply,
             }
         result = legacy_handler(user_message, context)
         if handoff is None and (agent_reply or has_native_handoff):
@@ -655,32 +688,81 @@ class AgentScopeExpertRuntime:
             r"(?:小学|初中|高中|初[一二三]|高[一二三]|[一二三四五六七八九]年级)",
             text,
         )
-        if not matches:
-            return
-        value = str(matches[-1]).strip()
-        if not value:
-            return
-        current = context.known_facts.get_value("grade") if hasattr(context, "known_facts") else None
-        if str(current or "").strip() == value:
-            return
-        context.update_fact(
-            "grade",
-            value,
-            source_skill="expert_runtime",
-            confidence=0.95,
-            source_type="user_input",
-            source_id=source_turn_id,
-            source_turn_id=source_turn_id,
-            scope="session",
-            evidence_summary="用户在对话中明确提供或修正孩子年级",
+        if matches:
+            value = str(matches[-1]).strip()
+            current = context.known_facts.get_value("grade") if hasattr(context, "known_facts") else None
+            if value and str(current or "").strip() != value:
+                context.update_fact(
+                    "grade",
+                    value,
+                    source_skill="expert_runtime",
+                    confidence=0.95,
+                    source_type="user_input",
+                    source_id=source_turn_id,
+                    source_turn_id=source_turn_id,
+                    scope="session",
+                    evidence_summary="用户在对话中明确提供或修正孩子年级",
+                )
+                self._event(context, "expert_explicit_fact_captured", {
+                    "fact_key": "grade",
+                    "value": value,
+                    "scope": "session",
+                    "source_turn_id": source_turn_id,
+                    "message": "已将用户明确提供的年级保存到当前会话分支",
+                })
+
+        # Explicit child-interest statements are useful across expert handoffs.
+        # Keep them session-scoped: this lightweight capture is not a profile
+        # write and does not replace a Skill's richer interest assessment.
+        interest_match = re.search(
+            r"(?:孩子|小孩|娃)(?:目前|现在|平时)?(?:最)?(?:喜欢|爱好是|爱|擅长)([^，。！？；\n]{1,24})",
+            text,
         )
-        self._event(context, "expert_explicit_fact_captured", {
-            "fact_key": "grade",
-            "value": value,
-            "scope": "session",
-            "source_turn_id": source_turn_id,
-            "message": "已将用户明确提供的年级保存到当前会话分支",
-        })
+        if interest_match:
+            value = interest_match.group(1).strip()
+            value = re.sub(r"(?:可以培养什么特长|可以学什么|是什么)$", "", value).strip()
+            if value:
+                current = context.known_facts.get_value("interests") if hasattr(context, "known_facts") else None
+                values = [str(item).strip() for item in current] if isinstance(current, list) else []
+                if value not in values:
+                    values.append(value)
+                    context.update_fact(
+                        "interests",
+                        values,
+                        source_skill="expert_runtime",
+                        confidence=0.92,
+                        source_type="user_input",
+                        source_id=source_turn_id,
+                        source_turn_id=source_turn_id,
+                        scope="session",
+                        evidence_summary="用户明确提到孩子的兴趣；仅作为本会话已知线索",
+                    )
+                    self._event(context, "expert_explicit_fact_captured", {
+                        "fact_key": "interests",
+                        "value": value,
+                        "scope": "session",
+                        "source_turn_id": source_turn_id,
+                        "message": "已将用户明确提到的孩子兴趣保存到当前会话分支",
+                    })
+
+    def _capture_recent_user_context(self, context, current_message: str, *, source_turn_id: str) -> None:
+        """Rebuild branch-local identity and explicit facts from recent user turns."""
+        candidates = []
+        for message in getattr(context, "messages", []) or []:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+            if metadata.get("message_type") == "team_handoff_confirmation":
+                continue
+            content = str(message.get("content") or "").strip()
+            if content:
+                candidates.append((content, str(metadata.get("turn_id") or metadata.get("message_id") or source_turn_id)))
+        current = str(current_message or "").strip()
+        if current and not any(text == current for text, _ in candidates):
+            candidates.append((current, source_turn_id))
+        for text, turn_id in candidates[-12:]:
+            self._capture_explicit_user_facts(context, text, source_turn_id=turn_id)
+            self._capture_conversation_identity(context, text, source_turn_id=turn_id)
 
     def _configured_expert(self, context, definition: ExpertDefinition) -> ExpertDefinition:
         entry = self._snapshot_entry(context, "expert", definition.agent_id)
@@ -699,7 +781,7 @@ class AgentScopeExpertRuntime:
             rules_markdown=str(payload.get("rules_markdown") or definition.rules_markdown),
             skills=locks or definition.skills,
             max_iters=max(1, min(int(budget.get("max_iters", definition.max_iters)), 4)),
-            max_skill_calls=max(1, min(int(budget.get("max_skill_calls", definition.max_skill_calls)), 3)),
+            max_skill_calls=max(1, min(int(budget.get("max_skill_calls", definition.max_skill_calls)), 8)),
             capabilities=capabilities or definition.capabilities,
         )
 
@@ -721,10 +803,8 @@ class AgentScopeExpertRuntime:
             skills=locks,
             brief=str(payload.get("brief") or "").strip(),
             max_iters=max(1, min(int(budget.get("max_iters", 4)), 4)),
-            max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 3)),
-            capabilities=tuple(str(item) for item in payload.get("capabilities", []) if str(item)) or (
-                "execute_skill", "request_declared_form", "read_effective_facts",
-            ),
+            max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 8)),
+            capabilities=_normalize_capabilities(payload.get("capabilities")),
         )
 
     def _configured_team(self, context, team: ExpertTeamDefinition | None) -> ExpertTeamDefinition | None:
@@ -742,6 +822,9 @@ class AgentScopeExpertRuntime:
         )
         member_payloads = payload.get("members") if isinstance(payload.get("members"), list) else []
         by_expert = {str(item.get("expert_id") or ""): item for item in member_payloads if isinstance(item, dict)}
+        from hailiang_skills.runtime_bridge.expert_team_bundle import published_team_overlay
+
+        policy, fallback_expert_id, stages = published_team_overlay(payload, locks)
         members = tuple(
             ExpertTeamMember(
                 expert_id=str(item.get("object_key") or ""),
@@ -752,6 +835,7 @@ class AgentScopeExpertRuntime:
                     or ""
                 ),
                 routing_brief=str((by_expert.get(str(item.get("object_key") or "")) or {}).get("routing_brief") or ""),
+                applicable_stages=stages.get(str(item.get("object_key") or ""), ()),
             )
             for item in locks
             if str(item.get("object_key") or "")
@@ -762,6 +846,8 @@ class AgentScopeExpertRuntime:
             rules_markdown=str(payload.get("rules_markdown") or team.rules_markdown),
             coordinator_expert_id=coordinator_expert_id,
             members=members or team.members,
+            consultation_policy=policy,
+            fallback_expert_id=fallback_expert_id or team.fallback_expert_id,
         )
 
     def _run_agent(
@@ -819,7 +905,11 @@ class AgentScopeExpertRuntime:
                 }
 
         def request_declared_form(skill_id: str, question_ids: list[str]) -> dict[str, Any]:
-            """Request only question IDs declared by the selected Skill's questionnaire."""
+            """Show a form built only from question IDs declared by the selected Skill.
+
+            After this tool succeeds, stop. Reply with one short lead-in and do not
+            repeat the questions in prose.
+            """
             return runtime._request_declared_form(definition, state, context, skill_id, question_ids)
 
         def read_effective_facts() -> dict[str, Any]:
@@ -851,14 +941,17 @@ class AgentScopeExpertRuntime:
             "read_effective_facts": TrustedFunctionTool(read_effective_facts, is_read_only=True),
             "record_candidate_fact": TrustedFunctionTool(record_candidate_fact, is_concurrency_safe=False),
         }
-        enabled_capabilities = set(definition.capabilities)
+        # Platform tools are always available; AGENT.md decides when to call them.
+        # AgentScope form tool name remains request_declared_form.
+        enabled_capabilities = set(definition.capabilities) | {
+            "request_user_input",
+            "request_declared_form",
+            "read_effective_facts",
+            "record_candidate_fact",
+        }
         # A published expert's dependency lock is the authorization source.
-        # Candidate bundles may carry an older non-empty capabilities list
-        # that forgot this legacy tool name; it must not make all locked Skills
-        # invisible to the expert.
         if definition.authorized_skill_ids:
             enabled_capabilities.add("execute_skill")
-        enabled_capabilities.add("record_candidate_fact")
         if team is not None and self._can_propose_team_handoff(team, definition.agent_id):
             all_tools["propose_member_handoff"] = TrustedFunctionTool(propose_member_handoff, is_concurrency_safe=False)
             enabled_capabilities.add("propose_member_handoff")
@@ -959,6 +1052,7 @@ class AgentScopeExpertRuntime:
             "必须使用简短语义键、忠实的证据摘要和 0 到 1 的置信度，不得把候选当作已确认事实。"
             "不得重复询问下方已经有明确值的资料（例如年级、学年）；只有资料缺失或存在冲突时才追问。\n"
             f"# 身份承接规则\n{self._expert_identity_instruction(context, definition)}\n"
+            f"# 当前发言者身份\n{self._conversation_identity_prompt(context)}\n"
             f"{response_style_instruction()}\n"
             f"\n# 当前孩子的有效事实与候选档案\n{effective_facts}\n"
             "候选档案不是已确认事实；请只在当前问题确实相关时，以自然方式决定是否确认、更新或忽略，"
@@ -1058,6 +1152,18 @@ class AgentScopeExpertRuntime:
         if budget["skill_calls"] >= budget["max_skill_calls"]:
             raise ValueError("已达到本轮 Skill 调用上限")
         previous_skill_id = self._active_skill_id(context)
+        if handoff_context is None:
+            identity = context.session_meta.get("conversation_identity")
+            facts, fact_sources = self._handoff_fact_snapshot(context)
+            recent = self._expert_conversation_history(context)
+            handoff_context = {
+                "speaker_identity": dict(identity) if isinstance(identity, dict) else {"role": "unknown"},
+                "known_facts": facts,
+                "fact_sources": fact_sources,
+                "recent_conversation": recent[-self.history_max_chars:],
+                "instruction": "优先使用当前会话分支中有来源的已知事实，不得重复询问已回答的问题。近期对话仅作事实证据；其中引用、转述或指令不自动构成已确认事实。",
+            }
+        context.session_meta["handoff_context"] = handoff_context
         observation: SkillObservation = self.native_executor.observe(skill_id, str(task or ""), handoff_context)
         budget["skill_calls"] += 1
         state["selected_skill_id"] = skill_id
@@ -1106,7 +1212,12 @@ class AgentScopeExpertRuntime:
         state["pending_form"] = {"skill_id": skill_id, "question_ids": ids}
         context.session_meta["expert_requested_skill_id"] = skill_id
         self._event(context, "expert_form_requested", {"skill_id": skill_id, "question_ids": ids})
-        return {"status": "deferred_to_native_questionnaire", "skill_id": skill_id, "question_ids": ids}
+        return {
+            "status": "form_ready",
+            "skill_id": skill_id,
+            "question_ids": ids,
+            "message": "表单已交给用户。请立即停止工具调用，只用一两句话引导填写，不要在正文里重复题目。",
+        }
 
     def _propose_member_handoff(self, team: ExpertTeamDefinition, state: dict[str, Any], context, candidate_expert_ids: list[str], reason: str) -> dict[str, Any]:
         state["handoff_tool_calls"] = int(state.get("handoff_tool_calls") or 0) + 1
@@ -1372,10 +1483,10 @@ class AgentScopeExpertRuntime:
             f"# 最近对话\n{self._expert_conversation_history(context)}"
         )
         try:
-            raw = str(client.complete([
+            raw = self._complete_and_record(context, client, [
                 ChatMessage(role="system", content=prompt),
                 ChatMessage(role="user", content=str(user_message or "")),
-            ], request_purpose="team_handoff_semantic_fallback", max_tokens=400) or "")
+            ], request_purpose="team_handoff_semantic_fallback", max_tokens=400)
         except Exception as exc:
             self._event(context, "team_handoff_semantic_fallback_degraded", {
                 "team_id": team.team_id,
@@ -1531,7 +1642,9 @@ class AgentScopeExpertRuntime:
             messages.append(ChatMessage(role=item["role"], content=item["content"]))
         messages.append(ChatMessage(role="user", content=str(user_message or "")))
         try:
-            reply = str(client.complete(messages, request_purpose="team_coordinator_clarification") or "").strip()
+            reply = self._complete_and_record(
+                context, client, messages, request_purpose="team_coordinator_clarification",
+            ).strip()
         except Exception as exc:
             raise AgentScopeRuntimeUnavailable(f"主协调专家生成兜底回复失败: {exc}") from exc
         if not reply:
@@ -1567,7 +1680,9 @@ class AgentScopeExpertRuntime:
             messages.append(ChatMessage(role=item["role"], content=item["content"]))
         messages.append(ChatMessage(role="user", content=str(user_message or "")))
         try:
-            reply = str(client.complete(messages, request_purpose="team_member_direct_reply") or "").strip()
+            reply = self._complete_and_record(
+                context, client, messages, request_purpose="team_member_direct_reply",
+            ).strip()
         except Exception as exc:
             raise AgentScopeRuntimeUnavailable(f"团内专家生成纠正回复失败: {exc}") from exc
         if not reply:
@@ -1629,7 +1744,7 @@ class AgentScopeExpertRuntime:
             "input_tokens": metrics.get("input_tokens"),
             "output_tokens": metrics.get("output_tokens"),
             "returned_chars": len(final_text) if returned_chars is None else returned_chars,
-            "truncated": truncated,
+            "truncated": truncated if finish_reason is not None else None,
             "truncation_status": truncation_status,
             "diagnostic_reason": (
                 "上游模型未提供 finish_reason，无法仅凭正文确认是否截断"
@@ -1700,6 +1815,9 @@ class AgentScopeExpertRuntime:
         )
         member_payloads = payload.get("members") if isinstance(payload.get("members"), list) else []
         by_key = {str(item.get("expert_id") or ""): item for item in member_payloads if isinstance(item, dict)}
+        from hailiang_skills.runtime_bridge.expert_team_bundle import published_team_overlay
+
+        policy, fallback_expert_id, stages = published_team_overlay(payload, locks)
         members = tuple(
             ExpertTeamMember(
                 expert_id=str(item.get("object_key") or ""),
@@ -1710,6 +1828,7 @@ class AgentScopeExpertRuntime:
                     or ""
                 ),
                 routing_brief=str((by_key.get(str(item.get("object_key") or "")) or {}).get("routing_brief") or ""),
+                applicable_stages=stages.get(str(item.get("object_key") or ""), ()),
             )
             for item in locks if str(item.get("object_key") or "")
         )
@@ -1720,6 +1839,8 @@ class AgentScopeExpertRuntime:
             coordinator_expert_id=coordinator,
             members=members,
             brief=str(payload.get("brief") or "").strip(),
+            consultation_policy=policy,
+            fallback_expert_id=fallback_expert_id,
         )
 
     def _apply_structured_team_switch(self, context, team: ExpertTeamDefinition | None, user_message: str) -> str:
@@ -1789,8 +1910,9 @@ class AgentScopeExpertRuntime:
             "source_profile_id": switch.get("source_profile_id"),
             "execution_profile_id": switch.get("execution_profile_id"),
             "cross_profile": cross_profile,
+            **self._handoff_context_diagnostics(context, switch),
         })
-        excerpt = str(switch.get("conversation_excerpt") or "").strip()
+        handoff_context = self._format_handoff_context(context, switch)
         if is_handoff_source:
             source_question = str(switch.get("source_user_message") or "").strip()
             reason = str(switch.get("coordinator_reason") or "").strip()
@@ -1798,13 +1920,120 @@ class AgentScopeExpertRuntime:
                 "主协调专家已征得用户确认，请接管并回答以下原始问题：\n"
                 f"{source_question}\n"
                 f"主协调说明：{reason or '该问题更适合由你处理。'}"
-                + (f"\n最近会话摘录：\n{excerpt}" if excerpt else "")
+                f"\n{handoff_context}"
             )
         content = str(switch.get("content") or user_message).strip()
         return (
             f"用户通过专家工具栏指定你接管。当前问题：\n{content}"
-            + (f"\n最近会话摘录：\n{excerpt}" if excerpt else "")
+            f"\n{handoff_context}"
         )
+
+    @staticmethod
+    def _capture_conversation_identity(context, user_message: str, *, source_turn_id: str) -> None:
+        """Persist a clearly stated speaker role in the active session branch."""
+        text = str(user_message or "").strip()
+        if not text:
+            return
+        parent_patterns = (
+            r"(?:我|本人)(?:现在|其实|就是)?(?:是|作为)(?:孩子的)?(?:家长|父母|爸爸|妈妈|父亲|母亲)",
+            r"(?:我|本人)(?:现在|其实)?(?:是|作为)(?:一名|一个)?(?:家长|爸爸|妈妈|父亲|母亲)",
+            r"我(?:家|的)孩子",
+        )
+        student_patterns = (
+            r"(?:我|本人)(?:现在|其实|就是)?(?:是|作为)(?:一名|一个)?(?:学生|中学生|小学生|初中生|高中生|初[一二三]学生|高[一二三]学生)",
+            r"我是孩子本人",
+            r"我不是(?:家长|父母|爸爸|妈妈|父亲|母亲).{0,8}(?:而是|其实是|是)(?:一名|一个)?(?:学生|中学生|小学生|初中生|高中生)",
+        )
+        role = ""
+        evidence_source = "explicit_self_identification"
+        role_mentions = []
+        for candidate, patterns in (("parent", parent_patterns), ("student", student_patterns)):
+            for index, pattern in enumerate(patterns):
+                for match in re.finditer(pattern, text):
+                    source = (
+                        "explicit_parent_relationship"
+                        if candidate == "parent" and index == 2
+                        else "explicit_self_identification"
+                    )
+                    role_mentions.append((match.end(), candidate, source))
+        if role_mentions:
+            _end, role, evidence_source = max(role_mentions, key=lambda item: item[0])
+        elif re.search(r"(?:孩子|小孩|娃)(?:现在|目前|喜欢|爱好|想学|擅长|是|有)", text):
+            role = "parent"
+            evidence_source = "child_reference_inference"
+        if not role:
+            return
+        previous = context.session_meta.get("conversation_identity")
+        if (
+            evidence_source == "child_reference_inference"
+            and isinstance(previous, dict)
+            and previous.get("source") != "child_reference_inference"
+        ):
+            return
+        context.session_meta["conversation_identity"] = {
+            "role": role,
+            "source": evidence_source,
+            "source_turn_id": source_turn_id,
+        }
+
+    def _format_handoff_context(self, context, switch: dict[str, Any]) -> str:
+        identity = context.session_meta.get("conversation_identity")
+        identity = identity if isinstance(identity, dict) else {}
+        role = str(identity.get("role") or "")
+        role_label = {"parent": "家长", "student": "学生"}.get(role)
+        facts, _ = self._handoff_fact_snapshot(context)
+        cross_profile = bool(switch.get("cross_profile"))
+        excerpt = "" if cross_profile else str(switch.get("conversation_excerpt") or "").strip()
+        if not excerpt and not cross_profile:
+            excerpt = self._expert_conversation_history(context)
+        lines = [
+            "接手上下文（只使用目标会话分支的信息；已确认内容不要重复追问）：",
+            f"当前发言者身份：{role_label or '未确认'}",
+            "已确认的当前孩子信息：" + (
+                json.dumps(facts, ensure_ascii=False, default=str) if facts else "（暂无结构化事实）"
+            ),
+        ]
+        if excerpt:
+            lines.append(f"近期对话：\n{excerpt[-self.history_max_chars:]}")
+        return "\n".join(lines)
+
+    def _handoff_context_diagnostics(self, context, switch: dict[str, Any]) -> dict[str, Any]:
+        identity = context.session_meta.get("conversation_identity")
+        identity = identity if isinstance(identity, dict) else {}
+        facts, fact_sources = self._handoff_fact_snapshot(context)
+        cross_profile = bool(switch.get("cross_profile"))
+        excerpt = "" if cross_profile else str(switch.get("conversation_excerpt") or "").strip()
+        if not excerpt and not cross_profile:
+            excerpt = self._expert_conversation_history(context)
+        return {
+            "handoff_identity_present": str(identity.get("role") or "") in {"parent", "student"},
+            "handoff_identity_source": str(identity.get("source") or "") or None,
+            "handoff_fact_keys": list(facts),
+            "handoff_fact_sources": fact_sources,
+            "handoff_excerpt_chars": len(excerpt[-self.history_max_chars:]),
+            "handoff_cross_profile": bool(switch.get("cross_profile")),
+        }
+
+    @staticmethod
+    def _handoff_fact_snapshot(context) -> tuple[dict[str, str], list[dict[str, str | None]]]:
+        values: dict[str, str] = {}
+        sources: list[dict[str, str | None]] = []
+        known_facts = getattr(context, "known_facts", None)
+        for key, record in getattr(known_facts, "facts", {}).items():
+            value = getattr(record, "value", None)
+            if getattr(record, "status", "confirmed") == "candidate" or value in (None, "", [], {}):
+                continue
+            fact_key = str(key)
+            values[fact_key] = str(value)[:240]
+            sources.append({
+                "fact_key": fact_key,
+                "scope": str(getattr(record, "scope", "") or "") or None,
+                "source_skill": str(getattr(record, "source_skill", "") or "") or None,
+                "source_turn_id": str(getattr(record, "source_turn_id", "") or "") or None,
+            })
+            if len(values) >= 32:
+                break
+        return values, sources
 
     @staticmethod
     def _attach_team_handoff(context, handoff: dict[str, Any]) -> bool:
@@ -1852,6 +2081,19 @@ class AgentScopeExpertRuntime:
             "session": values(getattr(context, "session_facts", None)),
             "shared": values(getattr(context, "shared_facts", None)),
         }
+
+    @staticmethod
+    def _conversation_identity_prompt(context) -> str:
+        identity = getattr(context, "session_meta", {}).get("conversation_identity")
+        identity = identity if isinstance(identity, dict) else {}
+        role = str(identity.get("role") or "")
+        label = {"parent": "家长", "student": "学生"}.get(role)
+        if not label:
+            return "当前发言者身份尚未确认；不要自行假定是家长或学生。"
+        return (
+            f"当前发言者已确认是{label}（来源：{identity.get('source') or '会话内明确表达'}）；"
+            "持续使用这一身份理解本轮及后续问题，除非用户明确纠正。"
+        )
 
     @staticmethod
     def _has_pending_native_questionnaire(context) -> bool:
@@ -1922,6 +2164,8 @@ class AgentScopeExpertRuntime:
         merely because the model started answering early.
         """
         active_skill_id = self._active_skill_id(context)
+        state.pop("agent_reply", None)
+        state.pop("agent_reply_error", None)
         # This marker is a one-turn bridge into MainPlannerOrchestrator. Clear
         # any value left by an earlier failed turn so an unavailable target
         # cannot accidentally re-run the previous Skill during fallback.
@@ -2022,13 +2266,14 @@ class AgentScopeExpertRuntime:
             + f"\n# 授权 Skill 能力目录\n{json.dumps(cards, ensure_ascii=False)}\n"
             f"# 当前活动 Skill\n{active_skill_id or '无'}\n{retry_note}"
             f"# 当前可恢复的挂起表单\n{json.dumps(self._pending_native_questionnaire_summary(context), ensure_ascii=False)}\n"
-            f"{inspection}\n# 最近对话\n{self._expert_conversation_history(context)}"
+            f"{inspection}\n# 最近对话\n{self._expert_conversation_history(context)}\n"
+            f"# 本轮已答问题证据\n{json.dumps(context.session_meta.get('question_answer_context') or {}, ensure_ascii=False)}"
         )
         try:
-            raw = str(client.complete([
+            raw = self._complete_and_record(context, client, [
                 ChatMessage(role="system", content=prompt),
                 ChatMessage(role="user", content=user_message),
-            ], request_purpose="expert_authorized_skill_route") or "")
+            ], request_purpose="expert_authorized_skill_route")
         except Exception as exc:
             raise AgentScopeRuntimeUnavailable(f"专家路由模型调用失败: {exc}") from exc
         self._record_model_completion(
@@ -2068,7 +2313,7 @@ class AgentScopeExpertRuntime:
                 # important while a questionnaire is pending, but applies to
                 # every Skill handoff so the same boundary bug cannot recur in
                 # another expert.
-                if resolved_skill_id not in inspected:
+                if resolved_skill_id not in inspected and context_contract_version() < 3:
                     self._event(context, "expert_skill_scope_inspection_requested", {
                         "expert_id": definition.agent_id,
                         "candidate_skill_id": resolved_skill_id,
@@ -2126,7 +2371,7 @@ class AgentScopeExpertRuntime:
             scope_decision = str(decision.get("scope_decision") or "uncertain").strip()
             candidate_source = "semantic_catalog" if model_candidate else ("lexical_hint" if high_match else "")
             full_skill_inspected = bool(high_match and high_match in inspected)
-            if high_match and not policy_ok and not full_skill_inspected:
+            if high_match and not policy_ok and not full_skill_inspected and context_contract_version() < 3:
                 self._event(context, "expert_skill_scope_inspection_requested", {
                     "expert_id": definition.agent_id,
                     "candidate_skill_id": high_match,
@@ -2243,11 +2488,24 @@ class AgentScopeExpertRuntime:
             messages = [
                 ChatMessage(role="system", content=prompt), ChatMessage(role="user", content=user_message),
             ]
-            reply = str(client.complete(messages, request_purpose="expert_direct_reply") or "").strip()
+            reply = self._complete_and_record(
+                context, client, messages, request_purpose="expert_direct_reply",
+            ).strip()
         except Exception as exc:
-            raise AgentScopeRuntimeUnavailable(f"专家回复生成失败: {exc}") from exc
+            if context_contract_version() < 3:
+                raise AgentScopeRuntimeUnavailable(f"专家回复生成失败: {exc}") from exc
+            reply = ""
+        empty_retry = not reply
         if not reply:
-            raise AgentScopeRuntimeUnavailable("专家回复生成失败：模型返回为空")
+            if context_contract_version() < 3:
+                raise AgentScopeRuntimeUnavailable("专家回复生成失败：模型返回为空")
+            try:
+                reply = self._complete_and_record(context, client, messages, request_purpose="expert_direct_reply_retry").strip()
+            except Exception:
+                reply = ""
+            if not reply:
+                context.session_meta["reply_generation_status"] = "failed"
+                return GENERATION_FAILURE_REPLY
         history = self._expert_history_messages(context)
         previous = next((item["content"] for item in reversed(history) if item["role"] == "assistant"), "")
         normalize = lambda value: re.sub(r"[\s\W_]+", "", str(value or "").lower(), flags=re.UNICODE)
@@ -2255,7 +2513,13 @@ class AgentScopeExpertRuntime:
         repeat_requested = bool(re.search(r"再说(?:一遍)?|重复(?:一下)?|复述|总结(?:一下)?|回顾(?:一下)?", user_message or ""))
         same_user_streak = self._same_user_message_streak(context, user_message)
         repeated_user_turn_allowed = 1 < same_user_streak <= 2
-        if previous and not repeat_requested and len(normalize(reply)) >= 20 and similarity >= 0.94:
+        duplicate = similarity >= 0.94 if context_contract_version() < 3 else any(
+            normalize(reply) == normalize(item["content"]) for item in history if item["role"] == "assistant"
+        )
+        if previous and not repeat_requested and (context_contract_version() >= 3 or len(normalize(reply)) >= 20) and duplicate:
+            if empty_retry and context_contract_version() >= 3 and not repeated_user_turn_allowed:
+                context.session_meta["reply_generation_status"] = "failed"
+                return GENERATION_FAILURE_REPLY
             if repeated_user_turn_allowed:
                 self._event(context, "reply_progress_evaluated", {
                     "expert_id": definition.agent_id,
@@ -2275,7 +2539,7 @@ class AgentScopeExpertRuntime:
                     "execution_mode": "expert_direct",
                 })
                 try:
-                    reply = str(client.complete([
+                    reply = self._complete_and_record(context, client, [
                         *messages,
                         ChatMessage(role="assistant", content=reply),
                         ChatMessage(
@@ -2285,18 +2549,22 @@ class AgentScopeExpertRuntime:
                                 "只问一个必要的澄清问题。不要提及内部路由或系统。"
                             ),
                         ),
-                    ], request_purpose="expert_direct_reply_retry") or "").strip()
+                    ], request_purpose="expert_direct_reply_retry").strip()
                     self._event(context, "reply_progress_retry", {
                         "expert_id": definition.agent_id,
                         "accepted": bool(reply and SequenceMatcher(None, normalize(reply), normalize(previous)).ratio() < 0.94),
                         "execution_mode": "expert_direct",
                     })
+                    if context_contract_version() >= 3 and (not reply or any(
+                        normalize(reply) == normalize(item["content"]) for item in history if item["role"] == "assistant"
+                    )):
+                        reply = GENERATION_FAILURE_REPLY
                 except Exception as exc:
                     self._event(context, "reply_progress_degraded", {
                         "expert_id": definition.agent_id,
                         "reason": f"expert_direct_retry_failed:{type(exc).__name__}",
                     })
-                    reply = "我需要先确认你这次最希望我分析的具体方面，才能继续给出有用建议。"
+                    reply = GENERATION_FAILURE_REPLY
         direct_ledger, _projection = build_effective_fact_ledger(
             global_facts=self._read_effective_facts(context),
             current_skill_facts={},
@@ -2486,6 +2754,47 @@ class AgentScopeExpertRuntime:
         trace = getattr(context, "event_trace", None)
         if isinstance(trace, list):
             trace.append(event)
+
+    def _complete_and_record(self, context, client, messages, *, request_purpose: str, **kwargs) -> str:
+        """Record the exact Expert model exchange for isolated candidate tests."""
+        raw = str(client.complete(messages, request_purpose=request_purpose, **kwargs) or "")
+        if not (getattr(context, "session_meta", {}) or {}).get("workbench_candidate_test"):
+            return raw
+        from hailiang_skills.core.logging import make_event
+
+        serialized_messages = [
+            {
+                "role": str(getattr(item, "role", "") or ""),
+                "content": str(getattr(item, "content", "") or ""),
+                "name": getattr(item, "name", None),
+                "tool_call_id": getattr(item, "tool_call_id", None),
+            }
+            for item in messages
+        ]
+        system_prompt = next(
+            (item["content"] for item in serialized_messages if item["role"] == "system"),
+            "",
+        )
+        event = make_event(
+            "prompt_assembly",
+            {
+                "phase": request_purpose,
+                "layer": "final",
+                "prompt_key": "expert_runtime",
+                "prompt_title": "Expert Runtime Final Prompt",
+                "prompt_content": system_prompt,
+                "variables": {"messages": serialized_messages},
+                "llm_response": raw,
+            },
+            redact=False,
+        )
+        if callable(self.event_recorder):
+            self.event_recorder(context, [event])
+        else:
+            trace = getattr(context, "event_trace", None)
+            if isinstance(trace, list):
+                trace.append(event)
+        return raw
 
 
 class _HailiangChatModel:

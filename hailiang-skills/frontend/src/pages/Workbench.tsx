@@ -1,4 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BatchEvalPanel } from "@/components/workbench/BatchEvalPanel";
+import { HarnessDebugPanel } from "@/components/workbench/HarnessDebugPanel";
+import {
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Activity,
   Archive,
@@ -17,8 +28,10 @@ import {
   GitCompareArrows,
   History,
   Layers3,
+  ListChecks,
   MoonStar,
   PackageCheck,
+  Pencil,
   Plus,
   RefreshCcw,
   Rocket,
@@ -59,6 +72,8 @@ import {
   type EvaluationRun,
   type ObjectRelease,
   type ObjectRevision,
+  type OrchestrationRulePackageStatus,
+  type OrchestrationRuleRevision,
   type RevisionTestSession,
   type SoulRevision,
   type StandardSkillConversion,
@@ -68,7 +83,7 @@ import {
   type WorkbenchObjectType,
 } from "@/utils/workbenchApi";
 
-type Section = "objects" | "versions" | "evaluation" | "convert" | "release";
+type Section = "objects" | "versions" | "evaluation" | "batch" | "convert" | "release";
 
 const TYPE_META: Record<
   WorkbenchObjectType,
@@ -94,6 +109,13 @@ const TYPE_META: Record<
   },
 };
 
+/** Platform tools are always available at runtime; AGENT.md decides who uses them when. */
+const DEFAULT_EXPERT_CAPABILITIES = [
+  "execute_skill",
+  "request_user_input",
+  "read_effective_facts",
+] as const;
+
 const emptyPayload = (type: WorkbenchObjectType): Record<string, unknown> => {
   if (type === "skill")
     return {
@@ -103,22 +125,23 @@ const emptyPayload = (type: WorkbenchObjectType): Record<string, unknown> => {
     };
   if (type === "expert")
     return {
-      rules_markdown: "# 专家规则\n\n请填写专家角色、边界和决策原则。",
+      rules_markdown:
+        "# 专家规则\n\n请填写专家角色、边界和决策原则。\n\n# 工具调用规则\n\n## 可用工具清单\n\n| 工具名称 | 用途 | 何时调用 | 注意事项 |\n| --- | --- | --- | --- |\n| `request_user_input` | 向用户弹出追问表单 | 缺会影响结论的关键信息，且现有事实/已答不足以继续 | 禁止在结论正文里提问；用户跳过后再给阶段性结论 |\n| `execute_skill` | 调用下方授权 Skill | 有明确专项诉求时 | 同一轮优先只启动最贴切的 Skill |\n\n## 调用决策流程\n\n1. 先核对已有事实；缺关键信息时调用 `request_user_input`，不要在正文追问。\n2. 信息足够后再 `execute_skill` 或直接作答。\n",
       brief: "",
       budget: { max_iters: 4, max_skill_calls: 3 },
-      capabilities: [
-        "execute_skill",
-        "request_declared_form",
-        "read_effective_facts",
-      ],
+      capabilities: [...DEFAULT_EXPERT_CAPABILITIES],
     };
   return {
     rules_markdown: "# 专家团规则\n\n请填写协同、转交与兜底原则。",
     brief: "",
     coordinator_expert_id: "",
+    fallback_expert_id: "",
+    consultation_policy: { max_subtasks: 3, max_parallel: 3, max_depth: 1 },
     members: [],
   };
 };
+
+const SCHOOL_STAGES = ["小学", "初中", "高中"] as const;
 
 function shortHash(value: string | undefined): string {
   return value ? `${value.slice(0, 8)}…${value.slice(-5)}` : "--";
@@ -222,10 +245,85 @@ type CandidateTurnDebug = {
   elapsed_ms?: number;
 };
 
+/** The Debug Zone only needs this small view of an SSE state while streaming. */
+type CandidateConversationSummary = Pick<SseV2State, "session_id" | "run_id" | "status"> & {
+  expert: SseV2State["expert"];
+  session: SseV2State["session"];
+};
+
+type CandidatePendingUiUpdate = {
+  debugSessionId: string;
+  optimisticAssistantId: string;
+  state?: SseV2State;
+  delta: string;
+};
+
+const CANDIDATE_STREAM_RENDER_INTERVAL_MS = 80;
+
+function candidateConversationSummary(state: SseV2State): CandidateConversationSummary {
+  return {
+    session_id: state.session_id,
+    run_id: state.run_id,
+    status: state.status,
+    expert: state.expert,
+    session: state.session,
+  };
+}
+
+function compactDebugValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") return value.length > 6000 ? `${value.slice(0, 6000)}\n... (truncated)` : value;
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= 5) return "... (nested value omitted)";
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 50).map((item) => compactDebugValue(item, depth + 1));
+    return value.length > 50 ? [...items, `... (${value.length - 50} more items omitted)`] : items;
+  }
+  const entries = Object.entries(value).slice(0, 50).map(([key, item]) => [key, compactDebugValue(item, depth + 1)]);
+  const compacted = Object.fromEntries(entries);
+  if (Object.keys(value).length > 50) compacted.__truncated__ = `... (${Object.keys(value).length - 50} more fields omitted)`;
+  return compacted;
+}
+
 function debugValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
-  const rendered = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const rendered = typeof value === "string" ? compactDebugValue(value) as string : JSON.stringify(compactDebugValue(value), null, 2);
   return rendered.length > 6000 ? `${rendered.slice(0, 6000)}\n…（已截断）` : rendered;
+}
+
+const CandidateMarkdown = memo(MarkdownContent);
+
+export const HistoryEvidence = memo(function HistoryEvidence({ value }: { value: unknown }) {
+  const [open, setOpen] = useState(false);
+  const preview = useMemo(() => open ? debugValue(value) : "", [open, value]);
+  return (
+    <details className="mt-2 text-xs text-slate-400" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary className="cursor-pointer">查看证据预览</summary>
+      {open ? <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-2">{preview}</pre> : null}
+    </details>
+  );
+});
+
+const ORCHESTRATION_RULE_VERSIONS = [
+  { purpose: "orchestrate_head" as const, label: "编排首" },
+  { purpose: "orchestrate_tail" as const, label: "编排尾" },
+  { purpose: "recommend" as const, label: "推荐" },
+];
+
+export function orchestrationRuleVersionLabel(status: OrchestrationRulePackageStatus | undefined): string {
+  if (!status || status.state === "unknown") return "读不到仓库版本";
+  if (status.state === "current") return `v${status.version} · 已是仓库最新`;
+  if (status.state === "body_current") return `正文与仓库 v${status.source_version} 一致，修订未记录版本号`;
+  if (status.version && status.source_version && status.version !== status.source_version) {
+    return `当前 v${status.version} · 仓库已是 v${status.source_version}`;
+  }
+  if (status.source_version) return `不是仓库最新 · 文件 v${status.source_version}`;
+  return "无法对比仓库版本";
+}
+
+function orchestrationRuleVersionBadge(status: OrchestrationRulePackageStatus | undefined): string {
+  if (status?.state === "current" || (status?.state === "stale" && status.version)) return `v${status.version}`;
+  if (status?.state === "body_current" && status.source_version) return `v${status.source_version}`;
+  return "";
 }
 
 function traceEntityLabel(entity: CandidateTraceEntity | null | undefined, empty = "本轮未经过") {
@@ -234,7 +332,7 @@ function traceEntityLabel(entity: CandidateTraceEntity | null | undefined, empty
   return `${entity.name || entity.object_key} (${entity.object_key})${revision}`;
 }
 
-function CandidateTurnTrace({ turn }: { turn: Record<string, unknown> }) {
+const CandidateTurnTrace = memo(function CandidateTurnTrace({ turn }: { turn: Record<string, unknown> }) {
   const debug = (turn.debug && typeof turn.debug === "object" ? turn.debug : {}) as CandidateTurnDebug;
   const events = Array.isArray(turn.events) ? turn.events as Array<Record<string, unknown>> : [];
   const references = debug.references?.used ?? [];
@@ -295,7 +393,7 @@ function CandidateTurnTrace({ turn }: { turn: Record<string, unknown> }) {
       </details>
     </div>
   );
-}
+});
 
 function StatusBadge({
   children,
@@ -319,13 +417,156 @@ function StatusBadge({
   );
 }
 
+/**
+ * Keep keystrokes local to the composer.  Workbench renders object lists,
+ * revision details and the full candidate transcript; keeping the draft in
+ * its page-level state makes every key press redraw all of those sections.
+ */
+function CandidateTestComposer({
+  disabled,
+  placeholder,
+  prefill,
+  prefillKey,
+  resetKey,
+  onSubmit,
+  expertMenu,
+}: {
+  disabled: boolean;
+  placeholder: string;
+  prefill: string;
+  prefillKey: number;
+  resetKey: number;
+  onSubmit: (message: string) => Promise<boolean>;
+  expertMenu?: {
+    members: Array<{ expert_id: string; mention_name: string; is_coordinator?: boolean; routing_brief?: string }>;
+    selectedId: string;
+    disabled?: boolean;
+    onSelect: (expertId: string) => void;
+  };
+}) {
+  const [value, setValue] = useState("");
+  const [expertMenuOpen, setExpertMenuOpen] = useState(false);
+  const expertMenuRef = useRef<HTMLDivElement | null>(null);
+  const lastPrefill = useRef("");
+  const selectedExpert = expertMenu?.members.find((item) => item.expert_id === expertMenu.selectedId) ?? null;
+
+  useEffect(() => {
+    setValue("");
+  }, [resetKey]);
+
+  useEffect(() => {
+    if (prefill && prefill !== lastPrefill.current) {
+      setValue(prefill);
+      lastPrefill.current = prefill;
+    }
+  }, [prefill, prefillKey]);
+
+  useEffect(() => {
+    if (!expertMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!expertMenuRef.current?.contains(event.target as Node)) setExpertMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [expertMenuOpen]);
+
+  function submit() {
+    const message = value.trim();
+    if (!message || disabled) return;
+    setValue("");
+    void onSubmit(message).then((accepted) => {
+      if (!accepted) setValue(message);
+    }).catch(() => setValue(message));
+  }
+
+  return (
+    <>
+      <textarea
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        placeholder={placeholder}
+        rows={3}
+        disabled={disabled}
+        className="mt-4 w-full rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 outline-none focus:border-sky-400/40 disabled:opacity-40"
+      />
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {expertMenu?.members.length ? (
+          <div className="relative" ref={expertMenuRef}>
+            <button
+              type="button"
+              disabled={disabled || expertMenu.disabled}
+              onClick={() => setExpertMenuOpen((open) => !open)}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition disabled:opacity-40 ${
+                selectedExpert
+                  ? "border-violet-300/40 bg-violet-300/10 text-violet-100"
+                  : "border-white/10 bg-slate-950/70 text-slate-300 hover:border-violet-400/30 hover:text-violet-100"
+              }`}
+              title={selectedExpert ? `下一条由 @${selectedExpert.mention_name} 处理` : "手动指定团内专家（可选）"}
+            >
+              @{selectedExpert ? selectedExpert.mention_name : "指定专家"}
+            </button>
+            {expertMenuOpen ? (
+              <div className="absolute bottom-full left-0 z-40 mb-2 w-64 rounded-xl border border-violet-300/25 bg-[#0c1a2b] p-2 shadow-2xl shadow-black/40">
+                <p className="px-2 pb-1.5 text-[11px] leading-4 text-slate-500">选择后只影响下一条发送；不选则走团协调/编排。</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    expertMenu.onSelect("");
+                    setExpertMenuOpen(false);
+                  }}
+                  className={`mb-1 w-full rounded-lg px-2.5 py-2 text-left text-xs transition ${
+                    !selectedExpert ? "bg-violet-300/15 text-violet-100" : "text-slate-300 hover:bg-white/5"
+                  }`}
+                >
+                  默认走团协调/编排
+                </button>
+                <div className="max-h-52 space-y-1 overflow-auto">
+                  {expertMenu.members.map((member) => {
+                    const selected = member.expert_id === expertMenu.selectedId;
+                    return (
+                      <button
+                        key={member.expert_id}
+                        type="button"
+                        title={member.routing_brief || `下一条交由 ${member.mention_name}`}
+                        onClick={() => {
+                          expertMenu.onSelect(selected ? "" : member.expert_id);
+                          setExpertMenuOpen(false);
+                        }}
+                        className={`w-full rounded-lg px-2.5 py-2 text-left text-xs transition ${
+                          selected ? "bg-violet-300/15 text-violet-100" : "text-slate-300 hover:bg-white/5"
+                        }`}
+                      >
+                        {member.is_coordinator ? "主协调：" : "@"}{member.mention_name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        <button
+          type="button"
+          disabled={disabled || !value.trim()}
+          onClick={submit}
+          className="rounded-lg bg-sky-400 px-3 py-2 text-xs font-semibold text-slate-950 disabled:opacity-40"
+        >
+          发送
+        </button>
+      </div>
+    </>
+  );
+}
+
 export default function Workbench() {
   const apiBaseUrl = getRuntimeWorkbenchApiBaseUrl();
-  const { themeMode, setThemeMode } = useChatStore();
+  const themeMode = useChatStore((state) => state.themeMode);
+  const setThemeMode = useChatStore((state) => state.setThemeMode);
   const [actor, setActor] = useState<WorkbenchActor | null>(() =>
     readWorkbenchActor(),
   );
   const [actorName, setActorName] = useState("");
+  const [chatRightPane, setChatRightPane] = useState<"chat" | "trace">("chat");
   const [section, setSection] = useState<Section>("objects");
   const [objects, setObjects] = useState<WorkbenchObject[]>([]);
   const [releases, setReleases] = useState<ObjectRelease[]>([]);
@@ -368,6 +609,9 @@ export default function Workbench() {
   const [idMigrationTarget, setIdMigrationTarget] = useState<WorkbenchObject | null>(null);
   const [idMigrationConfirmation, setIdMigrationConfirmation] = useState("");
   const [nextObjectKey, setNextObjectKey] = useState("");
+  const [renameTarget, setRenameTarget] = useState<WorkbenchObject | null>(null);
+  const [newObjectName, setNewObjectName] = useState("");
+  const [renameConfirmation, setRenameConfirmation] = useState("");
   const [referenceMigrationTarget, setReferenceMigrationTarget] = useState<WorkbenchObject | null>(null);
   const [referenceMigrationConfirmation, setReferenceMigrationConfirmation] = useState("");
   const [referenceFromReleaseId, setReferenceFromReleaseId] = useState("");
@@ -400,17 +644,36 @@ export default function Workbench() {
   const [soulRevisions, setSoulRevisions] = useState<SoulRevision[]>([]);
   const [soulRevisionId, setSoulRevisionId] = useState("");
   const [soulDraft, setSoulDraft] = useState("");
+  const [orchestrationRevisions, setOrchestrationRevisions] = useState<OrchestrationRuleRevision[]>([]);
+  const [headRulesDraft, setHeadRulesDraft] = useState("");
+  const [tailRulesDraft, setTailRulesDraft] = useState("");
+  const [recommendationRulesDraft, setRecommendationRulesDraft] = useState("");
+  const [recommendationsDraft, setRecommendationsDraft] = useState("[]");
+  const [orchestrationRulesTab, setOrchestrationRulesTab] = useState<"head" | "tail" | "recommend" | "catalog">("head");
+  const [debugZoneTab, setDebugZoneTab] = useState<"chat" | "harness">("chat");
   const [conversion, setConversion] = useState<StandardSkillConversion | null>(null);
   const [conversionDraft, setConversionDraft] = useState<Record<string, unknown> | null>(null);
   const [conversionTargetId, setConversionTargetId] = useState("");
   const debugTargetInitialized = useRef(false);
   const candidateStreamAbortRef = useRef<AbortController | null>(null);
   const candidateLastSeqRef = useRef<Record<string, number>>({});
+  const candidateUiTimerRef = useRef<number | null>(null);
+  const candidatePendingUiRef = useRef<CandidatePendingUiUpdate | null>(null);
+  const [debugZoneWidth, setDebugZoneWidth] = useState(() => {
+    try {
+      const saved = Number(window.localStorage.getItem("hailiang.workbench.debug-zone-width"));
+      return Number.isFinite(saved) && saved >= 480 && saved <= 1100 ? saved : 720;
+    } catch {
+      return 720;
+    }
+  });
   const [revisionTestSession, setRevisionTestSession] =
     useState<RevisionTestSession | null>(null);
-  const [revisionTestInput, setRevisionTestInput] = useState("");
+  const [candidateInputPrefill, setCandidateInputPrefill] = useState("");
+  const [candidateInputPrefillKey, setCandidateInputPrefillKey] = useState(0);
+  const [candidateInputResetKey, setCandidateInputResetKey] = useState(0);
   const [candidateTargetExpertId, setCandidateTargetExpertId] = useState("");
-  const [candidateConversationState, setCandidateConversationState] = useState<SseV2State | null>(null);
+  const [candidateConversationState, setCandidateConversationState] = useState<CandidateConversationSummary | null>(null);
   const candidateTeamName = candidateConversationState?.expert.team.name || "未选择";
   const candidateExpertName = candidateConversationState?.expert.active.name || "未选择";
   const candidateActiveSkill = candidateConversationState?.session.active_skill;
@@ -428,6 +691,137 @@ export default function Workbench() {
   );
   const [pendingAssets, setPendingAssets] = useState<EditableSkillFile[]>([]);
 
+  const flushCandidateStreamUi = useCallback(() => {
+    if (candidateUiTimerRef.current !== null) {
+      window.clearTimeout(candidateUiTimerRef.current);
+      candidateUiTimerRef.current = null;
+    }
+    const pending = candidatePendingUiRef.current;
+    candidatePendingUiRef.current = null;
+    if (!pending) return;
+    if (pending.state) {
+      setCandidateConversationState(candidateConversationSummary(pending.state));
+    }
+    setRevisionTestSession((current) => {
+      if (!current || current.debug_session_id !== pending.debugSessionId) return current;
+      return {
+        ...current,
+        transcript: current.transcript.map((item) => {
+          if (item.message_id !== pending.optimisticAssistantId) return item;
+          // SSE state contains the full authoritative reply. Delta-only
+          // servers remain supported without forcing a render per token.
+          const streamed = pending.state?.assistant.content;
+          const content = typeof streamed === "string" && streamed.length >= item.content.length
+            ? streamed
+            : pending.delta
+              ? `${item.content}${pending.delta}`
+              : item.content;
+          return {
+            ...item,
+            // Keep the browser-local id until the terminal `message` event.
+            // Replacing it mid-stream would make later deltas miss the
+            // optimistic transcript item altogether.
+            message_id: item.message_id,
+            content,
+            presentation: pending.state ? presentationFromSseState(pending.state) : item.presentation,
+            team_handoff:
+              pending.state && "candidates" in pending.state.team_handoff && Array.isArray(pending.state.team_handoff.candidates)
+                ? pending.state.team_handoff as TeamHandoff
+                : item.team_handoff,
+          };
+        }),
+      };
+    });
+  }, []);
+
+  const queueCandidateStreamUi = useCallback((update: Omit<CandidatePendingUiUpdate, "delta"> & { delta?: string }) => {
+    const previous = candidatePendingUiRef.current;
+    const sameAssistant = previous
+      && previous.debugSessionId === update.debugSessionId
+      && previous.optimisticAssistantId === update.optimisticAssistantId;
+    candidatePendingUiRef.current = {
+      debugSessionId: update.debugSessionId,
+      optimisticAssistantId: update.optimisticAssistantId,
+      state: update.state ?? (sameAssistant ? previous.state : undefined),
+      delta: `${sameAssistant ? previous.delta : ""}${update.delta ?? ""}`,
+    };
+    if (candidateUiTimerRef.current === null) {
+      candidateUiTimerRef.current = window.setTimeout(
+        flushCandidateStreamUi,
+        CANDIDATE_STREAM_RENDER_INTERVAL_MS,
+      );
+    }
+  }, [flushCandidateStreamUi]);
+
+  useEffect(() => () => {
+    if (candidateUiTimerRef.current !== null) window.clearTimeout(candidateUiTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("hailiang.workbench.debug-zone-width", String(debugZoneWidth));
+    } catch {
+      // A privacy-restricted browser can reject local storage. Resizing still
+      // works for the current page lifetime.
+    }
+  }, [debugZoneWidth]);
+
+  function clampDebugZoneWidth(width: number) {
+    const maximum = Math.max(480, Math.min(1100, window.innerWidth - 360));
+    return Math.round(Math.max(480, Math.min(maximum, width)));
+  }
+
+  function chatSessionOptionLabel(item: DebugHistoryItem | RevisionTestSession): string {
+    const firstUser = item.transcript?.find((row) => row.role === "user")?.content
+      || item.conclusion
+      || "空会话";
+    const status = item.status === "completed" ? "已完成" : "进行中";
+    return `${formatTime(item.created_at)} · ${status} · ${firstUser.slice(0, 28)}${firstUser.length > 28 ? "…" : ""}`;
+  }
+
+  function selectChatDebugSession(sessionId: string) {
+    candidateStreamAbortRef.current?.abort();
+    candidateStreamAbortRef.current = null;
+    setChatRightPane("chat");
+    setCandidateInputPrefill("");
+    setCandidateInputResetKey((current) => current + 1);
+    setCandidateTargetExpertId("");
+    setCandidateConversationState(null);
+    candidateLastSeqRef.current = {};
+    candidatePendingUiRef.current = null;
+    if (candidateUiTimerRef.current !== null) {
+      window.clearTimeout(candidateUiTimerRef.current);
+      candidateUiTimerRef.current = null;
+    }
+    if (!sessionId) {
+      setRevisionTestSession(null);
+      return;
+    }
+    const fromHistory = debugHistory.find((item) => item.debug_session_id === sessionId);
+    if (fromHistory) {
+      setRevisionTestSession(fromHistory);
+      return;
+    }
+    if (revisionTestSession?.debug_session_id === sessionId) return;
+    setRevisionTestSession(null);
+  }
+
+  function startDebugZoneResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (window.innerWidth < 1280) return;
+    event.preventDefault();
+    const move = (pointerEvent: PointerEvent) => {
+      setDebugZoneWidth(clampDebugZoneWidth(window.innerWidth - pointerEvent.clientX));
+    };
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  }
+
   const loadAll = useCallback(async () => {
     try {
       const [objectResult, releaseResult, deploymentResult, auditResult] =
@@ -443,6 +837,8 @@ export default function Workbench() {
       setAudit(auditResult.events);
       const soulResult = await workbenchApi.listSoulRevisions(apiBaseUrl);
       setSoulRevisions(soulResult.revisions);
+      const orchestrationResult = await workbenchApi.listOrchestrationRules(apiBaseUrl);
+      setOrchestrationRevisions(orchestrationResult.revisions);
     } catch (error) {
       setNotice({
         tone: "error",
@@ -454,6 +850,21 @@ export default function Workbench() {
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    if (headRulesDraft || tailRulesDraft || recommendationRulesDraft || recommendationsDraft !== "[]") return;
+    const published = orchestrationRevisions.find((item) => item.published) ?? orchestrationRevisions[0];
+    if (!published) return;
+    setHeadRulesDraft(published.head_rules);
+    setTailRulesDraft(published.tail_rules);
+    setRecommendationRulesDraft(published.recommendation_rules);
+    setRecommendationsDraft(JSON.stringify(published.recommendations ?? [], null, 2));
+  }, [headRulesDraft, orchestrationRevisions, recommendationRulesDraft, recommendationsDraft, tailRulesDraft]);
+
+  const loadedOrchestrationRevision = useMemo(
+    () => orchestrationRevisions.find((item) => item.published) ?? orchestrationRevisions[0],
+    [orchestrationRevisions],
+  );
 
   const openObject = useCallback(
     async (objectId: string) => {
@@ -582,12 +993,15 @@ export default function Workbench() {
         expert_id: lock.object_key,
         mention_name: String(saved.mention_name ?? release?.name ?? lock.object_key),
         routing_brief: String(saved.routing_brief ?? ""),
+        applicable_stages: Array.isArray(saved.applicable_stages)
+          ? saved.applicable_stages.map((item) => String(item))
+          : [],
         name: release?.name ?? lock.object_key,
       };
     });
   }, [dependencyReleases, payload.members, uniqueSelectedLocks]);
 
-  function updateTeamMember(expertId: string, patch: Partial<{ mention_name: string; routing_brief: string }>) {
+  function updateTeamMember(expertId: string, patch: Partial<{ mention_name: string; routing_brief: string; applicable_stages: string[] }>) {
     setPayload({
       ...payload,
       members: teamMemberSettings.map((member) =>
@@ -671,10 +1085,16 @@ export default function Workbench() {
   function chooseTestRevision(revisionId: string) {
     setTestRevisionId(revisionId);
     setRevisionTestSession(null);
-    setRevisionTestInput("");
+    setCandidateInputPrefill("");
+    setCandidateInputResetKey((current) => current + 1);
     setCandidateTargetExpertId("");
     setCandidateConversationState(null);
     candidateLastSeqRef.current = {};
+    candidatePendingUiRef.current = null;
+    if (candidateUiTimerRef.current !== null) {
+      window.clearTimeout(candidateUiTimerRef.current);
+      candidateUiTimerRef.current = null;
+    }
     setEvaluationRun(null);
     setDebugEvidenceId("");
     setDebugComplete(false);
@@ -758,11 +1178,122 @@ export default function Workbench() {
           ...(event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {}),
         }));
     });
-    const executionTrace = trace.map((turn) => {
+    const promptRecords = trace.flatMap((turn) => {
+      const debug = turn.debug && typeof turn.debug === "object"
+        ? turn.debug as Record<string, unknown>
+        : {};
+      const prompts = Array.isArray(debug.prompts) ? debug.prompts : [];
+      if (prompts.length > 0) {
+        return prompts.filter((prompt) => prompt && typeof prompt === "object" && (prompt as Record<string, unknown>).layer === "final").map((prompt) => {
+          const promptRecord = prompt && typeof prompt === "object"
+            ? prompt as Record<string, unknown>
+            : {};
+          const { prompt: _prompt, prompt_content: _promptContent, ...compactPrompt } = promptRecord;
+          return {
+            turn: turn.turn ?? null,
+            ...compactPrompt,
+          };
+        });
+      }
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return events
+        .filter((event) => event && typeof event === "object")
+        .map((event) => event as Record<string, unknown>)
+        .filter((event) => String(event.event_type ?? "") === "prompt_assembly")
+        .map((event) => {
+          const payload = event.payload && typeof event.payload === "object"
+            ? event.payload as Record<string, unknown>
+            : {};
+          const { prompt: _prompt, prompt_content: _promptContent, ...compactPayload } = payload;
+          return {
+            turn: turn.turn ?? null,
+            timestamp: event.timestamp ?? event.created_at ?? null,
+            ...compactPayload,
+          };
+        });
+    });
+    const promptTrace = [...new Map(promptRecords.map((prompt) => {
+      const record = prompt as Record<string, unknown>;
+      const key = JSON.stringify([record.turn, record.phase, record.prompt_key, record.messages ?? (record.variables as Record<string, unknown> | undefined)?.messages]);
+      return [key, prompt] as const;
+    })).values()];
+    const factCollection = trace.map((turn) => {
+      const debug = turn.debug && typeof turn.debug === "object"
+        ? turn.debug as Record<string, unknown>
+        : {};
       const events = Array.isArray(turn.events) ? turn.events : [];
       return {
         turn: turn.turn ?? null,
-        debug: turn.debug ?? {},
+        summary: debug.fact_collection && typeof debug.fact_collection === "object" ? debug.fact_collection : {},
+        events: events
+          .filter((event) => event && typeof event === "object")
+          .map((event) => event as Record<string, unknown>)
+          .filter((event) => [
+            "fact_prompt_projection",
+            "skill_confirmed_facts_collected",
+            "skill_collected_inputs_classified",
+            "skill_progress_staged",
+            "skill_progress_committed",
+            "skill_progress_rolled_back",
+          ].includes(String(event.event_type ?? ""))),
+      };
+    });
+    const replyGuardDiagnostics = trace.map((turn) => {
+      const debug = turn.debug && typeof turn.debug === "object"
+        ? turn.debug as Record<string, unknown>
+        : {};
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return {
+        turn: turn.turn ?? null,
+        summary: debug.reply_progress && typeof debug.reply_progress === "object" ? debug.reply_progress : {},
+        events: events
+          .filter((event) => event && typeof event === "object")
+          .map((event) => event as Record<string, unknown>)
+          .filter((event) => [
+            "reply_progress_evaluated",
+            "reply_progress_blocked",
+            "reply_progress_retry",
+            "reply_progress_degraded",
+            "reply_generation_candidate",
+            "reply_generation_final",
+            "reply_generation_failed",
+            "turn_context_snapshot_composed",
+            "fact_question_target_resolved",
+            "confirmed_fact_reask_blocked",
+            "skill_methodology_projection_used",
+            "reply_context_guard_evaluated",
+            "reply_context_guard_blocked",
+            "reply_context_guard_retried",
+            "reply_context_guard_degraded",
+          ].includes(String(event.event_type ?? ""))),
+      };
+    });
+    const questionUnitEvidence = trace.map((turn) => {
+      const debug = turn.debug && typeof turn.debug === "object"
+        ? turn.debug as Record<string, unknown>
+        : {};
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      return {
+        turn: turn.turn ?? null,
+        summary: Array.isArray(debug.question_units) ? debug.question_units : [],
+        events: events
+          .filter((event) => event && typeof event === "object")
+          .map((event) => event as Record<string, unknown>)
+          .filter((event) => [
+            "skill_question_unit_registered",
+            "skill_question_unit_partial",
+            "skill_question_unit_resolved",
+            "skill_question_unit_degraded",
+          ].includes(String(event.event_type ?? ""))),
+      };
+    });
+    const executionTrace = trace.map((turn) => {
+      const events = Array.isArray(turn.events) ? turn.events : [];
+      const debug = turn.debug && typeof turn.debug === "object" ? turn.debug as Record<string, unknown> : {};
+      const { prompts: _prompts, ...executionDebug } = debug;
+      return {
+        turn: turn.turn ?? null,
+        debug: executionDebug,
         events: events.filter((event) => {
           if (!event || typeof event !== "object") return false;
           return [
@@ -773,6 +1304,31 @@ export default function Workbench() {
             "reference_evidence_unavailable",
             "reference_compliance_degraded",
             "tool_result",
+            "fact_prompt_projection",
+            "skill_confirmed_facts_collected",
+            "skill_collected_inputs_classified",
+            "skill_progress_staged",
+            "skill_progress_committed",
+            "skill_progress_rolled_back",
+            "reply_progress_evaluated",
+            "reply_progress_blocked",
+            "reply_progress_retry",
+            "reply_progress_degraded",
+            "reply_generation_candidate",
+            "reply_generation_final",
+            "reply_generation_failed",
+            "turn_context_snapshot_composed",
+            "fact_question_target_resolved",
+            "confirmed_fact_reask_blocked",
+            "skill_methodology_projection_used",
+            "reply_context_guard_evaluated",
+            "reply_context_guard_blocked",
+            "reply_context_guard_retried",
+            "reply_context_guard_degraded",
+            "skill_question_unit_registered",
+            "skill_question_unit_partial",
+            "skill_question_unit_resolved",
+            "skill_question_unit_degraded",
           ].includes(String((event as Record<string, unknown>).event_type ?? ""));
         }),
       };
@@ -792,9 +1348,13 @@ export default function Workbench() {
       // Per-turn execution evidence deliberately includes full candidate
       // script input/output so it can be correlated with diagnostics.
       execution_trace: executionTrace,
-      // Route decisions and failures are metadata only: they make an
-      // uncalled Skill or a generic retryable failure diagnosable without
-      // exporting AGENT.md, SKILL.md, or model prompt bodies.
+      // Candidate test exports are explicit diagnostics. Keep prompt, fact
+      // and guard details in plaintext so the exact test behavior is
+      // reproducible from this artifact.
+      prompt_trace: promptTrace,
+      fact_collection: factCollection,
+      reply_guard_diagnostics: replyGuardDiagnostics,
+      question_unit_evidence: questionUnitEvidence,
       expert_routing_events: expertRoutingEvents,
     }, null, 2)], { type: "application/json" }));
     const link = document.createElement("a");
@@ -802,6 +1362,41 @@ export default function Workbench() {
     link.download = `candidate-conversation-${revisionId}.json`;
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function saveOrchestrationRules(publish: boolean) {
+    if (!actor) return;
+    let recommendations: unknown;
+    try {
+      recommendations = JSON.parse(recommendationsDraft || "[]");
+    } catch {
+      setNotice({ tone: "error", text: "推荐清单必须是合法 JSON 数组。" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const saved = await workbenchApi.saveOrchestrationRules(apiBaseUrl, {
+        head_rules: headRulesDraft,
+        tail_rules: tailRulesDraft,
+        recommendation_rules: recommendationRulesDraft,
+        recommendations,
+        actor_id: actor.actor_id,
+      });
+      const published = publish
+        ? await workbenchApi.publishOrchestrationRules(apiBaseUrl, saved.orchestration_revision_id, { actor_id: actor.actor_id })
+        : saved;
+      setOrchestrationRevisions((items) => [published, ...items.filter((item) => item.orchestration_revision_id !== published.orchestration_revision_id)]);
+      setNotice({
+        tone: "ok",
+        text: publish
+          ? `编排规则 r${published.revision_no} 已发布。重新激活部署后，只有新会话会用上这版。`
+          : `编排规则 r${published.revision_no} 已保存，尚未发布。`,
+      });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "编排规则保存失败" });
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function saveSoulRevision() {
@@ -880,7 +1475,8 @@ export default function Workbench() {
     setTestRevisionId(revision?.revision_id ?? "");
     setDebugReleaseId(release?.release_id ?? "");
     setRevisionTestSession(null);
-    setRevisionTestInput("");
+    setCandidateInputPrefill("");
+    setCandidateInputResetKey((current) => current + 1);
     setEvaluationRun(null);
     setDebugEvidenceId("");
     setDebugComplete(false);
@@ -1055,6 +1651,28 @@ export default function Workbench() {
     }
   }
 
+  async function renameObject() {
+    if (!actor || !renameTarget || !newObjectName.trim() || renameConfirmation !== renameTarget.name) return;
+    setBusy(true);
+    try {
+      const updated = await workbenchApi.updateObject(apiBaseUrl, renameTarget.object_id, {
+        name: newObjectName.trim(), actor_id: actor.actor_id,
+      });
+      setRenameTarget(null);
+      setNewObjectName("");
+      setRenameConfirmation("");
+      await loadAll();
+      if (selectedObject?.object_id === renameTarget.object_id) {
+        await openObject(renameTarget.object_id);
+      }
+      setNotice({ tone: "ok", text: `名称已更新为“${updated.name}”。` });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "修改名称失败" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function migrateReferences() {
     if (!actor || !referenceMigrationTarget || referenceMigrationConfirmation !== referenceMigrationTarget.name || !referenceFromReleaseId || !referenceToReleaseId) return;
     setBusy(true);
@@ -1098,13 +1716,21 @@ export default function Workbench() {
         return;
       }
     }
+    if (selectedObject.object_type === "expert") {
+      // Platform tools are always granted; AGENT.md decides when to call them.
+      nextPayload = {
+        ...nextPayload,
+        capabilities: [...DEFAULT_EXPERT_CAPABILITIES],
+      };
+    }
     if (selectedObject.object_type === "expert_team") {
       nextPayload = {
         ...nextPayload,
-        members: teamMemberSettings.map(({ expert_id, mention_name, routing_brief }) => ({
+        members: teamMemberSettings.map(({ expert_id, mention_name, routing_brief, applicable_stages }) => ({
           expert_id,
           mention_name: mention_name.trim(),
           routing_brief: routing_brief.trim(),
+          applicable_stages,
         })),
       };
     }
@@ -1229,7 +1855,7 @@ export default function Workbench() {
     reader.readAsText(file);
   }
 
-  async function addAssets(files: FileList | null, kind: "reference" | "asset") {
+  async function addAssets(files: FileList | null, kind: "reference" | "asset" | "script") {
     if (!files) return;
     const next = await Promise.all(
       Array.from(files).map(async (file) => {
@@ -1242,8 +1868,8 @@ export default function Workbench() {
           );
         }
         return {
-          relative_path: `${kind === "asset" ? "assets" : "references"}/${file.name}`,
-          media_type: file.type || "application/octet-stream",
+          relative_path: `${kind === "script" ? "scripts" : kind === "asset" ? "assets" : "references"}/${file.name}`,
+          media_type: kind === "script" ? "text/x-python" : file.type || "application/octet-stream",
           content_base64: btoa(binary),
           size: file.size,
         };
@@ -1264,12 +1890,8 @@ export default function Workbench() {
     teamHandoffSelection?: { source_message_id: string; handoff_id: string; target_expert_id: string; team_id?: string; mention_name?: string },
     expertSelection?: { target_expert_id: string },
   ) {
-    const message = (submittedInput ?? revisionTestInput).trim();
-    if (!actor || !selectedTestRevision || (!message && !formSubmission && !teamHandoffSelection && !expertSelection)) return;
-    // Clear at submission time so a slow SSE response cannot make the sent
-    // question appear duplicated in the editor.
-    const editorValueBeforeSubmit = revisionTestInput;
-    setRevisionTestInput("");
+    const message = (submittedInput ?? "").trim();
+    if (!actor || !selectedTestRevision || (!message && !formSubmission && !teamHandoffSelection && !expertSelection)) return false;
     setBusy(true);
     let streamAbortController: AbortController | null = null;
     try {
@@ -1293,6 +1915,11 @@ export default function Workbench() {
       const optimisticAssistantId = makeCandidateStreamId();
       streamAbortController = new AbortController();
       candidateStreamAbortRef.current = streamAbortController;
+      if (candidateUiTimerRef.current !== null) {
+        window.clearTimeout(candidateUiTimerRef.current);
+        candidateUiTimerRef.current = null;
+      }
+      candidatePendingUiRef.current = null;
       let streamError = "";
       setRevisionTestSession({
         ...session,
@@ -1302,6 +1929,9 @@ export default function Workbench() {
           { role: "assistant", content: "", message_id: optimisticAssistantId, blocks: [], interaction_states: {}, created_at: submittedAt },
         ],
       });
+      if (debugObject && selectedTestRevision) {
+        void loadDebugHistory(debugObject.object_id, selectedTestRevision.revision_id);
+      }
       await workbenchApi.streamRevisionTestTurn(
         apiBaseUrl,
         session.debug_session_id,
@@ -1318,38 +1948,27 @@ export default function Workbench() {
             const lastSeq = candidateLastSeqRef.current[state.run_id] ?? -1;
             if (state.seq <= lastSeq) return;
             candidateLastSeqRef.current[state.run_id] = state.seq;
-            setCandidateConversationState(state);
-            setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
-              ...current,
-              transcript: current.transcript.map((item) => item.message_id === optimisticAssistantId
-                ? {
-                    ...item,
-                    message_id: state.message_id ?? item.message_id,
-                    content: state.assistant.content,
-                    presentation: presentationFromSseState(state),
-                    team_handoff:
-                      "candidates" in state.team_handoff && Array.isArray(state.team_handoff.candidates)
-                        ? state.team_handoff as TeamHandoff
-                        : item.team_handoff,
-                  }
-                : item),
-            } : current);
+            queueCandidateStreamUi({
+              debugSessionId: session.debug_session_id,
+              optimisticAssistantId,
+              state,
+            });
             return;
           }
           if (event === "reply_delta") {
             const delta = String(payload.delta ?? "");
             if (!delta) return;
-            setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
-              ...current,
-              transcript: current.transcript.map((item) => item.message_id === optimisticAssistantId
-                ? { ...item, content: `${item.content}${delta}` }
-                : item),
-            } : current);
+            queueCandidateStreamUi({
+              debugSessionId: session.debug_session_id,
+              optimisticAssistantId,
+              delta,
+            });
             return;
           }
           if (event === "message") {
             const record = payload.assistant_message as RevisionTestSession["transcript"][number] | undefined;
             if (!record) return;
+            flushCandidateStreamUi();
             setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
               ...current,
               transcript: current.transcript.map((item) => item.message_id === optimisticAssistantId ? record : item),
@@ -1358,12 +1977,22 @@ export default function Workbench() {
           }
           if (event === "done") {
             const result = payload as unknown as { debug_session?: RevisionTestSession };
+            flushCandidateStreamUi();
             if (result.debug_session) setRevisionTestSession(result.debug_session);
             return;
           }
           if (event === "error") {
             const errorMessage = String(payload.message ?? "候选修订测试失败");
             streamError = errorMessage;
+            flushCandidateStreamUi();
+            const persistedDebugSession = payload.debug_session as Pick<RevisionTestSession, "debug_session_id" | "trace" | "status"> | undefined;
+            if (persistedDebugSession?.debug_session_id === session.debug_session_id) {
+              setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
+                ...current,
+                trace: persistedDebugSession.trace,
+                status: persistedDebugSession.status,
+              } : current);
+            }
             setRevisionTestSession((current) => current && current.debug_session_id === session.debug_session_id ? {
               ...current,
               transcript: current.transcript.map((item) => item.message_id === optimisticAssistantId
@@ -1381,22 +2010,18 @@ export default function Workbench() {
         tone: "ok",
         text: `已按 r${selectedTestRevision.revision_no} 的候选快照完成测试。`,
       });
+      return true;
     } catch (error) {
       // Stopping a candidate turn intentionally aborts this browser-side SSE
       // reader. It is not a user-visible request failure.
       if (streamAbortController?.signal.aborted) {
-        if (!formSubmission && !teamHandoffSelection && !expertSelection && !revisionTestInput) {
-          setRevisionTestInput(editorValueBeforeSubmit);
-        }
-        return;
-      }
-      if (!formSubmission && !teamHandoffSelection && !expertSelection && !revisionTestInput) {
-        setRevisionTestInput(editorValueBeforeSubmit);
+        return false;
       }
       setNotice({
         tone: "error",
         text: error instanceof Error ? error.message : "候选修订测试失败",
       });
+      return false;
     } finally {
       const ownsStream = candidateStreamAbortRef.current === streamAbortController;
       if (ownsStream) {
@@ -1416,7 +2041,12 @@ export default function Workbench() {
         actor.actor_id,
       );
       if (stopped.state?.protocol === "hailiang.sse.v2") {
-        setCandidateConversationState(stopped.state as unknown as SseV2State);
+        setCandidateConversationState(candidateConversationSummary(stopped.state as unknown as SseV2State));
+      }
+      candidatePendingUiRef.current = null;
+      if (candidateUiTimerRef.current !== null) {
+        window.clearTimeout(candidateUiTimerRef.current);
+        candidateUiTimerRef.current = null;
       }
       // The server has recorded the cancellation marker. Release the editor
       // immediately instead of waiting for a slow upstream model connection
@@ -1857,7 +2487,10 @@ export default function Workbench() {
   }
 
   return (
-    <main className="workbench-shell min-h-screen bg-[#07101d] text-slate-100">
+    <main
+      className="workbench-shell min-h-screen bg-[#07101d] text-slate-100"
+      style={{ "--debug-zone-width": `${debugZoneWidth}px` } as CSSProperties}
+    >
       <div className="flex min-h-screen">
         <aside className="workbench-sidebar hidden w-[248px] shrink-0 border-r border-white/10 bg-[#091422] p-5 lg:flex lg:flex-col">
           <div className="flex items-center gap-3 px-2">
@@ -1878,6 +2511,7 @@ export default function Workbench() {
                 label: "调试与用例",
                 icon: FlaskConical,
               },
+              { id: "batch" as const, label: "批量测评", icon: ListChecks },
               { id: "convert" as const, label: "标准协议转换", icon: Braces },
               { id: "release" as const, label: "发布中心", icon: Rocket },
             ].map((item) => {
@@ -1919,13 +2553,15 @@ export default function Workbench() {
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <p className="text-xs uppercase tracking-[0.2em] text-sky-400">
-                  {section === "objects" ? "Configuration" : section}
+                  {section === "objects" ? "Configuration" : section === "batch" ? "Batch" : section}
                 </p>
                 <h1 className="mt-1 text-xl font-semibold">
                   {section === "release"
                     ? "生产发布中心"
                     : section === "evaluation"
                       ? "调试与效果验证"
+                    : section === "batch"
+                      ? "批量测评"
                     : section === "versions"
                         ? "版本与依赖"
                         : section === "convert"
@@ -1972,7 +2608,7 @@ export default function Workbench() {
 
           {notice ? (
             <div
-              className={`mx-5 mt-5 flex items-center justify-between rounded-2xl border px-4 py-3 text-sm lg:mx-8 ${notice.tone === "ok" ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100" : "border-rose-400/20 bg-rose-400/10 text-rose-100"}`}
+              className={`mx-5 mt-5 flex items-center justify-between rounded-2xl border px-4 py-3 text-sm lg:mx-8 ${section === "evaluation" ? "xl:mr-[calc(var(--debug-zone-width)+24px)]" : ""} ${notice.tone === "ok" ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100" : "border-rose-400/20 bg-rose-400/10 text-rose-100"}`}
             >
               <span>{notice.text}</span>
               <button type="button" onClick={() => setNotice(null)}>
@@ -2153,6 +2789,19 @@ export default function Workbench() {
                             归档
                           </button>
                         )}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            setRenameTarget(selectedObject);
+                            setNewObjectName(selectedObject.name);
+                            setRenameConfirmation("");
+                          }}
+                          className="inline-flex items-center gap-2 rounded-xl border border-sky-400/25 bg-sky-400/[0.06] px-4 py-2.5 text-sm font-medium text-sky-100 hover:bg-sky-400/10 disabled:opacity-40"
+                        >
+                          <Pencil size={16} />
+                          修改名称
+                        </button>
                         <button
                           type="button"
                           disabled={busy}
@@ -2438,8 +3087,87 @@ export default function Workbench() {
                                   })}
                                 </select>
                               </label>
+                              <label className="block text-sm text-slate-300">
+                                兜底专家
+                                <select
+                                  value={String(payload.fallback_expert_id ?? "")}
+                                  onChange={(event) => setPayload({ ...payload, fallback_expert_id: event.target.value })}
+                                  className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none"
+                                >
+                                  <option value="">未配置，编排首不能分发</option>
+                                  {uniqueSelectedLocks.map((item) => {
+                                    const expertRelease = dependencyReleases.find((release) => release.release_id === item.release_id);
+                                    return (
+                                      <option key={item.object_id} value={item.object_id}>
+                                        {(expertRelease?.name || item.object_key)}（{item.object_key}）· v{item.release_no}
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                              </label>
+                              <div className="grid gap-3 md:grid-cols-3">
+                                <label className="text-xs text-slate-400">
+                                  最多子任务
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={8}
+                                    value={Number((payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3)}
+                                    onChange={(event) => {
+                                      const maxSubtasks = Number(event.target.value);
+                                      const currentParallel = Number((payload.consultation_policy as { max_parallel?: number } | undefined)?.max_parallel ?? maxSubtasks);
+                                      setPayload({
+                                        ...payload,
+                                        consultation_policy: {
+                                          ...(payload.consultation_policy as Record<string, unknown> | undefined),
+                                          max_subtasks: maxSubtasks,
+                                          max_parallel: Math.min(Math.max(1, currentParallel), Math.max(1, maxSubtasks)),
+                                          max_depth: Number((payload.consultation_policy as { max_depth?: number } | undefined)?.max_depth ?? 1),
+                                        },
+                                      });
+                                    }}
+                                    className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none"
+                                  />
+                                </label>
+                                <label className="text-xs text-slate-400">
+                                  并行容量
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={Number((payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3)}
+                                    value={Number((payload.consultation_policy as { max_parallel?: number } | undefined)?.max_parallel ?? (payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3)}
+                                    onChange={(event) => setPayload({
+                                      ...payload,
+                                      consultation_policy: {
+                                        max_subtasks: Number((payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3),
+                                        max_parallel: Number(event.target.value),
+                                        max_depth: Number((payload.consultation_policy as { max_depth?: number } | undefined)?.max_depth ?? 1),
+                                      },
+                                    })}
+                                    className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none"
+                                  />
+                                </label>
+                                <label className="text-xs text-slate-400">
+                                  编排深度
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={3}
+                                    value={Number((payload.consultation_policy as { max_depth?: number } | undefined)?.max_depth ?? 1)}
+                                    onChange={(event) => setPayload({
+                                      ...payload,
+                                      consultation_policy: {
+                                        max_subtasks: Number((payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3),
+                                        max_parallel: Number((payload.consultation_policy as { max_parallel?: number } | undefined)?.max_parallel ?? (payload.consultation_policy as { max_subtasks?: number } | undefined)?.max_subtasks ?? 3),
+                                        max_depth: Number(event.target.value),
+                                      },
+                                    })}
+                                    className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none"
+                                  />
+                                </label>
+                              </div>
                               <div>
-                                <p className="text-sm text-slate-300">成员展示名称与分流职责</p>
+                                <p className="text-sm text-slate-300">成员展示名称、负责范围与适用学段</p>
                                 <p className="mt-1 text-xs text-slate-500">
                                   主协调专家会用展示名称、ID 与职责摘要生成受控移交确认卡；名称在当前专家团内必须唯一。
                                 </p>
@@ -2464,6 +3192,23 @@ export default function Workbench() {
                                           className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400/40"
                                         />
                                       </label>
+                                      <div className="md:col-span-2 flex flex-wrap gap-3 text-xs text-slate-300">
+                                        {SCHOOL_STAGES.map((stage) => (
+                                          <label key={stage} className="flex items-center gap-2">
+                                            <input
+                                              type="checkbox"
+                                              checked={member.applicable_stages.includes(stage)}
+                                              onChange={(event) => updateTeamMember(member.expert_id, {
+                                                applicable_stages: event.target.checked
+                                                  ? [...member.applicable_stages, stage]
+                                                  : member.applicable_stages.filter((item) => item !== stage),
+                                              })}
+                                              className="accent-sky-400"
+                                            />
+                                            {stage}
+                                          </label>
+                                        ))}
+                                      </div>
                                     </div>
                                   ))}
                                 </div>
@@ -2617,8 +3362,12 @@ export default function Workbench() {
             </section>
           ) : null}
 
+          {section === "batch" && actor ? (
+            <BatchEvalPanel baseUrl={apiBaseUrl} actorId={actor.actor_id} />
+          ) : null}
+
           {section === "evaluation" ? (
-            <section className="p-5 lg:p-8 xl:pr-[26vw]">
+            <section className="p-5 lg:p-8 xl:pr-[calc(var(--debug-zone-width)+24px)]">
               <div className="mx-auto max-w-7xl">
                 <div className="grid gap-5 md:grid-cols-3">
                   <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-5">
@@ -2705,180 +3454,137 @@ export default function Workbench() {
                     <textarea value={soulDraft} onChange={(event) => setSoulDraft(event.target.value)} placeholder="新增 Soul 版本内容（保存后可选择）" rows={3} className="mt-3 w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-xs outline-none" />
                     <button type="button" disabled={!actor || !soulDraft.trim() || busy} onClick={() => void saveSoulRevision()} className="mt-2 rounded-xl border border-violet-400/25 px-3 py-2 text-xs text-violet-200 disabled:opacity-40">保存为新的 Soul 修订</button>
                   </div>
+                  <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-4">
+                    <p className="text-sm font-medium text-amber-100">编排规则</p>
+                    <p className="mt-1 text-xs text-slate-400">编排首、编排尾和推荐分开保存版本。发布后重新激活部署，只影响新会话。推荐由模型输出 jump_cards 语义字段，枚举以 catalog 为准；match_terms 已废弃。</p>
+                    {loadedOrchestrationRevision ? (
+                      <div className="mt-3 space-y-1 text-xs" aria-label="编排规则版本">
+                        <p className="text-slate-400">工作台修订 r{loadedOrchestrationRevision.revision_no}{loadedOrchestrationRevision.published ? " · 已发布" : " · 未发布"}</p>
+                        {ORCHESTRATION_RULE_VERSIONS.map((item) => {
+                          const status = loadedOrchestrationRevision.rule_versions?.[item.purpose];
+                          const latest = status?.state === "current" || status?.state === "body_current";
+                          return (
+                            <p key={item.purpose} className={latest ? "text-emerald-200" : "text-amber-100"}>
+                              {item.label} {orchestrationRuleVersionLabel(status)}
+                            </p>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    <div className="mt-3 flex flex-wrap gap-1.5" role="tablist" aria-label="编排规则分区">
+                      {([
+                        { id: "head" as const, label: "编排首", purpose: "orchestrate_head" as const },
+                        { id: "tail" as const, label: "编排尾", purpose: "orchestrate_tail" as const },
+                        { id: "recommend" as const, label: "推荐规则", purpose: "recommend" as const },
+                        { id: "catalog" as const, label: "推荐清单", purpose: null },
+                      ]).map((tab) => {
+                        const active = orchestrationRulesTab === tab.id;
+                        const badge = tab.purpose
+                          ? orchestrationRuleVersionBadge(loadedOrchestrationRevision?.rule_versions?.[tab.purpose])
+                          : "";
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={active}
+                            onClick={() => setOrchestrationRulesTab(tab.id)}
+                            className={`rounded-lg px-2.5 py-1 text-xs transition ${
+                              active
+                                ? "border border-amber-300/40 bg-amber-300/15 text-amber-50"
+                                : "border border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/20 hover:text-slate-200"
+                            }`}
+                          >
+                            {badge ? `${tab.label} ${badge}` : tab.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <label className="mt-3 block text-xs text-slate-400">
+                      {orchestrationRulesTab === "head"
+                        ? "编排首"
+                        : orchestrationRulesTab === "tail"
+                          ? "编排尾"
+                          : orchestrationRulesTab === "recommend"
+                            ? "推荐规则"
+                            : "推荐清单 JSON"}
+                      <textarea
+                        value={
+                          orchestrationRulesTab === "head"
+                            ? headRulesDraft
+                            : orchestrationRulesTab === "tail"
+                              ? tailRulesDraft
+                              : orchestrationRulesTab === "recommend"
+                                ? recommendationRulesDraft
+                                : recommendationsDraft
+                        }
+                        onChange={(event) => {
+                          const next = event.target.value;
+                          if (orchestrationRulesTab === "head") setHeadRulesDraft(next);
+                          else if (orchestrationRulesTab === "tail") setTailRulesDraft(next);
+                          else if (orchestrationRulesTab === "recommend") setRecommendationRulesDraft(next);
+                          else setRecommendationsDraft(next);
+                        }}
+                        rows={16}
+                        className={`mt-2 min-h-[22rem] w-full rounded-xl border border-white/10 bg-slate-950 p-3 text-xs outline-none ${
+                          orchestrationRulesTab === "catalog" ? "font-mono" : ""
+                        }`}
+                      />
+                    </label>
+                    <div className="mt-3 flex gap-2">
+                      <button type="button" disabled={!actor || busy} onClick={() => void saveOrchestrationRules(false)} className="rounded-xl border border-amber-400/25 px-3 py-2 text-xs text-amber-100 disabled:opacity-40">保存草稿</button>
+                      <button type="button" disabled={!actor || busy || !headRulesDraft.trim()} onClick={() => void saveOrchestrationRules(true)} className="rounded-xl border border-amber-400/40 px-3 py-2 text-xs text-amber-50 disabled:opacity-40">发布</button>
+                    </div>
+                  </div>
                 </div>
                 <div className="mt-6 grid gap-6">
-                  <div className="order-1 rounded-3xl border border-white/10 bg-white/[0.025] p-6 xl:fixed xl:bottom-0 xl:right-0 xl:top-[82px] xl:z-30 xl:flex xl:w-[25vw] xl:flex-col xl:rounded-none xl:border-y-0 xl:border-r-0 xl:border-l xl:border-white/10 xl:bg-[#091422] xl:p-5 xl:shadow-2xl">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.18em] text-sky-300">Debug Zone</p>
-                        <h2 className="mt-1 text-lg font-semibold">候选修订手动测试</h2>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {busy && candidateConversationState?.status === "streaming" ? (
-                          <button
-                            type="button"
-                            onClick={() => void stopCandidateRevisionTest()}
-                            className="inline-flex items-center gap-1 rounded-lg border border-rose-300/30 px-2 py-1 text-xs text-rose-100"
-                          >
-                            <X size={13} /> 停止
-                          </button>
-                        ) : null}
-                        <StatusBadge tone={revisionTestSession?.status === "active" ? "green" : "slate"}>
-                          {candidateConversationState?.status === "stopped"
-                            ? "已停止"
-                            : revisionTestSession?.status === "active" ? "会话进行中" : "等待测试"}
-                        </StatusBadge>
-                      </div>
-                    </div>
-                    <p className="mt-2 text-sm text-slate-500">
-                      直接测试所选 Skill、专家或专家团的不可变候选快照；不会跳转或写入现有长对话测试台。
-                    </p>
-                    <div className="mt-3 rounded-xl border border-sky-300/15 bg-sky-300/[0.05] px-3 py-2 text-xs leading-5 text-slate-300">
-                      <span className="text-slate-500">候选上下文：</span>未绑定孩子
-                      <span className="mx-2 text-slate-600">·</span>
-                      <span className="text-slate-500">专家团：</span>{candidateTeamName}
-                      <span className="mx-2 text-slate-600">·</span>
-                      <span className="text-slate-500">专家：</span>{candidateExpertName}
-                      <span className="mx-2 text-slate-600">·</span>
-                      <span className="text-slate-500">Skill：</span>{candidateSkillName}
-                    </div>
-                    {revisionTestSession?.transcript?.length && revisionTestSession.status === "active" ? (
-                      <button
-                        type="button"
-                        onClick={() => void completeRevisionTest()}
-                        className="mt-3 w-full rounded-xl border border-emerald-400/25 bg-emerald-400/10 px-4 py-2.5 text-sm text-emerald-200"
-                      >
-                        记录为候选修订测试证据
-                      </button>
-                    ) : null}
-                    {revisionTestSession?.transcript?.length && selectedTestRevision ? <button type="button" onClick={() => downloadTranscript(
-                      selectedTestRevision.revision_id,
-                      revisionTestSession.transcript,
-                      revisionTestSession.trace,
-                      candidateConversationState?.session_id || `revision_test_${revisionTestSession.debug_session_id}`,
-                      revisionTestSession.debug_session_id,
-                    )} className="mt-3 rounded-xl border border-white/10 px-3 py-2 text-xs text-sky-200">导出纯对话 JSON</button> : null}
-                    <div className="mt-5 max-h-[520px] min-h-[360px] space-y-3 overflow-auto rounded-2xl border border-white/10 bg-slate-950/50 p-4 xl:max-h-none xl:min-h-0 xl:flex-1">
-                      {revisionTestSession?.transcript?.length ? (
-                        revisionTestSession.transcript.map((item, index) => {
-                          const isAssistant = item.role === "assistant";
-                          const blocks = item.blocks ?? [];
-                          const handoffBlock = blocks.find((block) => block.type === "team_handoff");
-                          const handoff = item.team_handoff ?? (handoffBlock?.payload as TeamHandoff | undefined);
-                          const interactionStates = item.interaction_states ?? {};
-                          const presentation = item.presentation as MessagePresentation | undefined;
-                          const isTransition = item.message_type === "skill_transition";
-                          const isTeamHandoffConfirmation = item.message_type === "team_handoff_confirmation";
-                          const transition = presentation?.skill_transition as { action?: string } | undefined;
-                          return (
-                            <div key={item.message_id || `${item.role}-${index}`} className={item.role === "user" ? "text-right" : "text-left"}>
-                              {isTeamHandoffConfirmation ? (
-                                <div className="my-1 text-center text-xs text-violet-200/80">
-                                  <span className="rounded-full border border-violet-300/25 bg-violet-300/[0.08] px-3 py-1.5">
-                                    已确认由 {item.content.replace(/^@/, "")} 专家接管
-                                  </span>
-                                </div>
-                              ) : isAssistant && isTransition ? (
-                                <div className="inline-block max-w-[90%] rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-center text-xs text-slate-300">
-                                  {transition?.action === "exit"
-                                    ? "已退出当前 Skill"
-                                    : `已进入 ${(presentation?.session?.active_skill as { title?: string } | undefined)?.title || "当前 Skill"}`}
-                                </div>
-                              ) : (
-                                <div className={`inline-block max-w-[90%] rounded-2xl px-3 py-2 text-sm leading-6 ${item.role === "user" ? "bg-sky-400 text-slate-950" : "bg-white/10 text-slate-200"}`}>
-                                  {isAssistant ? <MarkdownContent content={item.content} className="text-slate-200" /> : item.content}
-                                  {isAssistant ? (
-                                    <div className="mt-3 text-left">
-                                      <MessageBlocksRenderer
-                                        messageId={item.message_id || `${revisionTestSession.debug_session_id}-${index}`}
-                                        blocks={blocks.filter((block) => block.type !== "team_handoff") as MessageBlock[]}
-                                        onPathAction={(pathName, description) => setRevisionTestInput(description || pathName)}
-                                        onSubmitFactForm={submitCandidateFactForm}
-                                        interactionStates={interactionStates as Record<string, MessageInteractionState>}
-                                      />
-                                    </div>
-                                  ) : null}
-                                  {isAssistant && handoff?.candidates?.length ? (
-                                    <div className="mt-3 text-left">
-                                      <TeamHandoffCard
-                                        handoff={handoff}
-                                        interactionState={interactionStates.team_handoff as MessageInteractionState | undefined}
-                                        disabled={busy || !item.message_id}
-                                        onConfirm={(candidate) => confirmCandidateTeamHandoff(item.message_id || "", handoff, candidate.expert_id)}
-                                      />
-                                    </div>
-                                  ) : null}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <p className="py-8 text-center text-sm text-slate-600">选择一个修订后输入问题，开始候选版本测试。</p>
-                      )}
-                    </div>
-                    {revisionTestSession?.trace?.length ? (
-                      <details className="mt-4 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
-                        <summary className="cursor-pointer text-sm font-medium text-slate-200">本轮调用轨迹与调试信息</summary>
-                        <p className="mt-2 text-xs leading-5 text-slate-500">展开后可查看本轮的专家团、专家、实际 Skill、引用资料和脚本输入/输出；这些内容会一并保存到候选修订测试证据。</p>
-                        <CandidateTurnTrace turn={revisionTestSession.trace.at(-1) ?? {}} />
-                      </details>
-                    ) : null}
-                    {candidateTeamMembers.length ? (
-                      <div className="mt-4 rounded-2xl border border-violet-300/20 bg-violet-300/[0.05] p-3">
-                        <p className="text-xs font-medium text-violet-100">手动 @ 团内专家</p>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {candidateTeamMembers.map((member) => {
-                            const selected = member.expert_id === candidateTargetExpertId;
-                            return (
-                              <button
-                                key={member.expert_id}
-                                type="button"
-                                disabled={busy || activeCandidateHandoff}
-                                title={member.routing_brief || `下一条消息交由 ${member.mention_name} 处理`}
-                                onClick={() => setCandidateTargetExpertId(selected ? "" : member.expert_id)}
-                                className={`rounded-full border px-3 py-1.5 text-xs transition disabled:cursor-not-allowed disabled:opacity-40 ${selected ? "border-violet-200/60 bg-violet-200/15 text-violet-100" : "border-white/10 bg-slate-950/50 text-slate-300 hover:border-violet-400/30 hover:text-violet-100"}`}
-                              >
-                                {member.is_coordinator ? "主协调：" : "@"}{member.mention_name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <p className="mt-2 text-[11px] leading-5 text-slate-500">
-                          {candidateTargetExpert ? `下一条消息将由 @${candidateTargetExpert.mention_name} 接管。` : "选择团内专家后发送问题；选择会绑定本次匿名候选会话。"}
-                        </p>
-                        {activeCandidateForm ? (
-                          <p className="mt-2 text-[11px] leading-5 text-amber-200/80">
-                            切换专家并发送新问题会自动结束当前未提交表单；原表单会保留在记录中但不能再提交。
-                          </p>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    <p className="mt-3 text-[11px] leading-5 text-slate-500">
-                      匿名上下文：本会话会持续保留对话、表单状态、Facts 与运行时摘要；不读取、不创建、不写入孩子档案或正式 Profile。
-                    </p>
-                    {activeCandidateHandoff ? (
-                      <p className="mt-3 rounded-xl border border-violet-300/20 bg-violet-300/[0.06] px-3 py-2 text-[11px] leading-5 text-violet-100/80">
-                        专家转交卡片仍待确认。你可以继续输入问题；文字只会由当前主协调专家处理，不会因此切换专家。需要切换时请点击卡片。
-                      </p>
-                    ) : null}
-                    <textarea
-                      value={revisionTestInput}
-                      onChange={(event) => setRevisionTestInput(event.target.value)}
-                      placeholder={selectedTestRevision ? `向 r${selectedTestRevision.revision_no} 输入测试问题…` : "请先选择要测试的修订"}
-                      rows={3}
-                      disabled={!selectedTestRevision || busy}
-                      className="mt-4 w-full rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-7 outline-none focus:border-sky-400/40 disabled:opacity-40"
-                    />
+                  <div className="order-1 rounded-3xl border border-white/10 bg-white/[0.025] p-6 xl:fixed xl:bottom-0 xl:right-0 xl:top-[82px] xl:z-30 xl:flex xl:w-[var(--debug-zone-width)] xl:flex-col xl:rounded-none xl:border-y-0 xl:border-r-0 xl:border-l xl:border-white/10 xl:bg-[#091422] xl:p-5 xl:shadow-2xl">
                     <button
                       type="button"
-                      disabled={!selectedTestRevision || !revisionTestInput.trim() || busy}
-                      onClick={() => void runRevisionTestTurn(undefined, undefined, undefined, candidateTargetExpert ? { target_expert_id: candidateTargetExpert.expert_id } : undefined)}
-                      className="mt-4 inline-flex items-center gap-2 rounded-xl bg-sky-400 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:opacity-40"
+                      aria-label="拖动调整候选修订手动测试区域宽度"
+                      title="拖动调整宽度；键盘左右方向键也可调整"
+                      onPointerDown={startDebugZoneResize}
+                      onKeyDown={(event) => {
+                        if (event.key === "ArrowLeft") {
+                          event.preventDefault();
+                          setDebugZoneWidth((current) => clampDebugZoneWidth(current + 24));
+                        } else if (event.key === "ArrowRight") {
+                          event.preventDefault();
+                          setDebugZoneWidth((current) => clampDebugZoneWidth(current - 24));
+                        }
+                      }}
+                      className="absolute -left-3 top-1/2 hidden h-24 w-3 -translate-y-1/2 cursor-col-resize touch-none rounded-l border border-r-0 border-sky-300/20 bg-[#0c1d30] text-sky-200 shadow-lg outline-none hover:bg-sky-400/15 focus-visible:ring-2 focus-visible:ring-sky-300 xl:flex xl:items-center xl:justify-center"
                     >
-                      <FlaskConical size={16} />
-                      发送测试问题
+                      <span aria-hidden="true" className="text-sm leading-none">⋮</span>
                     </button>
+                    <div className="shrink-0">
+                      <p className="text-xs uppercase tracking-[0.18em] text-sky-300">Debug Zone</p>
+                      {selectedTestRevision ? null : <h2 className="mt-1 text-lg font-semibold">候选修订手动测试</h2>}
+                    </div>
+                    <div className={`${selectedTestRevision ? "mt-1" : "mt-3"} flex min-h-0 flex-1 flex-col`}>
+                      {selectedTestRevision ? (
+                        <HarnessDebugPanel
+                          baseUrl={apiBaseUrl}
+                          revisionId={selectedTestRevision.revision_id}
+                          actorId={actor.actor_id}
+                          soulRevisionId={soulRevisionId}
+                          objectType={debugObject?.object_type}
+                          historySessions={debugHistory}
+                          onHistoryChange={() => {
+                            if (debugObject && selectedTestRevision) {
+                              void loadDebugHistory(debugObject.object_id, selectedTestRevision.revision_id);
+                            }
+                          }}
+                          onEvidenceSaved={(debugSessionId) => {
+                            setDebugEvidenceId(debugSessionId);
+                            setDebugComplete(true);
+                            setNotice({ tone: "ok", text: "候选修订测试已记录，可作为发布证据。" });
+                          }}
+                        />
+                      ) : (
+                        <p className="mt-6 py-8 text-center text-sm text-slate-600">请先选择要测试的修订，再开始测试。</p>
+                      )}
+                    </div>
                   </div>
                   <div className="order-2 rounded-3xl border border-white/10 bg-white/[0.025] p-6">
                     <div className="flex flex-wrap items-center justify-between gap-4">
@@ -2998,8 +3704,8 @@ export default function Workbench() {
                     <div className="flex gap-2"><select value={historyStatus} onChange={(event) => { const status = event.target.value as "all" | "active" | "completed"; setHistoryStatus(status); if (debugObject && selectedTestRevision) void loadDebugHistory(debugObject.object_id, selectedTestRevision.revision_id, status); }} className="rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-xs"><option value="all">全部状态</option><option value="active">进行中</option><option value="completed">已完成</option></select><button type="button" disabled={!debugObject || !selectedTestRevision || busy} onClick={() => debugObject && selectedTestRevision && void loadDebugHistory(debugObject.object_id, selectedTestRevision.revision_id)} className="rounded-xl border border-white/10 px-3 py-2 text-xs text-slate-300 disabled:opacity-40">刷新历史</button></div>
                   </div>
                   <div className="mt-5 grid gap-4 lg:grid-cols-2">
-                    <div className="space-y-3"><p className="text-xs font-medium text-sky-200">手动调试会话</p>{debugHistory.length ? debugHistory.map((item) => <div key={item.debug_session_id} className="rounded-2xl border border-white/10 bg-slate-950/45 p-4"><div className="flex items-center justify-between gap-2"><span>r{item.revision_no} · {item.status === "completed" ? "已完成" : "进行中"}</span><span className="text-xs text-slate-500">{formatTime(item.created_at)}</span></div><p className="mt-2 text-xs text-slate-400">{item.conclusion || "尚未填写结论"}</p><details className="mt-2 text-xs text-slate-400"><summary className="cursor-pointer">查看完整证据</summary><pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-2">{JSON.stringify(item, null, 2)}</pre></details><div className="mt-3 flex gap-3">{item.status === "completed" ? <button type="button" onClick={() => chooseHistoryEvidence(item.debug_session_id)} className="text-xs text-emerald-300">选为发布证据</button> : null}<button type="button" onClick={() => downloadEvidence("debug", item)} className="text-xs text-sky-300">下载 JSON</button></div></div>) : <p className="text-sm text-slate-600">暂无手动调试记录</p>}</div>
-                    <div className="space-y-3"><p className="text-xs font-medium text-violet-200">批量评测运行</p>{evaluationHistory.length ? evaluationHistory.map((item) => <div key={item.run_id} className="rounded-2xl border border-white/10 bg-slate-950/45 p-4"><div className="flex items-center justify-between gap-2"><span>{item.suite_name} · r{item.revision_no}</span><span className="text-xs text-slate-500">{formatTime(item.created_at)}</span></div><p className="mt-2 text-xs text-slate-400">{item.manual_result === "accepted" ? "人工通过" : item.manual_result === "rejected" ? "人工拒绝" : item.status}</p><details className="mt-2 text-xs text-slate-400"><summary className="cursor-pointer">查看完整证据</summary><pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-2">{JSON.stringify(item, null, 2)}</pre></details><div className="mt-3 flex gap-3">{item.manual_result === "accepted" ? <button type="button" onClick={() => chooseHistoryEvidence(item.run_id)} className="text-xs text-emerald-300">选为发布证据</button> : null}<button type="button" onClick={() => downloadEvidence("evaluation", item)} className="text-xs text-sky-300">下载 JSON</button></div></div>) : <p className="text-sm text-slate-600">暂无批量评测记录</p>}</div>
+                    <div className="space-y-3"><p className="text-xs font-medium text-sky-200">手动调试会话</p>{debugHistory.length ? debugHistory.map((item) => <div key={item.debug_session_id} className="rounded-2xl border border-white/10 bg-slate-950/45 p-4"><div className="flex items-center justify-between gap-2"><span>r{item.revision_no} · {item.status === "completed" ? "已完成" : "进行中"}</span><span className="text-xs text-slate-500">{formatTime(item.created_at)}</span></div><p className="mt-2 text-xs text-slate-400">{item.conclusion || "尚未填写结论"}</p><HistoryEvidence value={item} /><div className="mt-3 flex gap-3">{item.status === "completed" ? <button type="button" onClick={() => chooseHistoryEvidence(item.debug_session_id)} className="text-xs text-emerald-300">选为发布证据</button> : null}<button type="button" onClick={() => downloadEvidence("debug", item)} className="text-xs text-sky-300">下载 JSON</button></div></div>) : <p className="text-sm text-slate-600">暂无手动调试记录</p>}</div>
+                    <div className="space-y-3"><p className="text-xs font-medium text-violet-200">批量评测运行</p>{evaluationHistory.length ? evaluationHistory.map((item) => <div key={item.run_id} className="rounded-2xl border border-white/10 bg-slate-950/45 p-4"><div className="flex items-center justify-between gap-2"><span>{item.suite_name} · r{item.revision_no}</span><span className="text-xs text-slate-500">{formatTime(item.created_at)}</span></div><p className="mt-2 text-xs text-slate-400">{item.manual_result === "accepted" ? "人工通过" : item.manual_result === "rejected" ? "人工拒绝" : item.status}</p><HistoryEvidence value={item} /><div className="mt-3 flex gap-3">{item.manual_result === "accepted" ? <button type="button" onClick={() => chooseHistoryEvidence(item.run_id)} className="text-xs text-emerald-300">选为发布证据</button> : null}<button type="button" onClick={() => downloadEvidence("evaluation", item)} className="text-xs text-sky-300">下载 JSON</button></div></div>) : <p className="text-sm text-slate-600">暂无批量评测记录</p>}</div>
                   </div>
                 </section>
               </div>
@@ -3260,6 +3966,33 @@ export default function Workbench() {
               <input autoFocus value={deactivateTeamConfirmation} onChange={(event) => setDeactivateTeamConfirmation(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && deactivateTeamConfirmation === deactivateDeploymentTarget.expert_team_id && !busy) void deactivateDeployment(); }} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 font-mono outline-none focus:border-rose-400/50" />
             </label>
             <div className="mt-6 grid grid-cols-2 gap-3"><button type="button" disabled={busy} onClick={() => setDeactivateDeploymentTarget(null)} className="rounded-xl border border-white/10 px-4 py-3 text-sm text-slate-300 hover:bg-white/5">取消</button><button type="button" disabled={busy || deactivateTeamConfirmation !== deactivateDeploymentTarget.expert_team_id} onClick={() => void deactivateDeployment()} className="rounded-xl bg-rose-500 px-4 py-3 text-sm font-semibold text-white disabled:opacity-35">确认下线</button></div>
+          </div>
+        </div>
+      ) : null}
+      {renameTarget ? (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-black/80 p-4 backdrop-blur-sm">
+          <div role="dialog" aria-modal="true" className="w-full max-w-lg rounded-3xl border border-sky-400/20 bg-[#151923] p-6 shadow-2xl shadow-black/50">
+            <div className="flex items-start justify-between gap-5">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.18em] text-sky-200">修改对象名称</p>
+                <h2 className="mt-1 text-xl font-semibold">重命名"{renameTarget.name}"</h2>
+              </div>
+              <button type="button" aria-label="关闭名称修改" onClick={() => { setRenameTarget(null); setNewObjectName(""); setRenameConfirmation(""); }} className="rounded-xl p-2 text-slate-500 hover:bg-white/5 hover:text-white"><X size={18} /></button>
+            </div>
+            <div className="mt-5 rounded-2xl border border-sky-400/15 bg-sky-400/[0.05] p-4 text-sm leading-6 text-sky-50/80">
+              <p>当前名称：<strong className="text-white">{renameTarget.name}</strong></p>
+              <p className="mt-2 text-xs text-sky-100/65">修改名称仅影响显示，不会改变对象的 ID 或已发布版本。</p>
+            </div>
+            <label className="mt-5 block text-sm text-slate-300">新的显示名称
+              <input autoFocus value={newObjectName} onChange={(event) => setNewObjectName(event.target.value)} placeholder="输入新的显示名称" className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none focus:border-sky-400/50" />
+            </label>
+            <label className="mt-4 block text-sm text-slate-300">请输入当前名称 <strong className="text-white">{renameTarget.name}</strong> 以确认
+              <input value={renameConfirmation} onChange={(event) => setRenameConfirmation(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && renameConfirmation === renameTarget.name && newObjectName.trim() && !busy) void renameObject(); }} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none focus:border-sky-400/50" />
+            </label>
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <button type="button" disabled={busy} onClick={() => { setRenameTarget(null); setNewObjectName(""); setRenameConfirmation(""); }} className="rounded-xl border border-white/10 px-4 py-3 text-sm text-slate-300 hover:bg-white/5">取消</button>
+              <button type="button" disabled={busy || renameConfirmation !== renameTarget.name || !newObjectName.trim()} onClick={() => void renameObject()} className="rounded-xl bg-sky-400 px-4 py-3 text-sm font-semibold text-slate-950 disabled:opacity-35">确认修改名称</button>
+            </div>
           </div>
         </div>
       ) : null}

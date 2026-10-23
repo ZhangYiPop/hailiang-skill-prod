@@ -369,8 +369,9 @@ def test_open_or_resume_tolerates_concurrent_profile_insert(tmp_path: Path, monk
 
 def test_input_contract_and_external_run_id() -> None:
     expert_context = '{"expert_team_id":null,"expert_id":null,"expected_branch_version":1,"operation":"continue"}'
-    parsed = _parse_input('{"action":"chat","content":"你好","source":"chat","expert_context":' + expert_context + '}')
+    parsed = _parse_input('{"action":"chat","content":"你好","source":"chat","model":"pro","expert_context":' + expert_context + '}')
     assert isinstance(parsed, ChatInput)
+    assert parsed.model == "pro"
     parsed = _parse_input('{"action":"chat","content":"你好","source":"chat","expert_context":{"expert_team_id":null,"expert_id":null,"operation":"continue"}}')
     assert isinstance(parsed, ChatInput)
     parsed = _parse_input('{"action":"enter_skill","target_skill_id":"interest_explore","source":"toolbar","expert_context":' + expert_context + '}')
@@ -396,6 +397,17 @@ def test_input_contract_and_external_run_id() -> None:
     lease = coordinator.acquire("sess_1", "u1", run_id="bff_run_1")
     assert lease.generation == "bff_run_1"
     coordinator.release(lease)
+    assert coordinator.supersede("sess_1", next_run_id="bff_run_2") is None
+
+
+def test_turn_coordinator_supersedes_only_an_active_generation() -> None:
+    coordinator = TurnCoordinator()
+    first = coordinator.acquire("sess_active", "u1", run_id="run_active")
+
+    assert coordinator.supersede("sess_active", next_run_id="run_next") == "run_active"
+    assert coordinator.is_cancelled(first)
+    coordinator.release(first)
+    assert coordinator.current_generation("sess_active") == "run_next"
 
 
 def test_chat_stream_api_accepts_unbound_context_and_rejects_profile_data(api_client) -> None:

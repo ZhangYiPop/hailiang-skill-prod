@@ -1,0 +1,17 @@
+{
+  "source": "deterministic_runtime_fixture_not_provider_benchmark",
+  "baseline": {
+    "model_calls": 9,
+    "main_calls": 2,
+    "elapsed_ms": 1080.34,
+    "stream_calls": 0
+  },
+  "v3": {
+    "model_calls": 10,
+    "main_calls": 3,
+    "elapsed_ms": 1352.8,
+    "stream_calls": 1
+  },
+  "extra_model_calls": 1,
+  "limitations": "同一虚构多专家场景、固定正文和模拟生成延迟；仅量化协议调用及本地执行耗时，不代表真实模型 token 或业务性能。"
+}

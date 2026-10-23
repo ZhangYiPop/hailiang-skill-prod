@@ -22,7 +22,8 @@ fi
 # 以下为可安全提交的默认值。env.local.sh 可以覆盖它们。
 export HAILIANG_STORAGE_BACKEND="${HAILIANG_STORAGE_BACKEND:-postgres}"
 export HAILIANG_DATABASE_URL="${HAILIANG_DATABASE_URL:-postgresql+psycopg://hailiang:hailiang@127.0.0.1:5432/hailiang_skills}"
-export HAILIANG_REDIS_URL="${HAILIANG_REDIS_URL:-redis://127.0.0.1:6379/0}"
+# 使用 ${VAR-default}（而非 :-）：允许 env.local.sh 显式设空字符串以禁用 Redis（file 模式）。
+export HAILIANG_REDIS_URL="${HAILIANG_REDIS_URL-redis://127.0.0.1:6379/0}"
 export HAILIANG_MAX_SSE_CONNECTIONS="${HAILIANG_MAX_SSE_CONNECTIONS:-100}"
 export HAILIANG_STREAM_WORKERS="${HAILIANG_STREAM_WORKERS:-50}"
 export HAILIANG_SSE_QUEUE_TIMEOUT_SECONDS="${HAILIANG_SSE_QUEUE_TIMEOUT_SECONDS:-5}"

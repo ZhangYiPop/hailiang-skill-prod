@@ -22,9 +22,12 @@ import { SessionSidebar } from "@/components/SessionSidebar";
 import { StatusPill } from "@/components/StatusPill";
 import { SummaryPanel } from "@/components/SummaryPanel";
 import { useChatActions } from "@/hooks/useChatActions";
-import { useChatStore } from "@/store/useChatStore";
+import { testerModelName, TESTER_MODEL_OPTIONS, useChatStore } from "@/store/useChatStore";
+import { useHarnessConversation, useHarnessState } from "@/hooks/useHarnessConversation";
 
 export default function Home() {
+  useHarnessConversation();
+  const harnessActive = useHarnessState((s) => Boolean(s.activeRunId));
   const hasBootstrappedRef = useRef(false);
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
   const autoScrollEnabledRef = useRef(true);
@@ -38,6 +41,7 @@ export default function Home() {
     viewMode,
     themeMode,
     enableThinking,
+    selectedModelId,
     profiles,
     selectedProfileId,
     activeProfileId,
@@ -76,6 +80,7 @@ export default function Home() {
     setViewMode,
     setThemeMode,
     setEnableThinking,
+    setSelectedModelId,
   } = useChatStore();
   const {
     applyDebugIdentity,
@@ -252,6 +257,10 @@ export default function Home() {
           tone={enableThinking ? "info" : "default"}
         />
         <StatusPill
+          label={`模型 ${testerModelName(selectedModelId)}`}
+          tone={selectedModelId === "pro" ? "info" : "default"}
+        />
+        <StatusPill
           label={errorMessage ? "请求异常" : "接口正常待测"}
           tone={errorMessage ? "warning" : "success"}
         />
@@ -271,6 +280,24 @@ export default function Home() {
             onChange={(event) => setEnableThinking(event.target.checked)}
             className="h-5 w-5 accent-cyan-300"
           />
+        </label>
+        <label className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3">
+          <span>
+            <span className="block text-sm font-medium text-slate-100">问答模型</span>
+            <span className="mt-1 block text-xs leading-5 text-slate-500">
+              默认 deepseek-v4-flash-0731。切换后，下一轮问答使用同一密钥调用所选模型。正式环境固定为 deepseek-v4-flash-0731。
+            </span>
+          </span>
+          <select
+            aria-label="问答模型"
+            value={selectedModelId}
+            onChange={(event) => setSelectedModelId(event.target.value === "pro" ? "pro" : "flash")}
+            className="rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+          >
+            {TESTER_MODEL_OPTIONS.map((item) => (
+              <option key={item.id} value={item.id}>{item.model}</option>
+            ))}
+          </select>
         </label>
       </div>
 
@@ -317,6 +344,7 @@ export default function Home() {
         </div>
         <Composer
           disabled={!sessionId}
+          selectionDisabled={harnessActive}
           showQuickPrompts={showQuickPrompts}
           onSubmit={handleSendMessage}
           expertCatalog={expertCatalog}
@@ -350,7 +378,7 @@ export default function Home() {
     <ProfileSwitcher
       profiles={profiles}
       activeProfileId={selectedProfileId || activeProfileId}
-      loading={isLoadingProfiles}
+      loading={isLoadingProfiles || harnessActive}
       onSelect={(profileId) => {
         void selectProfile(profileId);
       }}

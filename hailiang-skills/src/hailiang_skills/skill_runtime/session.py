@@ -280,6 +280,7 @@ def _build_prompt_assembly(
     # source names, never fact values, so candidate exports can explain why a
     # prompt became smaller without exposing another copy of the profile.
     state.status_flags["_fact_prompt_projection"] = fact_projection
+    identity_text = _build_conversation_identity_text(state.status_flags.get("last_handoff_context"))
     state_json = json.dumps(
         {
             "session_id": state.session_id,
@@ -341,6 +342,7 @@ def _build_prompt_assembly(
         f"{response_style_instruction()}\n"
         "If a concrete path, school, province policy, or detailed planning request is not supported by matched local assets, do not guess. "
         f"Use this fallback style instead: {FALLBACK_MESSAGE}\n\n",
+        identity_text,
         f"# Skill Metadata\n{metadata_json}\n\n",
         f"# Runtime Clock\n{runtime_clock_text}\n\n",
         "# Platform Policy Priority\n"
@@ -352,9 +354,12 @@ def _build_prompt_assembly(
     ]
     if runtime_metadata.prompt_loading.include_skill_markdown != "none":
         core_sections.append(f"# Skill Instructions\n{bundle.skill_markdown}\n\n")
-    questionnaire_protocol = build_questionnaire_protocol(bundle, state)
-    if questionnaire_protocol:
-        core_sections.append(f"{questionnaire_protocol}\n")
+    # P11: when the skill declares request_declared_form, do not inject the JSON
+    # questionnaire envelope protocol; the model summons forms via the tool instead.
+    if "request_declared_form" not in set(runtime_metadata.tool_dependency or ()):
+        questionnaire_protocol = build_questionnaire_protocol(bundle, state)
+        if questionnaire_protocol:
+            core_sections.append(f"{questionnaire_protocol}\n")
     if runtime_metadata.prompt_loading.include_session_state:
         core_sections.append(f"# Session State\n{state_json}\n\n")
     core_sections.extend(
@@ -424,6 +429,27 @@ def _build_prompt_assembly(
         local_asset_paths=bundle.local_asset_index,
         assembled_from=tuple(assembled_from),
     )
+
+
+def _build_conversation_identity_text(handoff_context: Any) -> str:
+    if not isinstance(handoff_context, dict):
+        return ""
+    identity = handoff_context.get("speaker_identity")
+    if not isinstance(identity, dict):
+        return ""
+    role = str(identity.get("role") or "").strip()
+    if role == "parent":
+        return (
+            "# 当前对话身份\n"
+            "当前发言者是家长，讨论对象是孩子。用面向家长的称呼和表达；描述孩子时说‘孩子/他/她’，"
+            "不要把孩子的年级、兴趣或经历说成用户本人的，也不要问家长‘你平时喜欢/擅长什么’。\n\n"
+        )
+    if role == "student":
+        return (
+            "# 当前对话身份\n"
+            "当前发言者已明确为学生本人。直接面向学生交流，不要把学生误称为家长；仅在明确讨论其他孩子时才区分对象。\n\n"
+        )
+    return ""
 
 
 def _build_general_chat_skill_catalog_text(
@@ -722,6 +748,8 @@ def _build_runtime_facts_text(
     *,
     fact_ledger: dict[str, Any] | None = None,
 ) -> str:
+    from hailiang_skills.skill_runtime.skill_contract import field_uses
+
     active_skill_id = state.active_skill_id or bundle.contract.skill_id or bundle.root_name
     current_stage_facts = state.stage_facts.get(active_skill_id, {}).get(state.stage, {})
     route_history = state.route_history[-3:]
@@ -735,8 +763,17 @@ def _build_runtime_facts_text(
             skill_progress=progress,
             context_contract_version=state.status_flags.get("context_contract_version"),
         )
+    # P6: surface declared fields.uses so the model sees the backfilled keys first.
+    declared_uses = field_uses(bundle.contract)
+    uses_projection = {
+        key: (fact_ledger or {}).get(key)
+        if isinstance(fact_ledger, dict)
+        else state.global_facts.get(key)
+        for key in declared_uses
+    }
     return (
         f"active_skill_id={active_skill_id}\n"
+        f"fields_uses={json.dumps(uses_projection, ensure_ascii=False)}\n"
         f"effective_fact_ledger={json.dumps(fact_ledger, ensure_ascii=False)}\n"
         f"stage_facts={json.dumps(current_stage_facts, ensure_ascii=False)}\n"
         f"status_flags={json.dumps(_status_flags_for_prompt(state.status_flags), ensure_ascii=False)}\n"
@@ -905,10 +942,8 @@ def _latest_user_message(state: SessionState) -> str:
 
 
 def _retrieve_context_items(bundle: SkillBundle, state: SessionState, asset_lookup) -> list[RetrievedContextItem]:
+    # P4: full/legacy reference dumps are removed; always load by planner/progressive path.
     runtime_metadata = bundle.runtime_metadata
-    if runtime_metadata.prompt_loading.strategy != "progressive" and not runtime_metadata.retrieval.enabled:
-        return _legacy_reference_items(bundle)
-
     query = _latest_user_message(state)
     if not query:
         return []

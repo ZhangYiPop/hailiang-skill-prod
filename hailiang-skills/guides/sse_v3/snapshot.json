@@ -1,0 +1,384 @@
+{
+  "protocol": "hailiang.sse.v3",
+  "session_id": "demo-session",
+  "profile_id": "demo-profile",
+  "runtime_mode": "harness_v1",
+  "runs": [
+    {
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "session_id": "demo-session",
+      "profile_id": "demo-profile",
+      "goal": "为孩子规划",
+      "status": "completed",
+      "root_task_id": "task_d87ad56714c340f7a4fe3b2d1cef061e",
+      "created_at": "2026-10-19T06:25:04.718385+00:00",
+      "updated_at": "2026-10-19T06:25:06.016723+00:00",
+      "phase": "",
+      "result": "根据已提供的年级，可以先探索兴趣。😀省份与兴趣本次跳过，因此仅提供通用建议。",
+      "error": null,
+      "input_tokens_estimated": 48147,
+      "input_tokens_actual": null,
+      "input_token_limit": 300000,
+      "completed_count": 3,
+      "task_count": 3,
+      "waiting_count": 0,
+      "id": "run_779e502abd924727b741d331125799f2",
+      "elapsed_ms": 1298,
+      "allowed_actions": [
+        "start"
+      ],
+      "outcome": "partial",
+      "version": 61
+    }
+  ],
+  "nodes": [
+    {
+      "id": "task_d87ad56714c340f7a4fe3b2d1cef061e",
+      "parent_id": null,
+      "kind": "main",
+      "title": "为孩子规划",
+      "actor": "主 agent",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:04.718368+00:00",
+      "started_at": "2026-10-19T06:25:04.725632+00:00",
+      "ended_at": "2026-10-19T06:25:06.016691+00:00",
+      "error": null,
+      "stale": false,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": null,
+      "version": 11
+    },
+    {
+      "id": "tool_c8e02b882d414e96a80ff17361234166",
+      "parent_id": "task_d87ad56714c340f7a4fe3b2d1cef061e",
+      "kind": "tool",
+      "title": "分派专家任务",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:04.737070+00:00",
+      "started_at": "2026-10-19T06:25:04.748033+00:00",
+      "ended_at": "2026-10-19T06:25:05.441503+00:00",
+      "attempts": 1,
+      "error": null,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": null,
+      "version": 3
+    },
+    {
+      "id": "task_3ffde0c0143448b0a05b1aaeeeb45e24",
+      "parent_id": "task_d87ad56714c340f7a4fe3b2d1cef061e",
+      "kind": "expert",
+      "title": "升学建议",
+      "actor": "专家 a",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:04.751730+00:00",
+      "started_at": "2026-10-19T06:25:04.764403+00:00",
+      "ended_at": "2026-10-19T06:25:05.423419+00:00",
+      "error": null,
+      "stale": false,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": "partial",
+      "version": 9
+    },
+    {
+      "id": "task_681398279f1d4dfba076ab1247cf09b5",
+      "parent_id": "task_d87ad56714c340f7a4fe3b2d1cef061e",
+      "kind": "expert",
+      "title": "兴趣建议",
+      "actor": "专家 b",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:04.751740+00:00",
+      "started_at": "2026-10-19T06:25:04.817323+00:00",
+      "ended_at": "2026-10-19T06:25:05.071544+00:00",
+      "error": null,
+      "stale": false,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": "partial",
+      "version": 10
+    },
+    {
+      "id": "tool_818e255eef6e40fc9bb0d1fd47010d16",
+      "parent_id": "task_3ffde0c0143448b0a05b1aaeeeb45e24",
+      "kind": "tool",
+      "title": "执行专项分析",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:04.782878+00:00",
+      "started_at": "2026-10-19T06:25:04.798997+00:00",
+      "ended_at": "2026-10-19T06:25:05.323723+00:00",
+      "attempts": 1,
+      "error": null,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": null,
+      "version": 3
+    },
+    {
+      "id": "task_986e91fc990d40d2b1551aacbba64fca",
+      "parent_id": "task_3ffde0c0143448b0a05b1aaeeeb45e24",
+      "kind": "skill",
+      "title": "地区建议",
+      "actor": "专家 a",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:04.801740+00:00",
+      "started_at": "2026-10-19T06:25:04.880486+00:00",
+      "ended_at": "2026-10-19T06:25:05.305324+00:00",
+      "error": null,
+      "stale": false,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": "partial",
+      "version": 15
+    },
+    {
+      "id": "tool_f51f5b9c0a9c4ef399accea1eb7ca0f0",
+      "parent_id": "task_681398279f1d4dfba076ab1247cf09b5",
+      "kind": "tool",
+      "title": "补充信息",
+      "status": "skipped",
+      "created_at": "2026-10-19T06:25:04.835997+00:00",
+      "started_at": "2026-10-19T06:25:04.856499+00:00",
+      "ended_at": "2026-10-19T06:25:04.980183+00:00",
+      "attempts": 1,
+      "error": null,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": null,
+      "version": 3
+    },
+    {
+      "id": "tool_c1b479025ac742afb99131f603a36e5a",
+      "parent_id": "task_986e91fc990d40d2b1551aacbba64fca",
+      "kind": "tool",
+      "title": "补充信息",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:04.902558+00:00",
+      "started_at": "2026-10-19T06:25:04.929669+00:00",
+      "ended_at": "2026-10-19T06:25:05.089826+00:00",
+      "attempts": 1,
+      "error": null,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": null,
+      "version": 3
+    },
+    {
+      "id": "tool_fd589f84f79e46ffaf7e7f6fb1692c76",
+      "parent_id": "task_681398279f1d4dfba076ab1247cf09b5",
+      "kind": "tool",
+      "title": "执行专项工具",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:05.027990+00:00",
+      "started_at": "2026-10-19T06:25:05.057194+00:00",
+      "ended_at": "2026-10-19T06:25:05.058973+00:00",
+      "attempts": 1,
+      "error": null,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": null,
+      "version": 2
+    },
+    {
+      "id": "tool_d6fff5b3be9c41c595e9c07254080493",
+      "parent_id": "task_986e91fc990d40d2b1551aacbba64fca",
+      "kind": "tool",
+      "title": "补充信息",
+      "status": "skipped",
+      "created_at": "2026-10-19T06:25:05.131828+00:00",
+      "started_at": "2026-10-19T06:25:05.164011+00:00",
+      "ended_at": "2026-10-19T06:25:05.200724+00:00",
+      "attempts": 1,
+      "error": null,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": null,
+      "version": 3
+    },
+    {
+      "id": "tool_38829bcacc614e0bbe9790bd7bdffa73",
+      "parent_id": "task_986e91fc990d40d2b1551aacbba64fca",
+      "kind": "tool",
+      "title": "执行专项工具",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:05.247814+00:00",
+      "started_at": "2026-10-19T06:25:05.285112+00:00",
+      "ended_at": "2026-10-19T06:25:05.286833+00:00",
+      "attempts": 1,
+      "error": null,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": null,
+      "version": 2
+    },
+    {
+      "id": "tool_451f4fb664c5494e90eb239a09843e3c",
+      "parent_id": "task_3ffde0c0143448b0a05b1aaeeeb45e24",
+      "kind": "tool",
+      "title": "执行专项工具",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:05.361969+00:00",
+      "started_at": "2026-10-19T06:25:05.404031+00:00",
+      "ended_at": "2026-10-19T06:25:05.405763+00:00",
+      "attempts": 1,
+      "error": null,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": null,
+      "version": 2
+    },
+    {
+      "id": "tool_4150495a32ba49df8b0c593621fb989f",
+      "parent_id": "task_d87ad56714c340f7a4fe3b2d1cef061e",
+      "kind": "tool",
+      "title": "执行专项工具",
+      "status": "completed",
+      "created_at": "2026-10-19T06:25:05.482154+00:00",
+      "started_at": "2026-10-19T06:25:05.527810+00:00",
+      "ended_at": "2026-10-19T06:25:05.528201+00:00",
+      "attempts": 1,
+      "error": null,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "outcome": null,
+      "version": 2
+    }
+  ],
+  "input_requests": [
+    {
+      "id": "input_83bd292f2d4a41a5a81cd78991550a8b",
+      "title": "补充信息",
+      "fields": [
+        {
+          "key": "interest",
+          "label": "兴趣",
+          "input_type": "text",
+          "required": true,
+          "options": [],
+          "scope": "profile",
+          "fact_key": null,
+          "subject": "",
+          "applicable_time": "",
+          "min": null,
+          "max": null
+        }
+      ],
+      "status": "skipped",
+      "round": 1,
+      "owner_task_id": "task_681398279f1d4dfba076ab1247cf09b5",
+      "actor": "专家 b",
+      "bindings": [
+        {
+          "task_id": "task_681398279f1d4dfba076ab1247cf09b5",
+          "tool_id": "tool_f51f5b9c0a9c4ef399accea1eb7ca0f0"
+        }
+      ],
+      "clarification_reason": "",
+      "answer": {
+        "skipped": true,
+        "answers": {},
+        "skipped_fields": [
+          "interest"
+        ]
+      },
+      "request_version": 2,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "version": 2
+    },
+    {
+      "id": "input_aad06413999248d2bf8c9694e262d9e3",
+      "title": "补充信息",
+      "fields": [
+        {
+          "key": "grade",
+          "label": "年级",
+          "input_type": "text",
+          "required": true,
+          "options": [],
+          "scope": "profile",
+          "fact_key": null,
+          "subject": "",
+          "applicable_time": "",
+          "min": null,
+          "max": null
+        },
+        {
+          "key": "province",
+          "label": "省份",
+          "input_type": "text",
+          "required": true,
+          "options": [],
+          "scope": "profile",
+          "fact_key": null,
+          "subject": "",
+          "applicable_time": "",
+          "min": null,
+          "max": null
+        }
+      ],
+      "status": "answered",
+      "round": 1,
+      "owner_task_id": "task_3ffde0c0143448b0a05b1aaeeeb45e24",
+      "actor": "专家 a",
+      "bindings": [
+        {
+          "task_id": "task_986e91fc990d40d2b1551aacbba64fca",
+          "tool_id": "tool_c1b479025ac742afb99131f603a36e5a"
+        }
+      ],
+      "clarification_reason": "",
+      "answer": {
+        "skipped": false,
+        "answers": {
+          "grade": "高二"
+        },
+        "skipped_fields": [
+          "province"
+        ]
+      },
+      "request_version": 2,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "version": 3
+    },
+    {
+      "id": "input_157536a6f8a642c7ac93a9846a9f7637",
+      "title": "第二轮目标确认",
+      "fields": [
+        {
+          "key": "goal_detail",
+          "label": "希望进一步了解的目标",
+          "input_type": "text",
+          "required": true,
+          "options": [],
+          "scope": "profile",
+          "fact_key": null,
+          "subject": "",
+          "applicable_time": "",
+          "min": null,
+          "max": null
+        }
+      ],
+      "status": "skipped",
+      "round": 2,
+      "owner_task_id": "task_3ffde0c0143448b0a05b1aaeeeb45e24",
+      "actor": "专家 a",
+      "bindings": [
+        {
+          "task_id": "task_986e91fc990d40d2b1551aacbba64fca",
+          "tool_id": "tool_d6fff5b3be9c41c595e9c07254080493"
+        }
+      ],
+      "clarification_reason": "",
+      "answer": {
+        "skipped": true,
+        "answers": {},
+        "skipped_fields": [
+          "goal_detail"
+        ]
+      },
+      "request_version": 2,
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "version": 2
+    }
+  ],
+  "messages": [
+    {
+      "id": "run_779e502abd924727b741d331125799f2:final",
+      "run_id": "run_779e502abd924727b741d331125799f2",
+      "kind": "final",
+      "content": "根据已提供的年级，可以先探索兴趣。😀省份与兴趣本次跳过，因此仅提供通用建议。",
+      "status": "completed",
+      "revision": 1,
+      "version": 5
+    }
+  ],
+  "cursor": 142
+}

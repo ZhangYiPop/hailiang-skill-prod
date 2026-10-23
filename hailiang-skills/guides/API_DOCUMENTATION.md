@@ -1,7 +1,10 @@
 # 算法服务 BFF 转发接口文档
 
 > 基础地址示例：`http://10.30.6.45:8015`。普通 JSON 接口使用 `/api/v1`；SSE v2 聊天入口使用
-> `/api/v2/sessions/chat/stream`。SSE 的前端与转发后端联调流程见
+> `/api/v2/sessions/chat/stream`。Harness 多 agent 的 V3 最小入口为
+> `/api/v3/sessions/chat/stream`，其 BFF／前端契约见
+> [SSE_V3_HARNESS_CONTRACT.md](SSE_V3_HARNESS_CONTRACT.md) 与
+> [SSE_V3_HARNESS_INTEGRATION_GUIDE.md](SSE_V3_HARNESS_INTEGRATION_GUIDE.md)。旧 SSE v2 的联调流程见
 > [SSE_V2_INTEGRATION_GUIDE.md](SSE_V2_INTEGRATION_GUIDE.md)。
 
 ## 目录

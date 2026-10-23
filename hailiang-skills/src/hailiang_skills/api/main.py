@@ -235,6 +235,13 @@ async def _read_json_body(request: Request) -> dict[str, object] | None:
 
 
 def create_app() -> FastAPI:
+    # K8s/CI deployments must fail fast instead of silently executing a Skill
+    # script in the API Pod when the isolated Runner was configured incorrectly.
+    if os.getenv("HAILIANG_REQUIRE_REMOTE_SANDBOX", "false").lower() in {"1", "true", "yes", "on"}:
+        if os.getenv("HAILIANG_SCRIPT_EXECUTOR", "").strip().lower() != "remote":
+            raise RuntimeError("HAILIANG_REQUIRE_REMOTE_SANDBOX=true 时 HAILIANG_SCRIPT_EXECUTOR 必须为 remote")
+        if not os.getenv("HAILIANG_SANDBOX_ENDPOINT", "").strip() or not os.getenv("HAILIANG_SANDBOX_SHARED_TOKEN", "").strip():
+            raise RuntimeError("远端 Skill 沙箱缺少 HAILIANG_SANDBOX_ENDPOINT 或 HAILIANG_SANDBOX_SHARED_TOKEN")
     configure_otel()
     llm_config = load_llm_config()
     llm_client = LLMClient(llm_config)
@@ -567,7 +574,7 @@ def create_app() -> FastAPI:
         limiter_ready = app.state.llm_rate_limiter.ready()
         expert_runtime = orchestrator.expert_runtime.health()
         runtime_ready = bool(expert_runtime["available"] and expert_runtime["expert_loaded"] and orchestrator.ms_agent_probe.available)
-        ready = ready and limiter_ready and runtime_ready
+        ready = ready and limiter_ready and runtime_ready and app.state.harness.store.ready()
         payload = {
             "status": "ok" if ready else "not_ready",
             "postgres": storage.ready(),
@@ -576,6 +583,7 @@ def create_app() -> FastAPI:
             "llm_enabled": llm_config.enabled,
             "audit_encryption": audit_store is not None,
             "llm_rate_limiter": limiter_ready,
+            "harness_storage": app.state.harness.store.ready(),
             "expert_runtime": expert_runtime,
             "ms_agent_available": orchestrator.ms_agent_probe.available,
             "filesystem_fallback_skills": list(
@@ -601,6 +609,63 @@ def create_app() -> FastAPI:
         storage.user_metadata_repository,
         configuration_snapshot_resolver=lambda: workbench_service.active_deployment_snapshot(deployment_environment()),
     ), prefix="/api/v1")
+    from hailiang_skills.harness.store import HarnessStore
+    from hailiang_skills.harness.runtime import HarnessRuntime
+    from hailiang_skills.harness.integration import HarnessIntegration
+    from hailiang_skills.api.routes.harness import build_harness_router
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import build_harness_chat_stream_v3_router
+
+    harness_store = HarnessStore(storage.engine) if storage.engine is not None else HarnessStore.local(state_root() / "harness.sqlite3")
+    fact_service.harness_store = harness_store
+    harness_integration = HarnessIntegration(orchestrator, harness_store)
+    harness = HarnessRuntime(harness_store, harness_integration.client, harness_integration.tool, moderation_service)
+    app.state.harness = harness
+    if os.getenv("HAILIANG_HARNESS_EMBEDDED_WORKER", "true").lower() not in {"false", "0", "off"}:
+        app.add_event_handler("startup", harness.start)
+    app.add_event_handler("shutdown", harness.close)
+    app.include_router(build_harness_router(repository, fact_service, orchestrator, harness,
+        snapshot_resolver=lambda: workbench_service.active_deployment_snapshot(deployment_environment()),
+        debug_snapshot_resolver=workbench_service.debug_configuration_snapshot), prefix="/api/v2")
+    app.include_router(build_harness_router(repository, fact_service, orchestrator, harness,
+        snapshot_resolver=lambda: workbench_service.active_deployment_snapshot(deployment_environment()),
+        debug_snapshot_resolver=workbench_service.debug_configuration_snapshot, protocol_v3=True), prefix="/api/v3")
+    app.include_router(build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, harness,
+        snapshot_resolver=lambda: workbench_service.active_deployment_snapshot(deployment_environment())), prefix="/api/v3")
+
+    @app.middleware("http")
+    async def harness_mutation_guard(request: Request, call_next):
+        path = request.url.path
+        # The V3 minimal chat endpoint owns chat, form answers and stop actions.
+        # It must reach its action router while a Harness run is active.
+        if request.method in {"POST", "PATCH", "PUT", "DELETE"} and "/harness/" not in path and "/input-requests/" not in path and path != "/api/v3/sessions/chat/stream":
+            session_id = ""
+            if "/sessions/" in path:
+                suffix = path.split("/sessions/", 1)[1]
+                session_id = suffix.split("/", 1)[0]
+                if session_id == "chat":
+                    try:
+                        session_id = str((await request.json()).get("session_id", ""))
+                    except (ValueError, TypeError):
+                        session_id = ""
+            if session_id:
+                active = harness_store.active(session_id)
+                if active:
+                    return JSONResponse(status_code=409, content={"code": "ACTIVE_HARNESS_RUN_EXISTS", "message": "任务进行中，请回答卡片或停止任务。"})
+                try:
+                    context = repository.get(session_id)
+                except KeyError:
+                    context = None
+                from hailiang_skills.api.routes.harness import harness_enabled
+                # orchestrator_v2 sessions keep the App on /chat/stream; the
+                # harness_chat_adapter projects Harness orchestration to SSE v2.
+                orchestrator_v2 = bool(context and context.session_meta.get("orchestrator_v2"))
+                if (
+                    not orchestrator_v2
+                    and ((context and context.session_meta.get("runtime_mode") == "harness_v1") or (context is None and harness_enabled()))
+                    and (path.endswith("/messages") or (path.endswith("/chat/stream") and not path.startswith("/api/v3/sessions/chat/stream")))
+                ):
+                    return JSONResponse(status_code=409, content={"code": "HARNESS_ENDPOINT_REQUIRED", "message": "请使用 harness 任务接口。"})
+        return await call_next(request)
     app.include_router(
         build_chat_stream_router(
             repository,
@@ -621,6 +686,8 @@ def create_app() -> FastAPI:
     app.include_router(build_profiles_router(fact_service, storage.user_metadata_repository), prefix="/api/v1")
     app.include_router(build_admin_assets_router(), prefix="/api/v1")
     app.include_router(build_skill_analytics_router(orchestrator), prefix="/api/v1")
+    from hailiang_skills.workbench.batch_eval import BatchEvalService
+    workbench_service.batch_eval = BatchEvalService(workbench_service, repository, fact_service, orchestrator, harness)
     app.include_router(build_workbench_router(workbench_service), prefix="/workbench/v1")
     app.include_router(build_deployment_router(workbench_service), prefix="/deployment/v1")
     app.include_router(build_token_usage_router(storage.engine), prefix="/deployment/v1")

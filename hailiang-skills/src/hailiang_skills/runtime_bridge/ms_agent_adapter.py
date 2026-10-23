@@ -30,6 +30,7 @@ from agent_skill_runtime_core import (
 )
 
 from hailiang_skills.core.skill_ids import CAREER_PLAN_SKILL_ID
+from hailiang_skills.sandbox_executor import SandboxExecutorError, execute_remote_skill_script
 from hailiang_skills.runtime_bridge.script_review import review_scripts
 from hailiang_skills.runtime_bridge.script_cache import ScriptResultCache
 
@@ -191,6 +192,18 @@ class MSAgentRuntimeAdapter:
         revision_id: str | None = None,
         event_recorder: Any | None = None,
     ) -> tuple[list[dict[str, Any]], list[CoreTraceStep]]:
+        remote_outputs = self._execute_remote_runner(
+            skill_id=skill_id,
+            skill_dir=skill_dir,
+            loaded_scripts=loaded_scripts,
+            execute_scripts=execute_scripts,
+            script_inputs=script_inputs,
+            session_id=session_id,
+            turn_id=turn_id,
+            revision_id=revision_id,
+        )
+        if remote_outputs is not None:
+            return remote_outputs
         local_outputs = self._execute_local_fast_path(
             skill_id=skill_id,
             skill_dir=skill_dir,
@@ -421,6 +434,101 @@ class MSAgentRuntimeAdapter:
                 step.payload.setdefault("worker_acquire_ms", worker_acquire_ms)
                 step.payload.setdefault("worker_reused", worker is not None)
         return outputs, [*prepare_steps, *normalized_steps]
+
+    def _execute_remote_runner(
+        self,
+        *,
+        skill_id: str,
+        skill_dir: Path,
+        loaded_scripts: list[dict[str, Any]],
+        execute_scripts: bool,
+        script_inputs: dict[str, dict[str, Any]] | None,
+        session_id: str | None,
+        turn_id: str | None,
+        revision_id: str | None,
+    ) -> tuple[list[dict[str, Any]], list[CoreTraceStep]] | None:
+        """Use the shared Runner whenever remote execution is explicitly enabled.
+
+        ``None`` deliberately means legacy/development mode only.  Production
+        manifests set HAILIANG_SCRIPT_EXECUTOR=remote, so they never reach the
+        in-process MS-Agent/Docker implementation below.
+        """
+        if os.getenv("HAILIANG_SCRIPT_EXECUTOR", "legacy").strip().lower() != "remote":
+            return None
+        if not execute_scripts or not loaded_scripts:
+            return [], []
+        if self._script_review_blocks_execution(skill_dir):
+            return [], [
+                CoreTraceStep(
+                    name="script_execution",
+                    status="warning",
+                    detail="script execution skipped because static script review failed",
+                    payload={"execution_mode": "remote_runner", "error_code": "SCRIPT_REVIEW_FAILED"},
+                )
+            ]
+        outputs: list[dict[str, Any]] = []
+        started = time.perf_counter()
+        for script in loaded_scripts:
+            path = Path(str(script.get("abs_path") or script.get("path") or script.get("name")))
+            if not path.is_absolute():
+                path = skill_dir / path
+            payload = self._local_script_input(script, path, script_inputs)
+            try:
+                result = execute_remote_skill_script(
+                    root_dir=skill_dir,
+                    skill_id=skill_id,
+                    skill_version=str(revision_id or ""),
+                    script_path=path,
+                    input_payload=payload,
+                    timeout_seconds=30,
+                    trace_id=":".join(value for value in (session_id or "", turn_id or "") if value),
+                )
+            except SandboxExecutorError as exc:
+                outputs.append({
+                    "script": path.name,
+                    "stdin_payload": payload,
+                    "ok": False,
+                    "exit_code": None,
+                    "stdout": "",
+                    "stderr": "",
+                    "error": exc.detail,
+                    "error_code": exc.code,
+                    "execution_mode": "remote_runner",
+                })
+                continue
+            if result is None:  # Defensive; mode was checked above.
+                return None
+            output = {
+                "script": path.name,
+                "stdin_payload": payload,
+                "ok": result.ok,
+                "exit_code": result.exit_code,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "duration_ms": result.duration_ms,
+                "json_output": result.json_output,
+                "return_value": result.json_output,
+                "error": result.error,
+                "error_code": result.error_code,
+                "execution_mode": result.executor_type,
+                "execution_id": result.execution_id,
+                "environment_key": result.environment_key,
+                "dependency_cache_hit": result.cache_hit,
+            }
+            outputs.append(output)
+        success = bool(outputs) and all(bool(item.get("ok")) for item in outputs)
+        return outputs, [
+            CoreTraceStep(
+                name="script_execution",
+                status="success" if success else "warning",
+                detail="scripts executed by remote isolated runner" if success else "remote isolated runner did not complete all scripts",
+                payload={
+                    "execution_mode": "remote_runner",
+                    "duration_ms": _elapsed_ms(started),
+                    "outputs": outputs,
+                },
+            )
+        ]
 
     def _get_or_create_worker(self, **kwargs: Any) -> SandboxWorker | None:
         """Compatibility hook used by background prewarming."""
@@ -860,6 +968,17 @@ class MSAgentRuntimeAdapter:
         return {"query": "", "parameters": {}, "facts": {}, "messages": [], "script": script_path.name}
 
     def prewarm_runtime_skills(self, bundles: dict[str, Any]) -> list[CoreTraceStep]:
+        if os.getenv("HAILIANG_SCRIPT_EXECUTOR", "legacy").strip().lower() == "remote":
+            # The K8s/local Runner owns dependency preparation.  Do not probe
+            # Docker or create an MS-Agent container inside the API process.
+            return [
+                CoreTraceStep(
+                    name="sandbox_prepare",
+                    status="skipped",
+                    detail="remote sandbox runner prepares dependencies on demand",
+                    payload={"execution_mode": "remote_runner"},
+                )
+            ]
         if not self.sandbox_prewarm_enabled:
             return [
                 CoreTraceStep(

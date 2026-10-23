@@ -1,0 +1,44 @@
+# skill 职责登记表（规范 §9 / 平台改造 P3）
+# 主路由按本表过滤适用学段；未登记的 skill 回退到 SKILL.md 的 routing.school_stage_scope。
+# school_stages: primary / junior / senior，或 [all]
+
+skills:
+  interest_explore:
+    name: 特长培养规划
+    school_stages: [primary, junior]
+  junior_multi_path_planning:
+    name: 初中多元路径规划
+    school_stages: [junior]
+  multi_path_planning:
+    name: 多元路径推荐
+    school_stages: [senior]
+  mock_admission:
+    name: 升学潜力评估
+    school_stages: [senior]
+  subject_advisor:
+    name: 选科参谋
+    school_stages: [junior, senior]
+  score_improve:
+    name: 提分参谋
+    school_stages: [junior, senior]
+  parenting_action_planner:
+    name: 家庭教育行动
+    school_stages: [all]
+  mbti_self_exploration:
+    name: MBTI 自我探索
+    school_stages: [all]
+  future_explore:
+    name: 前景探路
+    school_stages: [all]
+  guess-profession:
+    name: 猜职业
+    school_stages: [all]
+  career_plan_entity:
+    name: 升学规划顾问
+    school_stages: [all]
+  main_planner:
+    name: 升学规划顾问
+    school_stages: [all]
+  general_chat:
+    name: 自由问答
+    school_stages: [all]

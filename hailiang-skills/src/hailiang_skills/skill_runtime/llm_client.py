@@ -74,7 +74,11 @@ class OpenAICompatibleChatClient:
         logger: RuntimeLogger | None = None,
         request_purpose: str = "unspecified",
         max_tokens: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+        enable_search: bool | None = None,
+        search_options: dict[str, object] | None = None,
     ) -> AssistantTurnResult:
+        self._request_metrics.value = {}
         if not messages:
             raise LLMRequestError("模型请求消息不能为空")
 
@@ -86,6 +90,9 @@ class OpenAICompatibleChatClient:
                 logger=logger,
                 request_purpose=request_purpose,
                 max_tokens=max_tokens,
+                cancel_check=cancel_check,
+                enable_search=enable_search,
+                search_options=search_options,
             )
             if logger:
                 logger.log("llm.response.none", raw_body_preview=preview_text(raw_body, limit=800))
@@ -100,6 +107,9 @@ class OpenAICompatibleChatClient:
                     logger=logger,
                     request_purpose=request_purpose,
                     max_tokens=max_tokens,
+                    cancel_check=cancel_check,
+                    enable_search=enable_search,
+                    search_options=search_options,
                 )
                 if logger:
                     logger.log("llm.response.native", raw_body_preview=preview_text(raw_body, limit=800))
@@ -128,6 +138,9 @@ class OpenAICompatibleChatClient:
             logger=logger,
             request_purpose=request_purpose,
             max_tokens=max_tokens,
+            cancel_check=cancel_check,
+            enable_search=enable_search,
+            search_options=search_options,
         )
         if logger:
             logger.log("llm.response.json_action", raw_body_preview=preview_text(raw_body, limit=800))
@@ -152,6 +165,9 @@ class OpenAICompatibleChatClient:
         logger: RuntimeLogger | None = None,
         request_purpose: str = "unspecified",
         max_tokens: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+        enable_search: bool | None = None,
+        search_options: dict[str, object] | None = None,
     ) -> str:
         get_llm_rate_limiter().acquire()
         endpoint = f"{self._config.base_url}/chat/completions"
@@ -164,6 +180,11 @@ class OpenAICompatibleChatClient:
             tool_mode=tool_mode,
         )
         _apply_thinking_options(payload, self._config.enable_thinking, self._config.return_reasoning)
+        _apply_search_options(
+            payload,
+            enable_search if enable_search is not None else self._config.enable_search,
+            search_options if search_options is not None else self._config.search_options,
+        )
         prompt_chars = _prompt_chars(messages)
         audit_record = audit_text("llm_request", json.dumps(payload, ensure_ascii=False))
         if logger:
@@ -184,6 +205,8 @@ class OpenAICompatibleChatClient:
                 "Accept": "application/json",
                 "Content-Type": "application/json",
         }
+        if cancel_check and cancel_check():
+            raise LLMRequestError("模型调用已取消")
         try:
             started = perf_counter()
             with span(
@@ -196,9 +219,25 @@ class OpenAICompatibleChatClient:
                     "mode": tool_mode,
                 },
             ):
-                response = self._http.post(endpoint, content=body, headers=headers)
-                response.raise_for_status()
-                raw_response = response.text
+                with self._http.stream("POST", endpoint, content=body, headers=headers) as response:
+                    response.raise_for_status()
+                    watcher_stop = threading.Event()
+                    if cancel_check:
+                        def close_on_cancel() -> None:
+                            while not watcher_stop.wait(0.05):
+                                if cancel_check():
+                                    try:
+                                        response.close()
+                                    except Exception:
+                                        pass
+                                    return
+                        threading.Thread(target=close_on_cancel, daemon=True).start()
+                    try:
+                        raw_response = response.read().decode(response.encoding or "utf-8")
+                    finally:
+                        watcher_stop.set()
+                if cancel_check and cancel_check():
+                    raise LLMRequestError("模型调用已取消")
                 usage = _extract_usage(raw_response)
                 finish_reason = _extract_finish_reason(raw_response)
                 metrics = {
@@ -208,6 +247,8 @@ class OpenAICompatibleChatClient:
                     "model": self._config.model,
                     "prompt_chars": prompt_chars,
                     "input_tokens": usage.get("input_tokens"),
+                    "prompt_cache_hit_tokens": usage.get("prompt_cache_hit_tokens"),
+                    "prompt_cache_miss_tokens": usage.get("prompt_cache_miss_tokens"),
                     "output_tokens": usage.get("output_tokens"),
                     "total_tokens": usage.get("total_tokens"),
                     "finish_reason": finish_reason,
@@ -225,6 +266,8 @@ class OpenAICompatibleChatClient:
             details = _extract_http_error_details(exc.response)
             raise LLMHTTPError(f"模型调用失败: HTTP {exc.response.status_code}: {details}") from exc
         except httpx.HTTPError as exc:
+            if cancel_check and cancel_check():
+                raise LLMRequestError("模型调用已取消") from exc
             raise LLMConnectionError(f"模型调用失败: {exc}") from exc
 
     def stream_complete(
@@ -234,7 +277,11 @@ class OpenAICompatibleChatClient:
         logger: RuntimeLogger | None = None,
         cancel_check: Callable[[], bool] | None = None,
         request_purpose: str = "unspecified",
+        max_tokens: int | None = None,
+        enable_search: bool | None = None,
+        search_options: dict[str, object] | None = None,
     ) -> Iterator[ChatStreamChunk]:
+        self._request_metrics.value = {}
         if not messages:
             raise LLMRequestError("模型请求消息不能为空")
 
@@ -243,7 +290,7 @@ class OpenAICompatibleChatClient:
         payload = _build_chat_payload(
             self._config.model,
             self._config.temperature,
-            self._config.max_tokens,
+            max_tokens if max_tokens is not None else self._config.max_tokens,
             messages,
             tool_specs=(),
             tool_mode="none",
@@ -251,6 +298,11 @@ class OpenAICompatibleChatClient:
         payload["stream"] = True
         payload["stream_options"] = {"include_usage": True}
         _apply_thinking_options(payload, self._config.enable_thinking, self._config.return_reasoning)
+        _apply_search_options(
+            payload,
+            enable_search if enable_search is not None else self._config.enable_search,
+            search_options if search_options is not None else self._config.search_options,
+        )
         prompt_chars = _prompt_chars(messages)
         audit_record = audit_text("llm_stream_request", json.dumps(payload, ensure_ascii=False))
         if logger:
@@ -360,6 +412,8 @@ class OpenAICompatibleChatClient:
                             "model": self._config.model,
                             "prompt_chars": prompt_chars,
                             "input_tokens": usage.get("input_tokens"),
+                            "prompt_cache_hit_tokens": usage.get("prompt_cache_hit_tokens"),
+                            "prompt_cache_miss_tokens": usage.get("prompt_cache_miss_tokens"),
                             "output_tokens": usage.get("output_tokens"),
                             "total_tokens": usage.get("total_tokens"),
                             "finish_reason": finish_reason,
@@ -415,6 +469,18 @@ def _apply_thinking_options(payload: dict[str, object], enable_thinking: bool, r
     payload["return_reasoning"] = bool(return_reasoning)
 
 
+def _apply_search_options(
+    payload: dict[str, object],
+    enable_search: bool,
+    search_options: dict[str, object] | None,
+) -> None:
+    if not enable_search:
+        return
+    payload["enable_search"] = True
+    if search_options:
+        payload["search_options"] = search_options
+
+
 def _prompt_chars(messages: Sequence[ChatMessage]) -> int:
     return sum(len(str(message.content or "")) for message in messages)
 
@@ -463,6 +529,8 @@ def _extract_usage_payload(payload: object) -> dict[str, int | None]:
         "input_tokens": token_value("prompt_tokens", "input_tokens"),
         "output_tokens": token_value("completion_tokens", "output_tokens"),
         "total_tokens": token_value("total_tokens"),
+        "prompt_cache_hit_tokens": token_value("prompt_cache_hit_tokens"),
+        "prompt_cache_miss_tokens": token_value("prompt_cache_miss_tokens"),
     }
 
 

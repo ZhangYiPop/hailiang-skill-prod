@@ -25,6 +25,7 @@ from hailiang_skills.runtime_bridge.native_questionnaire import (
     questionnaire_continuation_context,
     question_specs,
     questionnaire_config,
+    resolve_declared_form_request,
     resolve_questionnaire_continuation,
     stage_questionnaire_form,
     unwrap_questionnaire_assistant_message,
@@ -614,6 +615,33 @@ def test_first_questionnaire_turn_reuses_safe_facts_and_explicit_user_answers():
     assert next_context["answer_reconciliation"]["enabled"] is False
 
 
+def test_empty_model_reconciliation_falls_back_to_explicit_message_answers():
+    bundle = _bundle("multi_path_planning")
+    state = SessionState(session_id="sess_empty_reconcile", active_skill_id="multi_path_planning")
+    state.conversation_memory = {
+        "recent_messages": [
+            {
+                "role": "user",
+                "content": "帮高二学生做选科规划：偏理科，目标冲强基，家里希望稳妥一点",
+            },
+        ],
+    }
+
+    _text, block, decision = resolve_questionnaire_continuation(
+        bundle,
+        state,
+        '{"assistant_message":"请补充学生所在省份。","resolved_answers":[],'
+        '"question_ids":["当前年级","高考省份"],"collection_complete":false}',
+    )
+
+    assert state.skill_facts["multi_path_planning"]["answers"]["当前年级"] == "高二"
+    assert any(item["question_id"] == "当前年级" for item in decision["resolved_answers"])
+    assert block is not None
+    assert "当前年级" not in {
+        field["question_id"] for field in block["payload"]["fields"]
+    }
+
+
 def test_first_questionnaire_turn_reuses_summarized_english_exam_answer():
     bundle = _bundle("multi_path_planning")
     state = SessionState(session_id="sess_reconcile_english", active_skill_id="multi_path_planning")
@@ -1079,3 +1107,91 @@ def test_explicit_non_questionnaire_skill_entry_skips_full_planner(monkeypatch):
 
         assert result.assistant_message == "进入轮快速回复"
     assert fast_path_calls == ["interest_explore", "career_plan_entity"]
+
+
+def test_declared_form_request_rejects_unknown_ids_and_skips_answered_ones():
+    bundle = _bundle("multi_path_planning")
+    state = SessionState(session_id="sess_declared_form", active_skill_id="multi_path_planning")
+    protocol = build_questionnaire_protocol(bundle, state)
+    assert "request_declared_form" in protocol
+    assert "Always return JSON only" not in protocol
+
+    text, block, decision = resolve_declared_form_request(
+        bundle,
+        state,
+        {"question_ids": ["虚构问题"]},
+        prose="先看看这些情况。",
+    )
+    assert text == "先看看这些情况。"
+    assert block is None
+    assert decision["valid"] is False
+    assert decision["rejected_question_ids"] == ["虚构问题"]
+    assert decision["fallback_used"] is False
+
+    text, block, decision = resolve_declared_form_request(
+        bundle,
+        state,
+        {"question_ids": ["选科科目"]},
+        prose="请补充选科。",
+    )
+    assert text == "请补充选科。"
+    assert block is not None
+    assert block["type"] == "fact_form"
+    assert [field["question_id"] for field in block["payload"]["fields"]] == ["选科科目"]
+
+    state.skill_facts.setdefault("multi_path_planning", {}).setdefault("answers", {})["选科科目"] = "物化生"
+    text, block, decision = resolve_declared_form_request(
+        bundle,
+        state,
+        {"question_ids": ["选科科目"]},
+        prose="选科已经有了。",
+    )
+    assert block is None
+    assert decision["selected_question_ids"] == []
+    assert text == "选科已经有了。"
+
+
+def test_lightweight_questionnaire_uses_declared_form_tool_without_json_envelope(monkeypatch):
+    orchestrator = MainPlannerOrchestrator(SkillRegistry(), load_llm_config())
+
+    class _DeclaredFormClient:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.system_prompt = ""
+
+        def complete_with_tools(self, messages, specs, **_kwargs):
+            from hailiang_skills.skill_runtime.models import AssistantTurnResult, ToolCallRequest
+
+            self.calls += 1
+            self.system_prompt = messages[0].content
+            assert any(getattr(spec, "name", "") == "request_declared_form" for spec in specs)
+            return AssistantTurnResult(
+                final_text="先补充选科，我再继续看。",
+                tool_mode="native",
+                tool_calls=(
+                    ToolCallRequest(
+                        id="form-1",
+                        name="request_declared_form",
+                        arguments={"question_ids": ["选科科目"]},
+                    ),
+                ),
+            )
+
+    client = _DeclaredFormClient()
+    orchestrator.questionnaire_client = client
+    monkeypatch.setattr(
+        orchestrator,
+        "_prepare_ms_agent_native_turn",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("questionnaire turn must skip full planner")),
+    )
+    context = _native_skill_context("sess_declared_form_tool", "multi_path_planning")
+
+    result = orchestrator.handle_message("帮我看看现在的条件能不能报军校", context)
+
+    assert client.calls == 1
+    assert "request_declared_form" in client.system_prompt
+    assert "只返回一个 JSON 对象" not in client.system_prompt
+    assert result.assistant_message == "先补充选科，我再继续看。"
+    form = next(block for block in context.messages[-1]["blocks"] if block["type"] == "fact_form")
+    assert [field["question_id"] for field in form["payload"]["fields"]] == ["选科科目"]
+    assert form["payload"]["form_id"].startswith("native_question:multi_path_planning:")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
 from sqlalchemy.exc import IntegrityError
 
 from hailiang_skills.core.context import SessionContext
@@ -32,6 +33,11 @@ class ContextData(BaseModel):
     school_year: str | None = Field(default=None, min_length=1)
     grade: str | None = Field(default=None, min_length=1)
     facts: dict[str, object] = Field(default_factory=dict)
+    # V3's chat entry accepts a trusted, extensible portrait patch.  It is
+    # deliberately separate from ``facts``: registered facts are still
+    # validated by the legacy projection while arbitrary portrait attributes
+    # are persisted by the Harness portrait store and only read on demand.
+    profile_data: dict[str, Any] | None = None
 
 
 def _seed_profile(
@@ -244,6 +250,10 @@ def open_or_resume_session(
     _initialize_general_chat_state(context)
     get_conversation_state(context)
     context.session_meta["_session_created"] = True
+    from hailiang_skills.workbench.orchestration import stamp_new_session
+    stamp_new_session(context)
+    from hailiang_skills.api.routes.harness import harness_enabled
+    context.session_meta["runtime_mode"] = "harness_v1" if harness_enabled() else "legacy"
     context.session_meta["_profile_branch_created"] = True
     # All sessions use the same compatible v2 prompt/progress contract.
     context.session_meta["context_contract_version"] = 2

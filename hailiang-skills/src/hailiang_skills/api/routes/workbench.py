@@ -20,6 +20,27 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class BatchEvalCaseInput(StrictModel):
+    scene: str = Field(default="", max_length=200)
+    opening: str = Field(min_length=1, max_length=4000)
+    persona: str = Field(min_length=1, max_length=8000)
+    goal: str = Field(default="", max_length=4000)
+
+
+class BatchEvalInput(StrictModel):
+    revision_id: str = Field(min_length=1, max_length=80)
+    soul_revision_id: str | None = None
+    actor_id: str = Field(min_length=1, max_length=80)
+    persona_mode: Literal["simulator", "seed"] = "simulator"
+    speaker_role: Literal["家长", "学生"] = "家长"
+    model: str = Field(default="flash", max_length=80)
+    preset_identity: bool = True
+    max_rounds: int = Field(default=4, ge=1, le=8)
+    concurrency: int = Field(default=6, ge=1, le=6)
+    round_timeout_s: int = Field(default=180, ge=30, le=600)
+    cases: list[BatchEvalCaseInput] = Field(min_length=1, max_length=200)
+
+
 class ActorInput(StrictModel):
     display_name: str = Field(min_length=2, max_length=80)
     device_token: str | None = None
@@ -64,6 +85,12 @@ class DeploymentDeactivateInput(ActorAction):
 
 class DeleteObjectInput(StrictModel):
     confirmation_name: str = Field(min_length=1, max_length=256)
+    actor_id: str = Field(min_length=1)
+
+
+class UpdateObjectInput(StrictModel):
+    name: str | None = Field(default=None, max_length=256)
+    description: str | None = Field(default=None, max_length=2000)
     actor_id: str = Field(min_length=1)
 
 
@@ -150,6 +177,20 @@ class SoulRevisionInput(StrictModel):
     actor_id: str = Field(min_length=1)
 
 
+class OrchestrationRuleInput(StrictModel):
+    head_rules: str = ""
+    tail_rules: str = ""
+    recommendation_rules: str = ""
+    recommendations: list[dict[str, Any]] = Field(default_factory=list)
+    recommend_catalog: dict[str, Any] | None = None
+    system_skills: dict[str, Any] | None = None
+    actor_id: str = Field(min_length=1)
+
+
+class OrchestrationPublishInput(StrictModel):
+    actor_id: str = Field(min_length=1)
+
+
 class ConversionCommitInput(StrictModel):
     draft: dict[str, Any]
     target_object_id: str | None = None
@@ -206,6 +247,10 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
     @router.delete("/objects/{object_id}")
     def delete_object(object_id: str, body: DeleteObjectInput):
         return _call(lambda: service.delete_object(object_id, **body.model_dump()))
+
+    @router.patch("/objects/{object_id}")
+    def update_object(object_id: str, body: UpdateObjectInput):
+        return _call(lambda: service.update_object(object_id, **body.model_dump(exclude_none=True)))
 
     @router.post("/objects/{object_id}/id-migrations", status_code=201)
     def migrate_object_id(object_id: str, body: IdMigrationInput):
@@ -271,6 +316,20 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
     @router.post("/soul-revisions", status_code=201)
     def save_soul_revision(body: SoulRevisionInput):
         return _call(lambda: service.save_soul_revision(**body.model_dump()))
+
+    @router.get("/orchestration-rules")
+    def list_orchestration_rules():
+        return {"revisions": _call(service.list_orchestration_rules)}
+
+    @router.post("/orchestration-rules", status_code=201)
+    def save_orchestration_rules(body: OrchestrationRuleInput):
+        payload = body.model_dump()
+        actor_id = payload.pop("actor_id")
+        return _call(lambda: service.save_orchestration_rules(payload, actor_id=actor_id))
+
+    @router.post("/orchestration-rules/{orchestration_revision_id}/publish")
+    def publish_orchestration_rules(orchestration_revision_id: str, body: OrchestrationPublishInput):
+        return _call(lambda: service.publish_orchestration_rules(orchestration_revision_id, actor_id=body.actor_id))
 
     @router.post("/revision-tests/{debug_session_id}/turns")
     def run_revision_test_turn(debug_session_id: str, body: RevisionTestTurnInput):
@@ -466,6 +525,33 @@ def build_workbench_router(service: WorkbenchService) -> APIRouter:
     @router.get("/audit")
     def audit(limit: int = Query(default=50, ge=1, le=200)):
         return {"events": service.list_audit_events(limit)}
+
+    def batch_runner():
+        runner = getattr(service, "batch_eval", None)
+        if runner is None:
+            raise HTTPException(status_code=503, detail={"code": "BATCH_EVAL_UNAVAILABLE", "message": "批量测评运行时未就绪"})
+        return runner
+
+    @router.post("/batch-evals", status_code=202)
+    def start_batch_eval(body: BatchEvalInput):
+        return _call(lambda: batch_runner().start(body.model_dump()))
+
+    @router.get("/batch-evals/{job_id}")
+    def get_batch_eval(job_id: str):
+        return _call(lambda: batch_runner().get(job_id))
+
+    @router.post("/batch-evals/{job_id}/cancel")
+    def cancel_batch_eval(job_id: str):
+        return _call(lambda: batch_runner().cancel(job_id))
+
+    @router.get("/batch-evals/{job_id}/export")
+    def export_batch_eval(job_id: str):
+        content = _call(lambda: batch_runner().export_csv(job_id))
+        return Response(
+            "\ufeff" + content,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="batch-eval-{job_id}.csv"'},
+        )
 
     return router
 

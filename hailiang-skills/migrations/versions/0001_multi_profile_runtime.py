@@ -17,7 +17,12 @@ depends_on = None
 
 
 def upgrade() -> None:
-    Base.metadata.create_all(op.get_bind())
+    # Later revisions own these tables. Importing current metadata must not
+    # create them early and make a clean upgrade fail with DuplicateTable.
+    tables = [table for table in Base.metadata.sorted_tables
+              if not table.name.startswith('harness_')
+              and table.name != 'workbench_orchestration_rule_revisions']
+    Base.metadata.create_all(op.get_bind(), tables=tables)
 
 
 def downgrade() -> None:

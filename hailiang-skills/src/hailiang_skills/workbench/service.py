@@ -44,6 +44,7 @@ from hailiang_skills.storage.database import (
     WorkbenchEvaluationRunRow,
     WorkbenchEvaluationSuiteRow,
     WorkbenchObjectRow,
+    WorkbenchOrchestrationRuleRevisionRow,
     WorkbenchReleaseRow,
     WorkbenchSoulRevisionRow,
     WorkbenchRevisionRow,
@@ -171,6 +172,23 @@ def _normalize_brief(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
+def _script_capability_ids(skill_key: str, scripts: dict[str, Any]) -> list[str]:
+    """Only Python scripts are executable capabilities. requirements.txt stays a file."""
+    return [
+        f"{skill_key}:{path}"
+        for path in sorted(scripts)
+        if PurePosixPath(path).suffix.lower() == ".py"
+    ]
+
+
+def _payload_with_present_brief(payload: dict[str, Any], brief: object) -> dict[str, Any]:
+    """Omit an empty brief so a legacy filesystem package can be imported."""
+    normalized = _normalize_brief(brief)
+    if normalized:
+        payload["brief"] = normalized
+    return payload
+
+
 def _safe_relative_path(value: str) -> str:
     path = PurePosixPath(str(value or "").replace("\\", "/"))
     if not value or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
@@ -260,6 +278,145 @@ class WorkbenchService:
             db.commit()
             return self._soul_revision_dict(row)
 
+    def list_orchestration_rules(self) -> list[dict[str, Any]]:
+        self._bootstrap_orchestration_rules()
+        with self.session_factory() as db:
+            rows = db.scalars(
+                select(WorkbenchOrchestrationRuleRevisionRow).order_by(WorkbenchOrchestrationRuleRevisionRow.revision_no.desc())
+            )
+            return [self._orchestration_rule_dict(row) for row in rows]
+
+    def save_orchestration_rules(self, payload: dict[str, Any], *, actor_id: str) -> dict[str, Any]:
+        from hailiang_skills.workbench.orchestration import OrchestrationConfigError, normalize_rule_payload
+
+        try:
+            normalized = normalize_rule_payload(payload)
+        except OrchestrationConfigError as exc:
+            raise WorkbenchError(str(exc), code="ORCHESTRATION_RULES_INVALID") from exc
+        if not any(normalized[key] for key in ("head_rules", "tail_rules", "recommendation_rules")) and not normalized["recommendations"]:
+            raise WorkbenchError("编排规则不能为空", code="ORCHESTRATION_RULES_INVALID")
+        encoded = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+        with self.session_factory() as db:
+            latest = db.scalar(
+                select(WorkbenchOrchestrationRuleRevisionRow).order_by(WorkbenchOrchestrationRuleRevisionRow.revision_no.desc()).limit(1)
+            )
+            row = WorkbenchOrchestrationRuleRevisionRow(
+                orchestration_revision_id=_id("orch"),
+                revision_no=(latest.revision_no if latest else 0) + 1,
+                payload=normalized,
+                content_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+                published=False,
+                created_by=actor_id,
+            )
+            db.add(row)
+            self._audit(db, actor_id, "orchestration_rules.saved", "orchestration_rules", row.orchestration_revision_id, {"revision_no": row.revision_no})
+            db.commit()
+            return self._orchestration_rule_dict(row)
+
+    def publish_orchestration_rules(self, orchestration_revision_id: str, *, actor_id: str) -> dict[str, Any]:
+        with self.session_factory() as db:
+            row = db.get(WorkbenchOrchestrationRuleRevisionRow, orchestration_revision_id)
+            if row is None:
+                raise WorkbenchError("编排规则版本不存在", code="ORCHESTRATION_RULES_NOT_FOUND")
+            head = str((row.payload or {}).get("head_rules") or "").strip()
+            if not head:
+                raise WorkbenchError("发布前必须写好编排首规则", code="ORCHESTRATION_RULES_INVALID")
+            for item in db.scalars(select(WorkbenchOrchestrationRuleRevisionRow).where(WorkbenchOrchestrationRuleRevisionRow.published.is_(True))):
+                item.published = False
+            row.published = True
+            self._audit(db, actor_id, "orchestration_rules.published", "orchestration_rules", row.orchestration_revision_id, {"revision_no": row.revision_no})
+            db.commit()
+            return self._orchestration_rule_dict(row)
+
+    def _bootstrap_orchestration_rules(self) -> dict[str, Any] | None:
+        with self.session_factory() as db:
+            self._ensure_orchestration_rules(db)
+            db.commit()
+            row = db.scalar(
+                select(WorkbenchOrchestrationRuleRevisionRow).order_by(WorkbenchOrchestrationRuleRevisionRow.revision_no.desc()).limit(1)
+            )
+            return self._orchestration_rule_dict(row) if row is not None else None
+
+    def _ensure_orchestration_rules(self, db) -> WorkbenchOrchestrationRuleRevisionRow:
+        from hailiang_skills.workbench.orchestration import load_seed_rules
+
+        existing = db.scalar(
+            select(WorkbenchOrchestrationRuleRevisionRow).order_by(WorkbenchOrchestrationRuleRevisionRow.revision_no.desc()).limit(1)
+        )
+        if existing is not None:
+            return existing
+        payload = load_seed_rules()
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        row = WorkbenchOrchestrationRuleRevisionRow(
+            orchestration_revision_id=_id("orch"),
+            revision_no=1,
+            payload=payload,
+            content_hash=hashlib.sha256(encoded.encode()).hexdigest(),
+            published=True,
+            created_by="system",
+        )
+        db.add(row)
+        db.flush()
+        self._audit(db, "system", "orchestration_rules.imported", "orchestration_rules", row.orchestration_revision_id, {"revision_no": 1})
+        return row
+
+    def _published_orchestration_rules(self, db) -> dict[str, Any]:
+        self._ensure_orchestration_rules(db)
+        row = db.scalar(
+            select(WorkbenchOrchestrationRuleRevisionRow)
+            .where(WorkbenchOrchestrationRuleRevisionRow.published.is_(True))
+            .order_by(WorkbenchOrchestrationRuleRevisionRow.revision_no.desc())
+            .limit(1)
+        )
+        if row is None:
+            return {"head_rules": "", "tail_rules": "", "recommendation_rules": "", "recommendations": []}
+        # Keep catalog / system_skills so recommend runs after deploy activate.
+        return self._orchestration_rule_dict(row)
+
+    def _attach_orchestration_rules(self, db, deployment: WorkbenchDeploymentRow) -> None:
+        # Always refresh from the currently published revision so re-activate
+        # picks up new recommend catalog / rule bodies.
+        manifest = dict(deployment.manifest or {})
+        manifest["orchestration_rules"] = self._published_orchestration_rules(db)
+        deployment.manifest = manifest
+
+    def _reuse_object_for_import(self, *, object_type: str, object_key: str, actor_id: str) -> dict[str, Any] | None:
+        """Return an existing object of the same type and key, restoring it if archived."""
+        key = str(object_key or "").strip()
+        if object_type not in VALID_OBJECT_TYPES or not key:
+            return None
+        with self.session_factory() as db:
+            row = db.scalar(
+                select(WorkbenchObjectRow).where(
+                    WorkbenchObjectRow.object_type == object_type,
+                    WorkbenchObjectRow.object_key == key,
+                )
+            )
+            if row is None:
+                return None
+            if row.archived:
+                row.archived = False
+                row.updated_at = utc_now()
+                self._audit(
+                    db,
+                    actor_id,
+                    "object.unarchived",
+                    object_type,
+                    row.object_id,
+                    {"reason": "standard_package_import", "object_key": key},
+                )
+            latest = db.scalar(
+                select(WorkbenchRevisionRow)
+                .where(WorkbenchRevisionRow.object_id == row.object_id)
+                .order_by(WorkbenchRevisionRow.revision_no.desc())
+                .limit(1)
+            )
+            db.commit()
+            return {
+                "object_id": row.object_id,
+                "latest_revision_id": latest.revision_id if latest else None,
+            }
+
     def create_object(
         self,
         *,
@@ -299,6 +456,52 @@ class WorkbenchService:
             db.commit()
             return self._object_dict(row, latest_revision_no=0, latest_release_no=0)
 
+    def update_object(
+        self,
+        object_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        """Update an object's display name and/or description.
+
+        The object_key (machine identifier) cannot be changed here — use
+        migrate_object_id to create a successor with a different key.
+        """
+        with self.session_factory() as db:
+            obj = self._require_object(db, object_id)
+            updated = False
+            new_name = str(name or "").strip()
+            new_description = str(description or "").strip()
+            if new_name and new_name != obj.name:
+                obj.name = new_name
+                updated = True
+            if new_description and new_description != obj.description:
+                obj.description = new_description
+                updated = True
+            if not updated:
+                return self._object_dict(
+                    obj,
+                    self._latest_revision_no(db, object_id),
+                    self._latest_release_no(db, object_id),
+                )
+            obj.updated_at = utc_now()
+            self._audit(
+                db,
+                actor_id,
+                "object.updated",
+                obj.object_type,
+                object_id,
+                {"name": obj.name, "description": obj.description},
+            )
+            db.commit()
+            return self._object_dict(
+                obj,
+                self._latest_revision_no(db, object_id),
+                self._latest_release_no(db, object_id),
+            )
+
     def preview_standard_skill_package(self, package_bytes: bytes, *, actor_id: str) -> dict[str, Any]:
         """Parse an Agent Skills ZIP without executing its code or creating revisions."""
         files = self._normalize_standard_package_files(self._read_zip(package_bytes))
@@ -313,6 +516,22 @@ class WorkbenchService:
         leaf = PurePosixPath(source_path).name
         object_type = "expert_team" if leaf == "TEAM.md" else "expert" if leaf == "AGENT.md" else "skill"
         descriptor: dict[str, Any] = {}
+        # A recursively exported workbench package is also a useful input for
+        # this preview.  Once its single object root is normalized, object.json
+        # sits beside SKILL.md/AGENT.md/TEAM.md.  Reuse only its stable display
+        # identity; release IDs and payload are deliberately not imported as
+        # authoritative configuration.
+        native_object: dict[str, Any] = {}
+        if "object.json" in files:
+            try:
+                parsed_native_object = json.loads(files["object.json"])
+                if (
+                    isinstance(parsed_native_object, dict)
+                    and str(parsed_native_object.get("object_type") or "") == object_type
+                ):
+                    native_object = parsed_native_object
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
         if object_type in {"expert", "expert_team"}:
             descriptor_name = "agent.yaml" if object_type == "expert" else "team.yaml"
             descriptor_path = PurePosixPath(source_path).with_name(descriptor_name).as_posix()
@@ -332,11 +551,12 @@ class WorkbenchService:
             or descriptor.get("expert_team_id")
             or descriptor.get("team_id")
             or descriptor.get("id")
+            or native_object.get("object_key")
             or PurePosixPath(source_path).parent.name
             or "imported_skill"
         )
         object_key = "".join(char if char.isalnum() or char in "_-" else "_" for char in raw_key).strip("_") or "imported_skill"
-        name = str(metadata.get("name") or descriptor.get("name") or object_key)
+        name = str(metadata.get("name") or descriptor.get("name") or native_object.get("name") or object_key)
         runtime_contract = self._standard_runtime_contract(files)
         assets = []
         blocked: list[str] = []
@@ -403,12 +623,13 @@ class WorkbenchService:
             name = str(ai_hint["name"])[:256]
         if ai_hint.get("description"):
             metadata["description"] = str(ai_hint["description"])[:2000]
+        elif native_object.get("description"):
+            metadata["description"] = str(native_object["description"])[:2000]
         warnings = [*blocked, *script_errors]
         warnings.extend(str(item) for item in ai_hint.get("review_items", []) if str(item))
         if questionnaire and not any(key in questionnaire for key in ("fields", "config_path", "config_json")):
             warnings.append("问卷定义无法映射为平台表单字段，请人工补充。")
         return {
-            "root": self._entry_debug(root),
             "source": {"entry_path": source_path, "files": sorted(files), "metadata": metadata},
             "draft": {"object_type": object_type, "object_key": object_key, "name": name, "description": str(metadata.get("description") or ""), "payload": payload, "assets": assets, "dependency_locks": []},
             "form_preview": questionnaire.get("fields", []) if isinstance(questionnaire.get("fields"), list) else [],
@@ -449,15 +670,42 @@ class WorkbenchService:
             object_id = target_object_id
             base_revision_id = (detail.get("revisions") or [{}])[0].get("revision_id")
         else:
-            created = self.create_object(
+            existing = self._reuse_object_for_import(
                 object_type=str(draft.get("object_type") or "skill"),
                 object_key=str(draft.get("object_key") or ""),
-                name=str(draft.get("name") or ""),
-                description=str(draft.get("description") or ""),
                 actor_id=actor_id,
             )
-            object_id = created["object_id"]
-            base_revision_id = None
+            if existing is not None:
+                object_id = existing["object_id"]
+                base_revision_id = existing["latest_revision_id"]
+                # Update name and description if the draft carries new values.
+                with self.session_factory() as db:
+                    obj = self._require_object(db, object_id)
+                    updated = False
+                    draft_name = str(draft.get("name") or "").strip()
+                    draft_description = str(draft.get("description") or "").strip()
+                    if draft_name and draft_name != obj.name:
+                        obj.name = draft_name
+                        updated = True
+                    if draft_description and draft_description != obj.description:
+                        obj.description = draft_description
+                        updated = True
+                    if updated:
+                        obj.updated_at = utc_now()
+                        self._audit(db, actor_id, "object.updated", obj.object_type, object_id, {
+                            "name": draft_name, "description": draft_description,
+                        })
+                        db.commit()
+            else:
+                created = self.create_object(
+                    object_type=str(draft.get("object_type") or "skill"),
+                    object_key=str(draft.get("object_key") or ""),
+                    name=str(draft.get("name") or ""),
+                    description=str(draft.get("description") or ""),
+                    actor_id=actor_id,
+                )
+                object_id = created["object_id"]
+                base_revision_id = None
         revision = self.save_revision(
             object_id,
             base_revision_id=base_revision_id,
@@ -1684,6 +1932,11 @@ class WorkbenchService:
         # Candidate transcripts are also read through the v2 compatibility
         # projection. Existing debug data is retained as-is.
         context.session_meta["context_contract_version"] = 2
+        # Candidate revision tests are explicit diagnostics. Keep prompt
+        # assembly events in plaintext for this isolated workbench session so
+        # exported evidence can explain exactly what was sent to each model
+        # phase. Formal chat/session telemetry keeps its normal redaction.
+        context.session_meta["workbench_candidate_test"] = True
         context.session_meta.setdefault("_candidate_branch_version", 1)
         self._configure_snapshot_context(context, snapshot)
         runtime_state = context.skill_states.get("skill_runtime")
@@ -2445,6 +2698,8 @@ class WorkbenchService:
         required_references: set[str] = set()
         selected_references: set[str] = set()
         skill_progress: dict[str, Any] = {}
+        fact_collection: dict[str, Any] = {}
+        question_units: list[dict[str, Any]] = []
         script_runs: list[dict[str, Any]] = []
         expert_routing: dict[str, Any] = {}
         execution_error: dict[str, Any] = {}
@@ -2462,11 +2717,27 @@ class WorkbenchService:
             "first_token_ms": None,
         }
         reply_progress: dict[str, Any] = {}
+        prompt_trace: list[dict[str, Any]] = []
         for event in turn_events:
             if not isinstance(event, dict):
                 continue
             event_type = str(event.get("event_type") or "")
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            if event_type == "prompt_assembly":
+                prompt_trace.append({
+                    "phase": str(payload.get("phase") or ""),
+                    "layer": str(payload.get("layer") or ""),
+                    "title": str(payload.get("prompt_title") or ""),
+                    "prompt_key": str(payload.get("prompt_key") or ""),
+                    "prompt": str(payload.get("prompt_content") or ""),
+                    "messages": copy.deepcopy(
+                        ((payload.get("variables") or {}).get("messages") or [])
+                        if isinstance(payload.get("variables"), dict) else []
+                    ),
+                    "response": copy.deepcopy(payload.get("llm_response")),
+                    "reasoning": str(payload.get("llm_reasoning") or ""),
+                    "timestamp": str(payload.get("timestamp") or ""),
+                })
             if event_type == "expert_skill_route_selected":
                 expert_routing = {
                     "mode": str(payload.get("mode") or ""),
@@ -2510,7 +2781,7 @@ class WorkbenchService:
                     "reason": str(payload.get("reason") or "")[:800],
                     "exception_type": str(payload.get("exception_type") or ""),
                 }
-            if event_type == "runtime_skill_progress_updated":
+            if event_type in {"runtime_skill_progress_updated", "skill_progress_staged"}:
                 skill_progress = {
                     "stage_label": str(payload.get("stage_label") or ""),
                     "confirmed_fact_keys": list(payload.get("confirmed_fact_keys") or []),
@@ -2518,6 +2789,43 @@ class WorkbenchService:
                     "pending_topics": list(payload.get("pending_topics") or []),
                     "next_action": str(payload.get("next_action") or ""),
                 }
+            if event_type == "skill_confirmed_facts_collected":
+                fact_collection = {
+                    # Candidate diagnostics keep the exact facts extracted
+                    # from the current user message; formal telemetry still
+                    # receives the normal redacted event payload.
+                    "confirmed_facts": copy.deepcopy(payload.get("confirmed_facts") or {}),
+                    "confirmed_fact_keys": list(payload.get("confirmed_fact_keys") or []),
+                    "new_confirmed_fact_keys": list(payload.get("new_confirmed_fact_keys") or []),
+                    "cumulative_confirmed_fact_keys": list(payload.get("cumulative_confirmed_fact_keys") or []),
+                    "rejected_fact_keys": list(payload.get("rejected_fact_keys") or []),
+                    "rejection_reasons": dict(payload.get("rejection_reasons") or {}),
+                    "deferred_ambiguous_fact_keys": list(payload.get("deferred_ambiguous_fact_keys") or []),
+                    "source_type": str(payload.get("source_type") or ""),
+                }
+            if event_type == "skill_collected_inputs_classified":
+                fact_collection["working_input_keys"] = list(payload.get("working_input_keys") or [])
+                fact_collection["promoted_fact_keys"] = list(payload.get("promoted_fact_keys") or [])
+                fact_collection["skill_local_input_keys"] = list(payload.get("skill_local_input_keys") or [])
+            if event_type in {
+                "skill_question_unit_registered",
+                "skill_question_unit_partial",
+                "skill_question_unit_resolved",
+                "skill_question_unit_degraded",
+            }:
+                question_units.append({
+                    "event_type": event_type,
+                    "timestamp": event.get("timestamp") or event.get("created_at"),
+                    "skill_id": str(payload.get("skill_id") or skill_id),
+                    "unit_id": str(payload.get("unit_id") or ""),
+                    "stage": str(payload.get("stage") or ""),
+                    "status": str(payload.get("status") or ""),
+                    "text": str(payload.get("text") or payload.get("question") or ""),
+                    "answer": str(payload.get("answer") or ""),
+                    "followup": str(payload.get("followup") or ""),
+                    "classification": str(payload.get("classification") or ""),
+                    "reason": str(payload.get("reason") or ""),
+                })
             if event_type == "runtime_llm_timing":
                 phase = str(payload.get("phase") or "")
                 duration = payload.get("duration_ms")
@@ -2536,6 +2844,14 @@ class WorkbenchService:
                 "script_result_pending_presentation",
                 "script_result_presented",
                 "script_result_reused",
+                "turn_context_snapshot_composed",
+                "fact_question_target_resolved",
+                "confirmed_fact_reask_blocked",
+                "skill_methodology_projection_used",
+                "reply_context_guard_evaluated",
+                "reply_context_guard_blocked",
+                "reply_context_guard_retried",
+                "reply_context_guard_degraded",
             }:
                 reply_progress.setdefault("events", []).append({
                     "event_type": event_type,
@@ -2549,6 +2865,16 @@ class WorkbenchService:
                     "reason": str(payload.get("reason") or ""),
                     "same_user_message_streak": payload.get("same_user_message_streak"),
                     "repeated_user_turn_allowed": payload.get("repeated_user_turn_allowed"),
+                    "matched_fact_keys": list(payload.get("matched_fact_keys") or payload.get("fact_keys") or []),
+                    "question_count": payload.get("question_count"),
+                    "status": str(payload.get("status") or ""),
+                    "fallback": str(payload.get("fallback") or ""),
+                    "contract_hash": str(payload.get("contract_hash") or payload.get("methodology_contract_hash") or ""),
+                    "stage_id": str(payload.get("stage_id") or ""),
+                    "rule_count": payload.get("rule_count") or payload.get("methodology_rule_count"),
+                    "effective_fact_count": payload.get("effective_fact_count"),
+                    "confirmed_fact_key_count": payload.get("confirmed_fact_key_count"),
+                    "fact_source_counts": dict(payload.get("fact_source_counts") or {}),
                 })
             if event_type in {
                 "reference_context",
@@ -2677,7 +3003,10 @@ class WorkbenchService:
                 ],
             },
             "skill_progress": skill_progress,
+            "fact_collection": fact_collection,
+            "question_units": question_units,
             "reply_progress": reply_progress,
+            "prompts": prompt_trace,
             "expert_routing": expert_routing,
             "execution_error": execution_error,
             "scripts": script_runs,
@@ -2762,10 +3091,17 @@ class WorkbenchService:
         Unpublished candidates are temporarily mounted over the shared
         Runtime registry for the duration of this call, so they use exactly
         the same executor without becoming visible to formal conversations.
+
+        Uses ``get_raw()`` rather than ``get()`` for the candidate bundle
+        lookup because ``_mount_candidate_snapshot_skills`` writes directly
+        into ``bundles`` without updating ``enabled_by_id``.  The ``get()``
+        path would silently return None for any Skill whose deployment
+        happens to be disabled, causing a fallback into the preview codepath
+        that skips questionnaires, tool execution, and the state machine.
         """
         skill_id = str(entry.get("object_key") or "")
         runtime_registry = getattr(self.orchestrator, "runtime_registry", None)
-        bundle = runtime_registry.get(skill_id) if runtime_registry is not None and skill_id else None
+        bundle = runtime_registry.get_raw(skill_id) if runtime_registry is not None and skill_id else None
         formal_executor = getattr(self.orchestrator, "_handle_message_legacy", None)
         temporary_mount = False
         previous_bundle = None
@@ -2791,7 +3127,7 @@ class WorkbenchService:
                 previous_bundle = runtime_registry.bundles.get(registry_key)
                 runtime_registry.bundles[registry_key] = candidate_bundle
                 temporary_mount = True
-                bundle = runtime_registry.get(skill_id)
+                bundle = runtime_registry.get_raw(skill_id)
                 self._record_candidate_turn_event(
                     context,
                     "candidate_runtime_temporary_mount",
@@ -2935,6 +3271,21 @@ class WorkbenchService:
         with self.session_factory() as db:
             revision = self._require_revision(db, revision_id)
             obj = self._require_object(db, revision.object_id)
+            if obj.object_type == "expert":
+                current_validation = self._validate_payload(obj.object_type, revision.payload, revision.dependency_locks)
+                if not current_validation["valid"]:
+                    raise WorkbenchError("专家权限配置校验未通过，不能发布", code="REVISION_VALIDATION_FAILED", details=current_validation)
+            if obj.object_type == "expert_team":
+                for lock in revision.dependency_locks or []:
+                    for _release, member, member_revision in self._release_closure(db, self._require_release(db, str(lock["release_id"]))):
+                        if member.object_type != "expert":
+                            continue
+                        from hailiang_skills.harness.policy import validate_skill_boundary, load_settings
+                        from hailiang_skills.harness.contracts import HarnessError
+                        try:
+                            validate_skill_boundary(load_settings().get("independent_skill_ids", []), {member.object_key: {"skills": [item.get("object_key", "") for item in member_revision.dependency_locks or []]}})
+                        except HarnessError as exc:
+                            raise WorkbenchError("专家团成员 Skill 与独立 Skill 授权重叠，不能发布", code="REVISION_VALIDATION_FAILED") from exc
             existing = db.scalar(select(WorkbenchReleaseRow).where(WorkbenchReleaseRow.revision_id == revision_id))
             if existing is not None:
                 return self._release_dict(existing, obj, self._actor_display_names(db, [existing.published_by]))
@@ -2944,6 +3295,15 @@ class WorkbenchService:
                     code="REVISION_VALIDATION_FAILED",
                     details={"errors": list(revision.validation.get("errors") or []), "warnings": list(revision.validation.get("warnings") or [])},
                 )
+            # M-08: 发布前门禁 — 资产可解析、脚本可导入、问卷配置合法
+            if obj.object_type == "skill":
+                gate_errors = self._publish_gate_errors(db, revision)
+                if gate_errors:
+                    raise WorkbenchError(
+                        "发布前门禁未通过：资产或脚本存在问题，请修复后重新提交修订",
+                        code="PUBLISH_GATE_FAILED",
+                        details={"errors": gate_errors},
+                    )
             evidence = self._require_evidence(db, revision_id, evidence_id)
             release_no = (db.scalar(select(func.max(WorkbenchReleaseRow.release_no)).where(WorkbenchReleaseRow.object_id == obj.object_id)) or 0) + 1
             verification = {
@@ -3170,6 +3530,7 @@ class WorkbenchService:
                 },
                 "objects": manifest_objects,
                 "kernel_fingerprint": self.kernel_fingerprint,
+                "orchestration_rules": self._published_orchestration_rules(db),
                 "exported_by": actor_id,
                 "exported_at": _iso(utc_now()),
             }
@@ -3386,6 +3747,7 @@ class WorkbenchService:
                     "activated_at": _iso(row.activated_at),
                 },
                 "entries": entries or row.manifest.get("objects", []),
+                "orchestration_rules": row.manifest.get("orchestration_rules") if isinstance(row.manifest.get("orchestration_rules"), dict) else None,
                 "bound_at": _iso(utc_now()),
             }
 
@@ -3449,6 +3811,7 @@ class WorkbenchService:
             target.status = "active"
             target.activated_by = actor_id
             target.activated_at = utc_now()
+            self._attach_orchestration_rules(db, target)
             self._install_deployment_runtime(target)
             self._audit(db, actor_id, "deployment.activated", "deployment", target.deployment_id, {
                 "previous_deployment_id": target.previous_deployment_id,
@@ -3496,6 +3859,7 @@ class WorkbenchService:
             target.status = "active"
             target.activated_by = actor_id
             target.activated_at = utc_now()
+            self._attach_orchestration_rules(db, target)
             self._install_deployment_runtime(target)
             self._audit(db, actor_id, "deployment.restored", "deployment", target.deployment_id, {
                 "previous_deployment_id": target.previous_deployment_id,
@@ -3544,7 +3908,7 @@ class WorkbenchService:
                 "runtime_contract": self._json_file(bundle.root_dir / "runtime_contract.json"),
                 "configuration": dict(bundle.runtime_metadata.raw or {}),
                 "source_metadata": copy.deepcopy(bundle.metadata),
-                "capability_ids": [f"{skill_key}:{path}" for path in sorted(bundle.scripts)],
+                "capability_ids": _script_capability_ids(skill_key, bundle.scripts),
                 "source_version": str(bundle.runtime_metadata.version or bundle.metadata.get("version") or "0.0.0"),
                 "_workbench_managed_files": True,
             }
@@ -3569,12 +3933,11 @@ class WorkbenchService:
         experts = getattr(getattr(self.orchestrator, "expert_registry", None), "definitions", {})
         for expert in experts.values():
             locks = [skill_release_by_key[item.skill_id] for item in expert.skills if item.skill_id in skill_release_by_key]
-            payload = {
+            payload = _payload_with_present_brief({
                 "rules_markdown": expert.rules_markdown,
-                "brief": expert.brief,
                 "budget": {"max_iters": expert.max_iters, "max_skill_calls": expert.max_skill_calls},
                 "capabilities": list(expert.capabilities),
-            }
+            }, expert.brief)
             released = self._bootstrap_object("expert", expert.agent_id, expert.name, payload, locks)
             expert_release_by_key[expert.agent_id] = released
             created += 1
@@ -3582,15 +3945,22 @@ class WorkbenchService:
         for team in teams.values():
             locks = [expert_release_by_key[item.expert_id] for item in team.members if item.expert_id in expert_release_by_key]
             coordinator_object_id = next((item["object_id"] for item in locks if item["object_key"] == team.coordinator_expert_id), "")
-            payload = {
+            payload = _payload_with_present_brief({
                 "rules_markdown": team.rules_markdown,
-                "brief": team.brief,
                 "coordinator_expert_id": coordinator_object_id,
+                "consultation_policy": team.consultation_policy.as_dict(),
+                "fallback_expert_id": team.fallback_expert_id,
+                "collaboration_rules": team.collaboration_rules,
                 "members": [
-                    {"expert_id": item.expert_id, "mention_name": item.mention_name, "routing_brief": item.routing_brief}
+                    {
+                        "expert_id": item.expert_id,
+                        "mention_name": item.mention_name,
+                        "routing_brief": item.routing_brief,
+                        "applicable_stages": list(item.applicable_stages),
+                    }
                     for item in team.members
                 ],
-            }
+            }, team.brief)
             self._bootstrap_object("expert_team", team.team_id, team.name, payload, locks)
             created += 1
         return {"objects": created, "releases": created}
@@ -3709,7 +4079,7 @@ class WorkbenchService:
                 "runtime_contract": self._json_file(Path(bundle.root_dir) / "runtime_contract.json"),
                 "configuration": copy.deepcopy(bundle.runtime_metadata.raw or {}),
                 "source_metadata": copy.deepcopy(bundle.metadata),
-                "capability_ids": [f"{key}:{path}" for path in sorted(bundle.scripts)],
+                "capability_ids": _script_capability_ids(key, bundle.scripts),
                 "source_version": str(bundle.runtime_metadata.version or bundle.metadata.get("version") or "0.0.0"),
                 "_workbench_managed_files": True,
             }
@@ -3718,27 +4088,34 @@ class WorkbenchService:
             entries.append(self._filesystem_entry("skill", key, bundle.runtime_metadata.name or key, payload, [], files, source_id))
         for expert in getattr(getattr(self.orchestrator, "expert_registry", None), "definitions", {}).values():
             locks = [self._filesystem_lock("skill", item.skill_id, source_ids) for item in expert.skills]
-            payload = {
+            payload = _payload_with_present_brief({
                 "rules_markdown": expert.rules_markdown,
-                "brief": expert.brief,
                 "budget": {"max_iters": expert.max_iters, "max_skill_calls": expert.max_skill_calls},
                 "capabilities": list(expert.capabilities),
-            }
+            }, expert.brief)
             source_id = f"filesystem:expert:{expert.agent_id}"
             source_ids[("expert", expert.agent_id)] = source_id
             entries.append(self._filesystem_entry("expert", expert.agent_id, expert.name, payload, locks, [], source_id))
         for team in getattr(getattr(self.orchestrator, "expert_team_registry", None), "definitions", {}).values():
             locks = [self._filesystem_lock("expert", item.expert_id, source_ids) for item in team.members]
             coordinator_lock = next((item for item in locks if item["object_key"] == team.coordinator_expert_id), None)
-            payload = {
+            fallback_lock = next((item for item in locks if item["object_key"] == team.fallback_expert_id), None)
+            payload = _payload_with_present_brief({
                 "rules_markdown": team.rules_markdown,
-                "brief": team.brief,
                 "coordinator_expert_id": str((coordinator_lock or {}).get("object_id") or team.coordinator_expert_id),
+                "consultation_policy": team.consultation_policy.as_dict(),
+                "fallback_expert_id": str((fallback_lock or {}).get("object_id") or team.fallback_expert_id),
+                "collaboration_rules": team.collaboration_rules,
                 "members": [
-                    {"expert_id": item.expert_id, "mention_name": item.mention_name, "routing_brief": item.routing_brief}
+                    {
+                        "expert_id": item.expert_id,
+                        "mention_name": item.mention_name,
+                        "routing_brief": item.routing_brief,
+                        "applicable_stages": list(item.applicable_stages),
+                    }
                     for item in team.members
                 ],
-            }
+            }, team.brief)
             source_id = f"filesystem:expert_team:{team.team_id}"
             source_ids[("expert_team", team.team_id)] = source_id
             entries.append(self._filesystem_entry("expert_team", team.team_id, team.name, payload, locks, [], source_id))
@@ -4055,7 +4432,7 @@ class WorkbenchService:
             registry.bundles[object_key] = skill_bundle_from_entry(entry)
             return
         if object_type == "expert":
-            from hailiang_skills.runtime_bridge.expert_bundle import ExpertDefinition, LockedSkill
+            from hailiang_skills.runtime_bridge.expert_bundle import ExpertDefinition, LockedSkill, _normalize_capabilities
 
             budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
             definition = ExpertDefinition(
@@ -4065,10 +4442,8 @@ class WorkbenchService:
                 skills=tuple(LockedSkill(str(item.get("object_key") or ""), f"v{int(item.get('release_no') or 0)}") for item in locks),
                 brief=str(payload.get("brief") or ""),
                 max_iters=max(1, min(int(budget.get("max_iters", 4)), 4)),
-                max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 3)),
-                capabilities=tuple(str(item) for item in payload.get("capabilities", []) if str(item)) or (
-                    "execute_skill", "request_declared_form", "read_effective_facts",
-                ),
+                max_skill_calls=max(1, min(int(budget.get("max_skill_calls", 3)), 8)),
+                capabilities=_normalize_capabilities(payload.get("capabilities")),
             )
             self.orchestrator.expert_registry.definitions[object_key] = definition
             self.orchestrator.expert_runtime.expert_registry.definitions[object_key] = definition
@@ -4078,13 +4453,17 @@ class WorkbenchService:
 
             coordinator_object_id = str(payload.get("coordinator_expert_id") or "")
             coordinator = next((str(item.get("object_key") or "") for item in locks if str(item.get("object_id") or "") == coordinator_object_id), "")
+            from hailiang_skills.runtime_bridge.expert_team_bundle import published_team_overlay
+
             member_payloads = payload.get("members") if isinstance(payload.get("members"), list) else []
             by_key = {str(item.get("expert_id") or ""): item for item in member_payloads if isinstance(item, dict)}
+            policy, fallback_expert_id, stages = published_team_overlay(payload, locks)
             members = tuple(
                 ExpertTeamMember(
                     expert_id=str(item.get("object_key") or ""),
                     mention_name=str((by_key.get(str(item.get("object_key") or "")) or {}).get("mention_name") or item.get("object_key") or ""),
                     routing_brief=str((by_key.get(str(item.get("object_key") or "")) or {}).get("routing_brief") or ""),
+                    applicable_stages=stages.get(str(item.get("object_key") or ""), ()),
                 )
                 for item in locks if str(item.get("object_key") or "")
             )
@@ -4096,6 +4475,8 @@ class WorkbenchService:
                     coordinator_expert_id=coordinator,
                     members=members,
                     brief=str(payload.get("brief") or ""),
+                    consultation_policy=policy,
+                    fallback_expert_id=fallback_expert_id,
                 )
                 self.orchestrator.expert_team_registry.definitions[object_key] = definition
                 self.orchestrator.expert_runtime.team_registry.definitions[object_key] = definition
@@ -4233,6 +4614,29 @@ class WorkbenchService:
             config_json = questionnaire.get("config_json")
             if config_json is not None:
                 errors.extend(validate_questionnaire_config(config_json))
+            # M-03: 问卷声明与工具声明一致性校验
+            # request_declared_form 在 SKILL.md frontmatter 的 tool_dependency 中声明。
+            markdown = str(payload.get("prompt_markdown") or "")
+            frontmatter, _body = self._standard_frontmatter(markdown)
+            has_declared_form = "request_declared_form" in (
+                list(frontmatter.get("tool_dependency") or [])
+            )
+            has_questions = bool(
+                str(questionnaire.get("config_path") or "").strip()
+                or questionnaire.get("config_json")
+                or questionnaire.get("fields")
+                or str(questionnaire.get("question_catalog_path") or "").strip()
+            )
+            if has_declared_form and not has_questions:
+                errors.append(
+                    "SKILL.md 声明了 request_declared_form 工具依赖，"
+                    "但未配置题库（请在 configuration.questionnaire 中设置 config_path / config_json / fields）"
+                )
+            elif has_questions and not has_declared_form:
+                errors.append(
+                    "配置了题库但未在 SKILL.md frontmatter 的 tool_dependency 中声明 request_declared_form，"
+                    "模型将无法通过工具调用展示表单"
+                )
             known = known_capabilities if known_capabilities is not None else {
                 item["capability_id"] for item in capability_catalog(self.orchestrator)
             }
@@ -4240,6 +4644,14 @@ class WorkbenchService:
             if unknown:
                 errors.append(f"存在未知底层能力: {', '.join(unknown)}")
         elif object_type == "expert":
+            from hailiang_skills.harness.policy import load_settings, validate_skill_boundary
+            from hailiang_skills.harness.contracts import HarnessError
+            try:
+                validate_skill_boundary(load_settings().get("independent_skill_ids", []), {
+                    "publishing_expert": {"skills": [item.get("object_key", "") for item in locks]}
+                })
+            except HarnessError:
+                errors.append("专家内部 Skill 与主 agent 独立 Skill 授权重叠")
             brief = _normalize_brief(payload.get("brief"))
             if not brief:
                 (warnings if allow_legacy_brief else errors).append("专家 Brief 不能为空" if not allow_legacy_brief else "历史专家包缺少 Brief，请补齐后再发布")
@@ -4248,13 +4660,13 @@ class WorkbenchService:
             if not str(payload.get("rules_markdown") or "").strip():
                 errors.append("专家规则不能为空")
             if len(locks) < 1:
-                errors.append("专家必须引用至少一个已发布 Skill 版本")
+                warnings.append("未绑定 Skill，专家只按规则回答")
             errors.extend(validate_agent_skill_routing(
                 str(payload.get("rules_markdown") or ""),
                 {str(item.get("object_key") or "") for item in locks if str(item.get("object_key") or "")},
             ))
             budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
-            for key, maximum in (("max_iters", 4), ("max_skill_calls", 3)):
+            for key, maximum in (("max_iters", 4), ("max_skill_calls", 8)):
                 value = int(budget.get(key, maximum) or maximum)
                 if value < 1 or value > maximum:
                     errors.append(f"{key} 必须在 1-{maximum} 之间")
@@ -4285,6 +4697,11 @@ class WorkbenchService:
                 ]
                 if not all(mentions) or len(set(mentions)) != len(mentions):
                     errors.append("成员展示名称不能为空且必须在专家团内唯一")
+            from hailiang_skills.workbench.orchestration import validate_expert_team_orchestration
+
+            team_errors, team_warnings = validate_expert_team_orchestration(payload, locks)
+            errors.extend(team_errors)
+            warnings.extend(team_warnings)
             if not str(payload.get("rules_markdown") or "").strip():
                 warnings.append("建议补充专家团协同规则")
         return {"valid": not errors, "errors": errors, "warnings": warnings, "checked_at": _iso(utc_now())}
@@ -4336,6 +4753,62 @@ class WorkbenchService:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(content)
             return [item.detail for item in review_scripts(root) if item.status == "error"]
+
+    @staticmethod
+    def _publish_gate_errors(db, revision) -> list[str]:
+        """M-08: 发布前强制校验 — 资产可解析、脚本可导入、问卷配置一致。"""
+        errors: list[str] = []
+        payload = revision.payload or {}
+        # 1. 所有 JSON 资产可解析
+        for row in db.scalars(
+            select(WorkbenchAssetRow).where(
+                WorkbenchAssetRow.revision_id == revision.revision_id,
+                WorkbenchAssetRow.relative_path.endswith(".json"),
+            )
+        ):
+            try:
+                json.loads(bytes(row.content))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                errors.append(f"资产 JSON 解析失败：{row.relative_path} — {exc}")
+        # 2. 问卷配置合法（防止 revision 创建后配置被破坏）
+        try:
+            decoded = [
+                (row.relative_path, row.media_type, bytes(row.content))
+                for row in db.scalars(
+                    select(WorkbenchAssetRow).where(
+                        WorkbenchAssetRow.revision_id == revision.revision_id
+                    )
+                )
+            ]
+            errors.extend(_questionnaire_asset_errors(payload, decoded))
+        except Exception as exc:
+            errors.append(f"问卷资产校验异常：{exc}")
+        # 3. Python 脚本可导入
+        try:
+            script_files = [
+                (row.relative_path, row.media_type, bytes(row.content))
+                for row in db.scalars(
+                    select(WorkbenchAssetRow).where(
+                        WorkbenchAssetRow.revision_id == revision.revision_id,
+                        WorkbenchAssetRow.relative_path.startswith("scripts/"),
+                        WorkbenchAssetRow.relative_path.endswith(".py"),
+                    )
+                )
+            ]
+            if script_files:
+                with tempfile.TemporaryDirectory(prefix="hailiang-publish-gate-") as temp_dir:
+                    root = Path(temp_dir)
+                    for relative_path, _media_type, content in script_files:
+                        target = root.joinpath(*PurePosixPath(relative_path).parts)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(content)
+                    errors.extend(
+                        item.detail for item in review_scripts(root)
+                        if item.status == "error"
+                    )
+        except Exception as exc:
+            errors.append(f"脚本导入校验异常：{exc}")
+        return errors
 
     @staticmethod
     def _asset_dict(row: WorkbenchAssetRow, *, include_content: bool = False) -> dict[str, Any]:
@@ -4421,6 +4894,7 @@ class WorkbenchService:
             snapshot["soul_context"] = self._soul_revision_dict(soul)
         else:
             snapshot["soul_context"] = {"enabled": False, "content": "", "content_hash": None}
+        snapshot["orchestration_rules"] = self._published_orchestration_rules(db)
         snapshot["snapshot_hash"] = _hash(snapshot)
         snapshot["entries"] = [materialize_entry_files(item) for item in entries]
         return snapshot
@@ -4815,6 +5289,9 @@ class WorkbenchService:
             coordinator_object_id = str(payload.get("coordinator_expert_id") or "")
             if coordinator_object_id in source_to_local_object_ids:
                 payload["coordinator_expert_id"] = source_to_local_object_ids[coordinator_object_id]
+            fallback_object_id = str(payload.get("fallback_expert_id") or "")
+            if fallback_object_id in source_to_local_object_ids:
+                payload["fallback_expert_id"] = source_to_local_object_ids[fallback_object_id]
         if object_type == "skill":
             payload["_workbench_managed_files"] = True
         obj = db.scalar(
@@ -4855,6 +5332,26 @@ class WorkbenchService:
                     object_type,
                     obj.object_id,
                     {"reason": "recursive_package_import", "object_key": object_key},
+                )
+            # Update name and description from the imported package so that
+            # re-uploading with modified metadata takes effect immediately.
+            imported_name = str(entry.get("name") or "").strip()
+            imported_description = str(entry.get("description") or "").strip()
+            previous_name = obj.name
+            name_changed = imported_name and imported_name != obj.name
+            if imported_name and imported_name != obj.name:
+                obj.name = imported_name
+            if imported_description and imported_description != obj.description:
+                obj.description = imported_description
+            if name_changed:
+                obj.updated_at = utc_now()
+                self._audit(
+                    db,
+                    actor_id,
+                    "object.name_updated_from_import",
+                    object_type,
+                    obj.object_id,
+                    {"previous_name": previous_name, "imported_name": imported_name, "object_key": object_key},
                 )
         decoded_assets = self._decode_assets(
             entry.get("files") if isinstance(entry.get("files"), list) else [],
@@ -5200,6 +5697,30 @@ class WorkbenchService:
             "created_by_display_name": (actor_names or {}).get(row.created_by, row.created_by),
             "created_at": _iso(row.created_at),
         }
+
+    @staticmethod
+    def _orchestration_rule_dict(row) -> dict[str, Any]:
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        result = {
+            "orchestration_revision_id": row.orchestration_revision_id,
+            "revision_no": row.revision_no,
+            "head_rules": str(payload.get("head_rules") or ""),
+            "tail_rules": str(payload.get("tail_rules") or ""),
+            "recommendation_rules": str(payload.get("recommendation_rules") or ""),
+            "recommendations": list(payload.get("recommendations") or []),
+            "content_hash": row.content_hash,
+            "published": bool(row.published),
+            "created_by": row.created_by,
+            "created_at": _iso(row.created_at),
+        }
+        if isinstance(payload.get("recommend_catalog"), dict):
+            result["recommend_catalog"] = payload["recommend_catalog"]
+        if isinstance(payload.get("system_skills"), dict) and payload["system_skills"]:
+            result["system_skills"] = payload["system_skills"]
+        from hailiang_skills.workbench.orchestration import rule_package_status
+
+        result["rule_versions"] = rule_package_status(payload)
+        return result
 
     @staticmethod
     def _soul_revision_dict(row) -> dict[str, Any]:

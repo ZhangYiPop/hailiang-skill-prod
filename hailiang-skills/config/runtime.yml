@@ -1,74 +1,8 @@
-runtime_dir: runtime
-soul_path: config/soul.md
-memory_enabled: true
-# Summarize messages older than the active window in the background. While a
-# summary is pending or fails, the uncovered original messages remain in the prompt.
-memory_async_update: true
-sandbox_prewarm_enabled: true
-sandbox_worker_reuse_enabled: true
-sandbox_worker_pool_size_per_key: 1
-sandbox_worker_pool_max_total: 6
-sandbox_worker_acquire_timeout_seconds: 5
-sandbox_worker_idle_ttl_seconds: 120
-sandbox_worker_max_lifetime_seconds: 900
-script_result_cache_enabled: true
-script_result_cache_ttl_seconds: 600
-script_result_cache_max_entries: 1000
-local_fast_path_enabled: true
-# The active model accepts one million input/context tokens. Keep the latest
-# 100 user/assistant turns verbatim, then summarize older complete pairs.
-active_window_messages: 200
-context_window_tokens: 1000000
-# Keep normal working prompts much smaller than the model's hard 1M input
-# ceiling. The composer accounts for instructions, state, archive evidence and
-# messages before dispatching a model call.
-working_context_tokens: 160000
-async_checkpoint_ratio: 0.60
-sync_compression_ratio: 0.80
-# Expert routing is a separate model pass. These bounds prevent it from
-# silently discarding a long conversation before the model context limit.
-expert_history_messages: 200
-expert_history_message_chars: 120000
-expert_history_max_chars: 900000
-expert_reply_max_chars: 1500000
-tool_routing:
-  # ms_agent removes the normal-turn standalone classifier call. Use
-  # standalone for a controlled rollback; invalid merged output still falls
-  # back to the old classifier by default.
-  mode: ms_agent
-  fallback_on_invalid: true
-progress_simulation:
-  # Add a small, configurable cadence to reasoning labels while the model is running.
-  enabled: true
-  interval_s: 0.45
-  jitter_s: 0.25
-  min_duration_s: 1.2
-skill_management:
-  # Missing entries remain enabled for backward compatibility.
-  enabled:
-    mock_admission: true
-    subject_advisor: true
-    multi_path_planning: true
-    interest_explore: true
-    career_plan_entity: true
-    junior_multi_path_planning: false
-    future_explore: false
-    score_improve: false
-# Empty means native Skill is the default. Add a public Skill ID only during a
-# controlled rollback; a running turn never falls back automatically.
-legacy_bridge_skill_ids: []
-security_moderation:
-  # A result passes only when every label returned by this provider is listed.
-  # Set HAILIANG_SECURITY_ALLOWED_LABELS to a comma-separated list to override
-  # the Aliyun labels without editing this file; an empty value disables them.
-  allowed_labels:
-    aliyun: [political_entity, political_n, inappropriate_discrimination]
-security_quarantine:
-  directory: runtime/security_quarantine
-  encryption_key_env: HAILIANG_SECURITY_QUARANTINE_KEY
-  admin_token_env: HAILIANG_SECURITY_ADMIN_TOKEN
-  retention_policy: indefinite
-sse_recording:
-  enabled: true
-  root_dir: logs/sse_recording/sessions
-  format: jsonl
+harness:
+  max_model_calls: 48
+  max_tool_calls: 96
+  max_run_model_calls: 192
+  max_run_tool_calls: 384
+  max_tasks: 64
+  max_run_input_tokens: 800000
+  context_policy_version: v2

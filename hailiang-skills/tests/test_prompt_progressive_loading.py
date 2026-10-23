@@ -56,6 +56,28 @@ class PromptProgressiveLoadingTest(unittest.TestCase):
         self.assertIn("Runtime Facts 已有 grade 时，绝不能再问孩子几年级", assembly.core_prompt)
         self.assertIn('"effective_fact_ledger"', assembly.core_prompt)
 
+    def test_parent_identity_is_projected_as_high_priority_skill_instruction(self) -> None:
+        registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
+        bundle = registry.get("career_plan_entity")
+        assert bundle is not None
+        state = SessionState(
+            session_id="sess_parent_identity",
+            active_skill_id="career_plan_entity",
+            global_facts={"grade": "初二", "interests": ["画画"]},
+            status_flags={
+                "last_handoff_context": {
+                    "speaker_identity": {"role": "parent", "source": "child_reference_inference"},
+                    "known_facts": {"grade": "初二", "interests": ["画画"]},
+                }
+            },
+        )
+
+        assembly = build_prompt_assembly(bundle, state)
+
+        self.assertIn("# 当前对话身份", assembly.core_prompt)
+        self.assertIn("当前发言者是家长", assembly.core_prompt)
+        self.assertIn("不要问家长‘你平时喜欢/擅长什么’", assembly.core_prompt)
+
     def test_prompt_projects_duplicate_memory_facts_once(self) -> None:
         registry = load_local_skill_registry(PROJECT_RUNTIME_SKILLS_ROOT)
         bundle = registry.get("career_plan_entity")

@@ -26,10 +26,31 @@ class _FakeRunner:
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.setenv("HAILIANG_EXTERNAL_API_KEY", "test-key")
+    monkeypatch.setenv("HAILIANG_HARNESS_NEW_SESSIONS", "false")
     monkeypatch.setattr(external_chat, "StreamingRunner", _FakeRunner)
     app = FastAPI()
     app.include_router(build_external_chat_router(_Repo(), _Facts(), object()), prefix="/api/v1")
     return TestClient(app)
+
+
+def test_external_new_session_starts_durable_harness(client, monkeypatch):
+    from types import SimpleNamespace
+    from hailiang_skills.harness import policy
+    monkeypatch.setenv("HAILIANG_HARNESS_NEW_SESSIONS", "true")
+    monkeypatch.setattr(policy, "capture_policy", lambda *_: {"frozen": True})
+    calls = []
+    def create(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "harness-run"
+    client.app.state.harness = SimpleNamespace(create=create, moderation=None)
+    response = client.post("/api/v1/external/chat", headers={"Authorization": "Bearer test-key"},
+        json={"stream": True, "dialogue": [{"role": "model", "content": "历史结果"}, {"role": "user", "content": "进一步分析"}]})
+    assert response.status_code == 202
+    result = response.json()
+    assert result["runtime_mode"] == "harness_v1" and result["run_id"] == "harness-run"
+    assert result["user_id"].startswith("external_user_")
+    assert calls[0][0][3] == "进一步分析"
+    assert calls[0][1]["history"] == [{"role": "assistant", "content": "历史结果"}]
 
 
 class _Repo:

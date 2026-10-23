@@ -7,12 +7,19 @@ only place that owns an expert's Skill lock and role rules.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from hailiang_skills.runtime_bridge.consultation_policy import (
+    ConsultationPolicy,
+    OrchestrationConfigError,
+    parse_applicable_stages,
+    parse_consultation_policy,
+    resolve_member_key,
+)
 from hailiang_skills.runtime_bridge.expert_bundle import ExpertRegistry
 
 
@@ -25,6 +32,7 @@ class ExpertTeamMember:
     expert_id: str
     mention_name: str
     routing_brief: str = ""
+    applicable_stages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +44,9 @@ class ExpertTeamDefinition:
     members: tuple[ExpertTeamMember, ...]
     brief: str = ""
     source_dir: Path | None = None
+    consultation_policy: ConsultationPolicy = field(default_factory=ConsultationPolicy)
+    fallback_expert_id: str = ""
+    collaboration_rules: str = ""
 
     @property
     def member_expert_ids(self) -> tuple[str, ...]:
@@ -62,6 +73,34 @@ class ExpertTeamRegistry:
         if definition is None:
             raise ExpertTeamBundleError(f"专家团不存在: {team_id}")
         return definition
+
+
+def published_team_overlay(
+    payload: dict[str, Any] | None,
+    locks: list[dict[str, Any]] | None,
+) -> tuple[ConsultationPolicy, str, dict[str, tuple[str, ...]]]:
+    """Read consultation fields from a published payload without failing the runtime."""
+    body = payload if isinstance(payload, dict) else {}
+    lock_rows = [item for item in locks or [] if isinstance(item, dict)]
+    try:
+        policy = parse_consultation_policy(body.get("consultation_policy") if "consultation_policy" in body else None)
+    except OrchestrationConfigError:
+        policy = ConsultationPolicy()
+    member_ids = {str(item.get("object_key") or "") for item in lock_rows}
+    fallback = resolve_member_key(str(body.get("fallback_expert_id") or ""), lock_rows)
+    if fallback not in member_ids:
+        fallback = ""
+    stages: dict[str, tuple[str, ...]] = {}
+    members = body.get("members") if isinstance(body.get("members"), list) else []
+    for item in members:
+        if not isinstance(item, dict):
+            continue
+        try:
+            parsed = parse_applicable_stages(item.get("applicable_stages"))
+        except OrchestrationConfigError:
+            parsed = ()
+        stages[str(item.get("expert_id") or "")] = parsed
+    return policy, fallback, stages
 
 
 def load_local_expert_team_registry(
@@ -133,13 +172,26 @@ def load_expert_team_bundle(
             raise ExpertTeamBundleError("members.mention_name 必须在团队内唯一")
         member_ids.add(expert_id)
         mentions.add(mention_name)
+        try:
+            stages = parse_applicable_stages(item.get("applicable_stages"))
+        except OrchestrationConfigError as exc:
+            raise ExpertTeamBundleError(str(exc)) from exc
         members.append(ExpertTeamMember(
             expert_id=expert_id,
             mention_name=mention_name,
             routing_brief=str(item.get("routing_brief") or "").strip(),
+            applicable_stages=stages,
         ))
     if coordinator_expert_id not in member_ids:
         raise ExpertTeamBundleError("coordinator_expert_id 必须属于 members")
+    try:
+        policy = parse_consultation_policy(raw.get("consultation_policy") if "consultation_policy" in raw else None)
+    except OrchestrationConfigError as exc:
+        raise ExpertTeamBundleError(str(exc)) from exc
+    fallback_expert_id = str(raw.get("fallback_expert_id") or "").strip()
+    if fallback_expert_id and fallback_expert_id not in member_ids:
+        raise ExpertTeamBundleError("fallback_expert_id 必须属于 members")
+    collaboration_rules = str(raw.get("collaboration_rules") or "").strip()
     return ExpertTeamDefinition(
         team_id=team_id,
         name=name,
@@ -148,6 +200,9 @@ def load_expert_team_bundle(
         members=tuple(members),
         brief=str(raw.get("brief") or "").strip(),
         source_dir=root,
+        consultation_policy=policy,
+        fallback_expert_id=fallback_expert_id,
+        collaboration_rules=collaboration_rules,
     )
 
 
@@ -180,6 +235,7 @@ def build_expert_team_catalog(
                 "name": expert.name if expert else member.expert_id,
                 "mention_name": member.mention_name,
                 "routing_brief": member.routing_brief,
+                "applicable_stages": list(member.applicable_stages),
                 "is_coordinator": member.expert_id == team.coordinator_expert_id,
                 "skills": [],
             }
@@ -216,6 +272,9 @@ def build_expert_team_catalog(
             "topology": "team",
             "coordinator_expert_id": team.coordinator_expert_id,
             "coordinator_name": coordinator.name if coordinator else team.coordinator_expert_id,
+            "consultation_policy": team.consultation_policy.as_dict(),
+            "fallback_expert_id": team.fallback_expert_id,
+            "collaboration_rules": team.collaboration_rules,
             "members": members,
         }
         if metadata:

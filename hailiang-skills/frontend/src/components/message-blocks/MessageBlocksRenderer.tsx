@@ -1,4 +1,6 @@
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { TaskProgressBlock, AgentInputRequest } from "@/components/message-blocks/TaskProgressBlock";
+import type { HarnessRun, HarnessInput } from "@/types/harness";
 import { CitationsBlock } from "@/components/message-blocks/CitationsBlock";
 import { FactFormBlock } from "@/components/message-blocks/FactFormBlock";
 import { PathActionsBlock } from "@/components/message-blocks/PathActionsBlock";
@@ -55,6 +57,12 @@ export function MessageBlocksRenderer({
     <div className="space-y-3">
       {groupedBlocks.map((block, index) => {
         const key = `${block.type}-${index}`;
+        if (block.type === "task_progress") {
+          return <TaskProgressBlock key={key} run={block.payload.run as HarnessRun} />;
+        }
+        if (block.type === "agent_input_request") {
+          return <AgentInputRequest key={key} request={block.payload.request as HarnessInput} sessionId={String(block.payload.session_id)} />;
+        }
         if (isStatusTimelineBlock(block)) {
           return <StatusTimelineBlock key={key} messageId={messageId} block={block} />;
         }

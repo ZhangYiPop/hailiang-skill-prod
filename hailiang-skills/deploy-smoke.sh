@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # Deploy one isolated, non-systemd API instance for BFF smoke testing.
-# This intentionally does not create or modify Docker infrastructure.
+# The API itself remains a bare-metal process.  Skill scripts are executed by
+# the separately containerized sandbox Runner, so this script may start or
+# reuse that one tightly scoped Docker service.
 
 # PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
 # INSTALL_MS_AGENT_RUNTIME=auto \
 # ./deploy-smoke.sh \
-#   --env ./env.8010.sh \
+#   --env ./env.8011.sh \
 #   --replace-port \
 #   --with-frontend
 
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ENV_FILE="$PROJECT_DIR/env.8010.sh"
+ENV_FILE="$PROJECT_DIR/env.8011.sh"
 REPLACE_PORT=0
 SKIP_INSTALL=0
 SKIP_MIGRATIONS=0
@@ -28,7 +30,7 @@ old-Linux-compatible Python wheels from the Tsinghua mirror, migrates only the
 configured isolated database, and verifies /health/ready.
 
 Options:
-  --env PATH          Private environment file (default: ./env.8010.sh)
+  --env PATH          Private environment file (default: ./env.8011.sh)
   --replace-port      Gracefully stop an existing Hailiang Uvicorn instance on
                       BACKEND_PORT and an existing smoke static frontend on
                       FRONTEND_PORT (when --with-frontend is set).
@@ -40,6 +42,9 @@ Options:
   -h, --help          Show this help.
 
 This script never starts, recreates, or removes PostgreSQL/Redis containers.
+It starts or reuses only the local skill-sandbox-runner when
+HAILIANG_SANDBOX_MANAGE_RUNNER is not set to 0.  The smoke API never executes
+Skill scripts in its own process.
 It refuses to replace an API listener unless it is a Hailiang Uvicorn process,
 or a frontend listener unless it is this project's static_frontend_server.py.
 EOF
@@ -98,6 +103,51 @@ wait_for_health() {
   return 1
 }
 
+ensure_remote_sandbox_runner() {
+  # Do not allow a smoke deployment to silently fall back to executing an
+  # untrusted published Skill in the API process.  The production K8s setup
+  # uses the same HTTP Runner protocol; bare-metal smoke simply manages a
+  # local Docker instance of that Runner.
+  export HAILIANG_SCRIPT_EXECUTOR="${HAILIANG_SCRIPT_EXECUTOR:-remote}"
+  export HAILIANG_REQUIRE_REMOTE_SANDBOX="${HAILIANG_REQUIRE_REMOTE_SANDBOX:-true}"
+  export SANDBOX_RUNNER_PORT="${SANDBOX_RUNNER_PORT:-8091}"
+  export HAILIANG_SANDBOX_ENDPOINT="${HAILIANG_SANDBOX_ENDPOINT:-http://127.0.0.1:${SANDBOX_RUNNER_PORT}}"
+
+  if [ "$HAILIANG_SCRIPT_EXECUTOR" != "remote" ]; then
+    echo "Smoke deployment requires HAILIANG_SCRIPT_EXECUTOR=remote." >&2
+    exit 2
+  fi
+  if [ "$HAILIANG_REQUIRE_REMOTE_SANDBOX" != "true" ]; then
+    echo "Smoke deployment requires HAILIANG_REQUIRE_REMOTE_SANDBOX=true." >&2
+    exit 2
+  fi
+  require_value HAILIANG_SANDBOX_SHARED_TOKEN
+
+  if [ "${HAILIANG_SANDBOX_MANAGE_RUNNER:-1}" != "0" ]; then
+    command -v docker >/dev/null 2>&1 || {
+      echo "Docker is required to start the isolated skill-sandbox-runner." >&2
+      exit 2
+    }
+    docker info >/dev/null 2>&1 || {
+      echo "Docker daemon is unavailable; cannot start skill-sandbox-runner." >&2
+      exit 2
+    }
+    echo "Starting/reusing isolated Skill Sandbox Runner: ${HAILIANG_SANDBOX_ENDPOINT}"
+    SANDBOX_RUNNER_PORT="$SANDBOX_RUNNER_PORT" \
+      HAILIANG_SANDBOX_SHARED_TOKEN="$HAILIANG_SANDBOX_SHARED_TOKEN" \
+      HAILIANG_SANDBOX_PYPI_INDEX_URL="${HAILIANG_SANDBOX_PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple/}" \
+      docker compose -f "$PROJECT_DIR/docker-compose.local.yml" up -d skill-sandbox-runner
+  else
+    echo "Using externally managed Skill Sandbox Runner: ${HAILIANG_SANDBOX_ENDPOINT}"
+  fi
+
+  if ! wait_for_health "${HAILIANG_SANDBOX_ENDPOINT}/healthz"; then
+    echo "Skill Sandbox Runner did not become ready: ${HAILIANG_SANDBOX_ENDPOINT}/healthz" >&2
+    echo "Set HAILIANG_SANDBOX_MANAGE_RUNNER=0 only when a healthy external Runner is already configured." >&2
+    exit 1
+  fi
+}
+
 stop_existing_smoke_frontend() {
   local port="$1"
   local existing_pids command_line
@@ -144,6 +194,7 @@ require_value HAILIANG_SECURITY_QUARANTINE_KEY
 require_value HAILIANG_SECURITY_ADMIN_TOKEN
 require_value DASHSCOPE_API_KEY
 require_value AGENT_SKILL_RUNTIME_CORE_PATH
+ensure_remote_sandbox_runner
 
 validate_base64_aes256_key() {
   local setting_name="$1"
@@ -187,10 +238,16 @@ validate_base64_aes256_key HAILIANG_SECURITY_QUARANTINE_KEY
   exit 2
 }
 # The normal test database and Redis namespace belong to the legacy test
-# service.  Requiring a distinct name prevents a smoke migration from changing it.
+# service. Each parallel smoke deployment declares a dedicated database name;
+# 8010 keeps the historical default for compatibility.
+SMOKE_DATABASE_NAME="${HAILIANG_SMOKE_DATABASE_NAME:-hailiang_skills_test_multi_profile_v1_smoke}"
+case "$SMOKE_DATABASE_NAME" in
+  *[!A-Za-z0-9_]*|"") echo "HAILIANG_SMOKE_DATABASE_NAME must contain only letters, digits, and underscores" >&2; exit 2 ;;
+esac
+export HAILIANG_SMOKE_DATABASE_NAME="$SMOKE_DATABASE_NAME"
 case "$HAILIANG_DATABASE_URL" in
-  *"/hailiang_skills_test_multi_profile_v1_smoke"|*"/hailiang_skills_test_multi_profile_v1_smoke?"*) ;;
-  *) echo "Smoke database must be the dedicated hailiang_skills_test_multi_profile_v1_smoke database" >&2; exit 2 ;;
+  *"/$SMOKE_DATABASE_NAME"|*"/$SMOKE_DATABASE_NAME?"*) ;;
+  *) echo "Smoke database must be the dedicated $SMOKE_DATABASE_NAME database" >&2; exit 2 ;;
 esac
 case "$HAILIANG_REDIS_KEY_PREFIX" in
   hailiang:smoke*) ;;
@@ -317,6 +374,7 @@ fi
 # where the application role does not have CREATEDB privileges.
 HAILIANG_DATABASE_URL="$HAILIANG_DATABASE_URL" \
 HAILIANG_DATABASE_ADMIN_URL="${HAILIANG_DATABASE_ADMIN_URL:-}" \
+HAILIANG_SMOKE_DATABASE_NAME="$HAILIANG_SMOKE_DATABASE_NAME" \
 HAILIANG_SMOKE_RESET_DATABASE="$RESET_DATABASE" \
   "$VENV_DIR/bin/python" - <<'PY'
 import os
@@ -325,7 +383,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
 target = make_url(os.environ["HAILIANG_DATABASE_URL"])
-expected = "hailiang_skills_test_multi_profile_v1_smoke"
+expected = os.environ["HAILIANG_SMOKE_DATABASE_NAME"]
 if target.database != expected:
     raise SystemExit(f"Smoke database must be {expected}, got {target.database!r}")
 

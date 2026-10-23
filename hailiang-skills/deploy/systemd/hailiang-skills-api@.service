@@ -1,7 +1,7 @@
 [Unit]
 Description=Hailiang Skills API (%i)
 After=network-online.target docker.service
-Wants=network-online.target
+Wants=network-online.target hailiang-skills-harness@%i.service
 
 [Service]
 Type=simple

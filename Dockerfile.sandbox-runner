@@ -1,0 +1,32 @@
+# Isolated executor image.  It deliberately excludes the API application,
+# database drivers, model credentials and Docker client.
+FROM swr.cn-east-3.myhuaweicloud.com/hljy-dc/base/python:3.12-slim
+
+ENV TZ=Asia/Shanghai \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HOME=/sandbox/work \
+    PYTHONPATH=/opt/hailiang_skills \
+    HAILIANG_SANDBOX_CACHE_DIR=/sandbox/cache \
+    HAILIANG_SANDBOX_WORK_DIR=/sandbox/work
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 sandbox \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /sandbox sandbox \
+    && mkdir -p /sandbox/cache /sandbox/work /opt/hailiang_skills/hailiang_skills \
+    && chown -R sandbox:sandbox /sandbox /opt/hailiang_skills
+
+RUN pip install --no-cache-dir "fastapi>=0.115.0,<1.0.0" "uvicorn>=0.30.0,<1.0.0" "pydantic>=2.8.0,<3.0.0"
+
+# Keep the package directory beneath a PYTHONPATH root.  Copying these files
+# directly to /opt/hailiang_skills would make `hailiang_skills` unimportable.
+COPY --chown=10001:10001 hailiang-skills/src/hailiang_skills/__init__.py /opt/hailiang_skills/hailiang_skills/__init__.py
+COPY --chown=10001:10001 hailiang-skills/src/hailiang_skills/sandbox_runner.py /opt/hailiang_skills/hailiang_skills/sandbox_runner.py
+
+USER 10001:10001
+WORKDIR /sandbox
+EXPOSE 8081
+CMD ["python", "-m", "uvicorn", "hailiang_skills.sandbox_runner:app", "--host", "0.0.0.0", "--port", "8081"]

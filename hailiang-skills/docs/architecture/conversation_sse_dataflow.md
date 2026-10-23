@@ -49,7 +49,7 @@ run_completed/run_cancelled -> status 终态
 ## 并发、停止和风控
 
 - 同一普通 `run_id` 重复调用返回 `409 RUN_ID_CONFLICT`。
-- 新用户动作会原子标记旧 run 为 `superseded`，未完成助手回答不持久化。
+- 新用户动作会原子标记旧 run 为 `superseded`，保存已展示的部分回答及已确认 Facts 供新一轮上下文使用；旧 run 未展示的助手尾部不会保留。
 - `stop` 只允许当前活动 run，终态 `stopped` 保留已发送正文，不再添加表单或 Skill 卡片。
 - 风控每阶段立即写入 `risk`；输出拦截会清空本轮正文、表单和 Skill 卡片，并输出通用提示。
 

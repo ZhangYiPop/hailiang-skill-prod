@@ -26,6 +26,7 @@ POSTGRES_HOST_PORT="${POSTGRES_HOST_PORT:-}"
 REDIS_HOST_PORT="${REDIS_HOST_PORT:-}"
 OTEL_HOST_PORT="${OTEL_HOST_PORT:-}"
 OTEL_METRICS_HOST_PORT="${OTEL_METRICS_HOST_PORT:-}"
+SANDBOX_RUNNER_PORT="${SANDBOX_RUNNER_PORT:-8091}"
 
 usage() {
   cat <<'EOF'
@@ -104,12 +105,39 @@ resolve_infra_port() {
   fi
   choose_host_port "$preferred" "$@"
 }
+start_local_sandbox_runner() {
+  require_command docker
+  if ! docker info >/dev/null 2>&1; then
+    echo "❌ Docker Desktop 尚未启动，无法启动本地 Skill 沙箱 Runner。"
+    exit 1
+  fi
+  SANDBOX_RUNNER_PORT="$(resolve_infra_port skill-sandbox-runner 8081 "${SANDBOX_RUNNER_PORT:-8091}" 18091 28091 38091)"
+  export SANDBOX_RUNNER_PORT
+  export HAILIANG_SCRIPT_EXECUTOR="remote"
+  export HAILIANG_SANDBOX_ENDPOINT="${HAILIANG_SANDBOX_ENDPOINT:-http://127.0.0.1:${SANDBOX_RUNNER_PORT}}"
+  export HAILIANG_SANDBOX_SHARED_TOKEN="${HAILIANG_SANDBOX_SHARED_TOKEN:-local-dev-sandbox-token}"
+  export HAILIANG_REQUIRE_REMOTE_SANDBOX="${HAILIANG_REQUIRE_REMOTE_SANDBOX:-true}"
+  local_compose up -d skill-sandbox-runner
+  echo "   Skill Sandbox: ${HAILIANG_SANDBOX_ENDPOINT}"
+  for _ in $(seq 1 30); do
+    if curl --connect-timeout 1 --max-time 2 -fsS "${HAILIANG_SANDBOX_ENDPOINT}/healthz" >/dev/null 2>&1; then return; fi
+    sleep 1
+  done
+  echo "❌ 本地 Skill 沙箱 Runner 未就绪，请查看：docker compose -f ${LOCAL_COMPOSE_FILE} logs skill-sandbox-runner"
+  exit 1
+}
 choose_application_port() {
   local preferred="$1"
   shift
   if port_is_available "$preferred"; then
     echo "$preferred"
     return
+  fi
+  # 双击重启脚本会设置该变量，避免静默换端口后书签和调试台地址对不上。
+  if [ "${HAILIANG_LOCK_PORTS:-}" = "1" ]; then
+    echo "❌ 应用端口 ${preferred} 已被占用，已停止自动换端口。" >&2
+    echo "   请查看占用进程：lsof -nP -iTCP:${preferred} -sTCP:LISTEN" >&2
+    exit 1
   fi
   echo "⚠️  应用端口 ${preferred} 已被占用，正在选择本地备用端口。" >&2
   local candidate
@@ -217,6 +245,10 @@ if [ "$START_INFRA" = "1" ] && [ "$HAILIANG_STORAGE_BACKEND" = "postgres" ]; the
   echo "   PostgreSQL: $HAILIANG_DATABASE_URL"
   echo "   Redis:      $HAILIANG_REDIS_URL"
   local_compose up -d postgres redis otel-collector
+fi
+
+if [ "${HAILIANG_SCRIPT_EXECUTOR:-remote}" = "remote" ]; then
+  start_local_sandbox_runner
 fi
 
 if [ "$HAILIANG_STORAGE_BACKEND" = "postgres" ]; then

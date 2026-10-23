@@ -1,0 +1,24 @@
+[Unit]
+Description=Hailiang Skills Harness Worker (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+PartOf=hailiang-skills-api@%i.service
+
+[Service]
+Type=simple
+User=hailiang
+Group=hailiang
+EnvironmentFile=/etc/hailiang-skills/%i.env
+WorkingDirectory=/opt/hailiang-skills/current-%i
+ExecStart=/opt/hailiang-skills/current-%i/.venv/bin/python -m hailiang_skills.harness.worker
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=90
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ReadWritePaths=/var/lib/hailiang-skills
+
+[Install]
+WantedBy=multi-user.target

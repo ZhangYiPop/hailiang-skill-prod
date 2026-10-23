@@ -1,6 +1,7 @@
 schema_version: 1
-id: career_plan_expert
+id: e_career_planner
 name: 升学规划专家
+brief: 面向学生和家长，处理升学路径、选科、院校专业与学业规划。
 rule_file: AGENT.md
 topology: single_expert
 skills:
@@ -18,5 +19,5 @@ budget:
   max_skill_calls: 3
 capabilities:
   - execute_skill
-  - request_declared_form
+  - request_user_input
   - read_effective_facts

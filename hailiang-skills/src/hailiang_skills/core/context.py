@@ -82,6 +82,9 @@ class SessionContext:
             "_profile_branch_created",
             "_sse_profile_context",
             "configuration_snapshot",
+            "runtime_mode",
+            "harness_experts_disabled",
+            "workbench_debug_session_id",
             # The chosen Team/member belongs to the whole user-visible
             # session. Child branches still own their histories, facts,
             # forms and active Skill, but a later child switch must not make

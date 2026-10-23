@@ -32,6 +32,41 @@ class RouteSuggestionConfig:
     general_chat_card_threshold: float = 0.90
 
 
+@dataclass(frozen=True)
+class SelectableModel:
+    id: str
+    label: str
+    model: str
+
+
+class UnknownTesterModelError(ValueError):
+    """The Q&A tester asked for a model that is not in the configured list."""
+
+
+def tester_model_switch_allowed(environment: str) -> bool:
+    """Production stays on the default model. Local development defaults to test."""
+    value = str(environment or "").strip().lower()
+    return value == "test" or value.startswith("test-")
+
+
+def _parse_selectable_models(raw: object) -> tuple[SelectableModel, ...]:
+    if not isinstance(raw, list):
+        return ()
+    options: list[SelectableModel] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        model_name = str(item.get("model") or "").strip()
+        label = str(item.get("label") or model_id).strip() or model_id
+        if not model_id or not model_name or model_id in seen:
+            continue
+        seen.add(model_id)
+        options.append(SelectableModel(id=model_id, label=label, model=model_name))
+    return tuple(options)
+
+
 @dataclass
 class LLMConfig:
     provider: str
@@ -43,8 +78,26 @@ class LLMConfig:
     max_tokens: int = 8000
     enable_thinking: bool = False
     return_reasoning: bool = False
+    enable_search: bool = False
+    search_options: dict = field(default_factory=dict)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     route_suggestions: RouteSuggestionConfig = field(default_factory=RouteSuggestionConfig)
+    selectable_models: tuple[SelectableModel, ...] = ()
+
+    def resolve_tester_model(self, requested: str, *, environment: str) -> str:
+        """Return the configured model name for a tester choice.
+
+        An empty choice, or any choice outside test environments, keeps the
+        default model. An unknown choice in a test environment is rejected so
+        the tester does not silently stay on Flash.
+        """
+        key = str(requested or "").strip()
+        if not key or not tester_model_switch_allowed(environment):
+            return ""
+        for option in self.selectable_models:
+            if key == option.id or key == option.model:
+                return option.model
+        raise UnknownTesterModelError(key)
 
     @property
     def api_key(self) -> str | None:
@@ -80,4 +133,5 @@ def load_llm_config(path: Path | None = None) -> LLMConfig:
             1.0,
         ),
     )
+    data["selectable_models"] = _parse_selectable_models(data.get("selectable_models"))
     return LLMConfig(**data)

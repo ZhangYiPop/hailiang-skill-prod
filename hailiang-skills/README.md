@@ -2,6 +2,8 @@
 
 面向升学咨询场景的 Skill Runtime 融合版对话引擎。
 
+对话 Harness 的调用边界、恢复机制与验收依据见 [升级计划](docs/architecture/conversation_harness_upgrade.md)，运行配置、接口与本次验证结果见 [Harness 运行说明](docs/architecture/conversation_harness_runtime.md)。新会话使用独立 Harness，旧会话保持 legacy 链路。
+
 ## 管理汇报材料
 
 如果需要向业务管理层或技术管理层介绍这套 Agent 系统，建议优先阅读：
@@ -30,10 +32,29 @@
 其中对话链路、SSE 协议、事件顺序、表单/按钮/转场/取消/风控等完整说明，统一以 `docs/architecture/conversation_sse_dataflow.md` 为准。
 前端如果需要直接做 parser、状态机和 UI mock，优先参考 `guides/SSE_FRONTEND_MOCK_EXAMPLES.md`。
 
+## 业务配置从哪里加载（必读）
+
+Skill、专家、专家团有两套载体，**不要混着改**：
+
+| 载体 | 路径 / 位置 | 什么时候会用到 |
+| --- | --- | --- |
+| 仓库文件 | `runtime_skills/`、`runtime_agents/`、`runtime_agent_teams/` | 新库还没有 active 部署时的启动兜底；迁移导入源；单测对照 |
+| 调试台对象库 + 已激活部署 | 工作台对象 / 修订 / 发布，以及 `/deployment` 激活后的不可变 ZIP | **本机或环境一旦激活过部署，正式问答与调试台运行时只认这套** |
+
+默认 `HAILIANG_BUSINESS_CONFIG_SOURCE=auto`：有 active 部署就整包用数据库快照，不会再和仓库目录逐项拼装。因此在仓库里改 `AGENT.md` / `TEAM.md`，**不会**自动进当前会话；要改线上效果，请在 AI 业务调试台编辑对象 → 发布 → 激活部署。
+
+细节、回退变量与迁移命令见：
+
+- [业务配置数据库迁移与回退](guides/BUSINESS_CONFIGURATION_MIGRATION.md)
+- [AI 业务调试台业务使用手册](guides/AI_WORKBENCH_BUSINESS_USER_MANUAL.md)
+- [AI 业务调试台架构与运行手册](docs/architecture/business_workbench.md)
+
 业务调试台当前有两条不同的“导入”链路：
 
 - `递归导入到工作台对象库`：把导出的专家团 / 专家 / Skill 配置包按依赖闭包完整回灌到工作台对象库中。专家团包会自动递归导入其专家与 Skill，导入后对象可继续编辑、调试和发布。
 - `生产暂存导入`：把配置包导入部署暂存区，供后续激活 / 回滚使用，不会把对象回写到工作台对象库。
+
+候选修订测试区的 SSE 流式渲染最近做了前端节流整理：浏览器端会把高频 `reply_delta` 和 `state` 更新先合并，再按短间隔批量刷新 transcript 与调试摘要，避免长回复时因为逐 token 重渲染让 Workbench 明显卡顿；最终 `message / done / error` 事件仍会立即冲刷本地缓冲，保证收尾状态和服务端记录保持一致。
 
 最近一轮前后端联调中，围绕 `run_id / message_id / source_message_id` 的语义区别、toolbar 与推荐卡片进入 Skill 的请求差异、退出 Skill 的请求与返回、以及表单提交后“交互状态同步 + chat 续发”的双阶段链路，已补充到：
 

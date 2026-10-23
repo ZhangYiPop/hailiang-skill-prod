@@ -14,7 +14,8 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def make_event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+def make_event(event_type: str, payload: dict[str, Any], *, redact: bool = True) -> dict[str, Any]:
+    event_payload = enrich_payload(payload)
     return {
         "event_id": f"evt_{uuid4().hex[:12]}",
         "event_type": event_type,
@@ -24,7 +25,7 @@ def make_event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         # All domain events inherit the request/trace context.  This keeps
         # existing event consumers compatible while allowing a request to be
         # reconstructed from the session audit trail.
-        "payload": redact_log_payload(enrich_payload(payload)),
+        "payload": redact_log_payload(event_payload) if redact else event_payload,
     }
 
 

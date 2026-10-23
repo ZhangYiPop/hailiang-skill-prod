@@ -7,46 +7,81 @@
       "kind": "entry",
       "required_facts": [],
       "enable_intent_check": false,
-      "enable_satisfaction_check": false
+      "enable_satisfaction_check": false,
+      "required_fields": []
     },
     {
       "id": "collect",
       "kind": "collection",
-      "required_facts": ["grade"],
+      "required_facts": [
+        "grade"
+      ],
       "enable_intent_check": false,
-      "enable_satisfaction_check": false
+      "enable_satisfaction_check": false,
+      "required_fields": [
+        "grade"
+      ]
     },
     {
       "id": "confirm",
       "kind": "confirmation",
       "required_facts": [],
       "enable_intent_check": true,
-      "enable_satisfaction_check": true
+      "enable_satisfaction_check": true,
+      "required_fields": []
     },
     {
       "id": "analyze",
       "kind": "analysis",
       "required_facts": [],
       "enable_intent_check": true,
-      "enable_satisfaction_check": true
+      "enable_satisfaction_check": true,
+      "required_fields": []
     }
   ],
   "facts": {
-    "global": ["grade", "score_level", "talent", "gender"],
-    "skill": ["scene_goal", "conclusion_summary"],
+    "global": [
+      "grade",
+      "score_level",
+      "talent",
+      "gender"
+    ],
+    "skill": [
+      "scene_goal",
+      "conclusion_summary"
+    ],
     "stage": {
-      "collect": ["scene_goal"],
-      "confirm": ["revision_reason", "satisfaction_status"]
+      "collect": [
+        "scene_goal"
+      ],
+      "confirm": [
+        "revision_reason",
+        "satisfaction_status"
+      ]
     },
     "exports": {
       "promote_to_global": [],
-      "share_with_parent_skill": ["conclusion_summary"]
+      "share_with_parent_skill": [
+        "conclusion_summary"
+      ]
     }
   },
   "routes": [],
-  "accepts_scenes": ["前景探路"],
   "metadata": {
     "module_group": "child",
     "scene_name": "前景探路"
+  },
+  "fields": {
+    "uses": [
+      "scene_goal",
+      "conclusion_summary",
+      "grade",
+      "score_level",
+      "talent",
+      "gender"
+    ],
+    "outputs": [
+      "conclusion_summary"
+    ]
   }
 }

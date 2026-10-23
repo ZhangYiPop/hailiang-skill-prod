@@ -198,6 +198,34 @@ export type SoulRevision = {
   created_at: string;
 };
 
+export type RecommendationItem = {
+  recommendation_id: string;
+  title: string;
+  summary?: string;
+  match_terms?: string[];
+};
+
+export type OrchestrationRulePackageStatus = {
+  version: string;
+  source_version: string;
+  body_matches: boolean;
+  state: "current" | "body_current" | "stale" | "unknown";
+};
+
+export type OrchestrationRuleRevision = {
+  orchestration_revision_id: string;
+  revision_no: number;
+  head_rules: string;
+  tail_rules: string;
+  recommendation_rules: string;
+  recommendations: RecommendationItem[];
+  content_hash: string;
+  published: boolean;
+  created_by: string;
+  created_at: string;
+  rule_versions?: Partial<Record<"orchestrate_head" | "orchestrate_tail" | "recommend", OrchestrationRulePackageStatus>>;
+};
+
 export type StandardSkillConversion = {
   source: { entry_path: string; files: string[]; metadata: Record<string, unknown> };
   draft: Record<string, unknown>;
@@ -384,6 +412,16 @@ export const workbenchApi = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  updateObject: (
+    baseUrl: string,
+    objectId: string,
+    input: { name?: string; description?: string; actor_id: string },
+  ) =>
+    request<WorkbenchObject>(
+      baseUrl,
+      `/workbench/v1/objects/${objectId}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    ),
   archiveObject: (baseUrl: string, objectId: string, actorId: string) =>
     request<{ object_id: string; archived: true }>(
       baseUrl,
@@ -460,6 +498,12 @@ export const workbenchApi = {
     request<{ revisions: SoulRevision[] }>(baseUrl, "/workbench/v1/soul-revisions"),
   saveSoulRevision: (baseUrl: string, input: Record<string, unknown>) =>
     request<SoulRevision>(baseUrl, "/workbench/v1/soul-revisions", { method: "POST", body: JSON.stringify(input) }),
+  listOrchestrationRules: (baseUrl: string) =>
+    request<{ revisions: OrchestrationRuleRevision[] }>(baseUrl, "/workbench/v1/orchestration-rules"),
+  saveOrchestrationRules: (baseUrl: string, input: Record<string, unknown>) =>
+    request<OrchestrationRuleRevision>(baseUrl, "/workbench/v1/orchestration-rules", { method: "POST", body: JSON.stringify(input) }),
+  publishOrchestrationRules: (baseUrl: string, revisionId: string, input: Record<string, unknown>) =>
+    request<OrchestrationRuleRevision>(baseUrl, `/workbench/v1/orchestration-rules/${revisionId}/publish`, { method: "POST", body: JSON.stringify(input) }),
   previewStandardSkillConversion: async (baseUrl: string, file: File, actorId: string) => {
     const response = await fetch(`${normalizeBaseUrl(baseUrl)}/workbench/v1/standard-skill-conversions/preview?actor_id=${encodeURIComponent(actorId)}`, { method: "POST", body: file });
     if (!response.ok) throw await responseError(response, "标准 Skill 转换失败");
