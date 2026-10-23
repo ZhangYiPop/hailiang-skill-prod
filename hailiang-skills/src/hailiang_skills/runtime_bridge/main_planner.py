@@ -87,6 +87,7 @@ from hailiang_skills.runtime_bridge.question_progress import (  # noqa: E402
     detect_answered_question_repetition,
     question_ledger_projection,
     record_assistant_questions,
+    record_skipped_fields_from_tool,
     reconcile_user_answer,
     same_user_message_streak,
     apply_semantic_answers,
@@ -5676,6 +5677,22 @@ class MainPlannerOrchestrator:
         previous_skill_id = runtime_state.active_skill_id
         if previous_skill_id:
             reconcile_user_answer(runtime_state, previous_skill_id, user_message)
+            # Cross-channel dedup: sync skipped form fields from request_user_input
+            # tool results into the prose question ledger, so that detect_answered_
+            # question_repetition will catch a later natural-language re-ask like
+            # "你的英语水平怎么样？" after the user skipped "english_level" in a form.
+            for msg in getattr(runtime_state, "messages", []) or []:
+                if getattr(msg, "role", "") != "tool" or getattr(msg, "name", "") != "request_user_input":
+                    continue
+                raw = str(getattr(msg, "content", "") or "")
+                if not raw or not raw.startswith("{"):
+                    continue
+                try:
+                    result = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(result, dict) and result.get("skipped_fields"):
+                    record_skipped_fields_from_tool(runtime_state, previous_skill_id, result)
         expert_direct = context.session_meta.pop("expert_direct_reply", None)
         if isinstance(expert_direct, dict) and str(expert_direct.get("reply") or "").strip():
             # AgentScope already produced the role-bounded final answer.  Do

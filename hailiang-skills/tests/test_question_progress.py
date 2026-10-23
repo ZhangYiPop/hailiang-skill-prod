@@ -6,6 +6,7 @@ from hailiang_skills.runtime_bridge.question_progress import (
     same_user_message_streak,
     extract_questions,
     apply_semantic_answers,
+    record_skipped_fields_from_tool,
 )
 from hailiang_skills.skill_runtime.models import ChatMessage, SessionState
 
@@ -141,3 +142,98 @@ def test_semantic_answer_accepts_evidence_and_tracks_partial_information():
     assert len(projection["unresolved"]) == 1
     assert projection["unresolved"][0]["answer_evidence"]["missing"] == "预算"
     assert len(result["rejected_question_ids"]) == 2
+
+
+# ── semantic dedup tests ──
+
+
+def test_rephrased_question_is_detected_as_duplicate():
+    """Questions rephrased with added function words are caught.
+
+    The semantic overlap catches rephrasings that shuffle the same content
+    words, e.g. adding/removing function words like "的", "那", "吗".
+    Full synonym replacement ("水平"→"程度", "怎么样"→"如何") shares no
+    characters and is beyond character n-gram reach; embeddings would be
+    needed for those.
+    """
+    state = SessionState(session_id="semantic-dup", messages=[
+        ChatMessage(role="assistant", content="孩子的英语水平是雅思6分还是5分？"),
+    ])
+    record_assistant_questions(state, "sample", state.messages[0].content)
+    # User picks the first option via ordinal selection.
+    reconcile_user_answer(state, "sample", "选第一个，雅思6分")
+
+    # Strategy 1 (text substring): the normalized original text is contained
+    # in the rephrasing after removing "那"/"的"/"了".
+    repeated = detect_answered_question_repetition(
+        "那孩子的英语水平是雅思6分还是5分了？",
+        state,
+        "sample",
+    )
+    assert repeated, "rephrased question sharing key words should be detected"
+
+    # Strategy 3 (semantic overlap): rephrasing with different options but
+    # very similar wording and overlapping unigrams.
+    state2 = SessionState(session_id="semantic-dup-2", messages=[
+        ChatMessage(role="assistant", content="英语水平是否达到雅思6分？"),
+    ])
+    record_assistant_questions(state2, "sample2", state2.messages[0].content)
+    # Yes/no question answered with "是".
+    reconcile_user_answer(state2, "sample2", "是")
+    repeated2 = detect_answered_question_repetition(
+        "请问英语水平有达到雅思6分吗？",
+        state2,
+        "sample2",
+    )
+    assert repeated2, "similar wording should be caught via semantic overlap"
+
+
+def test_similar_option_sets_detected_across_rephrasing():
+    """Options expressed differently also catch re-asks."""
+    state = SessionState(session_id="option-dup", messages=[
+        ChatMessage(role="assistant", content="预算是20万以内还是20-30万？"),
+    ])
+    record_assistant_questions(state, "sample", state.messages[0].content)
+    reconcile_user_answer(state, "sample", "20-30万")
+
+    # Rephrased with same options
+    repeated = detect_answered_question_repetition(
+        "家庭预算是选20万以内还是20-30万？",
+        state,
+        "sample",
+    )
+    assert repeated
+
+
+def test_skipped_form_fields_block_prose_reask():
+    """Form-skipped fields (via record_skipped_fields_from_tool) block
+    a later natural-language re-ask."""
+    state = SessionState(session_id="cross-channel")
+    record_skipped_fields_from_tool(state, "cross_channel", {
+        "skipped_fields": [
+            {"key": "english_level", "label": "英语水平"},
+            {"key": "target_major", "label": "意向专业"},
+        ]
+    })
+
+    # The model now asks about English level in prose — must be detected
+    repeated = detect_answered_question_repetition(
+        "那你的英语水平怎么样？",
+        state,
+        "cross_channel",
+    )
+    assert repeated, "prose re-ask of skipped form field should be blocked"
+
+
+def test_record_skipped_fields_persists_in_ledger_projection():
+    """Skipped fields appear in the projection so prompt guard can use them."""
+    state = SessionState(session_id="projection-test")
+    record_skipped_fields_from_tool(state, "projection", {
+        "skipped_fields": [
+            {"key": "budget", "label": "家庭预算"},
+        ]
+    })
+    projection = question_ledger_projection(state, "projection")
+    answered_texts = [a.get("question") for a in projection["answered"]]
+    assert any("家庭预算" in t for t in answered_texts), \
+        "skipped field should appear in answered projection"
