@@ -1,6 +1,8 @@
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { TaskProgressBlock, AgentInputRequest } from "@/components/message-blocks/TaskProgressBlock";
+import { HarnessV3ProgressBlock } from "@/components/message-blocks/HarnessV3ProgressBlock";
 import type { HarnessRun, HarnessInput } from "@/types/harness";
+import type { HarnessV3Frame } from "@/types/harnessV3";
 import { CitationsBlock } from "@/components/message-blocks/CitationsBlock";
 import { FactFormBlock } from "@/components/message-blocks/FactFormBlock";
 import { PathActionsBlock } from "@/components/message-blocks/PathActionsBlock";
@@ -59,6 +61,9 @@ export function MessageBlocksRenderer({
         const key = `${block.type}-${index}`;
         if (block.type === "task_progress") {
           return <TaskProgressBlock key={key} run={block.payload.run as HarnessRun} />;
+        }
+        if (block.type === "task_progress_v3") {
+          return <HarnessV3ProgressBlock key={key} frame={block.payload.frame as HarnessV3Frame} />;
         }
         if (block.type === "agent_input_request") {
           return <AgentInputRequest key={key} request={block.payload.request as HarnessInput} sessionId={String(block.payload.session_id)} />;

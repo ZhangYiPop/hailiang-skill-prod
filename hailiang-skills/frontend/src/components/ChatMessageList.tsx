@@ -227,9 +227,12 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
         const citationBlocks = showCitations
           ? message.blocks.filter((block) => isCitationsBlock(block))
           : [];
+        const v3TaskBlocks = !presentation && !isUser
+          ? message.blocks.filter((block) => block.type === "task_progress_v3")
+          : [];
         const otherBlocks = presentation && "form_id" in presentation.form
           ? [{ type: "fact_form" as const, payload: presentation.form }]
-          : message.blocks.filter((block) => !isCitationsBlock(block) && !isStatusTimelineBlock(block));
+          : message.blocks.filter((block) => block.type !== "task_progress_v3" && !isCitationsBlock(block) && !isStatusTimelineBlock(block));
         const teamHandoff = !isUser && isActiveContext ? message.teamHandoff : undefined;
         const teamHandoffInteraction = message.interactionStates?.team_handoff;
         const showTeamHandoff = Boolean(
@@ -333,6 +336,13 @@ export function ChatMessageList({ messages, showCitations = false, activeSkill =
                       <MessageBlocksRenderer
                         messageId={message.id}
                         blocks={citationBlocks}
+                        onPathAction={handlePathAction}
+                        onSubmitFactForm={handleSubmitFactForm}
+                        interactionStates={interactionStates}
+                      />
+                      <MessageBlocksRenderer
+                        messageId={message.id}
+                        blocks={v3TaskBlocks}
                         onPathAction={handlePathAction}
                         onSubmitFactForm={handleSubmitFactForm}
                         interactionStates={interactionStates}

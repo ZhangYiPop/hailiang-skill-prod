@@ -125,3 +125,37 @@ def test_default_config_allows_education_profile_labels() -> None:
         "political_n",
         "inappropriate_discrimination",
     }
+
+
+def test_chunked_aliyun_advice_keeps_first_replacement_in_response_order() -> None:
+    class AdviceCloud:
+        available = True
+        failure_reason = None
+
+        def __init__(self):
+            self.calls = 0
+
+        def check(self, _content: str, *, stage: str, chat_id: str | None = None) -> ModerationResult:
+            del stage, chat_id
+            self.calls += 1
+            answer = "第一段代答" if self.calls == 1 else "第二段代答"
+            return ModerationResult(
+                matched=True,
+                risk_level="high",
+                labels=["violence"],
+                provider="aliyun",
+                mode="cloud",
+                raw={"Data": {"Advice": [{"Answer": answer}]}},
+            )
+
+    service = ModerationService(
+        lexicon_dir=Path("unused"),
+        quarantine_store=_QuarantineStore(),  # type: ignore[arg-type]
+        cloud_provider=AdviceCloud(),
+        local_provider=_LocalProvider(),
+    )
+    result = service.check("x" * 2001, stage="output", raise_on_block=False)
+
+    assert result.advice_answers() == ["第一段代答", "第二段代答"]
+    assert result.replacement_answer() == "第一段代答"
+    assert result.to_public_dict()["advice"] == ["第一段代答", "第二段代答"]

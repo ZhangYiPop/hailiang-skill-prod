@@ -9,6 +9,7 @@ from hailiang_skills.harness.policy import validate_skill_boundary
 from hailiang_skills.harness.runtime import HarnessRuntime
 from hailiang_skills.harness.store import HarnessStore
 from hailiang_skills.skill_runtime.models import AssistantTurnResult, ToolCallRequest
+from hailiang_skills.security.models import ModerationBlockedError, ModerationResult, OUTPUT_MODERATION_FALLBACK
 
 
 def policy():
@@ -61,6 +62,15 @@ def test_expert_parallel_wait_and_multi_round_resume(tmp_path):
     tasks = [t for t in run['tasks'].values() if t['kind'] == 'expert']
     assert {t['status'] for t in tasks} == {'waiting_for_user', 'completed'}
     assert 'B 内部结论' not in json.dumps(runtime.public(run), ensure_ascii=False)
+    product_tree = runtime.public(run, include_internal_ids=False)
+    assert product_tree['dispatch']['status'] == 'completed'
+    assert product_tree['dispatch']['planned_expert_count'] == 2
+    expert_nodes = [node for node in product_tree['nodes'] if node['kind'] == 'expert']
+    completed_expert = next(node for node in expert_nodes if node['status'] == 'completed')
+    assert completed_expert['agent_brief'] == '分析 B'
+    assert completed_expert['result']['conclusion'] == 'B 内部结论'
+    assert completed_expert['id'].startswith('node_')
+    assert completed_expert['parent_id'] == 'node_1'
     request = next(iter(run['inputs'].values()))
     submission = AnswerSubmission(user_id='u', profile_id='p', submission_id='answer1', expected_version=1, text='高二')
     runtime.answer(request['id'], submission)
@@ -369,6 +379,44 @@ def test_main_cannot_bypass_expert(tmp_path):
     assert validate_skill_boundary(['standalone'], {'a': {'skills': ['internal']}}) == ['standalone']
     with pytest.raises(HarnessError):
         validate_skill_boundary(['main_planner'], {'a': {'skills': ['career_plan_entity']}})
+    runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("advice", "expected", "source"),
+    [
+        ("阿里云代答", "阿里云代答", "aliyun_advice"),
+        (None, OUTPUT_MODERATION_FALLBACK, "project_fallback"),
+    ],
+)
+def test_blocked_final_main_reply_uses_safe_replacement(tmp_path, advice, expected, source):
+    class BlockingModeration:
+        def check(self, _content, *, stage, **_kwargs):
+            if stage == "output":
+                result = ModerationResult(
+                    matched=True,
+                    risk_level="high",
+                    labels=["violence"],
+                    provider="aliyun",
+                    mode="cloud",
+                    raw={"Data": {"Advice": [{"Answer": advice}]}} if advice else {},
+                )
+                raise ModerationBlockedError(result, stage="output")
+
+    class Client:
+        def complete_with_tools(self, *_args, **_kwargs):
+            return AssistantTurnResult(final_text="不应公开的原始模型回复")
+
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / "harness.sqlite3"), lambda _run: Client(), moderation=BlockingModeration())
+    run_id = runtime.create("s", "u", "p", "规划", policy())
+    advance(runtime, run_id, 2)
+    run = runtime.store.get(run_id)
+
+    assert run["status"] == "completed"
+    assert run["result"] == expected
+    assert run["outcome"] == "partial"
+    assert run["safety"] == {"replacement_applied": True, "replacement_source": source}
+    assert runtime.public(run)["result"] == expected
     runtime.close()
 
 
