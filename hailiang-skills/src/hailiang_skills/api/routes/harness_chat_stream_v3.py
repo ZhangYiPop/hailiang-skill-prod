@@ -55,8 +55,10 @@ class AnswerInput(TeamBoundInput):
     request_id: str = Field(min_length=1, max_length=80)
     # Stable task/bubble ID. A new request run_id is valid for every answer.
     assistant_message_id: str = Field(min_length=1, max_length=80)
-    submission_id: str = Field(min_length=1, max_length=100)
-    expected_version: int = Field(ge=1)
+    # Older product BFFs did not send these two fields.  The adapter fills
+    # them from the current card below while preserving strict answer rules.
+    submission_id: str | None = Field(default=None, min_length=1, max_length=100)
+    expected_version: int | None = Field(default=None, ge=1)
     answers: dict[str, Any] = Field(default_factory=dict)
     text: str | None = Field(default=None, max_length=120000)
     skipped: bool = False
@@ -604,9 +606,17 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                         ):
                             raise HTTPException(409, "INPUT_REQUEST_NOT_ACTIVE")
                     else:
+                        request_state = run.get("inputs", {}).get(input_data.request_id)
+                        if not isinstance(request_state, dict):
+                            raise HTTPException(409, "INPUT_REQUEST_NOT_ACTIVE")
+                        expected_version = input_data.expected_version or request_state["version"]
+                        # A deterministic server-side key preserves retry
+                        # idempotency for legacy callers that omit it; the
+                        # runtime still rejects a changed answer using it.
+                        submission_id = input_data.submission_id or f"v3:{input_data.request_id}:{expected_version}"
                         submission = InternalAnswerSubmission(
                             user_id=data.user_id, profile_id=data.profile_id,
-                            submission_id=input_data.submission_id, expected_version=input_data.expected_version,
+                            submission_id=submission_id, expected_version=expected_version,
                             answers=input_data.answers, text=input_data.text, skipped=input_data.skipped,
                         )
                         operation(lambda: runtime.answer(input_data.request_id, submission))

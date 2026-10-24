@@ -340,7 +340,9 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         assert f'"assistant_message_id": "{assistant_message_id}"' in resumed.text
         answer = {
             'session_id': 's', 'run_id': 'answer-1',
-            'input': json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'submission_id': 'answer-1', 'expected_version': request['version'], 'text': '高二', 'expert_team_id': 'team-a'}, ensure_ascii=False),
+            # Legacy V3 callers omit card version and submission ID.  The
+            # adapter derives both without relaxing strict answer semantics.
+            'input': json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高二', 'expert_team_id': 'team-a'}, ensure_ascii=False),
             'context_data': {'user_id': 'u', 'profile_id': 'p'},
         }
         accepted = client.post('/api/v3/sessions/chat/stream', json=answer)
