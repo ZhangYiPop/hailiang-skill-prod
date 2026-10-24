@@ -501,6 +501,11 @@ class HarnessRuntime:
                       "updates": {"type": "array", "minItems": 1, "maxItems": 12, "items": object_schema({
                           "key": {"type": "string"}, "value": {}, "scope": {"enum": ["task", "session", "profile", "user"]},
                           "status": {"enum": ["user_statement", "candidate", "assumption", "derived"]}, "evidence": {"type": "string"}}, ["key", "value", "scope", "status", "evidence"])}}, ["updates"]))]
+        if task["kind"] != "main":
+            result.append(spec("submit_findings", "记录本轮分析的结构化发现，内容不直接显示给用户。完成分析后先调用此工具，再输出自然文本回复。", object_schema({
+                "findings": {"type": "array", "items": {"type": "string"}, "description": "每条可独立验证的分析发现"},
+                "limitations": {"type": "array", "items": {"type": "string"}, "description": "信息不足或结论受限的地方"},
+                "unresolved": {"type": "array", "items": {"type": "string"}, "description": "未解决、可能需要后续关注的问题"}})))
         if task["kind"] == "main" and run["policy"]["experts"]:
             result.append(spec("delegate_tasks", "拆解为授权专家任务。使用批内唯一 key 和 depends_on，专家自主选择 Skill。", object_schema({
                 "tasks": {"type": "array", "minItems": 1, "maxItems": 12, "items": object_schema({
@@ -939,7 +944,7 @@ class HarnessRuntime:
         view = policy.get("orchestrator") or {}
         facts = {record.get("key"): record.get("value") for record in self.facts(run, task).values() if record.get("key")}
         history = [{"role": m["role"], "content": m["content"]} for m in task["messages"]
-                   if m.get("role") in {"user", "assistant"} and m.get("content") and not m.get("tool_calls")]
+                   if m.get("role") in {"user", "assistant", "system"} and m.get("content") and not m.get("tool_calls")]
         members = [m for m in view.get("members", []) if m.get("expert_id") in policy["experts"]]
         consult_policy = view.get("consultation_policy") or {}
         fallback = harness_fallback_expert_id(policy)
@@ -1712,6 +1717,15 @@ def _tool_signature(tool: dict) -> str:
             task['finalizing'] = True
             self._tool_result(tool, {'accepted': True, 'failed_subtasks': task.get('failed_subtasks')})
             changes.append({'event': 'finalizing', 'node_id': task['id']})
+        elif name == "submit_findings" and cp.enabled(run):
+            if task["kind"] == "main":
+                raise HarnessError("MAIN_AGENT_CANNOT_SUBMIT_FINDINGS")
+            existing = task.get("structured_result") or {}
+            for field in ("findings", "limitations", "unresolved"):
+                existing[field] = list(dict.fromkeys(existing.get(field, []) + (args.get(field) or [])))
+            task["structured_result"] = existing
+            self._tool_result(tool, {"recorded": {f: len(existing[f]) for f in ("findings", "limitations", "unresolved")}})
+            changes.append({"event": "findings_submitted", "node_id": task["id"]})
         elif name == "propose_fact_updates":
             results = []
             sources = [run["goal"]] + [json.dumps(q.get("answer", {}).get("answers", {}), ensure_ascii=False) for q in run["inputs"].values() if q["status"] == "answered"]
