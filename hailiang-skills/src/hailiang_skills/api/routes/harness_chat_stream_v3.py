@@ -377,14 +377,15 @@ def _suspended(run):
 
 
 def formal_v3_enabled() -> bool:
-    """V3 always executes through the formal multi-agent runtime.
+    """Keep public V3 on the candidate-test Harness execution runtime.
 
-    Candidate-revision manual tests and the product conversation console must
-    make the same expert-team, routing and Skill decisions.  Harness remains
-    the durable V3 frame projection, but it is no longer an alternative
-    business executor selected by an environment flag.
+    Workbench's candidate-revision test panel creates V3 Harness runs from an
+    immutable candidate snapshot. The conversation test console must use the
+    same planner, expert-team delegation and Skill execution semantics; the
+    formal adapter has different user-confirmed handoff behaviour and must
+    not be selected here.
     """
-    return True
+    return False
 
 
 def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, runtime, snapshot_resolver=None):

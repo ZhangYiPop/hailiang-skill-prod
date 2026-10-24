@@ -2,7 +2,6 @@ from types import SimpleNamespace
 import time
 
 from hailiang_skills.harness.formal_v3 import FormalV3TurnExecutor
-from hailiang_skills.api.routes.harness_chat_stream_v3 import formal_v3_enabled
 from test_harness import make_runtime
 from test_harness_context_v2 import v2_policy
 
@@ -18,10 +17,6 @@ class _Repository:
     def save(self, context):
         self.context = context
         self.saved += 1
-
-
-def test_v3_is_pinned_to_the_formal_multi_agent_runtime():
-    assert formal_v3_enabled() is True
 
 
 def test_formal_v3_executor_uses_orchestrator_and_leaves_harness_scheduler_idle(tmp_path):

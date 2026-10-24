@@ -16,9 +16,9 @@ export USER_ID="sse-v3-curl-user"
 export PROFILE_ID="sse-v3-curl-profile"
 ```
 
-V3 默认通过正式 Agent Team 运行时执行；它与 Workbench 候选修订手动测试
-共用同一套编排、专家路由与 Skill 执行能力，同时保留本手册中的 V3 请求体和
-SSE 完整帧协议。生产环境还应保持
+V3 默认通过 Harness 多 Agent 运行时执行；它与 Workbench 候选修订手动测试
+共用同一套编排、专家自动分派与 Skill 执行能力，同时保留本手册中的 V3 请求体
+和 SSE 完整帧协议。生产环境还应保持
 `HAILIANG_SCRIPT_EXECUTOR=remote` 与
 `HAILIANG_REQUIRE_REMOTE_SANDBOX=true`，确保 Skill 脚本不回退至 API 进程。
 
