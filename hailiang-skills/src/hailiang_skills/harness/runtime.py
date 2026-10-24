@@ -1411,6 +1411,10 @@ class HarnessRuntime:
                 changes.append({"event": "context_compressed", "node_id": task_id})
         self.store.mutate(run_id, save)
 
+def _tool_signature(tool: dict) -> str:
+    args = tool.get("arguments", {})
+    return f"{tool['name']}:{json.dumps(args, sort_keys=True, default=str)}"
+
     def _execute_tools(self, run_id, task_id, token):
         initial = self.store.get(run_id)
         for node_id in initial["tasks"][task_id]["pending_calls"]:
@@ -1438,14 +1442,15 @@ class HarnessRuntime:
                                            if t["name"] in SEARCH_TOOL_NAMES and t["task_id"] == task_id and t.get("attempts", 0))
                         if search_calls >= run["policy"]["settings"].get("max_search_calls_per_task", 10):
                             raise HarnessError("SEARCH_BUDGET_EXCEEDED")
-                    # 重复资产读取失败短路保护：同一 source 在同一 task 内连续失败≥3次
+                    # 通用工具调用熔断器：同一 signature（工具名+参数）在同一 task 内连续失败≥3次
                     # 直接报错拒绝调用，附带切换策略的指引，防止模型烧光预算。
-                    if tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
-                        source_key = tool["arguments"]["source"]
-                        failures = (task.get("runtime_state") or {}).get("_asset_failures", {})
-                        record = failures.get(source_key)
-                        if isinstance(record, dict) and record.get("count", 0) >= 3:
+                    sig = _tool_signature(tool)
+                    failures = (task.get("runtime_state") or {}).get("_tool_failures", {})
+                    record = failures.get(sig)
+                    if isinstance(record, dict) and record.get("count", 0) >= 3:
+                        if tool["name"] == "read_skill_asset":
                             raise HarnessError("ASSET_SOURCE_INCOMPATIBLE")
+                        raise HarnessError("TOOL_CIRCUIT_OPEN")
                     tool.update(status="running", execution_id=token, started_at=tool["started_at"] or now(), attempts=tool["attempts"] + 1)
                     task["tool_calls"] += 1
                     changes.append({"event": "tool_started", "node_id": node_id})
@@ -1470,16 +1475,17 @@ class HarnessRuntime:
                         result["field"] = ".".join(str(part) for part in exc.errors()[0]["loc"]) or "$"
                     if result["error"] == "ASSET_SOURCE_INCOMPATIBLE":
                         result["next_action"] = "当前 source 文件的数据格式与结构化读取不兼容。改用 search_skill_assets 语义搜索，或调用 read_skill_asset 省略 source 先列目录寻其他文件；不要重复尝试同一 source。"
+                    if result["error"] == "TOOL_CIRCUIT_OPEN":
+                        result["next_action"] = "此工具调用已连续失败3次，请换用其他工具或调整参数后重试。"
                     self._tool_result(tool, result, "failed")
                     changes.append({"event": "tool_failed", "node_id": node_id})
-                    # 累计 read_skill_asset 同一 source 的连续失败次数，用于短路保护
-                    if tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
-                        source_key = tool["arguments"]["source"]
-                        state = task.setdefault("runtime_state", {})
-                        failures = state.setdefault("_asset_failures", {})
-                        prev = failures.get(source_key)
-                        count = (prev.get("count", 0) + 1) if isinstance(prev, dict) else 1
-                        failures[source_key] = {"count": count, "last_error": result["error"]}
+                    # 累计工具调用失败次数（按 signature 分组），用于熔断保护
+                    sig = _tool_signature(tool)
+                    state = task.setdefault("runtime_state", {})
+                    failures = state.setdefault("_tool_failures", {})
+                    prev = failures.get(sig)
+                    count = (prev.get("count", 0) + 1) if isinstance(prev, dict) else 1
+                    failures[sig] = {"count": count, "last_error": result["error"]}
             self.store.mutate(run_id, begin)
             if external:
                 try:
@@ -1515,14 +1521,14 @@ class HarnessRuntime:
                     else:
                         self._tool_result(tool, result, "failed" if error else "completed")
                         changes.append({"event": "tool_failed" if error else "tool_completed", "node_id": node_id})
-                    # 累计 read_skill_asset 同一 source 的连续失败次数，用于短路保护
-                    if error and tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
-                        source_key = tool["arguments"]["source"]
+                    # 累计同一 tool+参数签名的连续失败次数，用于通用短路保护
+                    if error:
+                        sig = _tool_signature(tool)
                         state = run["tasks"][task_id].setdefault("runtime_state", {})
-                        failures = state.setdefault("_asset_failures", {})
-                        prev = failures.get(source_key)
+                        failures = state.setdefault("_tool_failures", {})
+                        prev = failures.get(sig)
                         count = (prev.get("count", 0) + 1) if isinstance(prev, dict) else 1
-                        failures[source_key] = {"count": count, "last_error": error}
+                        failures[sig] = {"count": count, "last_error": error}
                     # 追踪同一 source 的成功读取次数：超过阈值时注入提示防止逐页翻查浪费预算
                     if not error and tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
                         source_key = tool["arguments"]["source"]
