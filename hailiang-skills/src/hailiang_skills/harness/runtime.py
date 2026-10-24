@@ -1009,6 +1009,60 @@ class HarnessRuntime:
                                          members=members, policy=consult_policy, profile={"facts": facts, **facts},
                                          messages=history, fallback_expert_id=fallback)
             plan_json = plan.model_dump()
+            # ── Pre-flight fact gate ──────────────────────────────────────
+            # Before dispatching experts, check whether the activated skills
+            # share any required facts that the user hasn't provided yet.
+            # Collect them once through a unified input card so each skill
+            # doesn't ask the same question independently.
+            if plan.action == "consult" and not task.get("pre_flight_asked"):
+                from hailiang_skills.runtime_bridge.pre_flight_gate import (
+                    build_pre_flight_fields,
+                    collect_required_facts,
+                    missing_pre_flight_facts,
+                    resolve_skill_ids,
+                )
+                from hailiang_skills.core.facts_config import get_fact_label
+
+                target_expert_ids = [s.target_expert_id for s in plan.subtasks]
+                skill_ids = resolve_skill_ids(target_expert_ids, policy)
+                if skill_ids:
+                    required = collect_required_facts(skill_ids)
+                    missing = missing_pre_flight_facts(required, facts)
+                    if missing:
+                        labels = {k: get_fact_label(k) for k in required}
+                        fields = build_pre_flight_fields(missing, labels)
+
+                        def pre_flight_gate(current, changes, _db):
+                            if not self._valid(current, task_id, token):
+                                return
+                            live = current["tasks"][task_id]
+                            live["trace"][-1]["output"] = {"final_text": json.dumps(plan_json, ensure_ascii=False)}
+                            live["head_done"] = True
+                            live["pre_flight_asked"] = True
+                            current["orchestration"] = {"action": plan.action, "reason": plan.reason,
+                                                        "subtasks": plan_json["subtasks"]}
+                            self._record_node(current, live, "pre_flight_gate",
+                                              {"missing": missing, "skills": skill_ids},
+                                              {"missing": missing}, changes)
+                            arguments = {"title": "请补充以下信息", "fields": fields}
+                            call_id, node_id = identifier("call"), identifier("tool")
+                            current["tools"][node_id] = {
+                                "id": node_id, "call_id": call_id, "task_id": task_id, "parent_id": task_id,
+                                "name": "request_user_input", "arguments": arguments, "status": "queued",
+                                "attempts": 0, "created_at": now(), "started_at": None, "ended_at": None,
+                            }
+                            live["pending_calls"].append(node_id)
+                            live["messages"].append(serialize_message(ChatMessage(
+                                role="assistant", content="",
+                                tool_calls=(ToolCallRequest(call_id, "request_user_input", arguments),),
+                            )))
+                            live["status"] = "queued"
+                            changes.append({"event": "tool_created", "node_id": node_id})
+                            self._settle(current, changes, _db)
+
+                        self.store.mutate(run_id, pre_flight_gate)
+                        return
+            # ── End pre-flight gate ──────────────────────────────────────
             def apply_head(current, changes, db):
                 if not self._valid(current, task_id, token):
                     return
