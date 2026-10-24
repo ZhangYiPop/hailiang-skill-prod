@@ -311,6 +311,36 @@ main（主编排器）
 - 服务端维护问题组和跨专家复用：同一事实身份的答案只填写一次，所有匹配专家得到相同工具结果。完全相同的问题可能绑定多个专家任务，用户提交一次即可恢复所有绑定任务。
 - 前端在一张卡片内收集答案后，按 `request_id` 提交一次。可以部分填写；未填字段按本次跳过字段处理，不覆盖已有事实。全空提交等同跳过整张卡片。提交一部分字段并不会逐字段触发模型或推进卡片。
 - 当前卡片提交后，服务端更新完整状态帧：若当前组还有卡片，下一张会变为 `pending`；若当前组所有卡片已解决，当前组变为 `completed` 并提升最早的 `queued` 组；相关专家任务随后恢复分析。恢复后专家可能创建新卡片，新卡片进入新的活动组或队列组。
+
+### 回答字段校验与部分提交
+
+`answers` 的结构以当前活动卡片的 `input_requests[].fields` 为唯一依据，不可根据字段中文名、旧卡片或本地缓存猜测。提交时只传本次确实回答的字段；不知道、暂不愿回答或没有数据时，**直接省略该字段**，不要传入 `"无"`、`"暂无"`、`null`、空字符串或空数组等占位值。
+
+| 卡片字段 `input_type` | `answers[key]` 的合法值 | 未知或不回答时的写法 |
+| --- | --- | --- |
+| `text` | 字符串 | 省略该 `key` |
+| `single_select` | 与该字段某个 `options[].value` 完全相同的字符串 | 省略该 `key` |
+| `multi_select` | 由不重复的 `options[].value` 组成的字符串数组 | 省略该 `key` |
+| `integer` | JSON 整数，例如 `500` | 省略该 `key` |
+| `number` | JSON 数字，例如 `500`、`500.5` | 省略该 `key` |
+
+选项提交的是 `value`，不是展示给用户的 `label`，除非两者恰好相同。数值不能写成字符串：例如 `"estimated_score":"无"`、`"estimated_score":"500"` 都会返回 `INVALID_NUMBER`；正确写法是省略 `estimated_score`，或使用 `"estimated_score":500`。字段不属于当前卡片会返回 `UNKNOWN_ANSWER_FIELD`，枚举值不在该卡片选项中会返回 `INVALID_OPTION` 或 `INVALID_OPTIONS`。
+
+`skipped:true` 只表示**整张当前卡片全部跳过**，此时不得同时提交 `answers` 或 `text`；否则返回 `SKIP_WITH_ANSWERS`。部分提交应保持 `skipped:false`，并只在 `answers` 中保留已回答字段，例如：
+
+```json
+{
+  "action": "answer_input_request",
+  "assistant_message_id": "msg_xxx",
+  "request_id": "input_xxx",
+  "expert_team_id": "student_growth_expert_team",
+  "answers": {
+    "subject_choice": ["物理", "化学"],
+    "foreign_lang": "英语"
+  },
+  "skipped": false
+}
+```
 - 前端始终以最新完整帧替换气泡状态，再按 `input_queue.active_request_id` 重新选择卡片；不要自行切换同组下一题、推进组、移除其他专家的追问，或假设提交后任务已经完成。
 - 如果卡片仍为活动输入，但还有其他专家或工具可运行，SSE 会继续发送 `state`；只有没有可运行任务且仍等待用户时才发送 `done_suspended`。因此前端应在每个 `state` 帧检查活动卡片，不能只在 `done_suspended` 后才显示表单。
 

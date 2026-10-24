@@ -80,6 +80,25 @@ def test_run_api_ownership_idempotence_modes_and_private_trace(tmp_path, monkeyp
     runtime.close()
 
 
+def test_debug_trace_includes_execution_diagnostics_and_stays_private(tmp_path, monkeypatch):
+    import hailiang_skills.api.routes.harness as api
+    monkeypatch.setattr(api, 'capture_policy', lambda *_: policy())
+    runtime = make_runtime(tmp_path, lambda *_: call('finalize_response', {}))
+    repository = Repository()
+    repository.save(SessionContext(session_id='debug', user_id='u', session_meta={'runtime_mode': 'harness_v1', 'workbench_debug_session_id': 'dbg_1'}))
+    app = FastAPI()
+    app.include_router(build_harness_router(repository, Facts(), None, runtime), prefix='/api/v2')
+    rid = runtime.create('debug', 'u', None, '测试诊断', policy())
+    with TestClient(app) as client:
+        response = client.get(f'/api/v2/sessions/debug/harness/runs/{rid}/trace?user_id=u')
+        assert response.status_code == 200
+        diagnostics = response.json()['execution_diagnostics']
+        assert diagnostics['worker_wait_ms'] is not None
+        assert diagnostics['phases']
+        assert 'execution_diagnostics' not in client.get(f'/api/v2/sessions/debug/harness?user_id=u').text
+    runtime.close()
+
+
 def test_run_goal_seeds_explicit_grade_before_requesting_missing_facts(tmp_path, monkeypatch):
     import hailiang_skills.api.routes.harness as api
     monkeypatch.setattr(api, 'capture_policy', lambda *_: policy())

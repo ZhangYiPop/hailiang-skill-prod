@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import type { HarnessRun, HarnessNode, HarnessInput } from "@/types/harness";
 import { isHarnessTerminal } from "@/types/harness";
-import { harnessRequest, refreshHarness, submitHarnessAnswer, useHarnessState } from "@/hooks/useHarnessConversation";
+import { submitHarnessAnswer, useHarnessState } from "@/hooks/useHarnessConversation";
 import { useChatStore } from "@/store/useChatStore";
 import { createUuid } from "@/utils/uuid";
+import { HarnessExecutionDiagnostics, type HarnessExecutionDiagnosticsData } from "@/components/workbench/HarnessExecutionDiagnostics";
 
 const labels: Record<string, string> = { queued: "排队中", assigned: "已分派", running: "执行中", waiting_for_dependency: "等待前置任务",
   waiting_for_user: "等待你补充", completed: "已完成", failed: "执行失败", cancelled: "已停止", skipped: "未补充" };
@@ -202,6 +203,22 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
   const [clock, setClock] = useState(Date.now());
   const chatConnection = useHarnessState((s) => s.connection);
   const connection = suppliedConnection || chatConnection;
+  const apiBaseUrl = useChatStore((s) => s.apiBaseUrl);
+  const userId = useChatStore((s) => s.userId);
+  const [executionDiagnostics, setExecutionDiagnostics] = useState<HarnessExecutionDiagnosticsData | null>(null);
+  const debugSessionId = typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("workbench_debug_session_id") || "";
+  useEffect(() => {
+    if (!debugSessionId || !run.run_id || !run.session_id) { setExecutionDiagnostics(null); return; }
+    let cancelled = false;
+    const protocol = import.meta.env.VITE_HAILIANG_SSE_V3 === "true" ? "v3" : "v2";
+    void fetch(`${apiBaseUrl}/api/${protocol}/sessions/${encodeURIComponent(run.session_id)}/harness/runs/${encodeURIComponent(run.run_id)}/trace?user_id=${encodeURIComponent(userId)}`)
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload: { execution_diagnostics?: HarnessExecutionDiagnosticsData } | null) => {
+        if (!cancelled) setExecutionDiagnostics(payload?.execution_diagnostics || null);
+      })
+      .catch(() => { if (!cancelled) setExecutionDiagnostics(null); });
+    return () => { cancelled = true; };
+  }, [apiBaseUrl, debugSessionId, run.run_id, run.session_id, run.version, userId]);
   // A run can remain open while it waits for another task or for the user.
   // That wall-clock wait is not task execution, so it must not keep a UI
   // "running" timer growing after the scheduler has become idle.
@@ -260,6 +277,7 @@ export function TaskProgressBlock({ run, onSubmitAnswer, connection: suppliedCon
   return <section aria-label="任务动态状态" className="rounded-2xl border border-cyan-300/20 bg-cyan-950/20 p-4">
     <p className="text-sm text-cyan-100">{run.goal} · {labels[run.status] || "处理中"}</p>
     {(run.action || run.phase) && !isHarnessTerminal(run.status) && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-300">{run.action || run.phase}</p>}
+    {executionDiagnostics ? <div className="mt-3"><HarnessExecutionDiagnostics diagnostics={executionDiagnostics} /></div> : null}
     <p className="mt-1 text-xs text-slate-400">已完成 {run.completed_count} / {run.task_count} 项任务 · {run.waiting_count} 项等待补充 · {elapsedLabel}</p>
     {run.input_token_limit && <p className="mt-1 text-xs text-slate-400">累计模型输入估算 {run.input_tokens_estimated?.toLocaleString() ?? 0} / {run.input_token_limit.toLocaleString()} token{run.input_tokens_actual != null ? ` · 已回报实际输入 ${run.input_tokens_actual.toLocaleString()} token` : ""}</p>}
     {connection === "reconnecting" && !isHarnessTerminal(run.status) && <p role="status" className="mt-2 text-xs text-amber-200">连接恢复中，后台任务继续执行</p>}

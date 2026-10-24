@@ -254,7 +254,7 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
     @router.get("/sessions/{session_id}/harness/runs/{run_id}/trace")
     def trace(session_id: str, run_id: str, user_id: str, profile_id: str | None = None):
         from hailiang_skills.core.deployment import deployment_environment
-        from hailiang_skills.harness.runtime import debug_step_io
+        from hailiang_skills.harness.runtime import debug_step_io, execution_diagnostics
         context = access(session_id, user_id, profile_id)
         if deployment_environment().startswith("prod") or context is None or not context.session_meta.get("workbench_debug_session_id"):
             raise HTTPException(403, "HARNESS_TRACE_REQUIRES_DEBUG_SESSION")
@@ -266,7 +266,8 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                 "input_tokens_actual": run.get("input_tokens_actual", 0),
                 "input_tokens_charged": run.get("input_tokens_charged", run.get("input_tokens_estimated", 0)),
                 "tasks": [{"task_id": t["id"], "kind": t["kind"], "trace": t["trace"]} for t in run["tasks"].values()],
-                "steps": debug_step_io(run)}
+                "steps": debug_step_io(run),
+                "execution_diagnostics": execution_diagnostics(run)}
 
     @router.get("/sessions/{session_id}/harness/runs/{run_id}")
     def get_run(session_id: str, run_id: str, user_id: str, profile_id: str | None = None):
