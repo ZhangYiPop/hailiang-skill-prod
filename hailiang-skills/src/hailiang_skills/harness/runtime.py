@@ -840,6 +840,54 @@ class HarnessRuntime:
         publish()
         return AssistantTurnResult(final_text=content)
 
+    def _stream_orchestration_tail(self, client, run, task, token, messages):
+        """Stream the team tail into the durable final-message projection.
+
+        Expert tasks deliberately retain their complete internal answers.  The
+        only user-visible composition is the orchestration tail, so making
+        this call streaming is what improves first-token latency for both
+        one-expert and multi-expert team conversations.
+        """
+        stream_complete = getattr(client, "stream_complete", None)
+        if not callable(stream_complete):
+            # Lightweight test/deterministic clients only implement complete.
+            return str(client.complete(messages, request_purpose="orchestrator_tail") or "").strip()
+        from time import monotonic
+
+        run_id, task_id = run["run_id"], task["id"]
+        if not self.store.stream_text(run_id, task_id, token, reset=True):
+            raise HarnessError("EXECUTION_EXPIRED")
+        content, buffer, flushed, first_published = "", "", monotonic(), False
+
+        def cancelled():
+            return not self._valid(self.store.get(run_id), task_id, token)
+
+        def publish():
+            nonlocal buffer, flushed, first_published
+            if not buffer:
+                return
+            if self.moderation:
+                self.moderation.check(content, stage="output", session_id=run["session_id"], turn_id=task_id)
+            if not self.store.stream_text(run_id, task_id, token, buffer):
+                raise HarnessError("EXECUTION_EXPIRED")
+            buffer, flushed, first_published = "", monotonic(), True
+
+        for chunk in stream_complete(
+            messages,
+            cancel_check=cancelled,
+            request_purpose="orchestrator_tail",
+            max_tokens=run["policy"]["settings"].get("max_output_tokens", 8192),
+        ):
+            if chunk.content_delta:
+                content += chunk.content_delta
+                buffer += chunk.content_delta
+                # First token is intentionally published immediately; later
+                # chunks are lightly batched to avoid a write per token.
+                if not first_published or monotonic() - flushed >= 0.1:
+                    publish()
+        publish()
+        return content.strip()
+
     def execute(self, run_id, task_id, token):
         finished = threading.Event()
         heartbeat = threading.Thread(target=self._heartbeat, args=(run_id, task_id, token, finished), daemon=True)
@@ -1280,9 +1328,12 @@ class HarnessRuntime:
             if not stamp_call(prompt, "orchestrate_tail"):
                 return
             client = self.client_factory(run)
-            final = select_final_reply(rows, client=client, tail_rules=view.get("tail_rules", ""), user_question=goal,
-                                       collaboration_rules=view.get("collaboration_rules", ""))
-            text = str(final.get("text") or "").strip()
+            if run.get("wire_protocol") == "hailiang.sse.v3":
+                text = self._stream_orchestration_tail(client, run, task, token, prompt)
+            else:
+                final = select_final_reply(rows, client=client, tail_rules=view.get("tail_rules", ""), user_question=goal,
+                                           collaboration_rules=view.get("collaboration_rules", ""))
+                text = str(final.get("text") or "").strip()
         else:
             text = "本次分析尚未完成，暂时无法提供有充分依据的完整结论。"
             if not stamp_call([ChatMessage(role="system", content="编排尾：没有专家成功作答。")], "orchestrate_tail"):

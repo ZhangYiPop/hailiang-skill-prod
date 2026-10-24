@@ -1,8 +1,10 @@
 import json
 import pytest
-from test_harness import make_runtime, advance, call, postgres_test_backend
+from test_harness import make_runtime, advance, call, postgres_test_backend, orchestrated_policy, identity_seed
 from test_harness_context_v2 import v2_policy
 from hailiang_skills.harness.contracts import HarnessError
+from hailiang_skills.harness.runtime import HarnessRuntime
+from hailiang_skills.harness.store import HarnessStore
 from hailiang_skills.skill_runtime.models import AssistantTurnResult
 
 
@@ -234,6 +236,38 @@ def test_real_stream_interface_unicode_and_cancel(tmp_path):
     assert run['input_tokens_actual'] == 40
     root = run['tasks'][run['root_task_id']]
     assert not runtime.store.stream_text(rid, root['id'], root['lease_token'], '迟到')
+    runtime.close()
+
+
+def test_v3_team_tail_streams_final_summary_into_the_public_message(tmp_path):
+    from types import SimpleNamespace
+
+    head = json.dumps({
+        "action": "consult",
+        "subtasks": [{"subtask_id": "st_1", "question": "分析", "target_expert_id": "b", "priority": 1}],
+        "reason": "测试并行编排尾流式输出",
+    })
+
+    class Client:
+        def complete(self, _messages, request_purpose="", **_kwargs):
+            return head if request_purpose == "orchestrator_head" else "不应走非流式编排尾"
+
+        def complete_with_tools(self, _messages, _specs, **_kwargs):
+            return AssistantTurnResult(final_text="专家结论")
+
+        def stream_complete(self, _messages, **_kwargs):
+            yield SimpleNamespace(content_delta="汇总首段")
+            yield SimpleNamespace(content_delta="，汇总末段")
+
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / "harness.sqlite3"), lambda _run: Client())
+    run_id = runtime.create("s", "u", "p", "分析", orchestrated_policy(), identity_seed(), wire_protocol="hailiang.sse.v3")
+    advance(runtime, run_id, 12)
+    run = runtime.store.get(run_id)
+    assert run["status"] == "completed", run.get("error")
+    assert run["result"] == "汇总首段，汇总末段"
+    deltas = [event for event in runtime.store.public_events("s", "u", "p", 0) if event["type"] == "message.delta"]
+    assert len(deltas) == 2
+    assert "".join(event["data"]["text"] for event in deltas) == run["result"]
     runtime.close()
 
 

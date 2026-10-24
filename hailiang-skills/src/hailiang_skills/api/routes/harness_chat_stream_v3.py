@@ -351,6 +351,18 @@ def _project_product_state(snapshot: dict[str, Any], run: dict[str, Any]) -> dic
         "completed_count", "task_count", "input_tokens_estimated", "input_tokens_actual", "input_token_limit",
     )
     state = {key: deepcopy(source_run.get(key)) for key in allowed if key in source_run}
+    # While the orchestration tail is streaming, the durable run result is
+    # intentionally still empty.  The final-message entity is authoritative
+    # for the progressively accumulated text and lets existing state-only V3
+    # clients render it without learning a new SSE event type.
+    final_message_id = str(run.get("assistant_message_id") or f"{internal_run_id}:final")
+    final_message = next(
+        (item for item in snapshot.get("messages", [])
+         if item.get("id") == final_message_id and item.get("kind") == "final"),
+        {},
+    )
+    if not state.get("result") and final_message.get("content"):
+        state["result"] = deepcopy(final_message["content"])
     state.update({"dispatch": dispatch, "nodes": [projected_node(item) for item in source_nodes],
                   "inputs": inputs, "input_groups": groups})
     return state
@@ -424,6 +436,40 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         run = await asyncio.to_thread(runtime.store.get, harness_run_id)
         initial = await asyncio.to_thread(runtime.store.public_snapshot, run["session_id"], run["user_id"], run["profile_id"])
         cursor = initial["cursor"]
+        streamed_content = ""
+        initial_message_id = str(run.get("assistant_message_id") or f"{harness_run_id}:final")
+        initial_message = next((item for item in initial.get("messages", [])
+                                if item.get("id") == initial_message_id and item.get("kind") == "final"), {})
+        if isinstance(initial_message.get("content"), str):
+            streamed_content = initial_message["content"]
+
+        def delta_state(current_run, text: str, event_cursor: int):
+            """Translate an internal delta into a legacy-compatible state frame."""
+            frame = _payload(runtime, current_run, request_run_id=request_run_id,
+                             event="state", reason="final_text_delta", cursor=event_cursor)
+            frame["state"]["result"] = text
+            return frame
+
+        async def forward_pending(current_run):
+            """Replay persisted text deltas before terminal state, if any."""
+            nonlocal cursor, streamed_content
+            events = await asyncio.to_thread(
+                runtime.store.public_events, current_run["session_id"], current_run["user_id"], current_run["profile_id"], cursor,
+            )
+            if not events:
+                return [], []
+            cursor = max(event["seq"] for event in events)
+            frames = []
+            for item in events:
+                if item.get("run_id") != harness_run_id or item.get("type") != "message.delta":
+                    continue
+                data = item.get("data") if isinstance(item.get("data"), dict) else {}
+                text = data.get("text")
+                if isinstance(text, str) and text:
+                    streamed_content += text
+                    frames.append(delta_state(current_run, streamed_content, item["seq"]))
+            return frames, events
+
         # A terminal resume must replay only its durable final frame. It may
         # never make the BFF briefly render an active task again.
         if run["status"] in TERMINAL:
@@ -432,16 +478,17 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         yield format_sse_event("state", _payload(runtime, run, request_run_id=request_run_id, event="state", reason="stream_started", cursor=cursor))
         while not await http_request.is_disconnected():
             run = await asyncio.to_thread(runtime.store.get, harness_run_id)
+            delta_frames, events = await forward_pending(run)
+            for frame in delta_frames:
+                yield format_sse_event("state", frame)
             if run["status"] in TERMINAL:
                 yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
                 return
             if _suspended(run):
                 yield format_sse_event("done_suspended", _payload(runtime, run, request_run_id=request_run_id, event="done_suspended", reason="waiting_for_user", cursor=cursor))
                 return
-            events = await asyncio.to_thread(runtime.store.public_events, run["session_id"], run["user_id"], run["profile_id"], cursor)
             relevant = [event for event in events if event.get("run_id") == harness_run_id and event.get("type") in {"state", "done"}]
             if relevant:
-                cursor = max(event["seq"] for event in events)
                 latest = relevant[-1]
                 run = await asyncio.to_thread(runtime.store.get, harness_run_id)
                 event_name = "done" if latest.get("type") == "done" else "state"
@@ -452,7 +499,10 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
             if time.monotonic() - started >= timeout_seconds:
                 yield format_sse_event("done_timeout", _payload(runtime, run, request_run_id=request_run_id, event="done_timeout", reason="stream_timeout", cursor=cursor))
                 return
-            await asyncio.sleep(0.2)
+            # Tail text is already durably buffered; a short poll interval
+            # keeps first-token latency perceptible without changing the
+            # existing state-frame wire contract.
+            await asyncio.sleep(0.05)
 
     def authorised_message_run(request: V3ChatStreamRequest, assistant_message_id: str) -> str:
         return operation(lambda: runtime.store.message_run(

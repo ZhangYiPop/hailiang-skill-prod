@@ -212,7 +212,10 @@ class HarnessStore:
             if run['status'] in TERMINAL or task['lease_token'] != token or task['status'] != 'running' or task['lease_until'] <= now():
                 return False
             scope = lock_scope(db, run['session_id'], run['user_id'], run['profile_id'])
-            mid = run_id + ':final'
+            # Product V3 binds a stable bubble id immediately after creating
+            # the Harness run.  Stream into that same entity so incremental
+            # text and the terminal record never appear as two messages.
+            mid = str(run.get('assistant_message_id') or (run_id + ':final'))
             previous = scope.payload['messages'].get(mid, {})
             if reset:
                 upsert(db, scope, 'messages', 'message.updated', run_id, {'id': mid, 'run_id': run_id,
