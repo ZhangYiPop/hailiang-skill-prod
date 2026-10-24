@@ -519,6 +519,93 @@ def task_node(kind, goal, parent_id=None, expert_id=None, skill_id=None, complet
             "summary": "", "fact_versions": {}, "created_at": now(), "started_at": None, "ended_at": None, "lease_token": "", "lease_until": ""}
 
 
+def _debug_pre_flight_fields(
+    skill_id: str, policy: dict, seed_facts: dict,
+) -> list[dict[str, Any]]:
+    """Check whether *skill_id*'s entry-level required_facts are satisfied.
+
+    Reads ``runtime_contract.json`` from the new-spec directory and the legacy
+    ``runtime_skills/`` directory.  Returns ``request_user_input`` field
+    definitions for any missing required facts, or an empty list when all are
+    satisfied or the contract cannot be read.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    _FACT_KEY_ALIASES: dict[str, str] = {
+        "gaokao_province": "student_province",
+        "subject_choice": "subject_group",
+        "estimated_score": "score_total",
+        "education_budget": "budget_level",
+        "foreign_lang": "foreign_language",
+    }
+
+    # Locate the contract file.
+    contract: dict[str, Any] | None = None
+    _here = _Path(__file__).resolve()
+    search_dirs: list[_Path] = [
+        _Path("/Users/letty/code/工作/hailiang/测试/1020/新规范"),
+        _here.parents[2] / "runtime_skills",
+    ]
+    for base in search_dirs:
+        direct = base / skill_id / "runtime_contract.json"
+        if direct.is_file():
+            contract = _json.loads(direct.read_text(encoding="utf-8"))
+            break
+        for candidate in base.glob(f"*/{skill_id}/runtime_contract.json"):
+            contract = _json.loads(candidate.read_text(encoding="utf-8"))
+            break
+
+    if not contract:
+        return []
+
+    # Collect required_facts across collect stages.
+    required: dict[str, str] = {}  # canonical_key → contract_key
+    for stage in contract.get("stages", []):
+        if not isinstance(stage, dict):
+            continue
+        keys: list[str] = stage.get("required_facts") or stage.get("required_fields") or []
+        for key in keys:
+            canonical = _FACT_KEY_ALIASES.get(key, key)
+            if canonical not in required:
+                required[canonical] = key
+
+    if not required:
+        return []
+
+    # Check which are missing from seed_facts.
+    missing = [k for k in required if k not in seed_facts or seed_facts.get(k) is None]
+    if not missing:
+        return []
+
+    # Build field definitions with labels from facts_config.
+    try:
+        from hailiang_skills.core.facts_config import get_fact_label, get_fact_schema, get_fact_scope_policy
+        schema = get_fact_schema()
+    except Exception:
+        schema = {}
+
+    fields: list[dict[str, Any]] = []
+    for key in missing:
+        meta = schema.get(key, {})
+        field: dict[str, Any] = {
+            "key": key,
+            "label": meta.get("label", key),
+            "scope": "profile",
+            "fact_key": key,
+            "input_type": meta.get("input_type", "text"),
+            "required": False,
+        }
+        if meta.get("placeholder"):
+            field["placeholder"] = meta["placeholder"]
+        allowed = meta.get("allowed_values")
+        if allowed:
+            field["options"] = [{"label": v, "value": v} for v in allowed]
+        fields.append(field)
+
+    return fields
+
+
 class HarnessRuntime:
     def __init__(self, store, client_factory, tool_executor=None, moderation=None, *, lease_seconds=90):
         self.store, self.client_factory, self.tool_executor = store, client_factory, tool_executor
@@ -569,6 +656,41 @@ class HarnessRuntime:
             if not greeting_like:
                 from hailiang_skills.skill_runtime.models import ToolCallRequest
                 skill_id = debug_skill_id.strip()
+
+                # ── Debug pre-flight gate ──────────────────────────────────────
+                # 调试台单独测试 skill 时，主 agent 没有机会在分派前收集前置事实。
+                # 这里检查 skill 的 required_facts 是否已满足，缺失时先注入
+                # request_user_input，用户提交后再执行 execute_skill。
+                pre_flight_fields: list[dict[str, Any]] = []
+                try:
+                    pre_flight_fields = _debug_pre_flight_fields(
+                        skill_id, run["policy"], seed_facts or {},
+                    )
+                except Exception:
+                    pass  # 合同读取失败不影响调试，跳过前置门
+                # ── End debug pre-flight gate ──────────────────────────────────
+
+                tool_calls: list[ToolCallRequest] = []
+                if pre_flight_fields:
+                    pre_call_id = identifier("call")
+                    pre_tool_id = identifier("tool")
+                    pre_stamp = now()
+                    pre_args: dict[str, Any] = {
+                        "title": "请补充以下信息",
+                        "fields": pre_flight_fields,
+                    }
+                    run["tools"][pre_tool_id] = {
+                        "id": pre_tool_id, "call_id": pre_call_id,
+                        "task_id": root["id"], "parent_id": root["id"],
+                        "name": "request_user_input", "arguments": pre_args,
+                        "status": "queued", "attempts": 0,
+                        "created_at": pre_stamp, "started_at": None, "ended_at": None,
+                    }
+                    root["pending_calls"].append(pre_tool_id)
+                    tool_calls.append(ToolCallRequest(
+                        pre_call_id, "request_user_input", pre_args,
+                    ))
+
                 call_id = identifier("call")
                 tool_node_id = identifier("tool")
                 tool_stamp = now()
@@ -578,10 +700,12 @@ class HarnessRuntime:
                     "status": "queued", "attempts": 0, "created_at": tool_stamp, "started_at": None, "ended_at": None,
                 }
                 root["pending_calls"].append(tool_node_id)
+                tool_calls.append(ToolCallRequest(
+                    call_id, "execute_skill", {"skill_id": skill_id, "task": goal},
+                ))
                 root["messages"].append(serialize_message(ChatMessage(
                     role="assistant", content="",
-                    tool_calls=(ToolCallRequest(call_id, "execute_skill",
-                                               {"skill_id": skill_id, "task": goal}),),
+                    tool_calls=tuple(tool_calls),
                 )))
         run["context_policy_version"] = policy["settings"].get("context_policy_version", "v1")
         if cp.enabled(run):
@@ -674,11 +798,15 @@ class HarnessRuntime:
             if task["kind"] == "main":
                 result.append(spec("set_task_subject", "分派前确认本任务讨论当前档案还是其他对象。evidence 必须逐字来自用户问题或已提交答案。external 隔离当前档案，不能切换到其他用户档案。", object_schema({
                     "mode": {"enum": ["profile", "external"]}, "evidence": {"type": "string", "minLength": 1}}, ["mode", "evidence"])))
-            for item in result:
+            for idx, item in enumerate(result):
                 if item.name == "read_facts":
-                    item.parameters_schema.update(object_schema({
-                        "keys": {"type": "array", "items": {"type": "string"}},
-                        "known_versions": {"type": "object", "additionalProperties": {"type": "integer"}}}))
+                    item = ToolSpec(item.name,
+                        "读取当前任务适用事实。keys 为字符串数组，每个元素是单个 key（如 [\"province\"]），不要传入 JSON 序列化后的数组字符串。",
+                        {**item.parameters_schema, **object_schema({
+                            "keys": {"type": "array", "items": {"type": "string"}},
+                            "known_versions": {"type": "object", "additionalProperties": {"type": "integer"}}})},
+                        item.enabled)
+                    result[idx] = item
                 elif item.name == "execute_skill":
                     item.parameters_schema["properties"]["brief"] = cp.TaskBrief.model_json_schema()
                 elif item.name == "delegate_tasks":
@@ -1573,6 +1701,18 @@ class HarnessRuntime:
                         if tool["name"] == "read_skill_asset":
                             raise HarnessError("ASSET_SOURCE_INCOMPATIBLE")
                         raise HarnessError("TOOL_CIRCUIT_OPEN")
+                    # 空返回循环检测：同一 signature 在同一 task 内连续返回空结果≥3 次则拒绝，
+                    # 防止模型因 key 格式错误等问题反复调用同一工具烧光预算。
+                    _empty_streak = 0
+                    for _t in sorted(run["tools"].values(), key=lambda t: t.get("created_at", ""), reverse=True):
+                        if _t["task_id"] != task_id or _t["name"] != tool["name"] or _t["arguments"] != tool["arguments"]:
+                            continue
+                        if _t["status"] == "completed" and (not _t.get("result") or _t["result"] == {} or _t["result"] == []):
+                            _empty_streak += 1
+                        else:
+                            break
+                    if _empty_streak >= 3:
+                        raise HarnessError("TOOL_EMPTY_RESULT_LOOP")
                     tool.update(status="running", execution_id=token, started_at=tool["started_at"] or now(), attempts=tool["attempts"] + 1)
                     task["tool_calls"] += 1
                     changes.append({"event": "tool_started", "node_id": node_id})
@@ -1592,13 +1732,19 @@ class HarnessRuntime:
                     result = {"error": getattr(exc, "code", "INVALID_TOOL_ARGUMENTS")}
                     if isinstance(exc, SchemaError):
                         result["field"] = ".".join(str(part) for part in exc.absolute_path) or "$"
-                        result["expected"] = str(exc.validator_value) if exc.validator == "type" else str(exc.validator)
+                        if exc.validator == "pattern":
+                            result["expected"] = str(exc.validator_value)
+                            result["hint"] = f"值需匹配正则 {exc.validator_value}"
+                        else:
+                            result["expected"] = str(exc.validator_value) if exc.validator == "type" else str(exc.validator)
                     elif isinstance(exc, ValidationError) and exc.errors():
                         result["field"] = ".".join(str(part) for part in exc.errors()[0]["loc"]) or "$"
                     if result["error"] == "ASSET_SOURCE_INCOMPATIBLE":
                         result["next_action"] = "当前 source 文件的数据格式与结构化读取不兼容。改用 search_skill_assets 语义搜索，或调用 read_skill_asset 省略 source 先列目录寻其他文件；不要重复尝试同一 source。"
                     if result["error"] == "TOOL_CIRCUIT_OPEN":
                         result["next_action"] = "此工具调用已连续失败3次，请换用其他工具或调整参数后重试。"
+                    if result["error"] == "TOOL_EMPTY_RESULT_LOOP":
+                        result["next_action"] = "此工具调用已连续返回空结果3次，参数可能格式有误。检查 keys 是否为字符串数组而非 JSON 序列化字符串；检查 evidence_id 是否匹配工具要求格式。"
                     self._tool_result(tool, result, "failed")
                     changes.append({"event": "tool_failed", "node_id": node_id})
                     # 累计工具调用失败次数（按 signature 分组），用于熔断保护
@@ -1802,8 +1948,11 @@ class HarnessRuntime:
                 keys = args.get("keys")
                 records = {k: v for k, v in facts.items() if keys is None or v.get("key") in keys or k in keys}
                 task["read_fact_keys"] = sorted(set(task.get("read_fact_keys", []) + [v["key"] for v in records.values()]))
+                # 若模型未传 known_versions，自动用 task 已记录的版本过滤，
+                # 避免模型反复读取同一事实烧光调用预算。
+                known = args.get("known_versions") or task.get("fact_versions", {})
+                facts = {k: cp.compact_fact(k, v) for k, v in records.items() if known.get(k) != v["version"]}
                 task["fact_versions"].update({k: v["version"] for k, v in records.items()})
-                facts = {k: cp.compact_fact(k, v) for k, v in records.items() if args.get("known_versions", {}).get(k) != v["version"]}
             self._tool_result(tool, facts)
             changes.append({"event": "tool_completed", "node_id": tool["id"]})
         elif name == "set_task_subject" and cp.enabled(run):
