@@ -605,18 +605,21 @@ class HarnessRuntime:
                 log.exception("harness scheduler iteration failed")
 
     def claim(self, run_id):
+        _settle = self._settle
+        _invalidate_consumers = self._invalidate_consumers
+        _facts = self.facts
         def apply(run, changes, db):
             if run["status"] in TERMINAL:
                 return None
             for task in list(run["tasks"].values()):
                 if task["status"] == "completed" and task["fact_versions"]:
-                    current = self.facts(run, task, db)
+                    current = _facts(run, task, db)
                     if any(identity not in current or current[identity]["version"] != version for identity, version in task["fact_versions"].items()):
                         task.update(status="queued", stale=True, ended_at=None)
                         task["messages"].append({"role": "user", "content": "所用事实版本已变更，请复核并更新结论。"})
                         changes.append({"event": "task_requires_review", "node_id": task["id"]})
-                        self._invalidate_consumers(run, task["id"], changes)
-            self._settle(run, changes, db)
+                        _invalidate_consumers(run, task["id"], changes)
+            _settle(run, changes, db)
             running = 0
             for task in run["tasks"].values():
                 if task["status"] == "running":
