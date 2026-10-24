@@ -261,12 +261,60 @@ def public_dispatch(run):
     }
 
 
+def _public_summary(value, *, limit=28):
+    """Keep public progress specific without dumping an entire task prompt."""
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _public_task_label(run, task):
+    if task.get("kind") == "skill":
+        return _public_summary((run.get("policy", {}).get("skills", {}).get(task.get("skill_id"), {}) or {}).get("name") or "专项分析")
+    if task.get("kind") == "expert":
+        expert = (run.get("policy", {}).get("experts", {}) or {}).get(task.get("expert_id"), {}) or {}
+        return _public_summary(expert.get("name") or task.get("expert_id") or task.get("goal") or "专家任务")
+    return _public_summary(task.get("goal") or "当前任务")
+
+
+def _public_waiting_action(run, task):
+    tasks = run.get("tasks", {})
+    children = [item for item in tasks.values()
+                if item.get("parent_id") == task.get("id") and item.get("status") not in TERMINAL]
+    if children:
+        labels = list(dict.fromkeys(_public_task_label(run, item) for item in children))
+        summary = "、".join(labels[:2]) + ("等" if len(labels) > 2 else "")
+        if task.get("kind") == "main":
+            return f"正在等待{summary}完成专项分析"
+        return f"正在等待「{summary}」完成"
+    dependencies = [tasks.get(task_id) for task_id in task.get("depends_on") or []]
+    pending = [item for item in dependencies if isinstance(item, dict) and item.get("status") not in TERMINAL]
+    if pending:
+        summary = "、".join(_public_task_label(run, item) for item in pending[:2])
+        return f"正在等待「{summary}」完成"
+    if task.get("status") == "queued":
+        tools = [run.get("tools", {}).get(tool_id) for tool_id in task.get("pending_calls") or []]
+        tool = next((item for item in tools if isinstance(item, dict) and item.get("status") == "queued"), None)
+        if tool:
+            tool_label = {
+                "read_facts": "读取相关信息", "read_evidence": "读取参考资料",
+                "read_skill_asset": "读取专项资料", "search_skill_assets": "检索专项资料",
+                "execute_skill": "专项分析", "subject_requirements": "查询选科要求",
+            }.get(tool.get("name"), "专项工具")
+            return f"正在排队执行「{tool_label}」"
+        return f"正在排队处理「{_public_task_label(run, task)}」"
+    return "正在等待后续处理"
+
+
 def _public_phase(run, task):
     """Derive a safe user-facing phase/action without exposing model internals."""
     phase = str(run.get("phase") or "").strip()
     if task.get("kind") == "main":
         if task.get("tail_done"):
             return ("completed", "已完成最终回复")
+        if task.get("status") in {"waiting_for_dependency", "queued"} and (
+            task.get("status") == "waiting_for_dependency" or task.get("head_done") or task.get("pending_calls")
+        ):
+            return ("waiting_for_dependency", _public_waiting_action(run, task))
         if task.get("head_done") and not task.get("pending_calls"):
             return ("synthesizing", "编排器正在汇总专家结论")
         if not task.get("head_done"):
@@ -275,12 +323,14 @@ def _public_phase(run, task):
         if task.get("structured_result"):
             status = task["structured_result"].get("status") or "completed"
             return (status, "已提交专家结论")
+        if task.get("status") in {"waiting_for_dependency", "queued"}:
+            return ("waiting_for_dependency", _public_waiting_action(run, task))
         if task.get("pending_calls"):
             return ("using_skill", "正在执行 Skill 或工具")
-        if task.get("status") == "waiting_for_dependency":
-            return ("waiting_for_dependency", "等待前置任务结果")
         return ("analyzing", "正在分析任务")
     if task.get("kind") == "skill":
+        if task.get("status") in {"waiting_for_dependency", "queued"}:
+            return ("waiting_for_dependency", _public_waiting_action(run, task))
         return ("using_skill", "正在执行专项 Skill")
     return (phase or "running", "正在执行")
 
@@ -2652,6 +2702,9 @@ class HarnessRuntime:
         # persisted histories accurate while new runs use the run-level value.
         tail_done = bool(run.get("tail_done") or root_task.get("tail_done"))
         fallback_phase, fallback_action = _public_phase(run, root_task) if root_task else ("running", "正在执行")
+        root_is_waiting = root_task.get("status") in {"waiting_for_dependency", "queued"} and (
+            root_task.get("status") == "waiting_for_dependency" or root_task.get("head_done") or root_task.get("pending_calls")
+        )
         result = {"run_id": run["run_id"], "client_run_id": run.get("client_run_id"),
                 "assistant_message_id": run.get("assistant_message_id") or f"msg_harness_{run['run_id']}",
                 "record_version": run["version"], "session_id": run["session_id"], "profile_id": run["profile_id"],
@@ -2659,7 +2712,11 @@ class HarnessRuntime:
                 "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "input_groups": groups,
                 "created_at": run["created_at"], "updated_at": run["updated_at"],
-                "phase": run.get("phase") or fallback_phase, "action": run.get("action") or fallback_action,
+                # A persisted dispatch action is useful during startup, but it
+                # becomes stale once the root is specifically waiting on a
+                # named expert or task. Prefer the live, concrete explanation.
+                "phase": fallback_phase if root_is_waiting else run.get("phase") or fallback_phase,
+                "action": fallback_action if root_is_waiting else run.get("action") or fallback_action,
                 "dispatch": public_dispatch(run),
                 "synthesis_status": "completed" if tail_done else ("running" if run.get("phase") in {"synthesizing", "recommending"} else "pending"),
                 "recommendations_status": run.get("recommendations_status") or ("completed" if run.get("jump_cards") else ("not_started" if not run.get("tail_done") else "not_available")),

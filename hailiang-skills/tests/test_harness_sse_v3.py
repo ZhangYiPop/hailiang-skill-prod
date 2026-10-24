@@ -201,6 +201,37 @@ def test_v3_snapshot_projects_direct_main_agent_dispatch(tmp_path):
     runtime.close()
 
 
+def test_v3_snapshot_names_the_expert_or_skill_being_waited_for(tmp_path):
+    from hailiang_skills.harness.runtime import task_node
+
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    policy = v2_policy()
+    policy['experts']['career_plan_expert'] = {'name': '升学规划专家', 'brief': '', 'skills': []}
+    policy['experts']['study_expert'] = {'name': '学习指导师', 'brief': '', 'skills': []}
+    run_id = runtime.create('s', 'u', 'p', '分析', policy, wire_protocol='hailiang.sse.v3')
+
+    def attach(run, changes, _db):
+        root = run['tasks'][run['root_task_id']]
+        root.update(status='waiting_for_dependency', head_done=True)
+        expert = task_node('expert', '制定升学路径', root['id'], expert_id='career_plan_expert')
+        expert['status'] = 'waiting_for_dependency'
+        skill = task_node('skill', '核对方案资料', expert['id'], expert_id='career_plan_expert', skill_id='internal')
+        skill['status'] = 'running'
+        run['tasks'].update({expert['id']: expert, skill['id']: skill})
+        run['action'] = '正在并行执行 1 个专家任务'
+        changes.append({'event': 'expert_wait_fixture', 'node_id': root['id']})
+
+    runtime.store.mutate(run_id, attach)
+    snapshot = runtime.store.public_snapshot('s', 'u', 'p')
+    entity = next(item for item in snapshot['runs'] if item['id'] == run_id)
+    root = next(item for item in snapshot['nodes'] if item['id'] == runtime.store.get(run_id)['root_task_id'])
+    expert_node = next(item for item in snapshot['nodes'] if item['kind'] == 'expert')
+    assert entity['action'] == '正在等待升学规划专家完成专项分析'
+    assert root['action'] == entity['action']
+    assert expert_node['action'].startswith('正在等待「')
+    runtime.close()
+
+
 def test_v3_snapshot_projects_grouped_input_queue(tmp_path):
     from hailiang_skills.harness.contracts import AnswerSubmission
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
