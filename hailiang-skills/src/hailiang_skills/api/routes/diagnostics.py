@@ -446,6 +446,91 @@ def _test_environment() -> bool:
     return environment == "test" or environment.startswith("test-")
 
 
+def _harness_execution_assessment(run: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
+    """Classify a Harness wait without confusing orchestration with latency.
+
+    Raw nodes remain in the trace, but incident review repeatedly needs the
+    higher-level answer: did the plan serialize work, did capacity delay it,
+    was the user input gate active, or was the coordinator simply waiting for
+    otherwise independent experts before synthesis?
+    """
+    tasks = run.get("tasks") if isinstance(run.get("tasks"), dict) else {}
+    root_id = str(run.get("root_task_id") or "")
+    experts = [task for task in tasks.values() if isinstance(task, dict) and task.get("kind") == "expert"]
+    dependency_edges = [
+        {"task_id": task.get("id"), "expert_id": task.get("expert_id"), "depends_on": task.get("depends_on") or []}
+        for task in experts if task.get("depends_on")
+    ]
+    phases = execution.get("phases") if isinstance(execution.get("phases"), list) else []
+    queue_reasons: dict[str, list[str]] = {}
+    for phase in phases:
+        if not isinstance(phase, dict) or not phase.get("queue_reason"):
+            continue
+        queue_reasons.setdefault(str(phase["queue_reason"]), []).append(str(phase.get("id") or ""))
+    model_phases = [
+        {key: phase.get(key) for key in ("task_id", "purpose", "started_at", "completed_at", "duration_ms")}
+        for phase in (execution.get("model_phases") or []) if isinstance(phase, dict)
+    ]
+    findings: list[dict[str, Any]] = []
+    if dependency_edges:
+        findings.append({
+            "category": "orchestration", "code": "SERIAL_DEPENDENCY_CONFIGURED",
+            "severity": "info", "task_ids": [item["task_id"] for item in dependency_edges],
+            "message": "编排头为部分专家任务配置了 depends_on；这些任务按策略串行，不是性能排队。",
+        })
+    if queue_reasons.get("run_parallelism_limit"):
+        findings.append({
+            "category": "performance", "code": "RUN_PARALLELISM_LIMIT_REACHED",
+            "severity": "warning", "task_ids": queue_reasons["run_parallelism_limit"],
+            "message": "可运行任务达到本轮 max_parallel 上限，后续任务等待本轮并行槽位。",
+        })
+    if queue_reasons.get("awaiting_worker_claim"):
+        findings.append({
+            "category": "performance", "code": "WORKER_CLAIM_DELAY",
+            "severity": "info", "task_ids": queue_reasons["awaiting_worker_claim"],
+            "message": "任务已具备执行条件但尚未被 worker 领取；需结合 worker_wait_ms 判断是否为容量或调度延迟。",
+        })
+    if queue_reasons.get("waiting_for_user_input"):
+        findings.append({
+            "category": "input", "code": "WAITING_FOR_USER_INPUT",
+            "severity": "info", "task_ids": queue_reasons["waiting_for_user_input"],
+            "message": "任务正在等待表单或补充信息，不属于编排或模型性能问题。",
+        })
+    root = tasks.get(root_id) if root_id else {}
+    if isinstance(root, dict) and root.get("status") == "waiting_for_dependency" and not dependency_edges:
+        findings.append({
+            "category": "orchestration", "code": "SYNTHESIS_BARRIER",
+            "severity": "info", "task_ids": [root_id],
+            "message": "主编排器正在等待已独立派发的专家结果后统一汇总；这是多专家会诊的正常收口屏障。",
+        })
+    tail_phase = next((item for item in model_phases if item.get("purpose") == "orchestrate_tail"), None)
+    return {
+        "parallelism": {
+            "configured_max_parallel": execution.get("max_parallel"),
+            "running_task_count": execution.get("running_task_count"),
+            "expert_task_count": len(experts),
+            "independent_expert_task_count": len(experts) - len(dependency_edges),
+            "dependency_edges": dependency_edges,
+        },
+        "scheduler": {
+            "worker_wait_ms": execution.get("worker_wait_ms"),
+            "queue_reasons": queue_reasons,
+        },
+        "final_reply": {
+            "first_output_at": execution.get("first_output_at"),
+            "first_output_ms": execution.get("first_output_ms"),
+            "tail_phase": tail_phase,
+            "streaming_enabled": run.get("wire_protocol") == "hailiang.sse.v3",
+        },
+        "model_phases": model_phases,
+        "findings": findings or [{
+            "category": "observation", "code": "NO_ACTIVE_WAIT_BOTTLENECK",
+            "severity": "info", "task_ids": [],
+            "message": "当前轨迹未发现编排依赖、并行上限、worker 等待或表单等待证据。",
+        }],
+    }
+
+
 def _harness_runtime_trace(harness, session_id: str, *, run_id: str | None, limit: int,
                            include_content: bool) -> list[dict[str, Any]]:
     """Project durable V3 Harness state into an operator-only runtime trace."""
@@ -497,6 +582,7 @@ def _harness_runtime_trace(harness, session_id: str, *, run_id: str | None, limi
                 **({"answer": item.get("answer")} if include_content else {}),
             })
         orchestrator = policy.get("orchestrator") if isinstance(policy.get("orchestrator"), dict) else {}
+        execution = execution_diagnostics(run)
         traces.append({
             "run_id": run.get("run_id"), "session_id": run.get("session_id"), "profile_id": run.get("profile_id"),
             "status": run.get("status"), "created_at": run.get("created_at"), "updated_at": run.get("updated_at"),
@@ -519,7 +605,8 @@ def _harness_runtime_trace(harness, session_id: str, *, run_id: str | None, limi
                 "members": orchestrator.get("members") or [], "consultation_policy": orchestrator.get("consultation_policy") or {},
             },
             "dispatch": run.get("dispatch") or {}, "tasks": task_nodes, "tools": tool_nodes,
-            "input_requests": input_requests, "execution_diagnostics": execution_diagnostics(run),
+            "input_requests": input_requests, "execution_diagnostics": execution,
+            "execution_assessment": _harness_execution_assessment(run, execution),
             "steps": _redact(debug_step_io(run), include_content=include_content),
         })
     return traces[-limit:]

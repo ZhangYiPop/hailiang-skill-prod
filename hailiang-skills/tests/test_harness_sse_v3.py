@@ -241,6 +241,7 @@ def test_real_stream_interface_unicode_and_cancel(tmp_path):
 
 def test_v3_team_tail_streams_final_summary_into_the_public_message(tmp_path):
     from types import SimpleNamespace
+    from hailiang_skills.harness.runtime import execution_diagnostics
 
     head = json.dumps({
         "action": "consult",
@@ -268,6 +269,9 @@ def test_v3_team_tail_streams_final_summary_into_the_public_message(tmp_path):
     deltas = [event for event in runtime.store.public_events("s", "u", "p", 0) if event["type"] == "message.delta"]
     assert len(deltas) == 2
     assert "".join(event["data"]["text"] for event in deltas) == run["result"]
+    tail = next(item for item in execution_diagnostics(run)["model_phases"] if item["purpose"] == "orchestrate_tail")
+    assert tail["completed_at"] is not None
+    assert tail["duration_ms"] is not None
     runtime.close()
 
 

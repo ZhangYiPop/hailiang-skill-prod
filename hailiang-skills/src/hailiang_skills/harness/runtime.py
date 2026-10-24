@@ -251,7 +251,12 @@ def public_dispatch(run):
         "parallel_task_count": independent,
         "ready_task_count": sum(item["execution_status"] in {"assigned", "running"} for item in experts),
         "blocked_task_count": sum(bool(item["depends_on"]) and item["execution_status"] == "assigned" for item in experts),
-        "max_parallelism": int((run.get("policy", {}).get("settings") or {}).get("max_parallel_experts", 3)),
+        # This must reflect the scheduler's actual setting.  Older snapshots
+        # may only contain the historical display field, so retain it as a
+        # fallback rather than showing a different cap from the one enforced.
+        "max_parallelism": int((run.get("policy", {}).get("settings") or {}).get(
+            "max_parallel", (run.get("policy", {}).get("settings") or {}).get("max_parallel_experts", 3)
+        ) or 1),
         "experts": experts,
     }
 
@@ -505,6 +510,7 @@ def execution_diagnostics(run):
         "worker_claimed_at": worker_claimed_at,
         "worker_wait_ms": _diagnostic_duration(run.get("created_at"), worker_claimed_at, current=generated_at),
         "first_model_phase": model_entries[0] if model_entries else None,
+        "model_phases": model_entries,
         "first_output_at": run.get("first_output_at"),
         "first_output_ms": _diagnostic_duration(run.get("created_at"), run.get("first_output_at"), current=generated_at),
         "max_parallel": max_parallel,
@@ -972,6 +978,7 @@ class HarnessRuntime:
                     return
                 live = current["tasks"][task_id]
                 live["trace"][-1]["output"] = asdict(response)
+                live["trace"][-1]["completed_at"] = now()
                 self._record_model_usage(current, live["trace"][-1], metrics)
                 if output_replacement:
                     current["outcome"] = "partial"
@@ -1240,6 +1247,7 @@ class HarnessRuntime:
                                 return
                             live = current["tasks"][task_id]
                             live["trace"][-1]["output"] = {"final_text": json.dumps(plan_json, ensure_ascii=False)}
+                            live["trace"][-1]["completed_at"] = now()
                             live["head_done"] = True
                             live["pre_flight_asked"] = True
                             current["orchestration"] = {"action": plan.action, "reason": plan.reason,
@@ -1271,6 +1279,7 @@ class HarnessRuntime:
                     return
                 live = current["tasks"][task_id]
                 live["trace"][-1]["output"] = {"final_text": json.dumps(plan_json, ensure_ascii=False)}
+                live["trace"][-1]["completed_at"] = now()
                 live["head_done"] = True
                 current["orchestration"] = {"action": plan.action, "reason": plan.reason, "subtasks": plan_json["subtasks"]}
                 if plan.action == "consult":
@@ -1377,6 +1386,7 @@ class HarnessRuntime:
             live = current["tasks"][task_id]
             if stamped:
                 live["trace"][-1]["output"] = {"final_text": text}
+                live["trace"][-1]["completed_at"] = now()
                 self._record_node(current, live, "orchestrate_tail", {"experts": [r["expert_id"] for r in rows]},
                                   {"mode": "direct" if sum(r["status"] == "completed" for r in rows) == 1 else "merge", "experts": rows}, changes)
             if recommend_io:

@@ -96,9 +96,33 @@ def test_session_diagnostics_includes_test_only_v3_harness_runtime_trace(monkeyp
     assert redacted[0]["configuration"]["expert_team"] == {"team_id": "team_001", "release_id": "release_001", "version": "v1"}
     assert redacted[0]["configuration"]["orchestration_rules"]["rule_versions"]["orchestrate_head"]["version"] == "v1.1"
     assert redacted[0]["orchestration"]["enabled"] is True
+    assessment = redacted[0]["execution_assessment"]
+    assert assessment["parallelism"]["configured_max_parallel"] == 3
+    assert assessment["final_reply"]["streaming_enabled"] is True
+    assert assessment["findings"][0]["code"] == "NO_ACTIVE_WAIT_BOTTLENECK"
     assert "goal" not in redacted[0]["tasks"][0]
     detailed = diagnostics._harness_runtime_trace(harness, "sess_001", run_id="harness_001", limit=10, include_content=True)
     assert detailed[0]["tasks"][0]["goal"] == "敏感问题"
+
+
+def test_harness_execution_assessment_separates_synthesis_from_capacity_wait() -> None:
+    run = {
+        "root_task_id": "root", "wire_protocol": "hailiang.sse.v3",
+        "tasks": {
+            "root": {"id": "root", "kind": "main", "status": "waiting_for_dependency"},
+            "expert_a": {"id": "expert_a", "kind": "expert", "expert_id": "a", "status": "running", "depends_on": []},
+            "expert_b": {"id": "expert_b", "kind": "expert", "expert_id": "b", "status": "queued", "depends_on": []},
+        },
+    }
+    execution = {
+        "max_parallel": 1, "running_task_count": 1, "worker_wait_ms": 8,
+        "phases": [{"id": "expert_b", "queue_reason": "run_parallelism_limit"}],
+        "model_phases": [], "first_output_at": None, "first_output_ms": None,
+    }
+    assessment = diagnostics._harness_execution_assessment(run, execution)
+    codes = {item["code"] for item in assessment["findings"]}
+    assert codes == {"RUN_PARALLELISM_LIMIT_REACHED", "SYNTHESIS_BARRIER"}
+    assert assessment["parallelism"]["independent_expert_task_count"] == 2
 
 
 def test_revision_test_diagnostics_exposes_frozen_candidate_trace_with_content_opt_in(monkeypatch, tmp_path) -> None:
