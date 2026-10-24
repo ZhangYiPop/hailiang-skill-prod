@@ -131,16 +131,13 @@ def validate_skill_boundary(independent, experts):
 def has_explicit_expert_selection(context):
     """Whether the user intentionally narrowed this run to one expert.
 
-    New Harness sessions bind the deployment team coordinator into session
-    metadata for legacy runtime compatibility.  That coordinator is an entry
-    marker, not a user choice: formal team orchestration must still receive
-    the full authorised team and run its head/tail.
-    """
+    Returns True when the user explicitly picked a specific expert.
+    Team default entries and deployment snapshots are not explicit choices —
+    the main Agent coordinates routing for these cases."""
     meta = context.session_meta if isinstance(context.session_meta, dict) else {}
     if not str(meta.get("expert_id") or "").strip():
         return False
     return str(meta.get("expert_selection_source") or "").strip() not in {
-        "default_coordinator",
         "deployment_snapshot",
         "input_team",
     }
@@ -317,7 +314,8 @@ def capture_policy(orchestrator, context):
         orchestrator_view["enabled"] = True
     fallback = str(orchestrator_view.get("fallback_expert_id") or "")
     if fallback not in expert_data and team is not None and getattr(team, "coordinator_expert_id", "") in expert_data:
-        # Older team snapshots name the catch-all expert only as coordinator.
+        # Backward compat: older team snapshots that predate fallback_expert_id
+        # may still carry a coordinator; reuse it as the fallback.
         fallback = team.coordinator_expert_id
     if fallback not in expert_data:
         fallback = ""

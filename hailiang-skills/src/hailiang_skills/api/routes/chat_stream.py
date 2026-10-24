@@ -344,8 +344,8 @@ def _apply_expert_context_operation(context, orchestrator, input_data: ProfileBo
         team = teams.get(expert_context.expert_team_id) if teams is not None else None
         if team is None:
             raise HTTPException(status_code=422, detail="EXPERT_TEAM_NOT_FOUND")
-        selected_expert_id = team.coordinator_expert_id
-        if selected_expert_id not in team.member_expert_ids:
+        selected_expert_id = team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else "")
+        if selected_expert_id and selected_expert_id not in team.member_expert_ids:
             raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
         if (actual["expert_team_id"], actual["expert_id"]) != (team.team_id, selected_expert_id):
             context.abandon_active_interactions_for_expert_change(
@@ -699,7 +699,7 @@ def _confirm_team_handoff(context, orchestrator, input_data: ConfirmTeamHandoffI
     interaction = ensure_message_interactions(source).get("team_handoff")
     if not isinstance(interaction, dict) or interaction.get("status") != ACTIVE:
         raise HTTPException(status_code=409, detail="TEAM_HANDOFF_NOT_ACTIVE")
-    from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
+    from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else ""))
     context.abandon_active_interactions_for_expert_change(
         reason="confirm_team_handoff",
         from_expert_id=from_expert_id,
@@ -802,7 +802,7 @@ def _switch_team_member(context, orchestrator, input_data: SwitchTeamMemberInput
     member = team.member_for_expert(input_data.target_expert_id)
     if member is None:
         raise HTTPException(status_code=422, detail="EXPERT_NOT_IN_ACTIVE_TEAM")
-    from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
+    from_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else ""))
     if from_expert_id != member.expert_id:
         context.abandon_active_interactions_for_expert_change(
             reason="switch_team_member",

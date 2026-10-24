@@ -40,12 +40,12 @@ class ExpertTeamDefinition:
     team_id: str
     name: str
     rules_markdown: str
-    coordinator_expert_id: str
     members: tuple[ExpertTeamMember, ...]
     brief: str = ""
     source_dir: Path | None = None
-    consultation_policy: ConsultationPolicy = field(default_factory=ConsultationPolicy)
+    coordinator_expert_id: str = ""
     fallback_expert_id: str = ""
+    consultation_policy: ConsultationPolicy = field(default_factory=ConsultationPolicy)
     collaboration_rules: str = ""
 
     @property
@@ -148,8 +148,8 @@ def load_expert_team_bundle(
     team_id = str(raw.get("id") or raw.get("team_id") or "").strip()
     name = str(raw.get("name") or "").strip()
     coordinator_expert_id = str(raw.get("coordinator_expert_id") or "").strip()
-    if not team_id or not name or not coordinator_expert_id:
-        raise ExpertTeamBundleError("team.yaml 必须包含 id、name、coordinator_expert_id")
+    if not team_id or not name:
+        raise ExpertTeamBundleError("team.yaml 必须包含 id、name")
     if str(raw.get("rule_file") or "TEAM.md").strip() != "TEAM.md":
         raise ExpertTeamBundleError("专家团规则文件必须是包根目录的 TEAM.md")
     members_raw = raw.get("members")
@@ -182,7 +182,7 @@ def load_expert_team_bundle(
             routing_brief=str(item.get("routing_brief") or "").strip(),
             applicable_stages=stages,
         ))
-    if coordinator_expert_id not in member_ids:
+    if coordinator_expert_id and coordinator_expert_id not in member_ids:
         raise ExpertTeamBundleError("coordinator_expert_id 必须属于 members")
     try:
         policy = parse_consultation_policy(raw.get("consultation_policy") if "consultation_policy" in raw else None)
@@ -225,7 +225,7 @@ def build_expert_team_catalog(
         return []
     items: list[dict[str, Any]] = []
     for team in sorted(team_registry.definitions.values(), key=lambda item: item.team_id):
-        coordinator = expert_registry.get(team.coordinator_expert_id) if expert_registry else None
+        coordinator = expert_registry.get(team.coordinator_expert_id) if (expert_registry and team.coordinator_expert_id) else None
         members = []
         for member in team.members:
             expert = expert_registry.get(member.expert_id) if expert_registry else None
@@ -236,7 +236,7 @@ def build_expert_team_catalog(
                 "mention_name": member.mention_name,
                 "routing_brief": member.routing_brief,
                 "applicable_stages": list(member.applicable_stages),
-                "is_coordinator": member.expert_id == team.coordinator_expert_id,
+                "is_coordinator": bool(team.coordinator_expert_id and member.expert_id == team.coordinator_expert_id),
                 "skills": [],
             }
             if expert is not None:
@@ -271,7 +271,7 @@ def build_expert_team_catalog(
             "description": _team_summary(team.rules_markdown),
             "topology": "team",
             "coordinator_expert_id": team.coordinator_expert_id,
-            "coordinator_name": coordinator.name if coordinator else team.coordinator_expert_id,
+            "coordinator_name": coordinator.name if coordinator else "",
             "consultation_policy": team.consultation_policy.as_dict(),
             "fallback_expert_id": team.fallback_expert_id,
             "collaboration_rules": team.collaboration_rules,
@@ -294,4 +294,4 @@ def _team_summary(markdown: str) -> str:
         text = line.strip().lstrip("- ").strip()
         if text and not text.startswith("#"):
             return text[:180]
-    return "由主协调专家分流、并由成员专家持续接管的专家团。"
+    return "由主 Agent 统一协调、成员专家各司其职的专家团。"

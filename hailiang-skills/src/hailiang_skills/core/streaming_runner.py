@@ -190,7 +190,6 @@ def _expert_state_payload(context, orchestrator, switch: dict[str, Any] | None =
                 "name": definition.name if definition is not None else expert_id,
                 "brief": definition.brief if definition is not None else "",
                 "mention_name": member.mention_name if member is not None else "",
-                "is_coordinator": expert_id == team.coordinator_expert_id,
             }
     elif definition is not None:
         mode = "single"
@@ -199,7 +198,6 @@ def _expert_state_payload(context, orchestrator, switch: dict[str, Any] | None =
             "name": definition.name,
             "brief": definition.brief,
             "mention_name": "",
-            "is_coordinator": False,
         }
     transition: dict[str, Any] = {}
     if isinstance(switch, dict):
@@ -211,25 +209,14 @@ def _expert_state_payload(context, orchestrator, switch: dict[str, Any] | None =
             "source_message_id": switch.get("source_message_id"),
         }
     activation: dict[str, Any] = {}
-    # Choosing an Expert Team always starts from its coordinator. Make that
-    # server-side fact explicit: the frontend must not guess it from matching
-    # IDs, and it must not mistake a later toolbar/handoff switch back to the
-    # coordinator for the initial default takeover.
+    # Team entry: when no specific expert is selected, the main Agent handles
+    # the routing. Mark the explicit activation source so the frontend can
+    # distinguish initial team entry from later toolbar/handoff switches.
     selection_source = str((context.session_meta or {}).get("expert_selection_source") or "").strip()
-    if mode == "team" and active.get("is_coordinator") and selection_source in {
-        "manual_team",
-        "default_coordinator",
-        "deployment_snapshot",
-    }:
-        activation = {
-            "source": "team_default_coordinator",
-            "is_default": True,
-            "selection_source": selection_source,
-        }
-    elif mode != "none":
+    if mode != "none":
         activation = {
             "source": "explicit_or_restored",
-            "is_default": False,
+            "is_default": not selection_source,
             "selection_source": selection_source,
         }
     return {

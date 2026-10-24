@@ -168,8 +168,8 @@ def build_finalized_payload(
     elif is_expert_team_turn:
         # A team has its own, explicit handoff protocol.  Generic Skill route
         # cards would bypass member confirmation and, worse, look identical
-        # to a team recommendation in the UI.  Only the coordinator's
-        # ``team_handoff`` card may offer a transfer in this mode.
+        # to a team recommendation in the UI.  Only member-generated
+        # ``team_handoff`` cards may offer a transfer in this mode.
         route_suggestions = []
         route_analysis_event = {
             "active_skill": active_skill,
@@ -179,7 +179,7 @@ def build_finalized_payload(
             "fallback_used": False,
             "monitor_every_turn": monitor_route_suggestions_every_turn,
             "skipped_reason": "expert_team_turn",
-            "analysis_reason": "专家团会话仅使用主协调专家的成员转交卡，不生成通用 Skill 建议。",
+            "analysis_reason": "专家团会话使用成员专家的转交卡，不生成通用 Skill 建议。",
             "error": "",
             "duration_ms": 0,
         }

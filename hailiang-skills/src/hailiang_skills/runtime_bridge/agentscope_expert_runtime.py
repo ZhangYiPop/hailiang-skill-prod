@@ -180,10 +180,10 @@ class AgentScopeExpertRuntime:
         requested_expert_id = str(
             getattr(context, "session_meta", {}).get("active_expert_id")
             or getattr(context, "session_meta", {}).get("expert_id")
-            or (team.coordinator_expert_id if team else self.default_expert_id)
+            or (team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else "") or self.default_expert_id)
         ).strip()
         if team is not None and requested_expert_id not in team.member_expert_ids:
-            requested_expert_id = team.coordinator_expert_id
+            requested_expert_id = team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else "")
             context.session_meta["active_expert_id"] = requested_expert_id
             context.session_meta["expert_id"] = requested_expert_id
         base_definition = self.expert_registry.get(requested_expert_id) or self._expert_from_snapshot(context, requested_expert_id)
@@ -485,10 +485,10 @@ class AgentScopeExpertRuntime:
         expert_id = str(
             getattr(context, "session_meta", {}).get("active_expert_id")
             or getattr(context, "session_meta", {}).get("expert_id")
-            or (team.coordinator_expert_id if team else self.default_expert_id)
+            or (team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else "") or self.default_expert_id)
         ).strip()
         if team is not None and expert_id not in team.member_expert_ids:
-            expert_id = team.coordinator_expert_id
+            expert_id = team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else "")
         base_definition = self.expert_registry.get(expert_id) or self._expert_from_snapshot(context, expert_id)
         if base_definition is None or not self._available:
             return None

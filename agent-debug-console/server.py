@@ -141,6 +141,7 @@ def _catalog() -> dict[str, Any]:
             "team_id": team.team_id,
             "name": team.name,
             "coordinator_expert_id": team.coordinator_expert_id,
+            "fallback_expert_id": team.fallback_expert_id,
             "members": [
                 {"expert_id": member.expert_id, "mention_name": member.mention_name}
                 for member in team.members
@@ -189,7 +190,7 @@ def _apply_entry(context, orchestrator, body: dict[str, Any]) -> None:
         raise ValueError(f"专家团不存在: {team_id}")
     expert_id = str(body.get("expert_id") or "").strip()
     if expert_id not in team.member_expert_ids:
-        expert_id = team.coordinator_expert_id
+        expert_id = team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else "")
     meta["expert_team_id"] = team.team_id
     meta["expert_id"] = expert_id
     meta["active_expert_id"] = expert_id

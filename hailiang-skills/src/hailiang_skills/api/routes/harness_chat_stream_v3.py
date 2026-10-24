@@ -200,26 +200,27 @@ def _team_for_context(context, orchestrator, team_id: str):
     if team is None:
         raise HTTPException(422, "EXPERT_TEAM_NOT_FOUND")
     coordinator_id = str(getattr(team, "coordinator_expert_id", "") or "")
-    members = tuple(getattr(team, "member_expert_ids", ()) or ())
-    if not coordinator_id or coordinator_id not in members or experts is None or experts.get(coordinator_id) is None:
-        raise HTTPException(422, "EXPERT_TEAM_COORDINATOR_INVALID")
+    if coordinator_id:
+        members = tuple(getattr(team, "member_expert_ids", ()) or ())
+        if coordinator_id not in members or experts is None or experts.get(coordinator_id) is None:
+            raise HTTPException(422, "EXPERT_TEAM_COORDINATOR_INVALID")
     return team
 
 
 def _bind_input_team(context, orchestrator, team_id: str):
-    """Persist an input-selected team without narrowing policy to one expert."""
+    """Persist an input-selected team without narrowing policy to one expert.
+    The main Agent handles routing; the fallback expert is set for compatibility."""
     team = _team_for_context(context, orchestrator, team_id)
-    coordinator_id = team.coordinator_expert_id
+    # Prefer coordinator (backward compat), then fallback, then first member
+    entry_expert = team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else "")
     context.session_meta["expert_team_id"] = team.team_id
-    # Legacy components still require an active coordinator marker.  The
-    # policy recognises input_team as team selection, not a direct-expert run.
-    context.session_meta["expert_id"] = coordinator_id
-    context.session_meta["active_expert_id"] = coordinator_id
+    context.session_meta["expert_id"] = entry_expert
+    context.session_meta["active_expert_id"] = entry_expert
     context.session_meta["expert_selection_source"] = "input_team"
     context.session_meta.pop("branch_expert_override", None)
     context.set_session_agent_selection(
         expert_team_id=team.team_id,
-        expert_id=coordinator_id,
+        expert_id=entry_expert,
         selection_source="input_team",
     )
     context.apply_session_agent_selection()

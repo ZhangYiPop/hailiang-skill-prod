@@ -27,18 +27,17 @@ def default_expert_team_id() -> str:
 def require_default_expert_team(orchestrator, team_id: str | None = None):
     team_id = str(team_id or default_expert_team_id())
     teams = getattr(orchestrator, "expert_team_registry", None)
-    experts = getattr(orchestrator, "expert_registry", None)
     team = teams.get(team_id) if teams is not None else None
     if team is None:
         raise RuntimeError(f"default expert team does not exist: {team_id}")
-    coordinator = experts.get(team.coordinator_expert_id) if experts is not None else None
-    if coordinator is None or team.coordinator_expert_id not in team.member_expert_ids:
-        raise RuntimeError(f"default expert-team coordinator is invalid: {team.coordinator_expert_id}")
+    if not team.members:
+        raise RuntimeError(f"default expert team has no members: {team_id}")
     return team
 
 
 def initialize_default_expert_team(context, orchestrator, *, force: bool = False) -> bool:
-    """Install the coordinator only for a new/empty profile branch."""
+    """Initialize expert team for a new/empty profile branch. The main Agent
+    handles routing; no single expert is pre-selected as coordinator."""
     if not force and context.session_meta.get("expert_team_id"):
         return False
     snapshot = context.session_meta.get("configuration_snapshot")
@@ -46,9 +45,11 @@ def initialize_default_expert_team(context, orchestrator, *, force: bool = False
     snapshot_team_id = str(root.get("object_key") or "") if root.get("object_type") == "expert_team" else ""
     team = require_default_expert_team(orchestrator, snapshot_team_id or None)
     context.session_meta["expert_team_id"] = team.team_id
-    context.session_meta["active_expert_id"] = team.coordinator_expert_id
-    context.session_meta["expert_id"] = team.coordinator_expert_id
-    context.session_meta["expert_selection_source"] = "deployment_snapshot" if snapshot_team_id else "default_coordinator"
+    # Prefer coordinator (backward compat), then fallback, then first member
+    entry_expert = team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else "")
+    context.session_meta["active_expert_id"] = entry_expert
+    context.session_meta["expert_id"] = entry_expert
+    context.session_meta["expert_selection_source"] = "deployment_snapshot" if snapshot_team_id else "input_team"
     context.session_meta.pop("pending_team_handoff", None)
     # A team, not general_chat, is the business entrypoint.  The planner is
     # retained as an internal runtime coordinator only.

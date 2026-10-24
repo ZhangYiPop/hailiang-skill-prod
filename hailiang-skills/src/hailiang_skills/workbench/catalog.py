@@ -144,13 +144,11 @@ def resolve_default_expert_id(
     preferred_team_id: str = "",
     fallback_expert_id: str = "career_plan_expert",
 ) -> str:
-    """Resolve the coordinator used when a database-backed session is new.
+    """Resolve a default expert for database-backed sessions.
 
-    The filesystem runtime historically used ``career_plan_expert`` as its
-    internal coordinator.  Database deployments, however, are authoritative
-    expert-team packages and may use a different coordinator ID.  Resolve the
-    coordinator from the same immutable entries that will be installed into
-    the runtime, without changing any release or dependency-lock data.
+    Looks up the fallback expert from the team definition, or falls back
+    to the first expert member. The main Agent handles coordination, so
+    no specific coordinator expert is required.
     """
     rows = [item for item in entries if isinstance(item, dict)]
     expert_ids = {
@@ -173,37 +171,64 @@ def resolve_default_expert_id(
         if preferred and str(team.get("object_key") or "").strip() != preferred:
             continue
         payload = team.get("payload") if isinstance(team.get("payload"), dict) else {}
-        coordinator_object_id = str(payload.get("coordinator_expert_id") or "").strip()
         locks = team.get("dependency_locks") if isinstance(team.get("dependency_locks"), list) else []
-        coordinator = next(
+        # Try fallback_expert_id from payload first, then first member
+        fallback_from_payload = str(payload.get("fallback_expert_id") or "").strip()
+        if fallback_from_payload:
+            resolved_fallback = next(
+                (
+                    str(lock.get("object_key") or "").strip()
+                    for lock in locks
+                    if isinstance(lock, dict)
+                    and str(lock.get("object_id") or "").strip() == fallback_from_payload
+                    and str(lock.get("object_key") or "").strip()
+                ),
+                fallback_from_payload,
+            )
+            if resolved_fallback in expert_ids:
+                return resolved_fallback
+        # Fall back to first member
+        first_member = next(
             (
                 str(lock.get("object_key") or "").strip()
                 for lock in locks
                 if isinstance(lock, dict)
-                and str(lock.get("object_id") or "").strip() == coordinator_object_id
-                and str(lock.get("object_key") or "").strip()
+                and str(lock.get("object_key") or "").strip() in expert_ids
             ),
-            coordinator_object_id,
+            "",
         )
-        if coordinator in expert_ids:
-            return coordinator
+        if first_member:
+            return first_member
 
-    # If no preferred team was supplied, accept a single unambiguous team. Do
-    # not silently select an arbitrary coordinator from a multi-team catalog.
+    # If no preferred team was supplied, accept a single unambiguous team.
     if not preferred and len(teams) == 1:
         team = teams[0]
         payload = team.get("payload") if isinstance(team.get("payload"), dict) else {}
-        coordinator_object_id = str(payload.get("coordinator_expert_id") or "").strip()
         locks = team.get("dependency_locks") if isinstance(team.get("dependency_locks"), list) else []
-        coordinator = next(
+        # Try fallback_expert_id first, then first member
+        fallback_from_payload = str(payload.get("fallback_expert_id") or "").strip()
+        if fallback_from_payload:
+            resolved = next(
+                (
+                    str(lock.get("object_key") or "").strip()
+                    for lock in locks
+                    if isinstance(lock, dict)
+                    and str(lock.get("object_id") or "").strip() == fallback_from_payload
+                    and str(lock.get("object_key") or "").strip()
+                ),
+                fallback_from_payload,
+            )
+            if resolved in expert_ids:
+                return resolved
+        first_member = next(
             (
                 str(lock.get("object_key") or "").strip()
                 for lock in locks
                 if isinstance(lock, dict)
-                and str(lock.get("object_id") or "").strip() == coordinator_object_id
+                and str(lock.get("object_key") or "").strip() in expert_ids
             ),
-            coordinator_object_id,
+            "",
         )
-        if coordinator in expert_ids:
-            return coordinator
+        if first_member:
+            return first_member
     return fallback

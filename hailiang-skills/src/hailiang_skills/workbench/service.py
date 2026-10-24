@@ -2018,18 +2018,9 @@ class WorkbenchService:
                 "expert_id": expert_id,
                 "name": expert_name,
                 "mention_name": str(getattr(member, "mention_name", "") or ""),
-                "is_coordinator": bool(
-                    team_id
-                    and expert_id == str(
-                        (team_entry.get("payload") or {}).get("coordinator_expert_id")
-                        or getattr(team, "coordinator_expert_id", "")
-                        or ""
-                    )
-                ),
             } if expert_id else {},
             "activation": {
                 "source": "candidate_snapshot",
-                "is_default": bool(team_id and expert_id == str(getattr(team, "coordinator_expert_id", "") or "")),
                 "selection_source": str(meta.get("expert_selection_source") or ""),
             } if mode != "none" else {},
             "transition": {},
@@ -4276,7 +4267,8 @@ class WorkbenchService:
                 team_id = str(root.get("object_key") or "")
                 team = self.orchestrator.expert_team_registry.get(team_id)
                 if team is not None and getattr(self.orchestrator, "expert_runtime", None) is not None:
-                    self.orchestrator.expert_runtime.default_expert_id = team.coordinator_expert_id
+                    default = team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else "")
+                    self.orchestrator.expert_runtime.default_expert_id = default
         except (WorkbenchError, UnicodeDecodeError, json.JSONDecodeError):
             # The archive was fully validated at import; keep activation status
             # durable even if a runtime shell cannot currently be mounted.
@@ -4709,8 +4701,8 @@ class WorkbenchService:
             if len(locks) < 2:
                 errors.append("专家团必须引用至少两个已发布专家版本")
             coordinator = str(payload.get("coordinator_expert_id") or "")
-            if not coordinator or coordinator not in {item["object_id"] for item in locks}:
-                errors.append("主协调专家必须属于专家团成员")
+            if coordinator and coordinator not in {item["object_id"] for item in locks}:
+                errors.append("指定的专家必须属于专家团成员")
             members = payload.get("members") if isinstance(payload.get("members"), list) else []
             # Legacy revisions did not persist member presentation fields.
             # They remain readable; every current workbench save writes the

@@ -418,15 +418,14 @@ def build_chat_router(
         team = registry.get(team_id) if registry is not None else None
         if team is None:
             return None
-        active_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id)
+        active_expert_id = str(context.session_meta.get("active_expert_id") or team.coordinator_expert_id or team.fallback_expert_id or (team.members[0].expert_id if team.members else ""))
         active_member = team.member_for_expert(active_expert_id)
-        coordinator = team.member_for_expert(team.coordinator_expert_id)
         return {
             "team_id": team.team_id,
             "name": team.name,
             "brief": team.brief,
-            "coordinator_expert_id": team.coordinator_expert_id,
-            "coordinator_mention_name": coordinator.mention_name if coordinator else "",
+            "coordinator_expert_id": "",
+            "coordinator_mention_name": "",
             "active_expert_id": active_expert_id,
             "active_mention_name": active_member.mention_name if active_member else "",
             "members": [
@@ -434,7 +433,6 @@ def build_chat_router(
                     "expert_id": member.expert_id,
                     "mention_name": member.mention_name,
                     "routing_brief": member.routing_brief,
-                    "is_coordinator": member.expert_id == team.coordinator_expert_id,
                 }
                 for member in team.members
             ],
