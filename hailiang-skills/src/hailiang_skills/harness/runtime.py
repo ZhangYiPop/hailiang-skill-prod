@@ -1775,6 +1775,21 @@ def _tool_signature(tool: dict) -> str:
                 goal = str(task.get("goal") or "").strip()
                 if goal:
                     stdin_json["user_text"] = goal[:500]
+            # 输入校验：若任何字段为 None/空字符串/空列表，拒绝执行并告知缺失项
+            missing = [k for k, v in stdin_json.items() if v is None or v == "" or (isinstance(v, list) and len(v) == 0)]
+            if missing:
+                field_labels = {
+                    "city_tier": "城市等级(city_tier)",
+                    "school_type": "学校性质(school_type)",
+                    "countries": "目标国家(countries)",
+                }
+                missing_labels = [field_labels.get(f, f) for f in missing]
+                self._tool_result(tool, {
+                    "error": "MISSING_REQUIRED_FIELDS",
+                    "detail": f"缺少必填信息：{'、'.join(missing_labels)}。请先收集这些信息后再继续。",
+                }, "failed")
+                changes.append({"event": "tool_completed", "node_id": tool["id"]})
+                return True
             import subprocess
             try:
                 proc = subprocess.run(
