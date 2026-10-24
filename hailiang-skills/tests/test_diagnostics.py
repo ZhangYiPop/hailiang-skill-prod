@@ -84,12 +84,14 @@ def test_session_diagnostics_includes_test_only_v3_harness_runtime_trace(monkeyp
         "policy": {"team_id": "team_001", "orchestrated": True, "identity_gate": "text", "direct_expert_id": "", "settings": {"max_parallel": 3},
                    "orchestrator": {"members": [{"expert_id": "expert_001"}], "consultation_policy": {"mode": "consult"}},
                    "snapshot": {"deployment_id": "deploy_001", "package_hash": "hash_001", "root": {"object_type": "expert_team", "object_key": "team_001"},
+                                "orchestration_rules": {"orchestration_revision_id": "orch_001", "revision_no": 3, "content_hash": "rules_hash", "rule_versions": {"orchestrate_head": {"version": "v1.1", "state": "current"}}},
                                 "entries": [{"object_type": "expert_team", "object_key": "team_001", "release_id": "release_001", "version": "v1"}]}},
     }
     harness = SimpleNamespace(store=SimpleNamespace(runs=lambda session_id: [run]))
     monkeypatch.setattr(diagnostics, "deployment_environment", lambda: "test-smoke")
     redacted = diagnostics._harness_runtime_trace(harness, "sess_001", run_id=None, limit=10, include_content=False)
     assert redacted[0]["configuration"]["expert_team"] == {"team_id": "team_001", "release_id": "release_001", "version": "v1"}
+    assert redacted[0]["configuration"]["orchestration_rules"]["rule_versions"]["orchestrate_head"]["version"] == "v1.1"
     assert redacted[0]["orchestration"]["enabled"] is True
     assert "goal" not in redacted[0]["tasks"][0]
     detailed = diagnostics._harness_runtime_trace(harness, "sess_001", run_id="harness_001", limit=10, include_content=True)

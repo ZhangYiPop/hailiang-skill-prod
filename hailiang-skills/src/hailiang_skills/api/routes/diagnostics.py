@@ -374,6 +374,7 @@ def _harness_runtime_trace(harness, session_id: str, *, run_id: str | None, limi
             continue
         policy = run.get("policy") if isinstance(run.get("policy"), dict) else {}
         snapshot = policy.get("snapshot") if isinstance(policy.get("snapshot"), dict) else {}
+        rules = snapshot.get("orchestration_rules") if isinstance(snapshot.get("orchestration_rules"), dict) else {}
         root = snapshot.get("root") if isinstance(snapshot.get("root"), dict) else {}
         team_id = str(policy.get("team_id") or "")
         entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
@@ -417,6 +418,11 @@ def _harness_runtime_trace(harness, session_id: str, *, run_id: str | None, limi
                 "root": {"object_type": root.get("object_type"), "object_key": root.get("object_key")},
                 "expert_team": {"team_id": team_id, "release_id": team_entry.get("release_id"),
                                 "version": team_entry.get("version")},
+                "orchestration_rules": {
+                    "revision_id": rules.get("orchestration_revision_id"),
+                    "revision_no": rules.get("revision_no"), "content_hash": rules.get("content_hash"),
+                    "rule_versions": rules.get("rule_versions") or {},
+                },
             },
             "orchestration": {
                 "enabled": bool(policy.get("orchestrated")), "identity_gate": policy.get("identity_gate"),
