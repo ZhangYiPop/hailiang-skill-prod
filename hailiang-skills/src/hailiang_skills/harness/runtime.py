@@ -1793,6 +1793,57 @@ class HarnessRuntime:
         args = tool.get("arguments", {})
         return f"{tool['name']}:{json.dumps(args, sort_keys=True, default=str)}"
 
+    @staticmethod
+    def _reusable_read_result(run: dict, task_id: str, tool: dict):
+        """Return a completed immutable read with identical arguments, if any.
+
+        Local asset and evidence reads are snapshot-bound, side-effect-free
+        operations. Replaying them only spends a model/tool round and is a
+        common cause of Skill loops; mutation and external tools are never
+        eligible for this shortcut.
+        """
+        if tool.get("name") not in {"read_skill_asset", "read_evidence", SKILL_ASSET_SEARCH_TOOL, LEGACY_RAG_SEARCH_TOOL}:
+            return None
+        for previous in run.get("tools", {}).values():
+            if previous.get("id") == tool.get("id") or previous.get("task_id") != task_id:
+                continue
+            if previous.get("status") == "completed" and previous.get("name") == tool.get("name") and previous.get("arguments") == tool.get("arguments"):
+                return previous
+        return None
+
+    @staticmethod
+    def _read_budget_error(run: dict, task_id: str, tool: dict):
+        """Bound exploration by unique source/ref, while allowing useful paging."""
+        settings = run.get("policy", {}).get("settings", {}) or {}
+        name, args = tool.get("name"), tool.get("arguments") or {}
+        read_names = {"read_skill_asset", "read_evidence", SKILL_ASSET_SEARCH_TOOL, LEGACY_RAG_SEARCH_TOOL}
+        if name in read_names:
+            completed = sorted(
+                (item for item in run.get("tools", {}).values()
+                 if item.get("task_id") == task_id and item.get("status") == "completed"),
+                key=lambda item: item.get("ended_at") or item.get("created_at") or "",
+            )
+            consecutive = 0
+            for item in reversed(completed):
+                if item.get("name") not in read_names:
+                    break
+                consecutive += 1
+            if consecutive >= max(1, int(settings.get("max_consecutive_research_turns", 2))):
+                return "RESEARCH_TURN_LIMIT_REACHED"
+        if name == "read_skill_asset" and isinstance(args.get("source"), str):
+            used = sum(1 for item in run.get("tools", {}).values()
+                       if item.get("task_id") == task_id and item.get("name") == name
+                       and item.get("status") == "completed" and item.get("arguments", {}).get("source") == args["source"])
+            if used >= max(1, int(settings.get("max_asset_reads_per_source", 3))):
+                return "ASSET_READ_BUDGET_EXCEEDED"
+        if name == "read_evidence" and isinstance(args.get("evidence_id"), str):
+            used = sum(1 for item in run.get("tools", {}).values()
+                       if item.get("task_id") == task_id and item.get("name") == name
+                       and item.get("status") == "completed" and item.get("arguments", {}).get("evidence_id") == args["evidence_id"])
+            if used >= max(1, int(settings.get("max_evidence_reads_per_ref", 2))):
+                return "EVIDENCE_READ_BUDGET_EXCEEDED"
+        return None
+
     def _execute_tools(self, run_id, task_id, token):
         initial = self.store.get(run_id)
         for node_id in initial["tasks"][task_id]["pending_calls"]:
@@ -1820,6 +1871,15 @@ class HarnessRuntime:
                                            if t["name"] in SEARCH_TOOL_NAMES and t["task_id"] == task_id and t.get("attempts", 0))
                         if search_calls >= run["policy"]["settings"].get("max_search_calls_per_task", 10):
                             raise HarnessError("SEARCH_BUDGET_EXCEEDED")
+                    reusable = self._reusable_read_result(run, task_id, tool)
+                    if reusable is not None:
+                        self._tool_result(tool, deepcopy(reusable.get("result")))
+                        tool["reused_from_tool_id"] = reusable["id"]
+                        changes.append({"event": "tool_reused", "node_id": node_id})
+                        return
+                    read_budget_error = self._read_budget_error(run, task_id, tool)
+                    if read_budget_error:
+                        raise HarnessError(read_budget_error)
                     # 通用工具调用熔断器：同一 signature（工具名+参数）在同一 task 内连续失败≥3次
                     # 直接报错拒绝调用，附带切换策略的指引，防止模型烧光预算。
                     sig = self._tool_signature(tool)
@@ -1853,6 +1913,12 @@ class HarnessRuntime:
                         result["field"] = ".".join(str(part) for part in exc.errors()[0]["loc"]) or "$"
                     if result["error"] == "ASSET_SOURCE_INCOMPATIBLE":
                         result["next_action"] = "当前 source 文件的数据格式与结构化读取不兼容。改用 search_skill_assets 语义搜索，或调用 read_skill_asset 省略 source 先列目录寻其他文件；不要重复尝试同一 source。"
+                    if result["error"] == "ASSET_READ_BUDGET_EXCEEDED":
+                        result["next_action"] = "同一资料源的有效读取已达到上限。请整合已有资料、预览和证据给出结论；仅在明确存在未覆盖区间时才选择其他 source。"
+                    if result["error"] == "EVIDENCE_READ_BUDGET_EXCEEDED":
+                        result["next_action"] = "同一证据引用的有效读取已达到上限。请依据已读取片段、工具预览和已有事实完成分析，不要重复读取该 evidence_id。"
+                    if result["error"] == "RESEARCH_TURN_LIMIT_REACHED":
+                        result["next_action"] = "连续资料探索已达到上限。请停止读取并基于已有资料调用 submit_findings，给出可交付结论和明确限制。"
                     if result["error"] == "TOOL_CIRCUIT_OPEN":
                         result["next_action"] = "此工具调用已连续失败3次，请换用其他工具或调整参数后重试。"
                     self._tool_result(tool, result, "failed")

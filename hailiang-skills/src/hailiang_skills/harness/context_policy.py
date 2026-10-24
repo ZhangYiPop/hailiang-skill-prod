@@ -222,7 +222,8 @@ def tool_projection(run, task, tool):
     if len(raw) <= limit and not duplicate:
         return json.dumps({"evidence_id": eid, "status": tool["status"], "data": tool["result"]}, ensure_ascii=False, default=str), metadata
     return json.dumps({"evidence_ref": eid, "status": tool["status"], "duplicate": duplicate,
-                       "total_chars": len(raw), "action": "read_evidence 获取本任务需要的片段"}, ensure_ascii=False), metadata
+                       "total_chars": len(raw), "preview": evidence_project_note({"content": raw}),
+                       "action": "仅当预览不足以回答时，调用 read_evidence 获取明确需要的片段；不要为重复读取同一资料而调用。"}, ensure_ascii=False), metadata
 
 
 def _extract_key_values(data, max_items=5, max_chars=300):
@@ -299,6 +300,7 @@ def compose_v2(run, task, facts, specs, platform):
     rules += "\n索引不是事实值，未加载不等于未知；追问前按字段 read_facts。按需 read_evidence，未读取的引用不可当作已读依据。完成分析后直接以自然文本回复用户，保留完整判断和限制声明。"
     rules += "\n证据引用只能使用本次工具返回的 evidence_id（ev_ 开头）；文件路径与 URL 是来源描述，不是证据 ID。已有 data/content 可直接分析，不必为取得引用重复读取。"
     rules += "\n分数表等 JSON 资料优先用 read_skill_asset 按字段和分数定位记录；已知来源用精确读取和分页，不要反复换关键词搜索同一段。资料没有年份或适用口径时不能推断为当年录取依据。"
+    rules += "\n资料探索应尽快收口：同一 source 或 evidence_id 的相同读取会被复用；预览、已有 data 或已读取片段足以支持回答时，立即 submit_findings 并给出结论。连续两轮资料读取没有新增可核验事实时，停止探索并说明限制，不得继续猜测 source、重复读取或仅为获得引用重读。"
     rules += "\n确认替其他对象询问时，主 agent 必须在分派前调用 set_task_subject(external)，不得沿用当前档案事实。"
     if run.get("execution_contract_version") == "v1":
         rules += "\n专家与 Skill 完成分析后先调用 submit_findings 记录结构化发现，再以自然文本回复用户。findings 每条为可独立验证的发现；submit_findings 的内容不直接显示给用户。主 agent 汇总时直接给完整结论，不重述已答问题。"

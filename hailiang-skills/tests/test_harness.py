@@ -65,6 +65,31 @@ def test_saturated_worker_claim_is_preserved_in_wait_history(tmp_path):
     runtime.close()
 
 
+def test_read_tools_reuse_exact_result_and_enforce_exploration_limits(tmp_path):
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text="完成"))
+    run_id = runtime.create('s', 'u', 'p', '分析', policy())
+    run = runtime.store.get(run_id)
+    task_id = run['root_task_id']
+    run['tools'] = {
+        'old_read': {'id': 'old_read', 'task_id': task_id, 'name': 'read_skill_asset',
+                     'arguments': {'skill_id': 'internal', 'source': 'guide.json', 'offset': 0},
+                     'status': 'completed', 'result': {'records': [{'name': '已读'}]}, 'ended_at': '2026-10-25T00:00:00+00:00'},
+        'old_non_read': {'id': 'old_non_read', 'task_id': task_id, 'name': 'submit_findings',
+                         'arguments': {}, 'status': 'completed', 'result': {}, 'ended_at': '2026-10-25T00:00:01+00:00'},
+    }
+    same = {'id': 'new_read', 'task_id': task_id, 'name': 'read_skill_asset',
+            'arguments': {'skill_id': 'internal', 'source': 'guide.json', 'offset': 0}}
+    assert runtime._reusable_read_result(run, task_id, same)['id'] == 'old_read'
+    assert runtime._reusable_read_result(run, task_id, {**same, 'name': 'request_user_input'}) is None
+    run['policy']['settings'].update(max_asset_reads_per_source=1, max_consecutive_research_turns=4)
+    different_page = {**same, 'arguments': {'skill_id': 'internal', 'source': 'guide.json', 'offset': 20}}
+    assert runtime._read_budget_error(run, task_id, different_page) == 'ASSET_READ_BUDGET_EXCEEDED'
+    run['policy']['settings'].update(max_asset_reads_per_source=4, max_consecutive_research_turns=1)
+    run['tools'].pop('old_non_read')
+    assert runtime._read_budget_error(run, task_id, different_page) == 'RESEARCH_TURN_LIMIT_REACHED'
+    runtime.close()
+
+
 def test_expert_parallel_wait_and_multi_round_resume(tmp_path):
     rounds = {'a': 0}
     def respond(messages, specs, purpose):
