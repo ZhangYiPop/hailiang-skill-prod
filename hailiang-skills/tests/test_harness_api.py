@@ -281,6 +281,7 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
     frozen['team_id'] = 'team-a'
     monkeypatch.setattr(v3, 'capture_policy', lambda *_: deepcopy(frozen))
     monkeypatch.setenv('HAILIANG_HARNESS_SSE_WAIT_SECONDS', '1')
+    monkeypatch.setenv('HAILIANG_HARNESS_SSE_PING_SECONDS', '0.05')
     expert = SimpleNamespace(name='团队协调专家')
     team = SimpleNamespace(team_id='team-a', coordinator_expert_id='expert-a', member_expert_ids=('expert-a',))
     orchestrator = SimpleNamespace(
@@ -299,6 +300,7 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         response = client.post('/api/v3/sessions/chat/stream', json=body)
         assert response.status_code == 200
         assert 'event: state' in response.text and '"protocol": "hailiang.sse.v3"' in response.text
+        assert 'event: ping\ndata: {}\n\n' in response.text
         assert '"state"' in response.text and '"input_groups"' in response.text
         assert '"snapshot"' not in response.text
         assert '"client_run_id"' not in response.text

@@ -31,6 +31,19 @@ def format_sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _idle_ping_seconds() -> float | None:
+    """Return the idle SSE heartbeat interval; zero explicitly disables it."""
+    raw = os.getenv("HAILIANG_HARNESS_SSE_PING_SECONDS", "15")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 15.0
+    if value <= 0:
+        return None
+    # Avoid an accidental busy loop while still allowing fast test/dev probes.
+    return max(0.05, value)
+
+
 class StrictInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -432,7 +445,9 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         # V3 remains finite for a BFF, but background execution never depends
         # on this connection remaining open.
         timeout_seconds = max(1, int(os.getenv("HAILIANG_HARNESS_SSE_WAIT_SECONDS", "600")))
+        ping_seconds = _idle_ping_seconds()
         started = time.monotonic()
+        last_emitted_at = started
         run = await asyncio.to_thread(runtime.store.get, harness_run_id)
         initial = await asyncio.to_thread(runtime.store.public_snapshot, run["session_id"], run["user_id"], run["profile_id"])
         cursor = initial["cursor"]
@@ -476,11 +491,14 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
             yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
             return
         yield format_sse_event("state", _payload(runtime, run, request_run_id=request_run_id, event="state", reason="stream_started", cursor=cursor))
+        last_emitted_at = time.monotonic()
         while not await http_request.is_disconnected():
             run = await asyncio.to_thread(runtime.store.get, harness_run_id)
             delta_frames, events = await forward_pending(run)
             for frame in delta_frames:
                 yield format_sse_event("state", frame)
+            if delta_frames:
+                last_emitted_at = time.monotonic()
             if run["status"] in TERMINAL:
                 yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
                 return
@@ -493,12 +511,19 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 run = await asyncio.to_thread(runtime.store.get, harness_run_id)
                 event_name = "done" if latest.get("type") == "done" else "state"
                 yield format_sse_event(event_name, _payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor))
+                last_emitted_at = time.monotonic()
                 if event_name == "done":
                     return
                 continue
             if time.monotonic() - started >= timeout_seconds:
                 yield format_sse_event("done_timeout", _payload(runtime, run, request_run_id=request_run_id, event="done_timeout", reason="stream_timeout", cursor=cursor))
                 return
+            if ping_seconds is not None and time.monotonic() - last_emitted_at >= ping_seconds:
+                # Transport-only heartbeat: it never advances the durable
+                # cursor and product clients can safely ignore it.
+                yield format_sse_event("ping", {})
+                last_emitted_at = time.monotonic()
+                continue
             # Tail text is already durably buffered; a short poll interval
             # keeps first-token latency perceptible without changing the
             # existing state-frame wire contract.
