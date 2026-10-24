@@ -1450,7 +1450,7 @@ class HarnessRuntime:
                             raise HarnessError("SEARCH_BUDGET_EXCEEDED")
                     # 通用工具调用熔断器：同一 signature（工具名+参数）在同一 task 内连续失败≥3次
                     # 直接报错拒绝调用，附带切换策略的指引，防止模型烧光预算。
-                    sig = _tool_signature(tool)
+                    sig = self._tool_signature(tool)
                     failures = (task.get("runtime_state") or {}).get("_tool_failures", {})
                     record = failures.get(sig)
                     if isinstance(record, dict) and record.get("count", 0) >= 3:
@@ -1486,7 +1486,7 @@ class HarnessRuntime:
                     self._tool_result(tool, result, "failed")
                     changes.append({"event": "tool_failed", "node_id": node_id})
                     # 累计工具调用失败次数（按 signature 分组），用于熔断保护
-                    sig = _tool_signature(tool)
+                    sig = self._tool_signature(tool)
                     state = task.setdefault("runtime_state", {})
                     failures = state.setdefault("_tool_failures", {})
                     prev = failures.get(sig)
@@ -1529,7 +1529,7 @@ class HarnessRuntime:
                         changes.append({"event": "tool_failed" if error else "tool_completed", "node_id": node_id})
                     # 累计同一 tool+参数签名的连续失败次数，用于通用短路保护
                     if error:
-                        sig = _tool_signature(tool)
+                        sig = self._tool_signature(tool)
                         state = run["tasks"][task_id].setdefault("runtime_state", {})
                         failures = state.setdefault("_tool_failures", {})
                         prev = failures.get(sig)
