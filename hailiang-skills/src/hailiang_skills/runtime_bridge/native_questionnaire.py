@@ -11,6 +11,7 @@ from typing import Any
 from hailiang_skills.core.fact_service import FactService
 from hailiang_skills.schemas.questionnaire import validate_questionnaire_config
 from hailiang_skills.runtime_bridge.native_path_options import MULTI_PATH_SKILL_ID, path_catalog
+import logging
 from hailiang_skills.skills.common import extract_explicit_exam_province
 
 
@@ -1149,10 +1150,10 @@ def resolve_declared_form_request(
             break
     dedup_skipped = [qid for qid in requested if qid in previously_shown and qid not in seen]
     if dedup_skipped:
-        _log_questionnaire_warning(
-            bundle, state,
-            "duplicate_request_declared_form",
-            {"skill_id": skill_id, "previously_shown_question_ids": dedup_skipped},
+        logging.getLogger("hailiang.native_questionnaire").warning(
+            "duplicate request_declared_form — %d previously-shown question_ids re-requested: %s",
+            len(dedup_skipped),
+            ", ".join(dedup_skipped),
         )
     if selected:
         skill_state["_shown_form_question_ids"] = sorted(

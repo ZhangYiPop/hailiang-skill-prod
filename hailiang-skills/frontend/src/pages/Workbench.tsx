@@ -1473,6 +1473,7 @@ export default function Workbench() {
     const loaded = conversionEntries.filter((e) => e.status === "loaded" && e.draft);
     if (!loaded.length) return;
     setBusy(true);
+    // Mark all as committing
     setConversionEntries((prev) =>
       prev.map((e) => (loaded.some((l) => l.id === e.id) ? { ...e, status: "committing" as const } : e)),
     );
@@ -3914,7 +3915,7 @@ export default function Workbench() {
                         {/* Loaded / committed content */}
                         {(entry.status === "loaded" || entry.status === "committed") && entry.result && entry.draft && (
                           <>
-                            {entry.status === "loaded" && entry.result.ai_assistance.message && (
+                            {entry.result.ai_assistance.message && (
                               <p className="mt-3 text-sm text-slate-400">{entry.result.ai_assistance.message}</p>
                             )}
                             {entry.result.warnings.length > 0 && (
