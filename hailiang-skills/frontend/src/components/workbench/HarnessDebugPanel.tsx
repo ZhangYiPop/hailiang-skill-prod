@@ -107,25 +107,29 @@ export function HarnessDebugPanel({
   const unreadKey = `${persistenceKey}:unread`;
 
   const mergeRuns = (incoming: HarnessRun[]) => {
+    // Never store runs under an empty session key — that would leak content
+    // into the "new session" placeholder view.
+    const sid = debugId;
+    if (!sid) return;
     setRunsBySession((prev) => {
-      const current = { ...(prev[debugId] ? Object.fromEntries(prev[debugId].map((run) => [run.run_id, run])) : {}) };
+      const current = { ...(prev[sid] ? Object.fromEntries(prev[sid].map((run) => [run.run_id, run])) : {}) };
       for (const run of incoming) if (!current[run.run_id] || current[run.run_id].version <= run.version) current[run.run_id] = run;
       const updated = Object.values(current).sort((a, b) => a.created_at.localeCompare(b.created_at));
 
       // Track unread: if any run just completed and this session is not the current one,
       // mark it as unread so a green dot appears.
-      const hadTerminalRuns = (prev[debugId] || []).every((r) => isHarnessTerminal(r.status));
+      const hadTerminalRuns = (prev[sid] || []).every((r) => isHarnessTerminal(r.status));
       const allTerminal = updated.every((r) => isHarnessTerminal(r.status));
       if (!hadTerminalRuns && allTerminal && updated.length > 0) {
         setUnreadSessions((prev) => {
           const next = new Set(prev);
-          next.add(debugId);
+          next.add(sid);
           try { sessionStorage.setItem(unreadKey, JSON.stringify([...next])); } catch { /* ignore */ }
           return next;
         });
       }
 
-      return { ...prev, [debugId]: updated };
+      return { ...prev, [sid]: updated };
     });
   };
 
@@ -250,6 +254,7 @@ export function HarnessDebugPanel({
     setTrace("");
     setStepsByRun({});
     setRightPane("reply");
+    setGoal("");
     setDebugId(nextId);
     if (nextId) {
       sessionStorage.setItem(persistenceKey, nextId);
