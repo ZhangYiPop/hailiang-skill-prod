@@ -137,18 +137,29 @@ def _request_hash(input_data, profile_data, team_ids: list[str]):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _profile_name(profile_data: dict | None, profile_id: str) -> str:
+def _requested_profile_name(profile_data: dict | None, student_name: str | None = None) -> str:
+    """Resolve the V3 child name without letting a legacy field win."""
     value = (profile_data or {}).get("name")
-    return value.strip() if isinstance(value, str) and value.strip() else f"未命名孩子-{profile_id}"
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return student_name.strip() if isinstance(student_name, str) and student_name.strip() else ""
 
 
-def _public_context(context, profile_data: dict | None = None) -> dict[str, Any]:
+def _profile_name(profile_data: dict | None, profile_id: str, student_name: str | None = None) -> str:
+    return _requested_profile_name(profile_data, student_name) or f"未命名孩子-{profile_id}"
+
+
+def _public_context(context, profile_data: dict | None = None, student_name: str | None = None) -> dict[str, Any]:
     """Persist V2-compatible profile context in the V3 run, never in prompts."""
     profile_id = getattr(context, "profile_id", None) if context is not None else None
     scope = "profile" if profile_id else "unbound"
-    name = str(getattr(context, "profile_name", "") or "").strip() if context is not None else ""
+    # V3 payload data is the request's source of truth.  Only when both V3
+    # name forms are blank do we retain a previously stored profile name.
+    name = _requested_profile_name(profile_data, student_name)
+    if not name:
+        name = str(getattr(context, "profile_name", "") or "").strip() if context is not None else ""
     if not name and profile_id:
-        name = _profile_name(profile_data, str(profile_id))
+        name = _profile_name(profile_data, str(profile_id), student_name)
     return {
         "profile_id": profile_id,
         "profile_name": name or None,
@@ -162,17 +173,18 @@ def _public_context(context, profile_data: dict | None = None) -> dict[str, Any]
     }
 
 
-def _ensure_profile(fact_service, user_id: str, profile_id: str | None, profile_data: dict | None):
+def _ensure_profile(fact_service, user_id: str, profile_id: str | None, profile_data: dict | None, student_name: str | None = None):
     if not profile_id:
         return
     repo = fact_service.profile_repo
     listing = getattr(repo, "list_profiles", None)
     owned = {str(item.get("profile_id")) for item in listing(user_id)} if listing else set()
     if profile_id in owned:
-        if isinstance((profile_data or {}).get("name"), str):
+        requested_name = _requested_profile_name(profile_data, student_name)
+        if requested_name:
             updater = getattr(repo, "update_profile", None)
             if updater:
-                updater(user_id, profile_id, name=_profile_name(profile_data, profile_id))
+                updater(user_id, profile_id, name=requested_name)
         return
     lookup = getattr(repo, "get_profile_by_id", None)
     if lookup:
@@ -185,7 +197,7 @@ def _ensure_profile(fact_service, user_id: str, profile_id: str | None, profile_
     creator = getattr(repo, "create_profile", None)
     if creator is None:
         raise HTTPException(409, "PROFILE_NOT_READY")
-    creator(user_id, profile_id=profile_id, name=_profile_name(profile_data, profile_id), shared_facts_initialized=False)
+    creator(user_id, profile_id=profile_id, name=_profile_name(profile_data, profile_id, student_name), shared_facts_initialized=False)
 
 
 def _team_for_context(context, orchestrator, team_id: str):
@@ -451,7 +463,8 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
             request.run_id, harness_run_id, fingerprint,
         ))
 
-    def bind_public_ids(harness_run_id: str, *, team_ids: list[str], context, profile_data, superseded: str | None = None):
+    def bind_public_ids(harness_run_id: str, *, team_ids: list[str], context, profile_data,
+                        student_name: str | None = None, superseded: str | None = None):
         def apply(run, changes, _db):
             changed = False
             if not run.get("assistant_message_id"):
@@ -463,7 +476,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
             if not run.get("team_orchestration_version"):
                 run["team_orchestration_version"] = "single_team_v1"
                 changed = True
-            public_context = _public_context(context, profile_data) if context is not None else deepcopy(run.get("public_context") or {})
+            public_context = _public_context(context, profile_data, student_name) if context is not None else deepcopy(run.get("public_context") or {})
             if run.get("public_context") != public_context:
                 run["public_context"] = public_context
                 changed = True
@@ -496,7 +509,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     context = repository.get(request.session_id)
                 except KeyError:
                     context = None
-                bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data)
+                bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data, student_name=data.student_name)
             else:
                 active = runtime.store.active(request.session_id)
                 superseded = None
@@ -505,7 +518,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                         raise HTTPException(409, "ACTIVE_HARNESS_RUN_OWNED_BY_OTHER")
                     superseded = active.get("assistant_message_id")
                     runtime.cancel(active["run_id"])
-                _ensure_profile(fact_service, data.user_id, data.profile_id, profile_data)
+                _ensure_profile(fact_service, data.user_id, data.profile_id, profile_data, data.student_name)
                 context, created = open_or_resume_session(
                     repository, fact_service, session_id=request.session_id, data=data,
                     context_scope="profile" if data.profile_id else "unbound", allow_context_seed=False,
@@ -559,7 +572,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     wire_protocol=SSE_V3_PROTOCOL,
                     execution_runtime="formal" if formal_v3_enabled() else None,
                 ))
-                bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data, superseded=superseded)
+                bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data, student_name=data.student_name, superseded=superseded)
                 bind_request(request, input_data, harness_run_id, fingerprint)
                 if formal_v3_enabled():
                     formal_executor.start(harness_run_id, message=input_data.content)

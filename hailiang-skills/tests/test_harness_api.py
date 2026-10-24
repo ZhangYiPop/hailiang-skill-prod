@@ -10,6 +10,7 @@ from hailiang_skills.core.context import SessionContext
 from hailiang_skills.llm.config import load_llm_config
 from hailiang_skills.schemas.facts import KnownFacts
 from hailiang_skills.harness.contracts import AnswerSubmission
+from hailiang_skills.api.routes.harness_chat_stream_v3 import _profile_name, _public_context
 from test_harness import make_runtime, policy, advance, call, QUESTION, postgres_test_backend
 from hailiang_skills.skill_runtime.models import AssistantTurnResult
 
@@ -33,6 +34,14 @@ class Facts:
         pass
     def validate_configured_update(self, *args):
         return None
+
+
+def test_v3_child_name_prefers_profile_data_and_falls_back_to_student_name():
+    assert _profile_name({'name': '小明'}, 'p1', '小红') == '小明'
+    assert _profile_name({'name': '  '}, 'p1', '小红') == '小红'
+    context = SessionContext(profile_id='p1', profile_name='旧名称')
+    assert _public_context(context, {'name': '小明'}, '小红')['profile_name'] == '小明'
+    assert _public_context(context, {}, '小红')['profile_name'] == '小红'
 
 
 def test_run_api_ownership_idempotence_modes_and_private_trace(tmp_path, monkeypatch):
