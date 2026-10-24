@@ -75,6 +75,10 @@ class HarnessIntegration:
         persisted = deepcopy(task.get("runtime_state", {}))
         persisted.pop("messages", None)
         persisted.pop("session_id", None)
+        # 过滤 harness 内部 key（_tool_failures, _asset_reads 等），避免传入 SessionState 导致 TypeError
+        for key in list(persisted):
+            if key.startswith("_"):
+                persisted.pop(key, None)
         state = SessionState(session_id=task["id"], messages=[ChatMessage(role="user", content=task["goal"])], **persisted)
         facts = deepcopy(run.get("seed_facts", {}))
         if self.store:
