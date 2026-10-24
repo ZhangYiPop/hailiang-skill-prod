@@ -1889,6 +1889,7 @@ export default function Workbench() {
     formSubmission?: { source_message_id: string; form_id: string; values: Record<string, unknown> },
     teamHandoffSelection?: { source_message_id: string; handoff_id: string; target_expert_id: string; team_id?: string; mention_name?: string },
     expertSelection?: { target_expert_id: string },
+    forceNew?: boolean,
   ) {
     const message = (submittedInput ?? "").trim();
     if (!actor || !selectedTestRevision || (!message && !formSubmission && !teamHandoffSelection && !expertSelection)) return false;
@@ -1896,7 +1897,13 @@ export default function Workbench() {
     let streamAbortController: AbortController | null = null;
     try {
       const session =
-        revisionTestSession?.revision_id === selectedTestRevision.revision_id &&
+        forceNew
+          ? await workbenchApi.createRevisionTestSession(apiBaseUrl, {
+              revision_id: selectedTestRevision.revision_id,
+              soul_revision_id: soulRevisionId || null,
+              actor_id: actor.actor_id,
+            })
+          : revisionTestSession?.revision_id === selectedTestRevision.revision_id &&
         revisionTestSession.status === "active"
           ? revisionTestSession
           : await workbenchApi.createRevisionTestSession(apiBaseUrl, {
