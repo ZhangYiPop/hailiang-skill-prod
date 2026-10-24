@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 from hailiang_skills.harness.contracts import InternalAnswerSubmission, HarnessError, TERMINAL, identifier
+from hailiang_skills.harness.formal_v3 import FormalV3TurnExecutor
 from hailiang_skills.harness.policy import capture_policy
 
 
@@ -375,8 +376,21 @@ def _suspended(run):
     return not any(task["status"] in {"queued", "running"} for task in live)
 
 
+def formal_v3_enabled() -> bool:
+    """Feature gate for the formal-runtime V3 executor.
+
+    The rollout is opt-in until form/resume parity is enabled.  Crucially the
+    gate never changes the public V3 wire format, only the implementation that
+    produces its durable state.
+    """
+    return os.getenv("HAILIANG_V3_FORMAL_RUNTIME", "false").strip().lower() in {"1", "true", "on", "yes"}
+
+
 def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, runtime, snapshot_resolver=None):
     router = APIRouter()
+    formal_executor = FormalV3TurnExecutor(
+        repository=repository, orchestrator=orchestrator, harness_runtime=runtime,
+    )
 
     def operation(call):
         try:
@@ -510,13 +524,40 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 for old in sorted(runtime.store.runs(request.session_id), key=lambda item: item["created_at"])[-10:]:
                     if old["profile_id"] == data.profile_id and old["status"] == "completed":
                         history.extend([{"role": "user", "content": old["goal"]}, {"role": "assistant", "content": old.get("result", "")}])
+                # 注入上一轮 Run 的结构化上下文
+                if history:
+                    last = max(runtime.store.runs(request.session_id), key=lambda r: r["created_at"])
+                    if last.get("status") == "completed" and last.get("profile_id") == data.profile_id:
+                        expert_summaries = []
+                        for task in last.get("tasks", {}).values():
+                            if task.get("kind") == "expert":
+                                sr = task.get("structured_result") or {}
+                                expert_summaries.append({
+                                    "expert_id": task.get("expert_id"),
+                                    "expert_name": (last.get("policy", {}).get("experts", {}).get(task.get("expert_id"), {}).get("name") or task.get("expert_id")),
+                                    "status": task.get("status"),
+                                    "findings": (sr.get("findings") or [])[:5],
+                                    "limitations": (sr.get("limitations") or [])[:3],
+                                })
+                        history.append({
+                            "role": "system",
+                            "content": "上一轮执行上下文：" + json.dumps({
+                                "last_round_goal": last.get("goal", ""),
+                                "last_round_result_summary": (last.get("result") or "")[:300],
+                                "orchestration": last.get("orchestration") or {},
+                                "expert_summaries": expert_summaries,
+                            }, ensure_ascii=False),
+                        })
                 harness_run_id = operation(lambda: runtime.create(
                     request.session_id, data.user_id, data.profile_id, input_data.content, policy,
                     _seed_facts(context, runtime, request.session_id, data.user_id, data.profile_id), history,
                     wire_protocol=SSE_V3_PROTOCOL,
+                    execution_runtime="formal" if formal_v3_enabled() else None,
                 ))
                 bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data, superseded=superseded)
                 bind_request(request, input_data, harness_run_id, fingerprint)
+                if formal_v3_enabled():
+                    formal_executor.start(harness_run_id, message=input_data.content)
         elif isinstance(input_data, (AnswerInput, ResumeInput)):
             team_id, team_ids = _single_supported_team_id(input_data.expert_team_id)
             fingerprint = _request_hash(input_data, profile_data, team_ids)
@@ -538,11 +579,20 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     if profile_data and data.profile_id:
                         aliases = {"grade": "grade", "province": "student_province", "recent_exam.total_score": "exam_score"}
                         operation(lambda: runtime.store.upsert_portrait(data.user_id, data.profile_id, profile_data, aliases=aliases))
-                    submission = InternalAnswerSubmission(
-                        user_id=data.user_id, profile_id=data.profile_id, answers=input_data.answers,
-                        text=input_data.text, skipped=input_data.skipped,
-                    )
-                    operation(lambda: runtime.answer(input_data.request_id, submission, allow_partial=True, allow_correction=True))
+                    if run.get("execution_runtime") == "formal":
+                        if not formal_executor.answer(
+                            harness_run_id, request_id=input_data.request_id, answers=input_data.answers,
+                            text=input_data.text, skipped=input_data.skipped,
+                        ):
+                            raise HTTPException(409, "INPUT_REQUEST_NOT_ACTIVE")
+                    else:
+                        submission = InternalAnswerSubmission(
+                            user_id=data.user_id, profile_id=data.profile_id, answers=input_data.answers,
+                            text=input_data.text, skipped=input_data.skipped,
+                        )
+                        operation(lambda: runtime.answer(input_data.request_id, submission, allow_partial=True, allow_correction=True))
+                elif run.get("execution_runtime") == "formal" and run.get("status") not in TERMINAL:
+                    formal_executor.resume(harness_run_id, message="请继续完成当前专家团分析。")
                 bind_request(request, input_data, harness_run_id, fingerprint)
             _assert_run_team(run, team_id)
         else:

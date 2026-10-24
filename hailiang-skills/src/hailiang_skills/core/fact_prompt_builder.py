@@ -73,6 +73,10 @@ def build_fact_form_fields(fact_keys: list[str] | None = None) -> list[dict[str,
                 {"label": "是", "value": "true"},
                 {"label": "否", "value": "false"},
             ]
+        options = [
+            {"label": opt.get("label", ""), "value": opt.get("value", "")}
+            for opt in options
+        ]
         fields.append(
             {
                 "fact_key": fact_key,
@@ -94,7 +98,15 @@ def build_missing_fact_form_block(
     missing_facts: list[str],
     *,
     form_id: str = "missing_facts_form",
+    known_facts: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    if not missing_facts:
+        return None
+    if known_facts:
+        missing_facts = [
+            f for f in missing_facts
+            if not known_facts.get(f)  # truthy = already known, skip
+        ]
     if not missing_facts:
         return None
     fields = build_fact_form_fields(missing_facts)
