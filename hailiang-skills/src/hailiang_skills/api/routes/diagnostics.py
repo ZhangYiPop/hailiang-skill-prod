@@ -25,6 +25,7 @@ from hailiang_skills.core.session_logging import (
 )
 from hailiang_skills.storage.database import ChatRunRow, WorkbenchDebugSessionRow
 from hailiang_skills.storage.event_store import read_events
+from hailiang_skills.core.deployment import deployment_environment
 
 
 _CONTENT_KEYS = {
@@ -351,7 +352,86 @@ def _output_diagnostics(*, events: list[dict[str, Any]], limit: int) -> list[dic
     return records[-limit:]
 
 
+def _test_environment() -> bool:
+    environment = deployment_environment().strip().lower()
+    return environment == "test" or environment.startswith("test-")
+
+
+def _harness_runtime_trace(harness, session_id: str, *, run_id: str | None, limit: int,
+                           include_content: bool) -> list[dict[str, Any]]:
+    """Project durable V3 Harness state into an operator-only runtime trace."""
+    if harness is None or not _test_environment():
+        return []
+    try:
+        runs = harness.store.runs(session_id)
+    except Exception:
+        return []
+    from hailiang_skills.harness.runtime import debug_step_io, execution_diagnostics
+
+    traces: list[dict[str, Any]] = []
+    for run in runs:
+        if run_id and run.get("run_id") != run_id:
+            continue
+        policy = run.get("policy") if isinstance(run.get("policy"), dict) else {}
+        snapshot = policy.get("snapshot") if isinstance(policy.get("snapshot"), dict) else {}
+        root = snapshot.get("root") if isinstance(snapshot.get("root"), dict) else {}
+        team_id = str(policy.get("team_id") or "")
+        entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
+        team_entry = next((item for item in entries if isinstance(item, dict)
+                           and item.get("object_type") == "expert_team" and item.get("object_key") == team_id), {})
+        task_nodes = []
+        for task in run.get("tasks", {}).values():
+            task_nodes.append({
+                "id": task.get("id"), "parent_id": task.get("parent_id"), "kind": task.get("kind"),
+                "expert_id": task.get("expert_id"), "skill_id": task.get("skill_id"),
+                "status": task.get("status"), "attempt": task.get("attempt"),
+                "depends_on": task.get("depends_on") or [], "created_at": task.get("created_at"),
+                "started_at": task.get("started_at"), "ended_at": task.get("ended_at"),
+                **({"goal": task.get("goal")} if include_content else {}),
+            })
+        tool_nodes = []
+        for tool in run.get("tools", {}).values():
+            tool_nodes.append({
+                "id": tool.get("id"), "task_id": tool.get("task_id"), "parent_id": tool.get("parent_id"),
+                "name": tool.get("name"), "status": tool.get("status"), "attempts": tool.get("attempts"),
+                "created_at": tool.get("created_at"), "started_at": tool.get("started_at"), "ended_at": tool.get("ended_at"),
+                "error": tool.get("error"),
+            })
+        input_requests = []
+        for item in run.get("inputs", {}).values():
+            input_requests.append({
+                "id": item.get("id"), "status": item.get("status"), "version": item.get("version"),
+                "round": item.get("round"), "owner_task_id": item.get("owner_task_id"),
+                "bindings": item.get("bindings") or [],
+                "fields": item.get("fields") if include_content else [field.get("key") for field in item.get("fields") or []],
+                **({"answer": item.get("answer")} if include_content else {}),
+            })
+        orchestrator = policy.get("orchestrator") if isinstance(policy.get("orchestrator"), dict) else {}
+        traces.append({
+            "run_id": run.get("run_id"), "session_id": run.get("session_id"), "profile_id": run.get("profile_id"),
+            "status": run.get("status"), "created_at": run.get("created_at"), "updated_at": run.get("updated_at"),
+            "wire_protocol": run.get("wire_protocol"), "execution_runtime": run.get("execution_runtime") or "harness",
+            "configuration": {
+                "deployment_id": snapshot.get("deployment_id"), "package_hash": snapshot.get("package_hash"),
+                "snapshot_hash": snapshot.get("snapshot_hash"), "snapshot_source": snapshot.get("source"),
+                "root": {"object_type": root.get("object_type"), "object_key": root.get("object_key")},
+                "expert_team": {"team_id": team_id, "release_id": team_entry.get("release_id"),
+                                "version": team_entry.get("version")},
+            },
+            "orchestration": {
+                "enabled": bool(policy.get("orchestrated")), "identity_gate": policy.get("identity_gate"),
+                "direct_expert_id": policy.get("direct_expert_id"),
+                "members": orchestrator.get("members") or [], "consultation_policy": orchestrator.get("consultation_policy") or {},
+            },
+            "dispatch": run.get("dispatch") or {}, "tasks": task_nodes, "tools": tool_nodes,
+            "input_requests": input_requests, "execution_diagnostics": execution_diagnostics(run),
+            "steps": _redact(debug_step_io(run), include_content=include_content),
+        })
+    return traces[-limit:]
+
+
 def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, limit: int, include_content: bool,
+                    harness=None,
                     event_types: list[str] | None = None) -> dict[str, Any]:
     try:
         context = repository.get(session_id)
@@ -391,6 +471,7 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
             runs.append(database_run)
     runs.sort(key=lambda item: str(item.get("started_at") or item.get("created_at") or item["run_id"]))
     sse_records = _sse_records(session_id, run_id, limit=limit, include_content=include_content)
+    harness_trace = _harness_runtime_trace(harness, session_id, run_id=run_id, limit=limit, include_content=include_content)
     sandbox_events = [
         item for item in events
         if str(item.get("event_type") or item.get("event") or "").startswith("sandbox_")
@@ -411,7 +492,7 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
             break
     return {
         "session_id": session_id,
-        "found": context is not None or bool(events) or bool(http_records) or bool(runs) or bool(candidate_trace),
+        "found": context is not None or bool(events) or bool(http_records) or bool(runs) or bool(candidate_trace) or bool(harness_trace),
         "session": _redact({
             "user_id": getattr(context, "user_id", "") if context else "",
             "active_profile_id": getattr(context, "profile_id", None) if context else None,
@@ -441,10 +522,12 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
         "output_diagnostics": _output_diagnostics(events=events, limit=limit),
         "candidate_execution_trace": candidate_trace,
         "execution_trace": candidate_trace,
+        "harness_runtime_trace": harness_trace,
+        "harness_runtime_trace_available": _test_environment(),
     }
 
 
-def build_diagnostics_router(repository, engine) -> APIRouter:
+def build_diagnostics_router(repository, engine, harness=None) -> APIRouter:
     router = APIRouter(prefix="/operations/diagnostics", tags=["operations"])
 
     @router.post("/sessions/query")
@@ -457,7 +540,7 @@ def build_diagnostics_router(repository, engine) -> APIRouter:
         session_id = _safe_id(body.session_id, label="session_id")
         run_id = _safe_id(body.run_id, label="run_id") if body.run_id else None
         return _lookup_session(repository, engine, session_id, run_id=run_id, limit=body.limit,
-                                include_content=body.include_content, event_types=body.event_types)
+                                include_content=body.include_content, harness=harness, event_types=body.event_types)
 
     @router.post("/runs/query")
     def get_run_diagnostics(
@@ -472,7 +555,8 @@ def build_diagnostics_router(repository, engine) -> APIRouter:
             records = _http_records(field="run_id", value=run_id, limit=body.limit, include_content=body.include_content)
             return {"run_id": run_id, "found": bool(records), "run": None, "http_requests": records,
                     "hint": "No persisted run was found; use request_id for validation, authentication, or pre-session failures."}
-        result = _lookup_session(repository, engine, str(run["session_id"]), run_id=run_id, limit=body.limit, include_content=body.include_content)
+        result = _lookup_session(repository, engine, str(run["session_id"]), run_id=run_id, limit=body.limit,
+                                 include_content=body.include_content, harness=harness)
         result["run"] = run
         return result
 

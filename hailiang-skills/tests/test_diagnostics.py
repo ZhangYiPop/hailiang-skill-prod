@@ -74,6 +74,28 @@ def test_session_diagnostics_redacts_content_by_default(monkeypatch, tmp_path) -
     }]
 
 
+def test_session_diagnostics_includes_test_only_v3_harness_runtime_trace(monkeypatch) -> None:
+    run = {
+        "run_id": "harness_001", "session_id": "sess_001", "profile_id": "profile_001",
+        "status": "running", "created_at": "2026-10-25T10:00:00+08:00", "updated_at": "2026-10-25T10:00:01+08:00",
+        "wire_protocol": "hailiang.sse.v3", "root_task_id": "task_001", "inputs": {},
+        "tasks": {"task_001": {"id": "task_001", "kind": "main", "status": "running", "goal": "敏感问题", "trace": [], "depends_on": [], "created_at": "2026-10-25T10:00:00+08:00", "started_at": None, "ended_at": None}},
+        "tools": {"tool_001": {"id": "tool_001", "task_id": "task_001", "name": "delegate_tasks", "status": "completed", "arguments": {"tasks": []}, "created_at": "2026-10-25T10:00:00+08:00", "started_at": None, "ended_at": None}},
+        "policy": {"team_id": "team_001", "orchestrated": True, "identity_gate": "text", "direct_expert_id": "", "settings": {"max_parallel": 3},
+                   "orchestrator": {"members": [{"expert_id": "expert_001"}], "consultation_policy": {"mode": "consult"}},
+                   "snapshot": {"deployment_id": "deploy_001", "package_hash": "hash_001", "root": {"object_type": "expert_team", "object_key": "team_001"},
+                                "entries": [{"object_type": "expert_team", "object_key": "team_001", "release_id": "release_001", "version": "v1"}]}},
+    }
+    harness = SimpleNamespace(store=SimpleNamespace(runs=lambda session_id: [run]))
+    monkeypatch.setattr(diagnostics, "deployment_environment", lambda: "test-smoke")
+    redacted = diagnostics._harness_runtime_trace(harness, "sess_001", run_id=None, limit=10, include_content=False)
+    assert redacted[0]["configuration"]["expert_team"] == {"team_id": "team_001", "release_id": "release_001", "version": "v1"}
+    assert redacted[0]["orchestration"]["enabled"] is True
+    assert "goal" not in redacted[0]["tasks"][0]
+    detailed = diagnostics._harness_runtime_trace(harness, "sess_001", run_id="harness_001", limit=10, include_content=True)
+    assert detailed[0]["tasks"][0]["goal"] == "敏感问题"
+
+
 def test_session_diagnostics_projects_confirmed_output_truncation(monkeypatch, tmp_path) -> None:
     client = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(diagnostics, "read_events", lambda session_id: [{
