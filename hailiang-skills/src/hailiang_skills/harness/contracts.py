@@ -56,6 +56,7 @@ class InputField(BaseModel):
     fact_key: str | None = None
     subject: str = Field(default="", max_length=160)
     applicable_time: str = Field(default="", max_length=160)
+    placeholder: str = Field(default="", max_length=240)
     min: float | None = None
     max: float | None = None
 
