@@ -220,6 +220,30 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                 history.append({"role": "user", "content": run["goal"]})
                 if run.get("result"):
                     history.append({"role": "assistant", "content": run["result"]})
+        # 注入上一轮 Run 的结构化上下文，让新 Run 的编排器和主 agent 知道上轮发生了什么
+        if previous and history:
+            last = max(previous, key=lambda r: r["created_at"])
+            if last["status"] == "completed" and last["profile_id"] == data.profile_id:
+                expert_summaries = []
+                for task in last.get("tasks", {}).values():
+                    if task.get("kind") == "expert":
+                        sr = task.get("structured_result") or {}
+                        expert_summaries.append({
+                            "expert_id": task.get("expert_id"),
+                            "expert_name": (last.get("policy", {}).get("experts", {}).get(task.get("expert_id"), {}).get("name") or task.get("expert_id")),
+                            "status": task.get("status"),
+                            "findings": (sr.get("findings") or [])[:5],
+                            "limitations": (sr.get("limitations") or [])[:3],
+                        })
+                history.append({
+                    "role": "system",
+                    "content": "上一轮执行上下文：" + json.dumps({
+                        "last_round_goal": last.get("goal", ""),
+                        "last_round_result_summary": (last.get("result") or "")[:300],
+                        "orchestration": last.get("orchestration") or {},
+                        "expert_summaries": expert_summaries,
+                    }, ensure_ascii=False),
+                })
         run_id = operation(lambda: runtime.create(session_id, data.user_id, data.profile_id, request.goal, policy, seed, history,
             wire_protocol="hailiang.sse.v3" if protocol_v3 else None, submission=submission,
             supersede_active=protocol_v3, debug_skill_id=debug_skill_id))

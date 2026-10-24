@@ -11,6 +11,7 @@ from typing import Any
 from hailiang_skills.core.fact_service import FactService
 from hailiang_skills.schemas.questionnaire import validate_questionnaire_config
 from hailiang_skills.runtime_bridge.native_path_options import MULTI_PATH_SKILL_ID, path_catalog
+import logging
 from hailiang_skills.skills.common import extract_explicit_exam_province
 
 
@@ -168,6 +169,9 @@ def build_questionnaire_protocol(bundle: Any, state: Any) -> str:
         "Write the user-visible reply as ordinary text. To ask declared questions, call "
         "request_declared_form with question_ids taken only from question_catalog, at most "
         f"{_max_fields_per_form(bundle)} ids. Never invent a question type, option, or condition. "
+        "Collect ALL required fields in a SINGLE call; do NOT split into multiple sequential "
+        "request_declared_form calls. If there are more required fields than "
+        "max_fields_per_form, select the most critical ones up to the limit. "
         "Do not call the tool when no follow-up is needed. Do not write follow-up questions "
         "as Markdown or plain text; the runtime renders the selected questions as a form. "
         "Unknown question_ids are rejected and are not replaced with other catalog items. "
@@ -1112,6 +1116,8 @@ def resolve_declared_form_request(
         if str(item).strip()
     ]
     skill_id = str(getattr(state, "active_skill_id", "") or bundle.contract.skill_id)
+    skill_state = state.skill_facts.setdefault(skill_id, {})
+    previously_shown: set[str] = set(skill_state.get("_shown_form_question_ids", []))
     continuation = questionnaire_continuation_context(bundle, state)
     if isinstance(continuation, dict):
         _apply_explicit_message_answers(bundle, state, continuation.get("answer_reconciliation"))
@@ -1136,12 +1142,23 @@ def resolve_declared_form_request(
     seen: set[str] = set()
     for question_id in requested:
         spec = available.get(question_id)
-        if spec is None or question_id in answers or question_id in seen:
+        if spec is None or question_id in answers or question_id in seen or question_id in previously_shown:
             continue
         seen.add(question_id)
         selected.append(spec)
         if len(selected) >= _max_fields_per_form(bundle):
             break
+    dedup_skipped = [qid for qid in requested if qid in previously_shown and qid not in seen]
+    if dedup_skipped:
+        logging.getLogger("hailiang.native_questionnaire").warning(
+            "duplicate request_declared_form — %d previously-shown question_ids re-requested: %s",
+            len(dedup_skipped),
+            ", ".join(dedup_skipped),
+        )
+    if selected:
+        skill_state["_shown_form_question_ids"] = sorted(
+            previously_shown | {str(item["question_id"]) for item in selected}
+        )
     block = _form_block(skill_id, selected) if selected else None
     if not text:
         text = "请填写下面的信息，我再继续。" if block else "好的，我按已有信息继续。"
@@ -1151,6 +1168,7 @@ def resolve_declared_form_request(
         "form_source": "request_declared_form",
         "selected_question_ids": [str(item["question_id"]) for item in selected],
         "rejected_question_ids": [],
+        "dedup_skipped_question_ids": dedup_skipped,
         "error": "",
     }
 

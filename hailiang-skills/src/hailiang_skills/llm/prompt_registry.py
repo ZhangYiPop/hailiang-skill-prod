@@ -183,6 +183,7 @@ PROMPT_REGISTRY: dict[str, PromptSpec] = {
 }
 
 规划原则：
+- **本轮用户输入（user_input）是第一优先级信号**，必须先根据用户当前问题的语义意图决定 target_skill，再参考历史 scenario/phase 做补充判断；当用户当前问题与历史话题明显不同时，优先响应当前问题，不要被历史上下文带偏
 - 优先复用当前已知 facts，不要重复问已经知道的信息
 - 要结合 `context.interaction_state.current_scenario` 和 `current_phase` 判断本轮阶段
 - 如果信息足够，优先直接回答，不要机械追问

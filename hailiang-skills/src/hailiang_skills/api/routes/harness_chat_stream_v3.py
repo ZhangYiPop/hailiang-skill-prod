@@ -524,6 +524,30 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 for old in sorted(runtime.store.runs(request.session_id), key=lambda item: item["created_at"])[-10:]:
                     if old["profile_id"] == data.profile_id and old["status"] == "completed":
                         history.extend([{"role": "user", "content": old["goal"]}, {"role": "assistant", "content": old.get("result", "")}])
+                # 注入上一轮 Run 的结构化上下文
+                if history:
+                    last = max(runtime.store.runs(request.session_id), key=lambda r: r["created_at"])
+                    if last.get("status") == "completed" and last.get("profile_id") == data.profile_id:
+                        expert_summaries = []
+                        for task in last.get("tasks", {}).values():
+                            if task.get("kind") == "expert":
+                                sr = task.get("structured_result") or {}
+                                expert_summaries.append({
+                                    "expert_id": task.get("expert_id"),
+                                    "expert_name": (last.get("policy", {}).get("experts", {}).get(task.get("expert_id"), {}).get("name") or task.get("expert_id")),
+                                    "status": task.get("status"),
+                                    "findings": (sr.get("findings") or [])[:5],
+                                    "limitations": (sr.get("limitations") or [])[:3],
+                                })
+                        history.append({
+                            "role": "system",
+                            "content": "上一轮执行上下文：" + json.dumps({
+                                "last_round_goal": last.get("goal", ""),
+                                "last_round_result_summary": (last.get("result") or "")[:300],
+                                "orchestration": last.get("orchestration") or {},
+                                "expert_summaries": expert_summaries,
+                            }, ensure_ascii=False),
+                        })
                 harness_run_id = operation(lambda: runtime.create(
                     request.session_id, data.user_id, data.profile_id, input_data.content, policy,
                     _seed_facts(context, runtime, request.session_id, data.user_id, data.profile_id), history,

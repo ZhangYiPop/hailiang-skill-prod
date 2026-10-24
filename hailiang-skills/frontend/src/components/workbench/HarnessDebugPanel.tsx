@@ -34,6 +34,22 @@ function sessionLabel(item: HarnessHistorySession): string {
   return `${formatSessionTime(item.created_at)} · ${status} · ${first.slice(0, 28)}${first.length > 28 ? "…" : ""}`;
 }
 
+/** Derive a status dot for a session based on its runs and unread state. */
+function sessionStatusDot(
+  item: HarnessHistorySession,
+  runsBySession: Record<string, HarnessRun[]>,
+  unreadSessions: Set<string>,
+  isCurrent: boolean,
+): string {
+  if (isCurrent) return "";
+  const runs = runsBySession[item.debug_session_id] || [];
+  if (!runs.length) return unreadSessions.has(item.debug_session_id) ? " 🟢" : "";
+  const hasWaiting = runs.some((r) => !isHarnessTerminal(r.status));
+  if (hasWaiting) return " 🟡";
+  if (unreadSessions.has(item.debug_session_id)) return " 🟢";
+  return "";
+}
+
 export function HarnessDebugPanel({
   baseUrl,
   revisionId,
@@ -62,35 +78,62 @@ export function HarnessDebugPanel({
     return legacyView(snapshot);
   };
   const [goal, setGoal] = useState("");
-  // 正式流程里身份、学段由平台前置收集；测试时在这里预置，避免专家被反复追问。
   const [userRole, setUserRole] = useState("家长");
   const [schoolStage, setSchoolStage] = useState("高中");
   const [gradeName, setGradeName] = useState("");
   const [debugId, setDebugId] = useState("");
-  const [runs, setRuns] = useState<HarnessRun[]>([]);
+  // Per-session state: runs, evidence, conclusion, trace.
+  const [runsBySession, setRunsBySession] = useState<Record<string, HarnessRun[]>>({});
+  const [evidenceBySession, setEvidenceBySession] = useState<Record<string, boolean>>({});
+  const [conclusionBySession, setConclusionBySession] = useState<Record<string, string>>({});
+  const [unreadSessions, setUnreadSessions] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [trace, setTrace] = useState("");
   const [stepsByRun, setStepsByRun] = useState<Record<string, Record<string, StepIo>>>({});
   const [executionDiagnosticsByRun, setExecutionDiagnosticsByRun] = useState<Record<string, HarnessExecutionDiagnosticsData>>({});
   const [rightPane, setRightPane] = useState<"reply" | "trace">("reply");
-  const [conclusion, setConclusion] = useState("");
-  const [evidenceSaved, setEvidenceSaved] = useState(false);
   const [connection, setConnection] = useState("connected");
   const [knownSessionIds, setKnownSessionIds] = useState<string[]>([]);
   const selectedModelId = useChatStore((state) => state.selectedModelId);
   const setSelectedModelId = useChatStore((state) => state.setSelectedModelId);
   const userId = `workbench-harness:${actorId}`;
   const sessionId = `harness-${debugId}`;
+  const runs = runsBySession[debugId] || [];
+  const evidenceSaved = evidenceBySession[debugId] || false;
+  const conclusion = conclusionBySession[debugId] || "";
+  // "active" only considers the CURRENT session's runs — other sessions can run in parallel.
   const active = runs.find((r) => !isHarnessTerminal(r.status));
   const persistenceKey = `harness-debug:${baseUrl}:${actorId}:${revisionId}:${soulRevisionId || ""}`;
   const knownKey = `${persistenceKey}:known`;
+  const unreadKey = `${persistenceKey}:unread`;
 
-  const mergeRuns = (incoming: HarnessRun[]) => setRuns((previous) => {
-    const runs = { ...Object.fromEntries(previous.map((run) => [run.run_id, run])) };
-    for (const run of incoming) if (!runs[run.run_id] || runs[run.run_id].version <= run.version) runs[run.run_id] = run;
-    return Object.values(runs).sort((a, b) => a.created_at.localeCompare(b.created_at));
-  });
+  const mergeRuns = (incoming: HarnessRun[]) => {
+    // Never store runs under an empty session key — that would leak content
+    // into the "new session" placeholder view.
+    const sid = debugId;
+    if (!sid) return;
+    setRunsBySession((prev) => {
+      const current = { ...(prev[sid] ? Object.fromEntries(prev[sid].map((run) => [run.run_id, run])) : {}) };
+      for (const run of incoming) if (!current[run.run_id] || current[run.run_id].version <= run.version) current[run.run_id] = run;
+      const updated = Object.values(current).sort((a, b) => a.created_at.localeCompare(b.created_at));
+
+      // Track unread: if any run just completed and this session is not the current one,
+      // mark it as unread so a green dot appears.
+      const hadTerminalRuns = (prev[sid] || []).every((r) => isHarnessTerminal(r.status));
+      const allTerminal = updated.every((r) => isHarnessTerminal(r.status));
+      if (!hadTerminalRuns && allTerminal && updated.length > 0) {
+        setUnreadSessions((prev) => {
+          const next = new Set(prev);
+          next.add(sid);
+          try { sessionStorage.setItem(unreadKey, JSON.stringify([...next])); } catch { /* ignore */ }
+          return next;
+        });
+      }
+
+      return { ...prev, [sid]: updated };
+    });
+  };
 
   const request = async <T,>(path: string, body?: unknown): Promise<T> => {
     let response: Response;
@@ -165,13 +208,17 @@ export function HarnessDebugPanel({
     try { known = JSON.parse(sessionStorage.getItem(knownKey) || "[]"); } catch { known = []; }
     setKnownSessionIds(Array.isArray(known) ? known.filter((item) => typeof item === "string") : []);
     setDebugId(sessionStorage.getItem(persistenceKey) || "");
-    setRuns([]);
+    setRunsBySession({});
     setTrace("");
     setStepsByRun({});
+setEvidenceBySession({});
+    setConclusionBySession({});
+    // Restore unread state
+    let unread: string[] = [];
+    try { unread = JSON.parse(sessionStorage.getItem(unreadKey) || "[]"); } catch { unread = []; }
+    setUnreadSessions(new Set(Array.isArray(unread) ? unread : []));
     setExecutionDiagnosticsByRun({});
-    setEvidenceSaved(false);
-    setConclusion("");
-  }, [persistenceKey, knownKey]);
+  }, [persistenceKey, knownKey, unreadKey]);
 
   useEffect(() => {
     if (!debugId) return;
@@ -211,13 +258,19 @@ export function HarnessDebugPanel({
     setStepsByRun({});
     setExecutionDiagnosticsByRun({});
     setRightPane("reply");
-    setConclusion("");
-    setEvidenceSaved(false);
-    setRuns([]);
+    setGoal("");
     setDebugId(nextId);
     if (nextId) {
       sessionStorage.setItem(persistenceKey, nextId);
       rememberSession(nextId);
+      // Mark as read — remove green dot
+      setUnreadSessions((prev) => {
+        if (!prev.has(nextId)) return prev;
+        const next = new Set(prev);
+        next.delete(nextId);
+        try { sessionStorage.setItem(unreadKey, JSON.stringify([...next])); } catch { /* ignore */ }
+        return next;
+      });
     } else {
       sessionStorage.removeItem(persistenceKey);
     }
@@ -243,16 +296,25 @@ export function HarnessDebugPanel({
       }
     })();
     return () => { cancelled = true; };
-    // Trace payloads stay on the debug endpoint. Refetch when a run version changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rightPane, debugId, runKey]);
 
   const start = async () => {
-    if (active || busy || !goal.trim()) return;
+    // Only block if CURRENT session has an active run (can't send two questions
+    // in the same session at once). Other sessions can run in parallel.
+    const currentActive = (runsBySession[debugId] || []).find((r) => !isHarnessTerminal(r.status));
+    if (currentActive || busy || !goal.trim()) return;
     setBusy(true); setError(""); setTrace("");
     try {
-      const id = (!evidenceSaved && debugId) || (await request<{ debug_session_id: string }>("/workbench/v1/revision-tests", { revision_id: revisionId, actor_id: actorId, soul_revision_id: soulRevisionId || null })).debug_session_id;
-      if (id !== debugId) setRuns([]);
+      // Always create a new debug session when the current one has completed runs
+      // or has an active run in another session — never silently reuse.
+      const hasCurrentRuns = (runsBySession[debugId] || []).length > 0;
+      const hasAnyActive = Object.values(runsBySession).some((sessionRuns) =>
+        sessionRuns.some((r) => !isHarnessTerminal(r.status))
+      );
+      const id = (hasCurrentRuns || hasAnyActive)
+        ? (await request<{ debug_session_id: string }>("/workbench/v1/revision-tests", { revision_id: revisionId, actor_id: actorId, soul_revision_id: soulRevisionId || null })).debug_session_id
+        : ((!evidenceSaved && debugId) || (await request<{ debug_session_id: string }>("/workbench/v1/revision-tests", { revision_id: revisionId, actor_id: actorId, soul_revision_id: soulRevisionId || null })).debug_session_id);
       const presetFacts = objectType === "skill" ? {} : { user_role: userRole, school_stage: schoolStage };
       await request(`${api}/sessions/harness-${id}/harness/runs`, {
         ...(v3 ? { submission_id: createUuid() } : {}),
@@ -261,10 +323,13 @@ export function HarnessDebugPanel({
         context_data: { user_id: userId, facts: presetFacts, ...(gradeName && objectType !== "skill" ? { grade: gradeName } : {}) },
         debug_session_id: id,
       });
-      setDebugId(id);
-      sessionStorage.setItem(persistenceKey, id);
-      rememberSession(id);
-      setEvidenceSaved(false);
+      if (id !== debugId) {
+        setDebugId(id);
+        sessionStorage.setItem(persistenceKey, id);
+        rememberSession(id);
+        setEvidenceBySession((prev) => ({ ...prev, [id]: false }));
+        setConclusionBySession((prev) => ({ ...prev, [id]: "" }));
+      }
       const snapshot = await request<HarnessSnapshot>(`${api}/sessions/harness-${id}/harness?user_id=${encodeURIComponent(userId)}`);
       mergeRuns(snapshot.runs); setGoal("");
       onHistoryChange?.();
@@ -289,16 +354,29 @@ export function HarnessDebugPanel({
         actor_id: actorId,
         conclusion: conclusion.trim() || "业务人员已在候选修订测试台完成验证，并确认当前修订可进入发布流程。",
       });
-      setEvidenceSaved(true);
+      setEvidenceBySession((prev) => ({ ...prev, [debugId]: true }));
       onHistoryChange?.();
       onEvidenceSaved?.(debugId);
     } catch (e) { setError(String(e)); } finally { setBusy(false); }
   };
 
+  // Can send a new question: revision selected, no active run in current session,
+  // not busy, current session not saved as evidence, and goal is non-empty.
   const canSend = Boolean(revisionId) && !active && !busy && !evidenceSaved && Boolean(goal.trim());
 
   const historyTitle = sessionOptions.find((item) => item.debug_session_id === debugId);
   const historyLabel = historyTitle ? sessionLabel(historyTitle) : "新建问答会话";
+
+  const setConclusion = (value: string) => {
+    setConclusionBySession((prev) => ({ ...prev, [debugId]: value }));
+  };
+
+  const stopActiveRun = async () => {
+    if (!active) return;
+    try {
+      await request(`/api/v2/sessions/${sessionId}/harness/runs/${active.run_id}/cancel`, { user_id: userId, profile_id: null });
+    } catch (e) { setError(String(e)); }
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -310,14 +388,14 @@ export function HarnessDebugPanel({
             title={historyLabel}
             value={debugId}
             onChange={(event) => selectSession(event.target.value)}
-            className="h-7 max-w-[11rem] rounded-md border border-white/10 bg-slate-950 px-2 text-xs text-slate-100 outline-none"
+            className="h-7 max-w-[14rem] rounded-md border border-white/10 bg-slate-950 px-2 text-xs text-slate-100 outline-none"
           >
             <option value="" className="bg-slate-950 text-slate-100">
               {sessionOptions.length ? "历史会话" : "暂无历史会话"}
             </option>
             {sessionOptions.map((item) => (
               <option key={item.debug_session_id} value={item.debug_session_id} className="bg-slate-950 text-slate-100">
-                {sessionLabel(item)}
+                {sessionStatusDot(item, runsBySession, unreadSessions, item.debug_session_id === debugId)}{sessionLabel(item)}
               </option>
             ))}
           </select>
@@ -335,7 +413,7 @@ export function HarnessDebugPanel({
         </div>
         <button
           type="button"
-          disabled={Boolean(active) || busy}
+          disabled={busy}
           onClick={() => selectSession("")}
           className="ml-auto h-7 shrink-0 rounded-md border border-sky-300/30 px-2.5 text-xs text-sky-100 disabled:opacity-40"
         >
@@ -511,7 +589,7 @@ export function HarnessDebugPanel({
         {active ? (
           <button
             type="button"
-            onClick={() => void request(`/api/v2/sessions/${sessionId}/harness/runs/${active.run_id}/cancel`, { user_id: userId, profile_id: null }).catch((e) => setError(String(e)))}
+            onClick={() => void stopActiveRun()}
             className="shrink-0 rounded-lg border border-rose-300/30 px-4 py-3 text-sm text-rose-100"
           >
             停止

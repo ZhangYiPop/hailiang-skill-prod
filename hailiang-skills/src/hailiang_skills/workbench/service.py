@@ -1252,6 +1252,12 @@ class WorkbenchService:
                 raise WorkbenchConflict("修订测试会话已经结束", code="DEBUG_SESSION_COMPLETED")
             snapshot = copy.deepcopy(row.snapshot or {})
             context = self._restore_revision_test_context(row, snapshot)
+            # 修订测试需要档案数据时，阻止无 profile 启动
+            if context.profile_id is None and self._snapshot_needs_profile(snapshot):
+                raise WorkbenchError(
+                    "修订测试需要选择一个档案（孩子）才能启动，请先在 Workbench 中选择 Profile",
+                    code="REVISION_TEST_PROFILE_REQUIRED",
+                )
             # Capture every structured interaction transition before the
             # normal input adapter below so evidence retains form and card
             # state changes for this turn.
@@ -3830,6 +3836,30 @@ class WorkbenchService:
                 raise WorkbenchConflict("只能下线当前活跃的生产专家团", code="DEPLOYMENT_NOT_ACTIVE")
             if str(expert_team_id or "") != root_team_id:
                 raise WorkbenchError("确认的 expert_team_id 与部署不一致", code="DEPLOYMENT_CONFIRMATION_MISMATCH")
+            # 检查是否有正在运行的修订测试引用了此部署的快照
+            root_object_id = str((target.manifest.get("root") or {}).get("object_id") or "")
+            if root_object_id:
+                revision_ids = [
+                    r[0] for r in db.execute(
+                        select(WorkbenchRevisionRow.revision_id).where(
+                            WorkbenchRevisionRow.object_id == root_object_id
+                        )
+                    ).all()
+                ]
+                if revision_ids:
+                    running = list(db.scalars(
+                        select(WorkbenchDebugSessionRow).where(
+                            WorkbenchDebugSessionRow.revision_id.in_(revision_ids),
+                            WorkbenchDebugSessionRow.status == "active",
+                        )
+                    ).all())
+                    if running:
+                        ids = ", ".join(r.debug_session_id[:8] for r in running[:5])
+                        suffix = f" 等 {len(running)} 个" if len(running) > 5 else ""
+                        raise WorkbenchConflict(
+                            f"当前部署尚有修订测试正在进行（{ids}{suffix}），请先停止后再下线",
+                            code="REVISION_TESTS_RUNNING",
+                        )
             target.status = "deactivated"
             self._audit(db, actor_id, "deployment.deactivated", "deployment", target.deployment_id, {"expert_team_id": root_team_id})
             db.commit()
@@ -4869,6 +4899,68 @@ class WorkbenchService:
     def _is_publishable_asset_path(relative_path: str) -> bool:
         path = PurePosixPath(str(relative_path or ""))
         return "__pycache__" not in path.parts and path.suffix.lower() != ".pyc"
+
+    def _snapshot_needs_profile(self, snapshot: dict[str, Any]) -> bool:
+        """Check if any skill in the snapshot requires profile-scoped facts."""
+        try:
+            facts_config_path = Path(
+                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config", "facts_schema.yml")
+            )
+            if not facts_config_path.is_file():
+                return False
+            with open(facts_config_path, encoding="utf-8") as fh:
+                facts_config = yaml.safe_load(fh) or {}
+            profile_facts = {
+                key: item for key, item in (facts_config.get("facts") or {}).items()
+                if isinstance(item, dict) and item.get("scope_policy") in ("profile", "shared")
+            }
+            if not profile_facts:
+                return False
+            # Collect scenario groups from snapshot entries (skills)
+            entries = snapshot.get("entries") or []
+            for entry in entries:
+                if entry.get("object_type") != "skill":
+                    continue
+                payload = entry.get("payload") or {}
+                skill_scenario = ""
+                # Try payload first
+                questionnaire = (payload.get("runtime_contract") or {}).get("questionnaire")
+                if isinstance(questionnaire, dict):
+                    for q in (questionnaire.get("questions") or []):
+                        if isinstance(q, dict) and q.get("scope") in ("profile", "shared"):
+                            return True
+                # Try configuration metadata
+                config = payload.get("configuration") or payload.get("source_metadata") or {}
+                skill_scenario = config.get("scenario", "")
+                # Check if any profile fact's scenario group overlaps
+                for fact_key, fact_item in profile_facts.items():
+                    groups = fact_item.get("scenario_group") or []
+                    if skill_scenario and skill_scenario in groups:
+                        return True
+                    if groups and not skill_scenario:
+                        # If skill has no explicit scenario but profile facts exist,
+                        # conservatively require profile (skill likely uses facts)
+                        return True
+                # Check skill files for facts_schema
+                files = entry.get("files") or []
+                for f in files:
+                    if isinstance(f, dict) and f.get("relative_path") == "facts_schema.yml":
+                        content = f.get("content")
+                        if isinstance(content, bytes):
+                            content = content.decode("utf-8")
+                        if isinstance(content, str):
+                            try:
+                                schema = yaml.safe_load(content) or {}
+                                for item in (schema.get("facts") or {}).values():
+                                    if isinstance(item, dict) and item.get("scope_policy") in ("profile", "shared"):
+                                        return True
+                            except yaml.YAMLError:
+                                pass
+                        break
+            return False
+        except Exception:
+            # If we can't determine, don't block
+            return False
 
     def _snapshot_for_revision(self, db, revision: WorkbenchRevisionRow, *, soul_revision_id: str | None = None) -> dict[str, Any]:
         obj = self._require_object(db, revision.object_id)

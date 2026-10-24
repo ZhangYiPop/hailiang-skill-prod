@@ -33,6 +33,8 @@ def read_asset(run, task, args, bundle_loader):
     documents = list(_iter_local_documents(bundle_loader(run, sid)))
     source = args.get('source')
     offset, limit = args.get('offset', 0), args.get('limit', 20)
+    search = args.get('search')
+    context_lines = args.get('context_lines', 5)
     if not source:
         page = documents[offset:offset + limit]
         return {'skill_id': sid, 'documents': [{'title': title, 'source': src, 'chars': len(body)} for title, src, body in page],
@@ -44,6 +46,16 @@ def read_asset(run, task, args, bundle_loader):
     try:
         payload = json.loads(content)
     except ValueError:
+        if search is not None:
+            lines = content.split('\n')
+            for i, line in enumerate(lines):
+                if search.lower() in line.lower():
+                    start = max(0, i - context_lines)
+                    end = min(len(lines), i + context_lines + 1)
+                    window = '\n'.join(lines[start:end])
+                    return {'source': source, 'text': window, 'search': search,
+                            'match_line': i, 'context_lines': context_lines,
+                            'offset': start, 'total_lines': len(lines)}
         if args.get('filters') or args.get('score') is not None:
             raise HarnessError('ASSET_FILTER_REQUIRES_RECORDS')
         size = min(args.get('max_chars', 4000), 8000)
@@ -51,6 +63,25 @@ def read_asset(run, task, args, bundle_loader):
                 'next_offset': offset + size if offset + size < len(content) else None}
     if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
         raise HarnessError('ASSET_EXPECTED_RECORD_ARRAY')
+    if search is not None:
+        matched_indices = []
+        for index, row in enumerate(payload):
+            for key, value in row.items():
+                if isinstance(value, str) and search.lower() in value.lower():
+                    matched_indices.append(index)
+                    break
+        if matched_indices:
+            first_match = matched_indices[0]
+            start = max(0, first_match - context_lines)
+            end = min(len(payload), first_match + context_lines + 1)
+            window_records = [
+                {'record_index': i, 'record': payload[i], 'search_match': i in matched_indices}
+                for i in range(start, end)
+            ]
+            return {'source': source, 'matched_count': len(matched_indices),
+                    'records': window_records, 'search': search,
+                    'context_lines': context_lines, 'first_match_index': first_match,
+                    'notice': '资料匹配记录，不代表当年录取保证；年份与口径以记录来源为准。'}
     filters = args.get('filters', {})
     score = args.get('score')
     selected = []

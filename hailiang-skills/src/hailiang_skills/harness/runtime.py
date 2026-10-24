@@ -609,6 +609,11 @@ class HarnessRuntime:
                       "updates": {"type": "array", "minItems": 1, "maxItems": 12, "items": object_schema({
                           "key": {"type": "string"}, "value": {}, "scope": {"enum": ["task", "session", "profile", "user"]},
                           "status": {"enum": ["user_statement", "candidate", "assumption", "derived"]}, "evidence": {"type": "string"}}, ["key", "value", "scope", "status", "evidence"])}}, ["updates"]))]
+        if task["kind"] != "main":
+            result.append(spec("submit_findings", "记录本轮分析的结构化发现，内容不直接显示给用户。完成分析后先调用此工具，再输出自然文本回复。", object_schema({
+                "findings": {"type": "array", "items": {"type": "string"}, "description": "每条可独立验证的分析发现"},
+                "limitations": {"type": "array", "items": {"type": "string"}, "description": "信息不足或结论受限的地方"},
+                "unresolved": {"type": "array", "items": {"type": "string"}, "description": "未解决、可能需要后续关注的问题"}})))
         if task["kind"] == "main" and run["policy"]["experts"]:
             result.append(spec("delegate_tasks", "拆解为授权专家任务。使用批内唯一 key 和 depends_on，专家自主选择 Skill。", object_schema({
                 "tasks": {"type": "array", "minItems": 1, "maxItems": 12, "items": object_schema({
@@ -659,12 +664,13 @@ class HarnessRuntime:
             from .asset_reader import readable_skills
             readable = readable_skills(run, task)
             if readable:
-                result.append(spec("read_skill_asset", "精确读取授权 Skill 资料。source 省略时分页列目录；JSON 数组可 filters 精确匹配字段，score 匹配 min_score/max_score 闭区间；offset 为过滤后记录偏移，文本则为字符偏移。优先用较大 limit 一次读完匹配记录，matched_count 较大时不要逐页小批量读取浪费调用预算。", object_schema({
+                result.append(spec("read_skill_asset", "精确读取授权 Skill 资料。source 省略时分页列目录；JSON 数组可 filters 精确匹配字段，score 匹配 min_score/max_score 闭区间；search 关键字搜索跳转（搜索文本字段或行内容），命中则返回围绕匹配的上下文窗口，未命中回退到 offset/limit 分页；context_lines 控制搜索命中的上下文行/记录数（默认5）；offset 为过滤后记录偏移，文本则为字符偏移。优先用较大 limit 一次读完匹配记录，matched_count 较大时不要逐页小批量读取浪费调用预算。", object_schema({
                     "skill_id": {"enum": readable}, "source": {"type": "string"},
                     "filters": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean", "null"]}},
                     "score": {"type": "number"}, "offset": {"type": "integer", "minimum": 0},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 20},
-                    "max_chars": {"type": "integer", "minimum": 1, "maximum": 8000}}, ["skill_id"])))
+                    "max_chars": {"type": "integer", "minimum": 1, "maximum": 8000},
+                    "search": {"type": "string"}, "context_lines": {"type": "integer", "minimum": 0, "maximum": 50}}, ["skill_id"])))
             if task["kind"] == "main":
                 result.append(spec("set_task_subject", "分派前确认本任务讨论当前档案还是其他对象。evidence 必须逐字来自用户问题或已提交答案。external 隔离当前档案，不能切换到其他用户档案。", object_schema({
                     "mode": {"enum": ["profile", "external"]}, "evidence": {"type": "string", "minLength": 1}}, ["mode", "evidence"])))
@@ -907,8 +913,22 @@ class HarnessRuntime:
                 live["trace"][-1]["output"] = asdict(response)
                 self._record_model_usage(current, live["trace"][-1], metrics)
                 if str(metrics.get("finish_reason") or "").lower() in _TRUNCATED_FINISH:
-                    # Commit usage and raw output before recording failure.
+                    # Commit usage before deciding whether to retry.
                     live["incomplete_output"] = True
+                    truncation_attempts = live.get("truncation_attempts", 0) + 1
+                    live["truncation_attempts"] = truncation_attempts
+                    # Retry up to 2 times: requeue the task so it re-runs without
+                    # growing the context further (the truncated trace entry is
+                    # stripped before requeue, unlike facts_changed which keeps
+                    # partial output).  After 3 consecutive truncations, accept
+                    # the failure.
+                    if truncation_attempts <= 2:
+                        # Strip the truncated trace to avoid growing input on retry.
+                        if live["trace"] and live["trace"][-1].get("output"):
+                            live["trace"][-1].pop("output", None)
+                        live["status"] = "queued"
+                        changes.append({"event": "output_truncated_retry", "node_id": task_id})
+                        return
                     live.update(status="failed", error="MODEL_OUTPUT_TRUNCATED", ended_at=now())
                     if live["kind"] == "main":
                         current.update(status="failed", error="MODEL_OUTPUT_TRUNCATED")
@@ -1040,7 +1060,7 @@ class HarnessRuntime:
         view = policy.get("orchestrator") or {}
         facts = {record.get("key"): record.get("value") for record in self.facts(run, task).values() if record.get("key")}
         history = [{"role": m["role"], "content": m["content"]} for m in task["messages"]
-                   if m.get("role") in {"user", "assistant"} and m.get("content") and not m.get("tool_calls")]
+                   if m.get("role") in {"user", "assistant", "system"} and m.get("content") and not m.get("tool_calls")]
         members = [m for m in view.get("members", []) if m.get("expert_id") in policy["experts"]]
         consult_policy = view.get("consultation_policy") or {}
         fallback = harness_fallback_expert_id(policy)
@@ -1125,6 +1145,60 @@ class HarnessRuntime:
                                          members=members, policy=consult_policy, profile={"facts": facts, **facts},
                                          messages=history, fallback_expert_id=fallback)
             plan_json = plan.model_dump()
+            # ── Pre-flight fact gate ──────────────────────────────────────
+            # Before dispatching experts, check whether the activated skills
+            # share any required facts that the user hasn't provided yet.
+            # Collect them once through a unified input card so each skill
+            # doesn't ask the same question independently.
+            if plan.action == "consult" and not task.get("pre_flight_asked"):
+                from hailiang_skills.runtime_bridge.pre_flight_gate import (
+                    build_pre_flight_fields,
+                    collect_required_facts,
+                    missing_pre_flight_facts,
+                    resolve_skill_ids,
+                )
+                from hailiang_skills.core.facts_config import get_fact_label
+
+                target_expert_ids = [s.target_expert_id for s in plan.subtasks]
+                skill_ids = resolve_skill_ids(target_expert_ids, policy)
+                if skill_ids:
+                    required = collect_required_facts(skill_ids)
+                    missing = missing_pre_flight_facts(required, facts)
+                    if missing:
+                        labels = {k: get_fact_label(k) for k in required}
+                        fields = build_pre_flight_fields(missing, labels)
+
+                        def pre_flight_gate(current, changes, _db):
+                            if not self._valid(current, task_id, token):
+                                return
+                            live = current["tasks"][task_id]
+                            live["trace"][-1]["output"] = {"final_text": json.dumps(plan_json, ensure_ascii=False)}
+                            live["head_done"] = True
+                            live["pre_flight_asked"] = True
+                            current["orchestration"] = {"action": plan.action, "reason": plan.reason,
+                                                        "subtasks": plan_json["subtasks"]}
+                            self._record_node(current, live, "pre_flight_gate",
+                                              {"missing": missing, "skills": skill_ids},
+                                              {"missing": missing}, changes)
+                            arguments = {"title": "请补充以下信息", "fields": fields}
+                            call_id, node_id = identifier("call"), identifier("tool")
+                            current["tools"][node_id] = {
+                                "id": node_id, "call_id": call_id, "task_id": task_id, "parent_id": task_id,
+                                "name": "request_user_input", "arguments": arguments, "status": "queued",
+                                "attempts": 0, "created_at": now(), "started_at": None, "ended_at": None,
+                            }
+                            live["pending_calls"].append(node_id)
+                            live["messages"].append(serialize_message(ChatMessage(
+                                role="assistant", content="",
+                                tool_calls=(ToolCallRequest(call_id, "request_user_input", arguments),),
+                            )))
+                            live["status"] = "queued"
+                            changes.append({"event": "tool_created", "node_id": node_id})
+                            self._settle(current, changes, _db)
+
+                        self.store.mutate(run_id, pre_flight_gate)
+                        return
+            # ── End pre-flight gate ──────────────────────────────────────
             def apply_head(current, changes, db):
                 if not self._valid(current, task_id, token):
                     return
@@ -1458,6 +1532,11 @@ class HarnessRuntime:
                 changes.append({"event": "context_compressed", "node_id": task_id})
         self.store.mutate(run_id, save)
 
+    @staticmethod
+    def _tool_signature(tool: dict) -> str:
+        args = tool.get("arguments", {})
+        return f"{tool['name']}:{json.dumps(args, sort_keys=True, default=str)}"
+
     def _execute_tools(self, run_id, task_id, token):
         initial = self.store.get(run_id)
         for node_id in initial["tasks"][task_id]["pending_calls"]:
@@ -1485,14 +1564,15 @@ class HarnessRuntime:
                                            if t["name"] in SEARCH_TOOL_NAMES and t["task_id"] == task_id and t.get("attempts", 0))
                         if search_calls >= run["policy"]["settings"].get("max_search_calls_per_task", 10):
                             raise HarnessError("SEARCH_BUDGET_EXCEEDED")
-                    # 重复资产读取失败短路保护：同一 source 在同一 task 内连续失败≥3次
+                    # 通用工具调用熔断器：同一 signature（工具名+参数）在同一 task 内连续失败≥3次
                     # 直接报错拒绝调用，附带切换策略的指引，防止模型烧光预算。
-                    if tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
-                        source_key = tool["arguments"]["source"]
-                        failures = (task.get("runtime_state") or {}).get("_asset_failures", {})
-                        record = failures.get(source_key)
-                        if isinstance(record, dict) and record.get("count", 0) >= 3:
+                    sig = self._tool_signature(tool)
+                    failures = (task.get("runtime_state") or {}).get("_tool_failures", {})
+                    record = failures.get(sig)
+                    if isinstance(record, dict) and record.get("count", 0) >= 3:
+                        if tool["name"] == "read_skill_asset":
                             raise HarnessError("ASSET_SOURCE_INCOMPATIBLE")
+                        raise HarnessError("TOOL_CIRCUIT_OPEN")
                     tool.update(status="running", execution_id=token, started_at=tool["started_at"] or now(), attempts=tool["attempts"] + 1)
                     task["tool_calls"] += 1
                     changes.append({"event": "tool_started", "node_id": node_id})
@@ -1517,16 +1597,17 @@ class HarnessRuntime:
                         result["field"] = ".".join(str(part) for part in exc.errors()[0]["loc"]) or "$"
                     if result["error"] == "ASSET_SOURCE_INCOMPATIBLE":
                         result["next_action"] = "当前 source 文件的数据格式与结构化读取不兼容。改用 search_skill_assets 语义搜索，或调用 read_skill_asset 省略 source 先列目录寻其他文件；不要重复尝试同一 source。"
+                    if result["error"] == "TOOL_CIRCUIT_OPEN":
+                        result["next_action"] = "此工具调用已连续失败3次，请换用其他工具或调整参数后重试。"
                     self._tool_result(tool, result, "failed")
                     changes.append({"event": "tool_failed", "node_id": node_id})
-                    # 累计 read_skill_asset 同一 source 的连续失败次数，用于短路保护
-                    if tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
-                        source_key = tool["arguments"]["source"]
-                        state = task.setdefault("runtime_state", {})
-                        failures = state.setdefault("_asset_failures", {})
-                        prev = failures.get(source_key)
-                        count = (prev.get("count", 0) + 1) if isinstance(prev, dict) else 1
-                        failures[source_key] = {"count": count, "last_error": result["error"]}
+                    # 累计工具调用失败次数（按 signature 分组），用于熔断保护
+                    sig = self._tool_signature(tool)
+                    state = task.setdefault("runtime_state", {})
+                    failures = state.setdefault("_tool_failures", {})
+                    prev = failures.get(sig)
+                    count = (prev.get("count", 0) + 1) if isinstance(prev, dict) else 1
+                    failures[sig] = {"count": count, "last_error": result["error"]}
             self.store.mutate(run_id, begin)
             if external:
                 try:
@@ -1562,14 +1643,14 @@ class HarnessRuntime:
                     else:
                         self._tool_result(tool, result, "failed" if error else "completed")
                         changes.append({"event": "tool_failed" if error else "tool_completed", "node_id": node_id})
-                    # 累计 read_skill_asset 同一 source 的连续失败次数，用于短路保护
-                    if error and tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
-                        source_key = tool["arguments"]["source"]
+                    # 累计同一 tool+参数签名的连续失败次数，用于通用短路保护
+                    if error:
+                        sig = self._tool_signature(tool)
                         state = run["tasks"][task_id].setdefault("runtime_state", {})
-                        failures = state.setdefault("_asset_failures", {})
-                        prev = failures.get(source_key)
+                        failures = state.setdefault("_tool_failures", {})
+                        prev = failures.get(sig)
                         count = (prev.get("count", 0) + 1) if isinstance(prev, dict) else 1
-                        failures[source_key] = {"count": count, "last_error": error}
+                        failures[sig] = {"count": count, "last_error": error}
                     # 追踪同一 source 的成功读取次数：超过阈值时注入提示防止逐页翻查浪费预算
                     if not error and tool["name"] == "read_skill_asset" and isinstance(tool["arguments"].get("source"), str):
                         source_key = tool["arguments"]["source"]
@@ -1753,9 +1834,19 @@ class HarnessRuntime:
             task['finalizing'] = True
             self._tool_result(tool, {'accepted': True, 'failed_subtasks': task.get('failed_subtasks')})
             changes.append({'event': 'finalizing', 'node_id': task['id']})
+        elif name == "submit_findings" and cp.enabled(run):
+            if task["kind"] == "main":
+                raise HarnessError("MAIN_AGENT_CANNOT_SUBMIT_FINDINGS")
+            existing = task.get("structured_result") or {}
+            for field in ("findings", "limitations", "unresolved"):
+                existing[field] = list(dict.fromkeys(existing.get(field, []) + (args.get(field) or [])))
+            task["structured_result"] = existing
+            self._tool_result(tool, {"recorded": {f: len(existing[f]) for f in ("findings", "limitations", "unresolved")}})
+            changes.append({"event": "findings_submitted", "node_id": task["id"]})
         elif name == "propose_fact_updates":
             results = []
             sources = [run["goal"]] + [json.dumps(q.get("answer", {}).get("answers", {}), ensure_ascii=False) for q in run["inputs"].values() if q["status"] == "answered"]
+            existing_facts = self.facts(run, task, db)
             for update in args["updates"]:
                 if cp.enabled(run) and run.get("subject_mode") == "external" and update["scope"] != "task":
                     raise HarnessError("EXTERNAL_SUBJECT_REQUIRES_TASK_SCOPE")
@@ -1763,12 +1854,22 @@ class HarnessRuntime:
                     raise HarnessError("FACT_EVIDENCE_REQUIRED")
                 if update["status"] == "assumption" and update["scope"] != "task":
                     raise HarnessError("ASSUMPTION_MUST_BE_LOCAL")
-                self.store.fact_identity(run, task, update["scope"], update["key"])
+                identity = self.store.fact_identity(run, task, update["scope"], update["key"])
+                existing = existing_facts.get(identity)
+                if existing and existing.get("status") == "confirmed" and existing.get("value") == update["value"]:
+                    update["_idempotent_skip"] = True
+                    continue
                 if update["status"] == "user_statement":
                     values = update["value"] if isinstance(update["value"], list) else [update["value"]]
                     if not any(update["evidence"] in source for source in sources) or not all(str(value) in update["evidence"] for value in values):
                         raise HarnessError("USER_FACT_EVIDENCE_INVALID")
             for update in sorted(args["updates"], key=lambda u: (u["scope"], u["key"])):
+                if update.pop("_idempotent_skip", False):
+                    identity = self.store.fact_identity(run, task, update["scope"], update["key"])
+                    record = existing_facts.get(identity)
+                    if record:
+                        results.append(record)
+                    continue
                 if update["status"] == "user_statement":
                     evidence = update["evidence"]
                     identity = self.store.fact_identity(run, task, update["scope"], update["key"])
@@ -1805,6 +1906,21 @@ class HarnessRuntime:
                 goal = str(task.get("goal") or "").strip()
                 if goal:
                     stdin_json["user_text"] = goal[:500]
+            # 输入校验：若任何字段为 None/空字符串/空列表，拒绝执行并告知缺失项
+            missing = [k for k, v in stdin_json.items() if v is None or v == "" or (isinstance(v, list) and len(v) == 0)]
+            if missing:
+                field_labels = {
+                    "city_tier": "城市等级(city_tier)",
+                    "school_type": "学校性质(school_type)",
+                    "countries": "目标国家(countries)",
+                }
+                missing_labels = [field_labels.get(f, f) for f in missing]
+                self._tool_result(tool, {
+                    "error": "MISSING_REQUIRED_FIELDS",
+                    "detail": f"缺少必填信息：{'、'.join(missing_labels)}。请先收集这些信息后再继续。",
+                }, "failed")
+                changes.append({"event": "tool_completed", "node_id": tool["id"]})
+                return True
             import subprocess
             try:
                 proc = subprocess.run(
