@@ -54,6 +54,7 @@ import { TeamHandoffCard } from "@/components/message-blocks/TeamHandoffCard";
 import { useChatStore } from "@/store/useChatStore";
 import { presentationFromSseState } from "@/utils/conversationPresentation";
 import { syncAgentRoutingFrontmatter } from "@/utils/agentRoutingFrontmatter";
+import { createUuid } from "@/utils/uuid";
 import type { FactFormField, MessageBlock } from "@/types/messageBlocks";
 import type { MessageInteractionState, MessagePresentation, TeamHandoff } from "@/utils/api";
 import type { SseV2State } from "@/types/streamEvents";
@@ -84,6 +85,16 @@ import {
 } from "@/utils/workbenchApi";
 
 type Section = "objects" | "versions" | "evaluation" | "batch" | "convert" | "release";
+
+type ConversionFileEntry = {
+  id: string;
+  fileName: string;
+  status: "uploading" | "loaded" | "error" | "committing" | "committed";
+  result: StandardSkillConversion | null;
+  draft: Record<string, unknown> | null;
+  targetId: string;
+  error: string | null;
+};
 
 const TYPE_META: Record<
   WorkbenchObjectType,
@@ -651,9 +662,7 @@ export default function Workbench() {
   const [recommendationsDraft, setRecommendationsDraft] = useState("[]");
   const [orchestrationRulesTab, setOrchestrationRulesTab] = useState<"head" | "tail" | "recommend" | "catalog">("head");
   const [debugZoneTab, setDebugZoneTab] = useState<"chat" | "harness">("chat");
-  const [conversion, setConversion] = useState<StandardSkillConversion | null>(null);
-  const [conversionDraft, setConversionDraft] = useState<Record<string, unknown> | null>(null);
-  const [conversionTargetId, setConversionTargetId] = useState("");
+  const [conversionEntries, setConversionEntries] = useState<ConversionFileEntry[]>([]);
   const debugTargetInitialized = useRef(false);
   const candidateStreamAbortRef = useRef<AbortController | null>(null);
   const candidateLastSeqRef = useRef<Record<string, number>>({});
@@ -1413,31 +1422,112 @@ export default function Workbench() {
     } finally { setBusy(false); }
   }
 
-  async function previewStandardSkill(file: File) {
+  async function previewStandardSkills(files: FileList | File[]) {
     if (!actor) return;
-    setBusy(true);
-    try {
-      const result = await workbenchApi.previewStandardSkillConversion(apiBaseUrl, file, actor.actor_id);
-      setConversion(result);
-      setConversionDraft(result.draft);
-      setConversionTargetId("");
-      setNotice({ tone: "ok", text: "已完成静态解析并生成转换草稿，请确认后保存为候选修订。" });
-    } catch (error) { setNotice({ tone: "error", text: error instanceof Error ? error.message : "转换预览失败" }); }
-    finally { setBusy(false); }
+    const fileArray = Array.from(files);
+    if (!fileArray.length) return;
+    // Create entries for all selected files with "uploading" status
+    const newEntries: ConversionFileEntry[] = fileArray.map((file) => ({
+      id: createUuid(),
+      fileName: file.name,
+      status: "uploading" as const,
+      result: null,
+      draft: null,
+      targetId: "",
+      error: null,
+    }));
+    setConversionEntries((prev) => [...prev, ...newEntries]);
+    // Upload all concurrently
+    const results = await Promise.allSettled(
+      newEntries.map((entry, index) =>
+        workbenchApi.previewStandardSkillConversion(apiBaseUrl, fileArray[index], actor.actor_id).then(
+          (result) => ({ entryId: entry.id, ok: true as const, result }),
+          (error) => ({ entryId: entry.id, ok: false as const, error: error instanceof Error ? error.message : String(error) }),
+        ),
+      ),
+    );
+    setConversionEntries((prev) =>
+      prev.map((entry) => {
+        const match = results.find((r) => r.status === "fulfilled" && r.value.entryId === entry.id);
+        if (!match || match.status !== "fulfilled") return entry;
+        if (match.value.ok) {
+          const { result } = match.value;
+          return { ...entry, status: "loaded" as const, result, draft: result.draft, error: null };
+        }
+        return { ...entry, status: "error" as const, error: (match.value as { ok: false; error: string }).error };
+      }),
+    );
+    const succeeded = results.filter((r) => r.status === "fulfilled" && r.value.ok).length;
+    const failed = results.filter((r) => r.status === "fulfilled" && !r.value.ok).length;
+    if (succeeded > 0 && failed === 0) {
+      setNotice({ tone: "ok", text: `已完成 ${succeeded} 个文件的静态解析并生成转换草稿，请确认后统一提交。` });
+    } else if (succeeded > 0) {
+      setNotice({ tone: "error", text: `${succeeded} 个成功，${failed} 个失败，请检查失败项后重试。` });
+    } else {
+      setNotice({ tone: "error", text: `全部 ${failed} 个文件解析失败，请检查文件格式。` });
+    }
   }
 
-  async function commitStandardSkill() {
-    if (!actor || !conversionDraft) return;
+  async function commitAllConversions() {
+    if (!actor) return;
+    const loaded = conversionEntries.filter((e) => e.status === "loaded" && e.draft);
+    if (!loaded.length) return;
     setBusy(true);
-    try {
-      const saved = await workbenchApi.commitStandardSkillConversion(apiBaseUrl, { draft: conversionDraft, target_object_id: conversionTargetId || null, actor_id: actor.actor_id });
+    setConversionEntries((prev) =>
+      prev.map((e) => (loaded.some((l) => l.id === e.id) ? { ...e, status: "committing" as const } : e)),
+    );
+    let succeeded = 0;
+    let failed = 0;
+    let lastObjectId = "";
+    for (const entry of loaded) {
+      try {
+        const saved = await workbenchApi.commitStandardSkillConversion(apiBaseUrl, {
+          draft: entry.draft,
+          target_object_id: entry.targetId || null,
+          actor_id: actor.actor_id,
+        });
+        setConversionEntries((prev) =>
+          prev.map((e) => (e.id === entry.id ? { ...e, status: "committed" as const } : e)),
+        );
+        succeeded++;
+        lastObjectId = saved.object_id;
+      } catch (error) {
+        setConversionEntries((prev) =>
+          prev.map((e) =>
+            e.id === entry.id
+              ? { ...e, status: "error" as const, error: error instanceof Error ? error.message : String(error) }
+              : e,
+          ),
+        );
+        failed++;
+      }
+    }
+    setBusy(false);
+    if (succeeded > 0) {
       await loadAll();
-      await openObject(saved.object_id);
-      setConversion(null);
-      setConversionDraft(null);
-      setNotice({ tone: "ok", text: `已保存为候选 r${saved.revision.revision_no}，请进入调试与用例验证。` });
-    } catch (error) { setNotice({ tone: "error", text: error instanceof Error ? error.message : "保存转换草稿失败" }); }
-    finally { setBusy(false); }
+      if (lastObjectId) await openObject(lastObjectId);
+    }
+    if (failed === 0) {
+      setNotice({ tone: "ok", text: `全部 ${succeeded} 个转换已保存，请进入调试与用例验证。` });
+    } else {
+      setNotice({ tone: "error", text: `${succeeded} 个已保存，${failed} 个失败，请检查失败项。` });
+    }
+  }
+
+  function removeConversionEntry(entryId: string) {
+    setConversionEntries((prev) => prev.filter((e) => e.id !== entryId));
+  }
+
+  function updateConversionEntry(entryId: string, draftPatch: Record<string, unknown>) {
+    setConversionEntries((prev) =>
+      prev.map((e) => (e.id === entryId ? { ...e, draft: { ...e.draft, ...draftPatch } } : e)),
+    );
+  }
+
+  function updateConversionTargetId(entryId: string, targetId: string) {
+    setConversionEntries((prev) =>
+      prev.map((e) => (e.id === entryId ? { ...e, targetId } : e)),
+    );
   }
 
   function syncDebugTargetUrl(objectId: string, revisionId: string, releaseId: string) {
@@ -3721,32 +3811,220 @@ export default function Workbench() {
 
           {section === "convert" ? (
             <section className="p-5 lg:p-8">
-              <div className="mx-auto grid max-w-6xl gap-6 xl:grid-cols-[0.8fr_1.2fr]">
+              <div className="mx-auto max-w-6xl space-y-6">
+                {/* Upload area */}
                 <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-6">
                   <Braces className="text-violet-300" />
                   <h2 className="mt-4 text-xl font-semibold">导入标准 Agent Skills 包</h2>
-                  <p className="mt-2 text-sm leading-6 text-slate-400">上传 ZIP 后只会解析 SKILL.md、引用资料和脚本；不会执行脚本，不会自动发布。</p>
-                  <label className="mt-6 flex cursor-pointer flex-col items-center rounded-2xl border border-dashed border-violet-400/30 bg-violet-400/[0.05] p-8 text-center text-sm text-violet-100">
+                  <p className="mt-2 text-sm leading-6 text-slate-400">支持多选上传 ZIP，并发检测。只解析 SKILL.md、引用资料和脚本；不会执行脚本，不会自动发布。</p>
+                  <label className="mt-6 flex cursor-pointer flex-col items-center rounded-2xl border border-dashed border-violet-400/30 bg-violet-400/[0.05] p-8 text-center text-sm text-violet-100 hover:border-violet-400/50 hover:bg-violet-400/[0.08] transition">
                     <CloudUpload size={28} />
-                    <span className="mt-3">选择标准 Skill ZIP</span>
-                    <input type="file" accept=".zip,application/zip" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (file) void previewStandardSkill(file); event.currentTarget.value = ""; }} />
+                    <span className="mt-3">选择一个或多个标准 Skill ZIP</span>
+                    <span className="mt-1 text-xs text-violet-300/60">支持批量上传，每个文件独立检测</span>
+                    <input
+                      type="file"
+                      multiple
+                      accept=".zip,application/zip"
+                      className="hidden"
+                      onChange={(event) => {
+                        const files = event.target.files;
+                        if (files && files.length) void previewStandardSkills(files);
+                        event.currentTarget.value = "";
+                      }}
+                    />
                   </label>
                   <p className="mt-4 text-xs leading-5 text-slate-500">支持 SKILL.md、AGENT.md 或 TEAM.md；Python 脚本与表单定义会经过静态校验。</p>
                 </div>
-                <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-6">
-                  {conversion && conversionDraft ? <>
-                    <div className="flex items-start justify-between gap-4"><div><h2 className="text-xl font-semibold">转换草稿</h2><p className="mt-1 text-sm text-slate-400">{conversion.ai_assistance.message}</p></div><StatusBadge tone={conversion.warnings.length ? "amber" : "green"}>{conversion.warnings.length ? `${conversion.warnings.length} 项待处理` : "校验通过"}</StatusBadge></div>
-                    {conversion.warnings.length ? <ul className="mt-4 list-disc space-y-1 pl-5 text-xs text-amber-200">{conversion.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul> : null}
-                    <div className="mt-5 grid gap-3 md:grid-cols-2">
-                      <label className="text-sm text-slate-300">对象类型<select value={String(conversionDraft.object_type ?? "skill")} onChange={(event) => setConversionDraft({ ...conversionDraft, object_type: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2.5"><option value="skill">Skill</option><option value="expert">专家</option><option value="expert_team">专家团</option></select></label>
-                      <label className="text-sm text-slate-300">对象 ID<input value={String(conversionDraft.object_key ?? "")} onChange={(event) => setConversionDraft({ ...conversionDraft, object_key: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2.5" /></label>
-                      <label className="text-sm text-slate-300 md:col-span-2">名称<input value={String(conversionDraft.name ?? "")} onChange={(event) => setConversionDraft({ ...conversionDraft, name: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2.5" /></label>
+
+                {/* Per-file results */}
+                {conversionEntries.length > 0 && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-semibold text-slate-200">
+                        转换结果 · {conversionEntries.filter((e) => e.status === "loaded").length}/{conversionEntries.length} 个已就绪
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setConversionEntries([])}
+                        className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition"
+                      >
+                        清空全部
+                      </button>
                     </div>
-                    <details className="mt-5 rounded-2xl border border-white/10 p-4"><summary className="cursor-pointer text-sm">源文件与表单预览</summary><p className="mt-3 text-xs text-slate-400">{conversion.source.files.join(" · ")}</p><pre className="mt-3 max-h-52 overflow-auto rounded-xl bg-slate-950 p-3 text-xs">{JSON.stringify(conversion.form_preview, null, 2)}</pre></details>
-                    <label className="mt-5 block text-sm text-slate-300">写入位置<select value={conversionTargetId} onChange={(event) => setConversionTargetId(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2.5"><option value="">新建对象并保存 r1</option>{objects.filter((item) => item.object_type === conversionDraft.object_type).map((item) => <option key={item.object_id} value={item.object_id}>写入 {item.name} 的新修订</option>)}</select></label>
-                    <button type="button" disabled={busy} onClick={() => void commitStandardSkill()} className="mt-5 rounded-xl bg-violet-400 px-5 py-3 text-sm font-semibold text-violet-950 disabled:opacity-40">人工确认并保存候选修订</button>
-                  </> : <div className="grid min-h-72 place-items-center text-center text-sm text-slate-500">上传一个标准包后，在这里查看可编辑转换草稿、表单映射和安全校验。</div>}
-                </div>
+                    {conversionEntries.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className={`rounded-2xl border p-5 transition ${
+                          entry.status === "committed"
+                            ? "border-emerald-400/20 bg-emerald-400/[0.04]"
+                            : entry.status === "error"
+                              ? "border-rose-400/20 bg-rose-400/[0.04]"
+                              : "border-white/10 bg-white/[0.025]"
+                        }`}
+                      >
+                        {/* Header: file name + status + remove */}
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span className="shrink-0 text-sm font-mono text-slate-300 truncate max-w-[24rem]" title={entry.fileName}>
+                              {entry.fileName}
+                            </span>
+                            {entry.status === "uploading" && (
+                              <StatusBadge tone="blue">检测中…</StatusBadge>
+                            )}
+                            {entry.status === "loaded" && entry.result && (
+                              <StatusBadge tone={entry.result.warnings.length ? "amber" : "green"}>
+                                {entry.result.warnings.length ? `${entry.result.warnings.length} 项待处理` : "校验通过"}
+                              </StatusBadge>
+                            )}
+                            {entry.status === "error" && (
+                              <StatusBadge tone="amber">失败</StatusBadge>
+                            )}
+                            {entry.status === "committing" && (
+                              <StatusBadge tone="blue">提交中…</StatusBadge>
+                            )}
+                            {entry.status === "committed" && (
+                              <StatusBadge tone="green">已提交</StatusBadge>
+                            )}
+                          </div>
+                          {entry.status !== "uploading" && entry.status !== "committing" && (
+                            <button
+                              type="button"
+                              onClick={() => removeConversionEntry(entry.id)}
+                              className="shrink-0 rounded-lg p-1 text-slate-500 hover:text-rose-300 transition"
+                              title="移除此项"
+                            >
+                              <X size={16} />
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Loading spinner */}
+                        {entry.status === "uploading" && (
+                          <div className="mt-4 flex items-center gap-2 text-sm text-slate-400">
+                            <RefreshCcw size={14} className="animate-spin" />
+                            正在解析文件…
+                          </div>
+                        )}
+
+                        {/* Error message */}
+                        {entry.status === "error" && entry.error && (
+                          <p className="mt-3 text-sm text-rose-300">{entry.error}</p>
+                        )}
+
+                        {/* Loaded / committed content */}
+                        {(entry.status === "loaded" || entry.status === "committed") && entry.result && entry.draft && (
+                          <>
+                            {entry.status === "loaded" && entry.result.ai_assistance.message && (
+                              <p className="mt-3 text-sm text-slate-400">{entry.result.ai_assistance.message}</p>
+                            )}
+                            {entry.result.warnings.length > 0 && (
+                              <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-amber-200">
+                                {entry.result.warnings.map((warning) => (
+                                  <li key={warning}>{warning}</li>
+                                ))}
+                              </ul>
+                            )}
+
+                            {/* Editable fields */}
+                            <div className="mt-4 grid gap-3 md:grid-cols-2">
+                              <label className="text-sm text-slate-300">
+                                对象类型
+                                <select
+                                  value={String(entry.draft.object_type ?? "skill")}
+                                  disabled={entry.status === "committed"}
+                                  onChange={(event) =>
+                                    updateConversionEntry(entry.id, { object_type: event.target.value })
+                                  }
+                                  className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2.5 disabled:opacity-50"
+                                >
+                                  <option value="skill">Skill</option>
+                                  <option value="expert">专家</option>
+                                  <option value="expert_team">专家团</option>
+                                </select>
+                              </label>
+                              <label className="text-sm text-slate-300">
+                                对象 ID
+                                <input
+                                  value={String(entry.draft.object_key ?? "")}
+                                  disabled={entry.status === "committed"}
+                                  onChange={(event) =>
+                                    updateConversionEntry(entry.id, { object_key: event.target.value })
+                                  }
+                                  className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2.5 disabled:opacity-50"
+                                />
+                              </label>
+                              <label className="text-sm text-slate-300 md:col-span-2">
+                                名称
+                                <input
+                                  value={String(entry.draft.name ?? "")}
+                                  disabled={entry.status === "committed"}
+                                  onChange={(event) =>
+                                    updateConversionEntry(entry.id, { name: event.target.value })
+                                  }
+                                  className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2.5 disabled:opacity-50"
+                                />
+                              </label>
+                            </div>
+
+                            {/* Source files & form preview */}
+                            <details className="mt-4 rounded-2xl border border-white/10 p-4">
+                              <summary className="cursor-pointer text-sm text-slate-300">源文件与表单预览</summary>
+                              <p className="mt-3 text-xs text-slate-400">
+                                {entry.result.source.files.join(" · ")}
+                              </p>
+                              <pre className="mt-3 max-h-52 overflow-auto rounded-xl bg-slate-950 p-3 text-xs">
+                                {JSON.stringify(entry.result.form_preview, null, 2)}
+                              </pre>
+                            </details>
+
+                            {/* Write target */}
+                            <label className="mt-4 block text-sm text-slate-300">
+                              写入位置
+                              <select
+                                value={entry.targetId}
+                                disabled={entry.status === "committed"}
+                                onChange={(event) => updateConversionTargetId(entry.id, event.target.value)}
+                                className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-2.5 disabled:opacity-50"
+                              >
+                                <option value="">新建对象并保存 r1</option>
+                                {objects
+                                  .filter((item) => item.object_type === entry.draft?.object_type)
+                                  .map((item) => (
+                                    <option key={item.object_id} value={item.object_id}>
+                                      写入 {item.name} 的新修订
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Unified submit button */}
+                {conversionEntries.some((e) => e.status === "loaded") && (
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void commitAllConversions()}
+                      className="rounded-xl bg-violet-400 px-6 py-3 text-sm font-semibold text-violet-950 disabled:opacity-40 hover:bg-violet-300 transition"
+                    >
+                      {busy ? "提交中…" : `提交全部（${conversionEntries.filter((e) => e.status === "loaded").length} 项）`}
+                    </button>
+                  </div>
+                )}
+
+                {/* Empty state */}
+                {!conversionEntries.length && (
+                  <div className="rounded-3xl border border-white/10 bg-white/[0.025] p-6">
+                    <div className="grid min-h-48 place-items-center text-center text-sm text-slate-500">
+                      上传一个或多个标准包后，在这里查看可编辑转换草稿、表单映射和安全校验。
+                    </div>
+                  </div>
+                )}
               </div>
             </section>
           ) : null}
