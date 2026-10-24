@@ -605,21 +605,18 @@ class HarnessRuntime:
                 log.exception("harness scheduler iteration failed")
 
     def claim(self, run_id):
-        _settle = self._settle
-        _invalidate_consumers = self._invalidate_consumers
-        _facts = self.facts
         def apply(run, changes, db):
             if run["status"] in TERMINAL:
                 return None
             for task in list(run["tasks"].values()):
                 if task["status"] == "completed" and task["fact_versions"]:
-                    current = _facts(run, task, db)
+                    current = self.facts(run, task, db)
                     if any(identity not in current or current[identity]["version"] != version for identity, version in task["fact_versions"].items()):
                         task.update(status="queued", stale=True, ended_at=None)
                         task["messages"].append({"role": "user", "content": "所用事实版本已变更，请复核并更新结论。"})
                         changes.append({"event": "task_requires_review", "node_id": task["id"]})
-                        _invalidate_consumers(run, task["id"], changes)
-            _settle(run, changes, db)
+                        self._invalidate_consumers(run, task["id"], changes)
+            self._settle(run, changes, db)
             running = 0
             for task in run["tasks"].values():
                 if task["status"] == "running":
@@ -1419,9 +1416,10 @@ class HarnessRuntime:
                 changes.append({"event": "context_compressed", "node_id": task_id})
         self.store.mutate(run_id, save)
 
-def _tool_signature(tool: dict) -> str:
-    args = tool.get("arguments", {})
-    return f"{tool['name']}:{json.dumps(args, sort_keys=True, default=str)}"
+    @staticmethod
+    def _tool_signature(tool: dict) -> str:
+        args = tool.get("arguments", {})
+        return f"{tool['name']}:{json.dumps(args, sort_keys=True, default=str)}"
 
     def _execute_tools(self, run_id, task_id, token):
         initial = self.store.get(run_id)
