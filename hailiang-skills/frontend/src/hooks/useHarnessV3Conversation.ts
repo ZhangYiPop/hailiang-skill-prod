@@ -191,6 +191,8 @@ export async function submitHarnessV3Answer(frame: HarnessV3Frame, request: Harn
     assistant_message_id: frame.assistant_message_id,
     request_id: request.id,
     expert_team_id: [teamId],
+    submission_id: makeId("harness-answer"),
+    expected_version: request.request_version,
     answers,
     skipped,
   });

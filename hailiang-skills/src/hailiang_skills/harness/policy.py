@@ -159,6 +159,38 @@ def snapshot_root(snapshot):
     return root
 
 
+_CANDIDATE_COMPATIBLE_STRATEGY = "candidate_compatible"
+
+
+def configure_candidate_compatible_strategy(context, root: dict | None = None) -> None:
+    """Freeze the candidate-test orchestration semantics onto a session.
+
+    Candidate revision tests and public V3 chat deliberately bind different
+    configuration snapshots.  They must nevertheless make the same policy
+    decisions once a snapshot and a root object have been selected.
+    """
+    meta = context.session_meta
+    resolved_root = root if isinstance(root, dict) else snapshot_root(meta.get("configuration_snapshot"))
+    meta["harness_strategy_profile"] = _CANDIDATE_COMPATIBLE_STRATEGY
+    meta["harness_strategy_root"] = {
+        "object_type": str(resolved_root.get("object_type") or ""),
+        "object_key": str(resolved_root.get("object_key") or ""),
+    }
+    # Older V3 chat runs used a separate compatibility fallback.  Candidate
+    # tests do not: an absent published head rule means no formal orchestration.
+    meta.pop("harness_v3_minimal", None)
+
+
+def candidate_compatible_strategy(context) -> bool:
+    meta = context.session_meta or {}
+    # Debug sessions created before the shared profile was introduced already
+    # have candidate semantics; keep them stable when they resume.
+    return (
+        meta.get("harness_strategy_profile") == _CANDIDATE_COMPATIBLE_STRATEGY
+        or bool(meta.get("workbench_debug_session_id"))
+    )
+
+
 def capture_policy(orchestrator, context):
     """Freeze rules, catalogs and tool schemas for this run, not global mutable state."""
     skills, experts, teams = orchestrator.runtime_registry, orchestrator.expert_registry, orchestrator.expert_team_registry
@@ -278,7 +310,7 @@ def capture_policy(orchestrator, context):
     # orchestration documents.  Freeze the bundled rule package on *this new
     # run* so the explicit team still uses head/tail/recommend; never rewrite
     # the deployment or retrofit ordinary legacy sessions.
-    use_minimal_v3_rules = bool(context.session_meta.get("harness_v3_minimal")) and not has_head_rules
+    use_minimal_v3_rules = bool(context.session_meta.get("harness_v3_minimal")) and not candidate_compatible_strategy(context) and not has_head_rules
     if not policy_snapshot or use_minimal_v3_rules:
         from hailiang_skills.workbench.orchestration import load_seed_rules
         policy_snapshot = {
@@ -299,11 +331,12 @@ def capture_policy(orchestrator, context):
     #   * Formal session: the published deployment snapshot carries the team and
     #     the published orchestration rules. A user who explicitly picked one
     #     specific expert bypasses orchestration; the default coordinator does not.
-    debug_session = bool(context.session_meta.get("workbench_debug_session_id"))
-    tested = snapshot_root(captured_snapshot) if debug_session else {}
+    compatible_strategy = candidate_compatible_strategy(context)
+    strategy_root = context.session_meta.get("harness_strategy_root") if compatible_strategy else None
+    tested = strategy_root if isinstance(strategy_root, dict) else (snapshot_root(captured_snapshot) if compatible_strategy else {})
     root_type = tested.get("object_type")
     direct_expert_id = str(tested.get("object_key") or "") if root_type == "expert" and tested.get("object_key") in expert_data else ""
-    if debug_session:
+    if compatible_strategy:
         scope_allows = root_type == "expert_team"
     else:
         scope_allows = formal_orchestration_enabled() and team is not None and not explicit_expert_selection
@@ -327,7 +360,7 @@ def capture_policy(orchestrator, context):
             # Workbench debug sessions preset identity facts and keep the plain
             # text gate. Real users have nowhere else to supply them, so the
             # gate asks through a form card.
-            "identity_gate": "text" if debug_session else "form",
+            "identity_gate": "text" if compatible_strategy else "form",
             "direct_expert_id": direct_expert_id,
             "settings": {"context_policy_version": "v2" if os.getenv("HAILIANG_CONTEXT_POLICY", settings.get("context_policy_version", "v1")) == "v2" else "v1",
                          "max_parallel": int(settings.get("max_parallel", 3)), "max_model_calls": int(settings.get("max_model_calls", 24)),

@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 from hailiang_skills.harness.contracts import InternalAnswerSubmission, HarnessError, TERMINAL, identifier
 from hailiang_skills.harness.formal_v3 import FormalV3TurnExecutor
-from hailiang_skills.harness.policy import capture_policy
+from hailiang_skills.harness.policy import capture_policy, configure_candidate_compatible_strategy
 
 
 SSE_V3_PROTOCOL = "hailiang.sse.v3"
@@ -55,6 +55,8 @@ class AnswerInput(TeamBoundInput):
     request_id: str = Field(min_length=1, max_length=80)
     # Stable task/bubble ID. A new request run_id is valid for every answer.
     assistant_message_id: str = Field(min_length=1, max_length=80)
+    submission_id: str = Field(min_length=1, max_length=100)
+    expected_version: int = Field(ge=1)
     answers: dict[str, Any] = Field(default_factory=dict)
     text: str | None = Field(default=None, max_length=120000)
     skipped: bool = False
@@ -509,12 +511,13 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     context_scope="profile" if data.profile_id else "unbound", allow_context_seed=False,
                 )
                 context.session_meta["runtime_mode"] = "harness_v1"
-                context.session_meta["harness_v3_minimal"] = True
                 if created and snapshot_resolver:
                     snapshot = snapshot_resolver()
                     if snapshot:
                         context.session_meta["configuration_snapshot"] = snapshot
                 _bind_input_team(context, orchestrator, team_id)
+                configure_candidate_compatible_strategy(context, {"object_type": "expert_team", "object_key": team_id})
+                context.session_meta["context_contract_version"] = 3
                 repository.save(context)
                 if profile_data and data.profile_id:
                     aliases = {"grade": "grade", "province": "student_province", "recent_exam.total_score": "exam_score"}
@@ -589,10 +592,11 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                             raise HTTPException(409, "INPUT_REQUEST_NOT_ACTIVE")
                     else:
                         submission = InternalAnswerSubmission(
-                            user_id=data.user_id, profile_id=data.profile_id, answers=input_data.answers,
-                            text=input_data.text, skipped=input_data.skipped,
+                            user_id=data.user_id, profile_id=data.profile_id,
+                            submission_id=input_data.submission_id, expected_version=input_data.expected_version,
+                            answers=input_data.answers, text=input_data.text, skipped=input_data.skipped,
                         )
-                        operation(lambda: runtime.answer(input_data.request_id, submission, allow_partial=True, allow_correction=True))
+                        operation(lambda: runtime.answer(input_data.request_id, submission))
                 elif run.get("execution_runtime") == "formal" and run.get("status") not in TERMINAL:
                     formal_executor.resume(harness_run_id, message="请继续完成当前专家团分析。")
                 bind_request(request, input_data, harness_run_id, fingerprint)

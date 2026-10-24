@@ -331,23 +331,23 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         assert f'"assistant_message_id": "{assistant_message_id}"' in resumed.text
         answer = {
             'session_id': 's', 'run_id': 'answer-1',
-            'input': json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高二', 'expert_team_id': 'team-a'}, ensure_ascii=False),
+            'input': json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'submission_id': 'answer-1', 'expected_version': request['version'], 'text': '高二', 'expert_team_id': 'team-a'}, ensure_ascii=False),
             'context_data': {'user_id': 'u', 'profile_id': 'p'},
         }
         accepted = client.post('/api/v3/sessions/chat/stream', json=answer)
         assert accepted.status_code == 200
         stored = runtime.store.get(run['run_id'])['inputs'][request['id']]
         assert stored['status'] == 'answered'
-        # A different later submission is an explicit correction, without a
-        # client submission ID or card version.
+        # Candidate-test semantics are strict: a resolved card cannot be
+        # corrected by sending a later public V3 request.
         correction = deepcopy(answer)
         correction['run_id'] = 'answer-2'
-        correction['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-a'}, ensure_ascii=False)
-        assert client.post('/api/v3/sessions/chat/stream', json=correction).status_code == 200
-        assert runtime.store.scoped_facts('u', 'profile', 'p')['grade']['value'] == '高三'
+        correction['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'submission_id': 'answer-2', 'expected_version': request['version'] + 1, 'text': '高三', 'expert_team_id': 'team-a'}, ensure_ascii=False)
+        assert client.post('/api/v3/sessions/chat/stream', json=correction).status_code == 409
+        assert runtime.store.scoped_facts('u', 'profile', 'p')['grade']['value'] == '高二'
         mismatch = deepcopy(answer)
         mismatch['run_id'] = 'answer-mismatch'
-        mismatch['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-b'}, ensure_ascii=False)
+        mismatch['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'submission_id': 'answer-mismatch', 'expected_version': request['version'] + 1, 'text': '高三', 'expert_team_id': 'team-b'}, ensure_ascii=False)
         assert client.post('/api/v3/sessions/chat/stream', json=mismatch).status_code == 409
         missing_team = deepcopy(body)
         missing_team['run_id'] = 'client-missing-team'

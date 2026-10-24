@@ -85,6 +85,8 @@ class SessionContext:
             "runtime_mode",
             "harness_experts_disabled",
             "workbench_debug_session_id",
+            "harness_strategy_profile",
+            "harness_strategy_root",
             # The chosen Team/member belongs to the whole user-visible
             # session. Child branches still own their histories, facts,
             # forms and active Skill, but a later child switch must not make
