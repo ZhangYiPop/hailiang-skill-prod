@@ -467,41 +467,59 @@ def _harness_execution_assessment(run: dict[str, Any], execution: dict[str, Any]
         if not isinstance(phase, dict) or not phase.get("queue_reason"):
             continue
         queue_reasons.setdefault(str(phase["queue_reason"]), []).append(str(phase.get("id") or ""))
+    wait_intervals = execution.get("wait_intervals") if isinstance(execution.get("wait_intervals"), list) else []
+    historical_reasons: dict[str, list[dict[str, Any]]] = {}
+    for interval in wait_intervals:
+        if not isinstance(interval, dict) or not interval.get("reason"):
+            continue
+        historical_reasons.setdefault(str(interval["reason"]), []).append(interval)
+
+    def waited_task_ids(reason: str) -> list[str]:
+        return list(dict.fromkeys(
+            queue_reasons.get(reason, []) + [str(item.get("task_id") or "") for item in historical_reasons.get(reason, [])]
+        ))
+
     model_phases = [
         {key: phase.get(key) for key in ("task_id", "purpose", "started_at", "completed_at", "duration_ms")}
         for phase in (execution.get("model_phases") or []) if isinstance(phase, dict)
     ]
     findings: list[dict[str, Any]] = []
-    if dependency_edges:
+    if dependency_edges or historical_reasons.get("waiting_for_dependency"):
         findings.append({
             "category": "orchestration", "code": "SERIAL_DEPENDENCY_CONFIGURED",
-            "severity": "info", "task_ids": [item["task_id"] for item in dependency_edges],
+            "severity": "info", "task_ids": list(dict.fromkeys([item["task_id"] for item in dependency_edges] + waited_task_ids("waiting_for_dependency"))),
             "message": "编排头为部分专家任务配置了 depends_on；这些任务按策略串行，不是性能排队。",
         })
-    if queue_reasons.get("run_parallelism_limit"):
+    if waited_task_ids("run_parallelism_limit"):
         findings.append({
             "category": "performance", "code": "RUN_PARALLELISM_LIMIT_REACHED",
-            "severity": "warning", "task_ids": queue_reasons["run_parallelism_limit"],
+            "severity": "warning", "task_ids": waited_task_ids("run_parallelism_limit"),
             "message": "可运行任务达到本轮 max_parallel 上限，后续任务等待本轮并行槽位。",
         })
-    if queue_reasons.get("awaiting_worker_claim"):
+    if waited_task_ids("awaiting_worker_claim"):
         findings.append({
             "category": "performance", "code": "WORKER_CLAIM_DELAY",
-            "severity": "info", "task_ids": queue_reasons["awaiting_worker_claim"],
+            "severity": "info", "task_ids": waited_task_ids("awaiting_worker_claim"),
             "message": "任务已具备执行条件但尚未被 worker 领取；需结合 worker_wait_ms 判断是否为容量或调度延迟。",
         })
-    if queue_reasons.get("waiting_for_user_input"):
+    if waited_task_ids("waiting_for_user_input"):
         findings.append({
             "category": "input", "code": "WAITING_FOR_USER_INPUT",
-            "severity": "info", "task_ids": queue_reasons["waiting_for_user_input"],
+            "severity": "info", "task_ids": waited_task_ids("waiting_for_user_input"),
             "message": "任务正在等待表单或补充信息，不属于编排或模型性能问题。",
         })
     root = tasks.get(root_id) if root_id else {}
-    if isinstance(root, dict) and root.get("status") == "waiting_for_dependency" and not dependency_edges:
+    if (isinstance(root, dict) and root.get("status") == "waiting_for_dependency" and not dependency_edges) or historical_reasons.get("synthesis_barrier"):
         findings.append({
-            "category": "orchestration", "code": "SYNTHESIS_BARRIER",
-            "severity": "info", "task_ids": [root_id],
+            "category": "orchestration", "code": "SYNTHESIS_BARRIER", "severity": "info",
+            "task_ids": waited_task_ids("synthesis_barrier") or [root_id],
             "message": "主编排器正在等待已独立派发的专家结果后统一汇总；这是多专家会诊的正常收口屏障。",
+        })
+    if historical_reasons.get("child_task_completion"):
+        findings.append({
+            "category": "orchestration", "code": "EXPERT_SUBTASK_BARRIER", "severity": "info",
+            "task_ids": waited_task_ids("child_task_completion"),
+            "message": "专家正在等待自己派发的 Skill 子任务完成；Skill 内部的模型和工具轮次按数据依赖顺序执行。",
         })
     tail_phase = next((item for item in model_phases if item.get("purpose") == "orchestrate_tail"), None)
     return {
@@ -515,6 +533,9 @@ def _harness_execution_assessment(run: dict[str, Any], execution: dict[str, Any]
         "scheduler": {
             "worker_wait_ms": execution.get("worker_wait_ms"),
             "queue_reasons": queue_reasons,
+            "historical_wait_trace_available": execution.get("historical_wait_trace_available", False),
+            "wait_totals_ms": execution.get("wait_totals_ms") or {},
+            "longest_waits": execution.get("longest_waits") or [],
         },
         "final_reply": {
             "first_output_at": execution.get("first_output_at"),
@@ -523,11 +544,15 @@ def _harness_execution_assessment(run: dict[str, Any], execution: dict[str, Any]
             "streaming_enabled": run.get("wire_protocol") == "hailiang.sse.v3",
         },
         "model_phases": model_phases,
-        "findings": findings or [{
+        "findings": findings or ([{
+            "category": "observation", "code": "HISTORICAL_WAIT_TRACE_UNAVAILABLE",
+            "severity": "info", "task_ids": [],
+            "message": "该运行创建于等待区间追踪上线前，完成后的历史等待原因无法可靠还原。",
+        }] if not execution.get("historical_wait_trace_available") else [{
             "category": "observation", "code": "NO_ACTIVE_WAIT_BOTTLENECK",
             "severity": "info", "task_ids": [],
             "message": "当前轨迹未发现编排依赖、并行上限、worker 等待或表单等待证据。",
-        }],
+        }]),
     }
 
 

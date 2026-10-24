@@ -60,6 +60,41 @@ def test_execution_diagnostics_classifies_worker_parallel_dependency_and_input_w
     runtime.close()
 
 
+def test_execution_diagnostics_keeps_wait_history_after_run_completion(tmp_path):
+    from hailiang_skills.harness.runtime import execution_diagnostics, task_node
+
+    runtime = make_runtime(tmp_path, lambda *_: call('finalize_response', {}))
+    test_policy = v2_policy()
+    test_policy['settings']['max_parallel'] = 1
+    rid = runtime.create('s', 'u', 'p', '分析', test_policy, wire_protocol='hailiang.sse.v3')
+
+    def attach(run, changes, _db):
+        root = run['tasks'][run['root_task_id']]
+        root.update(status='waiting_for_dependency', lease_token='', lease_until='')
+        independent = task_node('expert', '并行专家', root['id'], expert_id='career_plan_expert')
+        dependent = task_node('expert', '依赖专家', root['id'], expert_id='career_plan_expert', depends_on=[independent['id']])
+        dependent['status'] = 'waiting_for_dependency'
+        skill = task_node('skill', '专项分析', independent['id'], expert_id='career_plan_expert', skill_id='internal')
+        independent['status'] = 'waiting_for_dependency'
+        run['tasks'].update({independent['id']: independent, dependent['id']: dependent, skill['id']: skill})
+        changes.append({'event': 'diagnostic_fixture', 'node_id': root['id']})
+
+    runtime.store.mutate(rid, attach)
+
+    def finish(run, changes, _db):
+        for task in run['tasks'].values():
+            task.update(status='completed', ended_at=run['updated_at'], lease_token='', lease_until='')
+        run['status'] = 'completed'
+        changes.append({'event': 'diagnostic_fixture_completed', 'node_id': run['root_task_id']})
+
+    runtime.store.mutate(rid, finish)
+    diagnostics = execution_diagnostics(runtime.store.get(rid))
+    reasons = {item['reason'] for item in diagnostics['wait_intervals']}
+    assert diagnostics['historical_wait_trace_available'] is True
+    assert {'synthesis_barrier', 'waiting_for_dependency', 'child_task_completion'} <= reasons
+    runtime.close()
+
+
 def test_v3_snapshot_carries_expert_id_and_jump_cards(tmp_path):
     from hailiang_skills.harness.runtime import task_node
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))

@@ -107,11 +107,78 @@ class HarnessStore:
         with self.transaction() as db:
             row = self._locked(db, run_id)
             run = self._run_payload(row)
+            before = deepcopy(run)
             changes: list[dict] = []
             result = apply(run, changes, db)
             if changes:
+                self._record_task_state_history(before, run)
                 self._save(db, row, run, changes)
             return deepcopy(result)
+
+    @staticmethod
+    def _wait_reason(run: dict, task: dict) -> str | None:
+        """Classify a task state at the instant it was entered or exited.
+
+        This belongs next to persistence rather than a UI projection: a
+        completed run no longer exposes its former queue state, while incident
+        diagnosis needs the original reason and duration.
+        """
+        status = task.get("status")
+        if status == "waiting_for_user":
+            return "waiting_for_user_input"
+        if status == "waiting_for_dependency":
+            children = [item for item in run.get("tasks", {}).values()
+                        if item.get("parent_id") == task.get("id") and item.get("status") not in TERMINAL]
+            if children:
+                return "synthesis_barrier" if task.get("kind") == "main" else "child_task_completion"
+            return "waiting_for_dependency"
+        if status != "queued":
+            return None
+        tasks = run.get("tasks", {})
+        if any(tasks.get(dependency, {}).get("status") not in TERMINAL for dependency in task.get("depends_on") or []):
+            return "waiting_for_dependency"
+        if any(
+            request.get("status") in {"pending", "queued"}
+            and any(binding.get("task_id") == task.get("id") for binding in request.get("bindings") or [])
+            for request in run.get("inputs", {}).values()
+        ):
+            return "waiting_for_user_input"
+        settings = (run.get("policy") or {}).get("settings") or {}
+        max_parallel = int(settings.get("max_parallel", 1) or 1)
+        running = sum(item.get("status") == "running" for item in tasks.values())
+        return "run_parallelism_limit" if running >= max_parallel else "awaiting_worker_claim"
+
+    @classmethod
+    def _record_task_state_history(cls, before: dict, run: dict) -> None:
+        """Persist each task's state intervals across scheduler mutations."""
+        changed_at = now()
+        before_tasks = before.get("tasks") if isinstance(before.get("tasks"), dict) else {}
+        for task_id, task in (run.get("tasks") or {}).items():
+            if not isinstance(task, dict):
+                continue
+            prior = before_tasks.get(task_id)
+            history = task.setdefault("state_history", [])
+            if not history:
+                initial_status = prior.get("status") if isinstance(prior, dict) else task.get("status")
+                initial_run = before if isinstance(prior, dict) else run
+                initial_task = prior if isinstance(prior, dict) else task
+                history.append({
+                    "status": initial_status,
+                    "started_at": task.get("created_at") or changed_at,
+                    "reason": cls._wait_reason(initial_run, initial_task) or "created",
+                })
+            prior_status = prior.get("status") if isinstance(prior, dict) else None
+            if prior_status == task.get("status"):
+                continue
+            last = history[-1]
+            if not last.get("ended_at"):
+                last["ended_at"] = changed_at
+                if isinstance(prior, dict):
+                    last["reason"] = cls._wait_reason(before, prior) or last.get("reason")
+            history.append({
+                "status": task.get("status"), "started_at": changed_at,
+                "reason": cls._wait_reason(run, task),
+            })
 
     def _save(self, db, row, run, changes):
         db.info["harness_changed"] = True

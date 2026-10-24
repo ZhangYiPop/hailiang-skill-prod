@@ -99,7 +99,7 @@ def test_session_diagnostics_includes_test_only_v3_harness_runtime_trace(monkeyp
     assessment = redacted[0]["execution_assessment"]
     assert assessment["parallelism"]["configured_max_parallel"] == 3
     assert assessment["final_reply"]["streaming_enabled"] is True
-    assert assessment["findings"][0]["code"] == "NO_ACTIVE_WAIT_BOTTLENECK"
+    assert assessment["findings"][0]["code"] == "HISTORICAL_WAIT_TRACE_UNAVAILABLE"
     assert "goal" not in redacted[0]["tasks"][0]
     detailed = diagnostics._harness_runtime_trace(harness, "sess_001", run_id="harness_001", limit=10, include_content=True)
     assert detailed[0]["tasks"][0]["goal"] == "敏感问题"

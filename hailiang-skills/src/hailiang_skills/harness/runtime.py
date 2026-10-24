@@ -502,6 +502,31 @@ def execution_diagnostics(run):
             "queue_reason": "waiting_for_parent_task" if tool.get("status") == "queued" and parent.get("status") != "running" else None,
         })
     nodes.sort(key=lambda item: (item.get("created_at") or item.get("started_at") or "", str(item["id"])))
+    wait_intervals = []
+    historical_wait_trace_available = False
+    wait_statuses = {"queued", "waiting_for_dependency", "waiting_for_user"}
+    for task in tasks.values():
+        history = task.get("state_history") if isinstance(task.get("state_history"), list) else []
+        if history:
+            historical_wait_trace_available = True
+        for interval in history:
+            if not isinstance(interval, dict) or interval.get("status") not in wait_statuses:
+                continue
+            started_at = interval.get("started_at")
+            if not started_at:
+                continue
+            ended_at = interval.get("ended_at")
+            wait_intervals.append({
+                "task_id": task.get("id"), "kind": task.get("kind"), "expert_id": task.get("expert_id"),
+                "status": interval.get("status"), "reason": interval.get("reason") or "unknown",
+                "started_at": started_at, "ended_at": ended_at,
+                "duration_ms": _diagnostic_duration(started_at, ended_at, current=generated_at),
+            })
+    wait_intervals.sort(key=lambda item: (item.get("started_at") or "", str(item["task_id"])))
+    wait_totals: dict[str, int] = {}
+    for interval in wait_intervals:
+        if interval["duration_ms"] is not None:
+            wait_totals[interval["reason"]] = wait_totals.get(interval["reason"], 0) + interval["duration_ms"]
     return {
         "generated_at": generated_at,
         "total_elapsed_ms": _diagnostic_duration(
@@ -512,18 +537,27 @@ def execution_diagnostics(run):
         "first_model_phase": model_entries[0] if model_entries else None,
         "model_phases": model_entries,
         "first_output_at": run.get("first_output_at"),
-        "first_output_ms": _diagnostic_duration(run.get("created_at"), run.get("first_output_at"), current=generated_at),
+        # No first output must remain unknown, never become the elapsed time
+        # until this diagnostic query was made.
+        "first_output_ms": _diagnostic_duration(run.get("created_at"), run.get("first_output_at")) if run.get("first_output_at") else None,
         "max_parallel": max_parallel,
         "running_task_count": running_count,
         "phases": nodes,
+        "historical_wait_trace_available": historical_wait_trace_available,
+        "wait_intervals": wait_intervals,
+        "wait_totals_ms": wait_totals,
+        "longest_waits": sorted(wait_intervals, key=lambda item: item.get("duration_ms") or 0, reverse=True)[:20],
     }
 
 
 def task_node(kind, goal, parent_id=None, expert_id=None, skill_id=None, completion="完成指定任务", depends_on=()):
+    created_at = now()
     return {"id": identifier("task"), "parent_id": parent_id, "kind": kind, "expert_id": expert_id, "skill_id": skill_id,
             "goal": goal, "completion": completion, "depends_on": list(depends_on), "status": "queued", "messages": [{"role": "user", "content": goal}],
             "pending_calls": [], "model_calls": 0, "tool_calls": 0, "skill_calls": 0, "attempt": 0, "trace": [],
-            "summary": "", "fact_versions": {}, "created_at": now(), "started_at": None, "ended_at": None, "lease_token": "", "lease_until": ""}
+            "summary": "", "fact_versions": {}, "created_at": created_at, "started_at": None, "ended_at": None,
+            "state_history": [{"status": "queued", "started_at": created_at, "reason": "created"}],
+            "lease_token": "", "lease_until": ""}
 
 
 class HarnessRuntime:
