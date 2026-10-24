@@ -5,8 +5,11 @@ from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 from hailiang_skills.api.routes import diagnostics
+from hailiang_skills.storage.database import Base, WorkbenchDebugSessionRow
 
 
 class _Repository:
@@ -96,6 +99,56 @@ def test_session_diagnostics_includes_test_only_v3_harness_runtime_trace(monkeyp
     assert "goal" not in redacted[0]["tasks"][0]
     detailed = diagnostics._harness_runtime_trace(harness, "sess_001", run_id="harness_001", limit=10, include_content=True)
     assert detailed[0]["tasks"][0]["goal"] == "敏感问题"
+
+
+def test_revision_test_diagnostics_exposes_frozen_candidate_trace_with_content_opt_in(monkeypatch, tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'diagnostics.sqlite3'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(WorkbenchDebugSessionRow(
+            debug_session_id="dbg_candidate_001",
+            revision_id="rev_candidate_001",
+            snapshot={
+                "root": {"object_type": "expert_team", "object_key": "team_candidate"},
+                "orchestration_rules": {
+                    "orchestration_revision_id": "orch_candidate", "revision_no": 2,
+                    "content_hash": "rules_hash", "rule_versions": {"orchestrate_head": {"version": "1.1"}},
+                },
+                "entries": [{"object_type": "expert_team", "object_key": "team_candidate",
+                             "revision_id": "rev_team", "release_id": None, "version": "candidate"}],
+            },
+            runtime_context={"session_meta": {"active_expert_id": "expert_candidate", "_candidate_branch_version": 3}},
+            transcript=[{"role": "user", "content": "测试问题"}],
+            trace=[{"turn": 1, "events": [{"event_type": "candidate_turn_started", "payload": {"content": "测试问题"}}],
+                    "debug": {"expert": {"object_key": "expert_candidate"}}}],
+        ))
+        db.commit()
+
+    monkeypatch.setenv("HAILIANG_SECURITY_ADMIN_TOKEN", "diagnostic-token")
+    app = FastAPI()
+    app.include_router(diagnostics.build_diagnostics_router(_Repository(), engine), prefix="/api/v1")
+    client = TestClient(app)
+
+    denied = client.post("/api/v1/operations/diagnostics/revision-tests/query", json={"debug_session_id": "dbg_candidate_001"})
+    assert denied.status_code == 403
+    redacted = client.post(
+        "/api/v1/operations/diagnostics/revision-tests/query",
+        json={"debug_session_id": "dbg_candidate_001"},
+        headers={"X-Security-Admin-Token": "diagnostic-token"},
+    )
+    assert redacted.status_code == 200
+    trace = redacted.json()["candidate_revision_test_trace"]
+    assert trace["execution_runtime"] == "workbench_candidate"
+    assert trace["configuration"]["expert_team"]["team_id"] == "team_candidate"
+    assert trace["configuration"]["orchestration_rules"]["rule_versions"]["orchestrate_head"]["version"] == "1.1"
+    assert "transcript" not in trace
+
+    detailed = client.post(
+        "/api/v1/operations/diagnostics/revision-tests/query",
+        json={"debug_session_id": "dbg_candidate_001", "include_content": True},
+        headers={"X-Security-Admin-Token": "diagnostic-token"},
+    )
+    assert detailed.json()["candidate_revision_test_trace"]["transcript"][0]["content"] == "测试问题"
 
 
 def test_session_diagnostics_projects_confirmed_output_truncation(monkeypatch, tmp_path) -> None:

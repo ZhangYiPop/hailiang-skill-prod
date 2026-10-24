@@ -65,6 +65,14 @@ class RequestDiagnosticsInput(BaseModel):
     include_content: bool = False
 
 
+class RevisionTestDiagnosticsInput(BaseModel):
+    """Operator lookup for one immutable Workbench candidate-test session."""
+
+    debug_session_id: str = Field(min_length=1, max_length=160)
+    limit: int = Field(default=200, ge=1, le=1000)
+    include_content: bool = False
+
+
 def _authorize(token: str | None, authorization: str | None) -> None:
     expected = os.getenv("HAILIANG_SECURITY_ADMIN_TOKEN", "")
     bearer = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else ""
@@ -194,6 +202,87 @@ def _candidate_trace(engine, session_id: str, *, limit: int, include_content: bo
             if isinstance(event, dict):
                 events.append(event)
     return _redact(trace, include_content=include_content), _redact(events[-limit:], include_content=include_content)
+
+
+def _candidate_revision_test_trace(engine, debug_session_id: str, *, limit: int,
+                                   include_content: bool) -> dict[str, Any] | None:
+    """Return the durable candidate-test evidence in a V3-comparable shape.
+
+    Candidate manual tests intentionally run against an unpublished immutable
+    snapshot, so their evidence lives in ``workbench_debug_sessions`` rather
+    than the formal session store.  Do not make operators reconstruct a turn
+    from the Workbench UI or infer its frozen configuration from current data.
+    """
+    if engine is None:
+        return None
+    from sqlalchemy.orm import Session
+
+    try:
+        with Session(engine) as db:
+            row = db.get(WorkbenchDebugSessionRow, debug_session_id)
+            if row is None:
+                return None
+            snapshot = dict(row.snapshot or {})
+            runtime_context = dict(row.runtime_context or {})
+            trace = list(row.trace or [])[-limit:]
+            transcript = list(row.transcript or [])[-(limit * 2):]
+    except Exception:
+        return None
+
+    entries = [item for item in snapshot.get("entries", []) if isinstance(item, dict)]
+    root = snapshot.get("root") if isinstance(snapshot.get("root"), dict) else {}
+    root_entry = next((item for item in entries
+                       if item.get("object_type") == root.get("object_type")
+                       and item.get("object_key") == root.get("object_key")), {})
+    meta = runtime_context.get("session_meta") if isinstance(runtime_context.get("session_meta"), dict) else {}
+    team_id = str(meta.get("expert_team_id") or (root.get("object_key") if root.get("object_type") == "expert_team" else ""))
+    team_entry = next((item for item in entries
+                       if item.get("object_type") == "expert_team" and item.get("object_key") == team_id), {})
+    rules = snapshot.get("orchestration_rules") if isinstance(snapshot.get("orchestration_rules"), dict) else {}
+    events = [event for turn in trace if isinstance(turn, dict)
+              for event in (turn.get("events") or []) if isinstance(event, dict)][-limit:]
+    turns = []
+    for turn in trace:
+        if not isinstance(turn, dict):
+            continue
+        turns.append({
+            "turn": turn.get("turn"),
+            "events": turn.get("events") or [],
+            "debug": turn.get("debug") or {},
+            "error": turn.get("error") or None,
+        })
+    return _redact({
+        "debug_session_id": row.debug_session_id,
+        "status": row.status,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        "revision_id": row.revision_id,
+        "baseline_release_id": row.baseline_release_id,
+        "execution_runtime": "workbench_candidate",
+        "configuration": {
+            "snapshot_hash": snapshot.get("snapshot_hash"),
+            "snapshot_source": "candidate_revision",
+            "root": {"object_type": root.get("object_type"), "object_key": root.get("object_key"),
+                     "revision_id": root_entry.get("revision_id"), "release_id": root_entry.get("release_id")},
+            "expert_team": {"team_id": team_id or None, "revision_id": team_entry.get("revision_id"),
+                            "release_id": team_entry.get("release_id"), "version": team_entry.get("version")},
+            "orchestration_rules": {
+                "revision_id": rules.get("orchestration_revision_id"),
+                "revision_no": rules.get("revision_no"), "content_hash": rules.get("content_hash"),
+                "rule_versions": rules.get("rule_versions") or {},
+            },
+        },
+        "runtime_state": {
+            "active_expert_id": meta.get("active_expert_id") or meta.get("expert_id"),
+            "expert_selection_source": meta.get("expert_selection_source"),
+            "branch_version": meta.get("_candidate_branch_version"),
+            "interaction_state": runtime_context.get("interaction_state") or {},
+        },
+        "turns": turns,
+        "events": events,
+        **({"transcript": transcript, "runtime_context": runtime_context,
+            "conclusion": row.conclusion} if include_content else {}),
+    }, include_content=include_content)
 
 
 def _sse_records(session_id: str, run_id: str | None, *, limit: int, include_content: bool) -> list[dict[str, Any]]:
@@ -547,6 +636,29 @@ def build_diagnostics_router(repository, engine, harness=None) -> APIRouter:
         run_id = _safe_id(body.run_id, label="run_id") if body.run_id else None
         return _lookup_session(repository, engine, session_id, run_id=run_id, limit=body.limit,
                                 include_content=body.include_content, harness=harness, event_types=body.event_types)
+
+    @router.post("/revision-tests/query")
+    def get_revision_test_diagnostics(
+        body: RevisionTestDiagnosticsInput,
+        x_security_admin_token: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Read one candidate manual-test trail without relying on the UI.
+
+        This deliberately sits beside the formal-session diagnostics endpoint:
+        both are privileged, read-only incident-analysis APIs, but their
+        durable stores are different.
+        """
+        _authorize(x_security_admin_token, authorization)
+        debug_session_id = _safe_id(body.debug_session_id, label="debug_session_id")
+        trace = _candidate_revision_test_trace(
+            engine, debug_session_id, limit=body.limit, include_content=body.include_content,
+        )
+        return {
+            "debug_session_id": debug_session_id,
+            "found": trace is not None,
+            "candidate_revision_test_trace": trace,
+        }
 
     @router.post("/runs/query")
     def get_run_diagnostics(
