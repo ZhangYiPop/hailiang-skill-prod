@@ -792,8 +792,22 @@ class HarnessRuntime:
                 live["trace"][-1]["output"] = asdict(response)
                 self._record_model_usage(current, live["trace"][-1], metrics)
                 if str(metrics.get("finish_reason") or "").lower() in _TRUNCATED_FINISH:
-                    # Commit usage and raw output before recording failure.
+                    # Commit usage before deciding whether to retry.
                     live["incomplete_output"] = True
+                    truncation_attempts = live.get("truncation_attempts", 0) + 1
+                    live["truncation_attempts"] = truncation_attempts
+                    # Retry up to 2 times: requeue the task so it re-runs without
+                    # growing the context further (the truncated trace entry is
+                    # stripped before requeue, unlike facts_changed which keeps
+                    # partial output).  After 3 consecutive truncations, accept
+                    # the failure.
+                    if truncation_attempts <= 2:
+                        # Strip the truncated trace to avoid growing input on retry.
+                        if live["trace"] and live["trace"][-1].get("output"):
+                            live["trace"][-1].pop("output", None)
+                        live["status"] = "queued"
+                        changes.append({"event": "output_truncated_retry", "node_id": task_id})
+                        return
                     live.update(status="failed", error="MODEL_OUTPUT_TRUNCATED", ended_at=now())
                     if live["kind"] == "main":
                         current.update(status="failed", error="MODEL_OUTPUT_TRUNCATED")
