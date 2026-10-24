@@ -116,7 +116,7 @@ const TYPE_META: Record<
     label: "专家团",
     icon: UsersRound,
     tone: "text-amber-300",
-    description: "多专家协同与主协调兜底",
+    description: "多专家协同与智能兜底",
   },
 };
 
@@ -449,7 +449,7 @@ function CandidateTestComposer({
   resetKey: number;
   onSubmit: (message: string) => Promise<boolean>;
   expertMenu?: {
-    members: Array<{ expert_id: string; mention_name: string; is_coordinator?: boolean; routing_brief?: string }>;
+    members: Array<{ expert_id: string; mention_name: string; routing_brief?: string }>;
     selectedId: string;
     disabled?: boolean;
     onSelect: (expertId: string) => void;
@@ -547,7 +547,7 @@ function CandidateTestComposer({
                           selected ? "bg-violet-300/15 text-violet-100" : "text-slate-300 hover:bg-white/5"
                         }`}
                       >
-                        {member.is_coordinator ? "主协调：" : "@"}{member.mention_name}
+                        {"@"}{member.mention_name}
                       </button>
                     );
                   })}
@@ -1073,7 +1073,6 @@ export default function Workbench() {
   const activeCandidateHandoff = latestCandidateAssistant?.interaction_states?.team_handoff?.status === "active";
   const candidateTeamMembers = useMemo(() => {
     if (debugObject?.object_type !== "expert_team" || !selectedTestRevision) return [];
-    const coordinatorObjectId = String(selectedTestRevision.payload.coordinator_expert_id ?? "");
     const configuredMembers = Array.isArray(selectedTestRevision.payload.members)
       ? selectedTestRevision.payload.members.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
       : [];
@@ -1085,7 +1084,6 @@ export default function Workbench() {
           expert_id: item.object_key,
           mention_name: String(configured?.mention_name ?? objects.find((object) => object.object_id === item.object_id)?.name ?? item.object_key),
           routing_brief: String(configured?.routing_brief ?? ""),
-          is_coordinator: item.object_id === coordinatorObjectId,
         };
       });
   }, [debugObject?.object_type, objects, selectedTestRevision]);
@@ -3155,37 +3153,6 @@ export default function Workbench() {
                           uniqueSelectedLocks.length ? (
                             <div className="mt-5 space-y-5">
                               <label className="block text-sm text-slate-300">
-                                主协调专家
-                                <select
-                                  value={String(
-                                    payload.coordinator_expert_id ?? "",
-                                  )}
-                                  onChange={(event) =>
-                                    setPayload({
-                                      ...payload,
-                                      coordinator_expert_id: event.target.value,
-                                    })
-                                  }
-                                  className="mt-2 w-full rounded-xl border border-white/10 bg-slate-950 px-3 py-3 outline-none"
-                                >
-                                  <option value="">请选择主协调专家</option>
-                                  {uniqueSelectedLocks.map((item) => {
-                                    const expertRelease = dependencyReleases.find(
-                                      (release) => release.release_id === item.release_id,
-                                    );
-                                    const expertName = expertRelease?.name || item.object_key;
-                                    return (
-                                      <option
-                                        key={item.object_id}
-                                        value={item.object_id}
-                                      >
-                                        {expertName}（{item.object_key}）· v{item.release_no}
-                                      </option>
-                                    );
-                                  })}
-                                </select>
-                              </label>
-                              <label className="block text-sm text-slate-300">
                                 兜底专家
                                 <select
                                   value={String(payload.fallback_expert_id ?? "")}
@@ -3267,7 +3234,7 @@ export default function Workbench() {
                               <div>
                                 <p className="text-sm text-slate-300">成员展示名称、负责范围与适用学段</p>
                                 <p className="mt-1 text-xs text-slate-500">
-                                  主协调专家会用展示名称、ID 与职责摘要生成受控移交确认卡；名称在当前专家团内必须唯一。
+                                  所有成员由主 Agent 统一协调分派；兜底专家用于处理无匹配分支的请求。名称在当前专家团内必须唯一。
                                 </p>
                                 <div className="mt-3 grid gap-3">
                                   {teamMemberSettings.map((member) => (

@@ -3,6 +3,54 @@ import { legacyView, subscribeV3, type V3Snapshot } from "@/utils/harnessV3";
 import { createUuid } from "@/utils/uuid";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentInputRequest, TaskProgressBlock, type StepIo, type SubmitHarnessAnswer } from "@/components/message-blocks/TaskProgressBlock";
+
+const GRADE_OPTIONS: Record<string, string[]> = {
+  "小学": ["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"],
+  "初中": ["初一", "初二", "初三"],
+  "高中": ["高一", "高二", "高三"],
+};
+
+const PROVINCES = [
+  "北京", "天津", "上海", "重庆",
+  "河北", "山西", "辽宁", "吉林", "黑龙江",
+  "江苏", "浙江", "安徽", "福建", "江西", "山东",
+  "河南", "湖北", "湖南", "广东", "海南",
+  "四川", "贵州", "云南", "陕西", "甘肃", "青海",
+  "广西", "内蒙古", "西藏", "宁夏", "新疆",
+];
+
+// 高考改革方案：传统/3+3/3+1+2
+const PROVINCE_SCHEME: Record<string, "traditional" | "three_three" | "three_one_two"> = {
+  "北京": "three_three", "天津": "three_three", "上海": "three_three",
+  "浙江": "three_three", "山东": "three_three", "海南": "three_three",
+  "河北": "three_one_two", "山西": "three_one_two", "辽宁": "three_one_two",
+  "吉林": "three_one_two", "黑龙江": "three_one_two", "江苏": "three_one_two",
+  "安徽": "three_one_two", "福建": "three_one_two", "江西": "three_one_two",
+  "河南": "three_one_two", "湖北": "three_one_two", "湖南": "three_one_two",
+  "广东": "three_one_two", "重庆": "three_one_two", "四川": "three_one_two",
+  "贵州": "three_one_two", "云南": "three_one_two", "陕西": "three_one_two",
+  "甘肃": "three_one_two", "青海": "three_one_two", "广西": "three_one_two",
+  "内蒙古": "three_one_two", "西藏": "three_one_two", "宁夏": "three_one_two",
+  "新疆": "three_one_two",
+};
+
+const SUBJECT_COMBINATIONS: Record<string, string[]> = {
+  traditional: ["文科（政史地）", "理科（物化生）"],
+  three_three: [
+    "物理+化学+生物", "物理+化学+地理", "物理+化学+政治",
+    "物理+生物+地理", "物理+生物+政治", "物理+地理+政治",
+    "历史+化学+生物", "历史+化学+地理", "历史+化学+政治",
+    "历史+生物+地理", "历史+生物+政治", "历史+地理+政治",
+    "化学+生物+地理", "化学+生物+政治", "化学+地理+政治",
+    "生物+地理+政治",
+  ],
+  three_one_two: [
+    "物理+化学+生物", "物理+化学+地理", "物理+化学+政治",
+    "物理+生物+地理", "物理+生物+政治", "物理+地理+政治",
+    "历史+化学+生物", "历史+化学+地理", "历史+化学+政治",
+    "历史+生物+地理", "历史+生物+政治", "历史+地理+政治",
+  ],
+};
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { HarnessContextDiagnostics } from "./HarnessContextDiagnostics";
 import { HarnessExecutionDiagnostics, type HarnessExecutionDiagnosticsData } from "./HarnessExecutionDiagnostics";
@@ -81,6 +129,14 @@ export function HarnessDebugPanel({
   const [userRole, setUserRole] = useState("家长");
   const [schoolStage, setSchoolStage] = useState("高中");
   const [gradeName, setGradeName] = useState("");
+  const gradeOptions = useMemo(() => GRADE_OPTIONS[schoolStage] || Object.values(GRADE_OPTIONS).flat(), [schoolStage]);
+  const [province, setProvince] = useState("");
+  const [subjectCombination, setSubjectCombination] = useState("");
+  const subjectOptions = useMemo(() => {
+    if (!province) return [];
+    const scheme = PROVINCE_SCHEME[province] || "three_one_two";
+    return SUBJECT_COMBINATIONS[scheme] || [];
+  }, [province]);
   const [debugId, setDebugId] = useState("");
   // Per-session state: runs, evidence, conclusion, trace.
   const [runsBySession, setRunsBySession] = useState<Record<string, HarnessRun[]>>({});
@@ -315,7 +371,12 @@ setEvidenceBySession({});
       const id = (hasCurrentRuns || hasAnyActive)
         ? (await request<{ debug_session_id: string }>("/workbench/v1/revision-tests", { revision_id: revisionId, actor_id: actorId, soul_revision_id: soulRevisionId || null })).debug_session_id
         : ((!evidenceSaved && debugId) || (await request<{ debug_session_id: string }>("/workbench/v1/revision-tests", { revision_id: revisionId, actor_id: actorId, soul_revision_id: soulRevisionId || null })).debug_session_id);
-      const presetFacts = objectType === "skill" ? {} : { user_role: userRole, school_stage: schoolStage };
+      const presetFacts = objectType === "skill" ? {} : {
+        ...(userRole ? { user_role: userRole } : {}),
+        ...(schoolStage ? { school_stage: schoolStage } : {}),
+        ...(province ? { student_province: province, gaokao_province: province } : {}),
+        ...(subjectCombination ? { subject_group: subjectCombination, subject_choice: subjectCombination } : {}),
+      };
       await request(`${api}/sessions/harness-${id}/harness/runs`, {
         ...(v3 ? { submission_id: createUuid() } : {}),
         goal,
@@ -421,11 +482,13 @@ setEvidenceBySession({});
         </button>
       </div>
       {objectType && objectType !== "skill" ? (
-        <div className="grid shrink-0 grid-cols-3 gap-2 text-xs text-slate-400">
+        <div className="grid shrink-0 grid-cols-5 gap-2 text-xs text-slate-400">
           {([
-            ["身份", userRole, setUserRole, ["家长", "学生"]],
-            ["学段", schoolStage, setSchoolStage, ["小学", "初中", "高中"]],
-            ["年级", gradeName, setGradeName, ["", "初一", "初二", "初三", "高一", "高二", "高三"]],
+            ["身份", userRole, setUserRole, ["", "家长", "学生"]],
+            ["学段", schoolStage, (v: string) => { setSchoolStage(v); setGradeName(""); }, ["", "小学", "初中", "高中"]],
+            ["年级", gradeName, setGradeName, ["", ...gradeOptions]],
+            ["省份", province, (v: string) => { setProvince(v); setSubjectCombination(""); }, ["", ...PROVINCES]],
+            ["选科组合", subjectCombination, setSubjectCombination, ["", ...subjectOptions]],
           ] as Array<[string, string, (value: string) => void, string[]]>).map(([label, value, setter, options]) => (
             <label key={label} className="block">
               {label}

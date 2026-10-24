@@ -7,7 +7,7 @@ type TeamHandoffCardProps = {
   onConfirm: (candidate: TeamHandoff["candidates"][number]) => void;
 };
 
-/** Shared, protocol-owned renderer for a coordinator's member handoff. */
+/** Shared, protocol-owned renderer for an expert's member handoff card. */
 export function TeamHandoffCard({
   handoff,
   interactionState,

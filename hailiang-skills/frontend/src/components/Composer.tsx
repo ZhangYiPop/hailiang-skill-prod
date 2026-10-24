@@ -108,7 +108,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
                     "disabled:cursor-not-allowed disabled:opacity-40",
                   ].join(" ")}
                 >
-                  {member.is_coordinator ? "主协调：" : "@"}{member.mention_name}
+                  {"@"}{member.mention_name}
                 </button>
               );
             })}
@@ -170,7 +170,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
                       : "border-white/10 bg-white/[0.04] text-slate-300 hover:border-violet-400/30 hover:bg-violet-400/10 hover:text-violet-100",
                   ].join(" ")}
                 >
-                  {member.is_coordinator ? "主协调：" : "@"}{member.mention_name}{selected ? "（待下次发送）" : ""}
+                  {"@"}{member.mention_name}{selected ? "（待下次发送）" : ""}
                 </button>
               );
             })}
@@ -201,7 +201,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
               );
             })}
           </div>
-          <p className="px-1 text-[11px] leading-5 text-slate-500">{pendingExpertClear ? "下一条消息将退出专家模式并按普通聊天处理。" : pendingTeam ? "可在首条消息前直接选择团内成员；不选则由主协调专家承接。" : "专家能力由专家包锁定；专家团由主协调专家决定是否建议转交。"}</p>
+          <p className="px-1 text-[11px] leading-5 text-slate-500">{pendingExpertClear ? "下一条消息将退出专家模式并按普通聊天处理。" : pendingTeam ? "可在首条消息前直接选择团内成员；不选则由主 Agent 承接。" : "专家能力由专家包锁定；转交由主 Agent 统一协调。"}</p>
         </div>
       ) : null
       )}

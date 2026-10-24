@@ -211,7 +211,6 @@ export type ExpertTeamMember = {
   name?: string;
   mention_name: string;
   routing_brief?: string;
-  is_coordinator: boolean;
 };
 
 export type ExpertTeamCatalogItem = {
@@ -220,8 +219,9 @@ export type ExpertTeamCatalogItem = {
   brief?: string;
   description: string;
   topology: "team" | string;
-  coordinator_expert_id: string;
-  coordinator_name: string;
+  coordinator_expert_id?: string;
+  coordinator_name?: string;
+  fallback_expert_id?: string;
   members: ExpertTeamMember[];
 };
 
@@ -229,8 +229,9 @@ export type SelectedExpertTeam = {
   team_id: string;
   name: string;
   brief?: string;
-  coordinator_expert_id: string;
-  coordinator_mention_name: string;
+  coordinator_expert_id?: string;
+  coordinator_mention_name?: string;
+  fallback_expert_id?: string;
   active_expert_id: string;
   active_mention_name: string;
   members: ExpertTeamMember[];

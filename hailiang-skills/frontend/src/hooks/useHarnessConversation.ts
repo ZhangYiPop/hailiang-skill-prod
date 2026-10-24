@@ -113,9 +113,14 @@ export async function sendHarnessIfEnabled(content: string): Promise<boolean> {
     useHarnessState.getState().set({ activeRunId: response.run_id });
     if (state.pendingExpertTeamId) {
       const team = state.expertTeamCatalog.find((item) => item.team_id === state.pendingExpertTeamId);
-      if (team) state.setActiveExpertTeam({ ...team, coordinator_mention_name: team.coordinator_name,
-        active_expert_id: state.pendingExpertId || team.coordinator_expert_id,
-        active_mention_name: team.members.find((member) => member.expert_id === (state.pendingExpertId || team.coordinator_expert_id))?.mention_name || team.coordinator_name });
+      if (team) {
+        const fallbackExpertId = team.coordinator_expert_id || team.fallback_expert_id || team.members[0]?.expert_id || "";
+        state.setActiveExpertTeam({ ...team, coordinator_mention_name: "",
+          active_expert_id: state.pendingExpertId || fallbackExpertId,
+          active_mention_name: state.pendingExpertId
+            ? (team.members.find((member) => member.expert_id === state.pendingExpertId)?.mention_name ?? "")
+            : (team.members.find((member) => member.expert_id === fallbackExpertId)?.mention_name ?? "") });
+      }
     }
     if (state.pendingExpertId) state.setActiveExpertId(state.pendingExpertId);
     if (state.pendingExpertClear) { state.setActiveExpertTeam(null); state.setActiveExpertId(""); }

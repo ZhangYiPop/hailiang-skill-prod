@@ -1399,9 +1399,9 @@ export function useChatActions() {
                           team_id: catalogTeam.team_id,
                           name: catalogTeam.name,
                           brief: state.expert.team.brief ?? catalogTeam.brief ?? "",
-                          coordinator_expert_id: catalogTeam.coordinator_expert_id,
+                          coordinator_expert_id: catalogTeam.coordinator_expert_id ?? "",
                           coordinator_mention_name:
-                            catalogTeam.members.find((item) => item.is_coordinator)?.mention_name ?? "",
+                            catalogTeam.members[0]?.mention_name ?? "",
                           active_expert_id: authoritativeExpertId,
                           active_mention_name: "",
                           members: catalogTeam.members,
@@ -1929,9 +1929,8 @@ export function useChatActions() {
       if (normalizedTeamId && !team) {
         throw new Error("专家团不存在或当前不可用");
       }
-      // Team selection must be sent as ``expert_team_id``. Sending just the
-      // coordinator id would silently start a direct-expert conversation and
-      // prevent the runtime from offering team-member handoff cards.
+      // Team selection must be sent as ``expert_team_id``. Sending a specific
+      // expert id would bypass team orchestrator and prevent handoff cards.
       store.setPendingExpertId("");
       store.setPendingExpertClear(false);
       store.setPendingExpertTeamId(team?.team_id ?? "");
