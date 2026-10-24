@@ -1420,6 +1420,19 @@ def _truncate_debug_text(value: str, *, limit: int) -> str:
     return f"{text[:limit]}...(truncated)"
 
 
+_TOOL_RESULT_MAX_CHARS = 8000
+
+
+def _truncate_tool_result(result: Any) -> Any:
+    if isinstance(result, str) and len(result) > _TOOL_RESULT_MAX_CHARS:
+        return result[:_TOOL_RESULT_MAX_CHARS] + f"...(结果已截断，共{len(result)}字符)"
+    if isinstance(result, dict):
+        return {k: _truncate_tool_result(v) for k, v in result.items()}
+    if isinstance(result, list):
+        return [_truncate_tool_result(v) for v in result]
+    return result
+
+
 def _sanitize_script_execution_reply(value: str) -> str:
     """Remove internal script narration/result dumps from user-visible text."""
     text = str(value or "")
@@ -3812,9 +3825,17 @@ class MainPlannerOrchestrator:
                             label="资料查询未完成",
                             detail=result.error or f"工具 {call.name} 执行失败",
                         )
-                self._record_tool_result_event(context, call=call, result=result)
-                next_transient_messages.extend(_tool_exchange_messages(call, result, tool_mode=turn_result.tool_mode))
-                next_tool_results.append(result)
+                result_for_context = ToolCallResult(
+                    id=result.id,
+                    name=result.name,
+                    ok=result.ok,
+                    content=_truncate_tool_result(result.content),
+                    error=result.error,
+                    sources=result.sources,
+                )
+                self._record_tool_result_event(context, call=call, result=result_for_context)
+                next_transient_messages.extend(_tool_exchange_messages(call, result_for_context, tool_mode=turn_result.tool_mode))
+                next_tool_results.append(result_for_context)
             tool_results = tuple(next_tool_results)
             transient_messages = tuple(next_transient_messages)
             preferred_mode = turn_result.tool_mode
@@ -6176,7 +6197,10 @@ class MainPlannerOrchestrator:
             "focus_points": ["先确认学段，再进入对应的多元路径 skill"],
             "should_ask_question": True,
             "question_hint": "请先告诉我孩子现在几年级或处于小学 / 初中 / 高中哪个学段。",
-            "missing_fact_form": build_missing_fact_form_block(["grade"]),
+            "missing_fact_form": build_missing_fact_form_block(
+                ["grade"],
+                known_facts={key: value.value for key, value in context.known_facts.facts.items()},
+            ),
         }
         context.skill_states["planner"] = planner_state
         active_skill_id = runtime_state.active_skill_id or "multi_path_planning"

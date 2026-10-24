@@ -460,7 +460,10 @@ def _build_convergence_reply(
     if planner_state.get("should_ask_question") and question_hint:
         sections.append(question_hint)
 
-    return "\n\n".join(sections) if sections else "当前还没有足够资产生成路径收敛结果。"
+    reply = "\n\n".join(sections) if sections else "当前还没有足够资产生成路径收敛结果。"
+    reply = _enforce_punctuation_density(reply)
+    reply = _insert_paragraph_breaks(reply)
+    return reply
 
 
 def _band_matches(rule_row: dict, score_band_tag: str | None) -> bool:
@@ -672,6 +675,50 @@ def suggest_high_value_missing_facts(
         key=lambda item: (-int(item[1]["count"]), -float(item[1]["best_score"]), item[0]),
     )
     return [slot for slot, _ in ranked_slots[:limit]]
+
+
+def _enforce_punctuation_density(text: str, min_periods_per_chars: int = 80) -> str:
+    """Insert Chinese periods to improve readability when punctuation density is too low."""
+    if len(text) < 100:
+        return text
+
+    period_count = text.count("。")
+    if len(text) <= 200 or (period_count > 0 and len(text) / period_count <= min_periods_per_chars):
+        return text
+
+    segments = text.split("，")
+    if len(segments) < 2:
+        return text
+
+    result = segments[0]
+    for seg in segments[1:]:
+        result += "。" if len(seg) > 30 else "，"
+        result += seg
+    return result
+
+
+def _insert_paragraph_breaks(text: str) -> str:
+    """Insert paragraph breaks before section headers and at natural break points."""
+    # Insert \n\n before each 【 (Chinese section header marker)
+    text = text.replace("【", "\n\n【")
+
+    paragraphs = text.split("\n\n")
+    result: list[str] = []
+    for para in paragraphs:
+        if not para:
+            continue
+        if len(para) > 200:
+            # Find nearest preceding 。 within the first 200 chars
+            idx = para.rfind("。", 0, 200)
+            if idx > 0:
+                result.append(para[:idx + 1])
+                result.append(para[idx + 1:])
+            else:
+                result.append(para)
+        else:
+            result.append(para)
+
+    return "\n\n".join(result)
 
 
 class ConvergenceSkill(BaseSkill):

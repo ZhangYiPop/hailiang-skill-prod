@@ -551,12 +551,13 @@ class HarnessRuntime:
             from .asset_reader import readable_skills
             readable = readable_skills(run, task)
             if readable:
-                result.append(spec("read_skill_asset", "精确读取授权 Skill 资料。source 省略时分页列目录；JSON 数组可 filters 精确匹配字段，score 匹配 min_score/max_score 闭区间；offset 为过滤后记录偏移，文本则为字符偏移。优先用较大 limit 一次读完匹配记录，matched_count 较大时不要逐页小批量读取浪费调用预算。", object_schema({
+                result.append(spec("read_skill_asset", "精确读取授权 Skill 资料。source 省略时分页列目录；JSON 数组可 filters 精确匹配字段，score 匹配 min_score/max_score 闭区间；search 关键字搜索跳转（搜索文本字段或行内容），命中则返回围绕匹配的上下文窗口，未命中回退到 offset/limit 分页；context_lines 控制搜索命中的上下文行/记录数（默认5）；offset 为过滤后记录偏移，文本则为字符偏移。优先用较大 limit 一次读完匹配记录，matched_count 较大时不要逐页小批量读取浪费调用预算。", object_schema({
                     "skill_id": {"enum": readable}, "source": {"type": "string"},
                     "filters": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean", "null"]}},
                     "score": {"type": "number"}, "offset": {"type": "integer", "minimum": 0},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 20},
-                    "max_chars": {"type": "integer", "minimum": 1, "maximum": 8000}}, ["skill_id"])))
+                    "max_chars": {"type": "integer", "minimum": 1, "maximum": 8000},
+                    "search": {"type": "string"}, "context_lines": {"type": "integer", "minimum": 0, "maximum": 50}}, ["skill_id"])))
             if task["kind"] == "main":
                 result.append(spec("set_task_subject", "分派前确认本任务讨论当前档案还是其他对象。evidence 必须逐字来自用户问题或已提交答案。external 隔离当前档案，不能切换到其他用户档案。", object_schema({
                     "mode": {"enum": ["profile", "external"]}, "evidence": {"type": "string", "minLength": 1}}, ["mode", "evidence"])))
