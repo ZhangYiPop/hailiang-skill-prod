@@ -377,13 +377,14 @@ def _suspended(run):
 
 
 def formal_v3_enabled() -> bool:
-    """Feature gate for the formal-runtime V3 executor.
+    """V3 always executes through the formal multi-agent runtime.
 
-    The rollout is opt-in until form/resume parity is enabled.  Crucially the
-    gate never changes the public V3 wire format, only the implementation that
-    produces its durable state.
+    Candidate-revision manual tests and the product conversation console must
+    make the same expert-team, routing and Skill decisions.  Harness remains
+    the durable V3 frame projection, but it is no longer an alternative
+    business executor selected by an environment flag.
     """
-    return os.getenv("HAILIANG_V3_FORMAL_RUNTIME", "false").strip().lower() in {"1", "true", "on", "yes"}
+    return True
 
 
 def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, runtime, snapshot_resolver=None):

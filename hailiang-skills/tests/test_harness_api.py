@@ -271,6 +271,9 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
     frozen = policy()
     frozen['team_id'] = 'team-a'
     monkeypatch.setattr(v3, 'capture_policy', lambda *_: deepcopy(frozen))
+    # Keep exercising the compatibility projection independently. Production
+    # V3 is intentionally pinned to FormalV3TurnExecutor.
+    monkeypatch.setattr(v3, 'formal_v3_enabled', lambda: False)
     monkeypatch.setenv('HAILIANG_HARNESS_SSE_WAIT_SECONDS', '1')
     expert = SimpleNamespace(name='团队协调专家')
     team = SimpleNamespace(team_id='team-a', coordinator_expert_id='expert-a', member_expert_ids=('expert-a',))
