@@ -7,6 +7,7 @@ import json
 import inspect
 import hashlib
 import logging
+import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -479,7 +480,7 @@ def _diagnostic_duration(start, end, *, current=None):
     return max(0, int((end_at - start_at).total_seconds() * 1000))
 
 
-def execution_diagnostics(run):
+def execution_diagnostics(run, *, scheduler_snapshot=None):
     """Project scheduler timing for workbench-only Harness diagnostics.
 
     This deliberately consumes the durable run payload rather than public SSE
@@ -510,6 +511,10 @@ def execution_diagnostics(run):
                 })
     model_entries.sort(key=lambda item: (item["started_at"], str(item["task_id"])))
 
+    scheduler_snapshot = scheduler_snapshot if isinstance(scheduler_snapshot, dict) else {}
+    pool_capacity = int(scheduler_snapshot.get("worker_pool_capacity") or 0)
+    pool_inflight = int(scheduler_snapshot.get("inflight_count") or 0)
+
     def waiting_reason(task):
         status = task.get("status")
         if status == "waiting_for_dependency":
@@ -529,6 +534,8 @@ def execution_diagnostics(run):
             return "waiting_for_user_input"
         if running_count >= max_parallel:
             return "run_parallelism_limit"
+        if pool_capacity and pool_inflight >= pool_capacity:
+            return "global_worker_pool_saturated"
         return "awaiting_worker_claim"
 
     nodes = []
@@ -540,6 +547,7 @@ def execution_diagnostics(run):
             "started_at": task.get("started_at"), "ended_at": task.get("ended_at"),
             "duration_ms": _diagnostic_duration(task.get("started_at"), task_end, current=generated_at),
             "queue_reason": waiting_reason(task),
+            "scheduler_claim": task.get("scheduler_claim"),
         })
     for tool in tools.values():
         parent = tasks.get(tool.get("task_id"), {})
@@ -592,6 +600,7 @@ def execution_diagnostics(run):
         "first_output_ms": _diagnostic_duration(run.get("created_at"), run.get("first_output_at")) if run.get("first_output_at") else None,
         "max_parallel": max_parallel,
         "running_task_count": running_count,
+        "worker_pool": scheduler_snapshot or None,
         "phases": nodes,
         "historical_wait_trace_available": historical_wait_trace_available,
         "wait_intervals": wait_intervals,
@@ -611,15 +620,68 @@ def task_node(kind, goal, parent_id=None, expert_id=None, skill_id=None, complet
 
 
 class HarnessRuntime:
-    def __init__(self, store, client_factory, tool_executor=None, moderation=None, *, lease_seconds=90):
+    def __init__(self, store, client_factory, tool_executor=None, moderation=None, *, lease_seconds=90,
+                 worker_count=None):
         self.store, self.client_factory, self.tool_executor = store, client_factory, tool_executor
         self.moderation = moderation
         self.lease_seconds = max(1, lease_seconds)
+        self.worker_count = self._worker_count(worker_count)
         self._stop = threading.Event()
-        self._pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="harness")
+        self._pool = ThreadPoolExecutor(max_workers=self.worker_count, thread_name_prefix="harness")
         self._thread = None
         self.wakeup = Wakeup()
         self.store.wakeup = self.wakeup
+        self._inflight_lock = threading.Lock()
+        self._inflight: dict[object, dict] = {}
+        self._last_claimed_run_id = None
+        self._pool_saturated_since = None
+
+    @staticmethod
+    def _worker_count(value):
+        """Read an explicit pool capacity without allowing accidental exhaustion.
+
+        The old fixed value of six hid a production throughput control behind
+        code.  The environment remains the deployment-level default while the
+        constructor argument keeps deterministic tests and dedicated workers
+        easy to configure.
+        """
+        raw = value if value is not None else os.getenv("HAILIANG_HARNESS_WORKERS", "6")
+        try:
+            return min(128, max(1, int(raw)))
+        except (TypeError, ValueError):
+            log.warning("invalid HAILIANG_HARNESS_WORKERS=%r; falling back to 6", raw)
+            return 6
+
+    def scheduler_snapshot(self):
+        """Return a test/operations-only view of this process's worker pool."""
+        with self._inflight_lock:
+            entries = list(self._inflight.values())
+            return {
+                "worker_pool_capacity": self.worker_count,
+                "inflight_count": len(entries),
+                "idle_worker_count": max(0, self.worker_count - len(entries)),
+                "pool_saturated_since": self._pool_saturated_since,
+                "inflight_tasks": [dict(item) for item in entries],
+            }
+
+    def _reap_futures(self):
+        with self._inflight_lock:
+            completed = [future for future in self._inflight if future.done()]
+            for future in completed:
+                self._inflight.pop(future, None)
+
+    def _rotated_runnable_runs(self, run_ids):
+        """Give each active run one fair chance before returning to the first.
+
+        A task may still be constrained by its own max_parallel policy, but a
+        busy run that continuously produces tool/model follow-up turns no
+        longer always wins simply because its database row appears first.
+        """
+        run_ids = list(dict.fromkeys(run_ids))
+        if not run_ids or self._last_claimed_run_id not in run_ids:
+            return run_ids
+        index = run_ids.index(self._last_claimed_run_id)
+        return run_ids[index + 1:] + run_ids[:index + 1]
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -785,25 +847,47 @@ class HarnessRuntime:
         return result
 
     def _loop(self):
-        futures = set()
         while not self._stop.is_set():
             self.wakeup.wait()
             if self._stop.is_set():
                 break
-            futures = {f for f in futures if not f.done()}
-            if len(futures) >= 6:
+            self._reap_futures()
+            snapshot = self.scheduler_snapshot()
+            if snapshot["inflight_count"] >= self.worker_count:
+                if self._pool_saturated_since is None:
+                    self._pool_saturated_since = now()
                 continue
             try:
-                for run_id in self.store.runnable_runs():
-                    if len(futures) >= 6:
+                run_ids = self._rotated_runnable_runs(self.store.runnable_runs())
+                for run_id in run_ids:
+                    snapshot = self.scheduler_snapshot()
+                    if snapshot["inflight_count"] >= self.worker_count:
+                        if self._pool_saturated_since is None:
+                            self._pool_saturated_since = now()
                         break
-                    lease = self.claim(run_id)
+                    context = {
+                        **snapshot,
+                        "runnable_run_count": len(run_ids),
+                        "pool_was_saturated_since_last_claim": self._pool_saturated_since,
+                    }
+                    lease = self.claim(run_id, scheduler_context=context)
                     if lease:
-                        futures.add(self._pool.submit(self.execute, run_id, *lease))
+                        task_id, token = lease
+                        future = self._pool.submit(self.execute, run_id, *lease)
+                        with self._inflight_lock:
+                            self._inflight[future] = {
+                                "run_id": run_id, "task_id": task_id, "execution_id": token,
+                                "submitted_at": now(),
+                            }
+                        self._last_claimed_run_id = run_id
+                        # This claim consumes a newly available worker.  The
+                        # next claim keeps the preceding saturation evidence in
+                        # its durable task trace, then starts a fresh window.
+                        self._pool_saturated_since = None
             except Exception:
                 log.exception("harness scheduler iteration failed")
 
-    def claim(self, run_id):
+    def claim(self, run_id, *, scheduler_context=None):
         def apply(run, changes, db):
             # Product SSE v3 can retain the durable Harness record/projection
             # while delegating the business turn to MainPlannerOrchestrator.
@@ -837,9 +921,17 @@ class HarnessRuntime:
                 if task["status"] != "queued":
                     continue
                 token = identifier("execution")
+                context = dict(scheduler_context or {})
+                if context:
+                    context["wait_reason"] = (
+                        "global_worker_pool_saturated"
+                        if context.get("pool_was_saturated_since_last_claim")
+                        else "awaiting_worker_claim"
+                    )
                 task.update(status="running", lease_token=token, lease_until=(datetime.now(timezone.utc) + timedelta(seconds=self.lease_seconds)).isoformat(),
-                            started_at=task["started_at"] or now(), attempt=task["attempt"] + 1)
-                task.setdefault("execution_attempts", []).append({"execution_id": token, "status": "running", "parent_id": task["id"], "started_at": now(), "lease_until": task["lease_until"]})
+                            started_at=task["started_at"] or now(), attempt=task["attempt"] + 1,
+                            scheduler_claim=context or None)
+                task.setdefault("execution_attempts", []).append({"execution_id": token, "status": "running", "parent_id": task["id"], "started_at": now(), "lease_until": task["lease_until"], "scheduler_claim": context or None})
                 changes.append({"event": "task_started", "node_id": task["id"]})
                 return task["id"], token
             return None

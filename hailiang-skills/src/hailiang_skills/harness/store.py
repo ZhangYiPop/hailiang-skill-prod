@@ -174,7 +174,13 @@ class HarnessStore:
             if not last.get("ended_at"):
                 last["ended_at"] = changed_at
                 if isinstance(prior, dict):
-                    last["reason"] = cls._wait_reason(before, prior) or last.get("reason")
+                    # The runtime knows whether a scheduler slot had been
+                    # saturated before it finally claimed this task.  Keep
+                    # that evidence with the finished queue interval rather
+                    # than reducing every capacity incident to the ambiguous
+                    # "awaiting_worker_claim" after the run completes.
+                    claim = task.get("scheduler_claim") if isinstance(task.get("scheduler_claim"), dict) else {}
+                    last["reason"] = claim.get("wait_reason") or cls._wait_reason(before, prior) or last.get("reason")
             history.append({
                 "status": task.get("status"), "started_at": changed_at,
                 "reason": cls._wait_reason(run, task),

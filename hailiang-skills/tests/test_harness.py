@@ -40,6 +40,31 @@ def make_runtime(tmp_path, responder):
     return HarnessRuntime(HarnessStore.local(tmp_path / 'harness.sqlite3'), lambda _run: Client())
 
 
+def test_worker_pool_capacity_is_configurable_and_run_claims_rotate_fairly(monkeypatch, tmp_path):
+    monkeypatch.setenv("HAILIANG_HARNESS_WORKERS", "9")
+    runtime = make_runtime(tmp_path, lambda *_: call('finalize_response', {}))
+    assert runtime.worker_count == 9
+    runtime._last_claimed_run_id = "run_b"
+    assert runtime._rotated_runnable_runs(["run_a", "run_b", "run_c"]) == ["run_c", "run_a", "run_b"]
+    runtime.close()
+
+
+def test_saturated_worker_claim_is_preserved_in_wait_history(tmp_path):
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text="完成"))
+    run_id = runtime.create('s', 'u', 'p', '分析', policy())
+    lease = runtime.claim(run_id, scheduler_context={
+        "worker_pool_capacity": 6, "inflight_count": 5, "runnable_run_count": 4,
+        "pool_was_saturated_since_last_claim": "2026-10-25T00:00:00+00:00",
+    })
+    assert lease
+    run = runtime.store.get(run_id)
+    root = run['tasks'][run['root_task_id']]
+    assert root['scheduler_claim']['wait_reason'] == 'global_worker_pool_saturated'
+    assert root['state_history'][0]['reason'] == 'global_worker_pool_saturated'
+    assert root['execution_attempts'][0]['scheduler_claim']['inflight_count'] == 5
+    runtime.close()
+
+
 def test_expert_parallel_wait_and_multi_round_resume(tmp_path):
     rounds = {'a': 0}
     def respond(messages, specs, purpose):

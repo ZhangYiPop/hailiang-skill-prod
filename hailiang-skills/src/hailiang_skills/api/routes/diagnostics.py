@@ -502,6 +502,12 @@ def _harness_execution_assessment(run: dict[str, Any], execution: dict[str, Any]
             "severity": "info", "task_ids": waited_task_ids("awaiting_worker_claim"),
             "message": "任务已具备执行条件但尚未被 worker 领取；需结合 worker_wait_ms 判断是否为容量或调度延迟。",
         })
+    if waited_task_ids("global_worker_pool_saturated"):
+        findings.append({
+            "category": "performance", "code": "GLOBAL_WORKER_POOL_SATURATED",
+            "severity": "warning", "task_ids": waited_task_ids("global_worker_pool_saturated"),
+            "message": "任务可运行但 Harness 共享 worker 池已满；请结合 worker_pool.inflight_tasks 定位占用槽位的运行、任务与持续时间。",
+        })
     if waited_task_ids("waiting_for_user_input"):
         findings.append({
             "category": "input", "code": "WAITING_FOR_USER_INPUT",
@@ -536,6 +542,7 @@ def _harness_execution_assessment(run: dict[str, Any], execution: dict[str, Any]
             "historical_wait_trace_available": execution.get("historical_wait_trace_available", False),
             "wait_totals_ms": execution.get("wait_totals_ms") or {},
             "longest_waits": execution.get("longest_waits") or [],
+            "worker_pool": execution.get("worker_pool"),
         },
         "final_reply": {
             "first_output_at": execution.get("first_output_at"),
@@ -607,7 +614,8 @@ def _harness_runtime_trace(harness, session_id: str, *, run_id: str | None, limi
                 **({"answer": item.get("answer")} if include_content else {}),
             })
         orchestrator = policy.get("orchestrator") if isinstance(policy.get("orchestrator"), dict) else {}
-        execution = execution_diagnostics(run)
+        scheduler_snapshot = harness.scheduler_snapshot() if callable(getattr(harness, "scheduler_snapshot", None)) else None
+        execution = execution_diagnostics(run, scheduler_snapshot=scheduler_snapshot)
         traces.append({
             "run_id": run.get("run_id"), "session_id": run.get("session_id"), "profile_id": run.get("profile_id"),
             "status": run.get("status"), "created_at": run.get("created_at"), "updated_at": run.get("updated_at"),
