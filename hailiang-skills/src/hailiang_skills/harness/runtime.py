@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
 import inspect
@@ -24,6 +24,7 @@ from .reply import reply_violations, repair_instruction
 from .evidence import project_evidence
 from . import context_policy as cp
 from hailiang_skills.core.context_composer import estimate_tokens
+from hailiang_skills.security.models import ModerationBlockedError, OUTPUT_MODERATION_FALLBACK
 
 log = logging.getLogger(__name__)
 
@@ -900,9 +901,21 @@ class HarnessRuntime:
             metrics = client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {}
             if not response.tool_calls and not response.final_text.strip():
                 raise HarnessError("EMPTY_MODEL_REPLY")
+            output_replacement: tuple[str, str] | None = None
             if self.moderation:
                 if response.final_text.strip():
-                    self.moderation.check(response.final_text, stage="output", session_id=run["session_id"], turn_id=task_id)
+                    try:
+                        self.moderation.check(response.final_text, stage="output", session_id=run["session_id"], turn_id=task_id)
+                    except ModerationBlockedError as exc:
+                        # A provider-supplied safe answer (or our stable fallback)
+                        # is a partial completion, not a failed Harness run.
+                        replacement_method = getattr(exc.result, "replacement_answer", None)
+                        if not callable(replacement_method):
+                            raise
+                        provider_replacement = replacement_method()
+                        replacement = provider_replacement or OUTPUT_MODERATION_FALLBACK
+                        output_replacement = (replacement, "aliyun_advice" if provider_replacement else "project_fallback")
+                        response = replace(response, final_text=replacement, tool_calls=())
                 for call in response.tool_calls:
                     if call.name == "request_user_input":
                         self.moderation.check(json.dumps(call.arguments, ensure_ascii=False), stage="output", session_id=run["session_id"], turn_id=task_id)
@@ -912,6 +925,12 @@ class HarnessRuntime:
                 live = current["tasks"][task_id]
                 live["trace"][-1]["output"] = asdict(response)
                 self._record_model_usage(current, live["trace"][-1], metrics)
+                if output_replacement:
+                    current["outcome"] = "partial"
+                    current["safety"] = {
+                        "replacement_applied": True,
+                        "replacement_source": output_replacement[1],
+                    }
                 if str(metrics.get("finish_reason") or "").lower() in _TRUNCATED_FINISH:
                     # Commit usage before deciding whether to retry.
                     live["incomplete_output"] = True
@@ -2468,7 +2487,7 @@ class HarnessRuntime:
         self.store.mutate(run_id, apply)
 
     @staticmethod
-    def public(run):
+    def public(run, *, include_internal_ids=True):
         labels = {
             "delegate_tasks": "分派专家任务",
             "platform_gate": "身份学段检查",
@@ -2493,9 +2512,12 @@ class HarnessRuntime:
             phase, action = _public_phase(run, task)
             children = [child for child in run["tasks"].values() if child.get("parent_id") == task["id"]]
             structured = task.get("structured_result") if isinstance(task.get("structured_result"), dict) else None
+            if not include_internal_ids and structured is None and task["kind"] == "expert" and task.get("status") == "completed" and task.get("result"):
+                structured = {"status": "completed", "conclusion": task["result"], "findings": [], "limitations": [], "unresolved": []}
             nodes.append({
                 "id": task["id"], "parent_id": task["parent_id"], "kind": task["kind"], "title": title, "actor": actor,
                 "expert_id": expert_id,
+                "agent_brief": run["policy"]["experts"].get(task.get("expert_id"), {}).get("brief") if task["kind"] == "expert" else None,
                 "status": task["status"], "created_at": task.get("created_at"), "started_at": task["started_at"],
                 "ended_at": task["ended_at"], "error": task.get("error"), "stale": task.get("stale", False),
                 "brief": deepcopy(task.get("brief") or {"objective": task.get("goal", ""), "completion": task.get("completion", "")}),
@@ -2535,7 +2557,7 @@ class HarnessRuntime:
         # persisted histories accurate while new runs use the run-level value.
         tail_done = bool(run.get("tail_done") or root_task.get("tail_done"))
         fallback_phase, fallback_action = _public_phase(run, root_task) if root_task else ("running", "正在执行")
-        return {"run_id": run["run_id"], "client_run_id": run.get("client_run_id"),
+        result = {"run_id": run["run_id"], "client_run_id": run.get("client_run_id"),
                 "assistant_message_id": run.get("assistant_message_id") or f"msg_harness_{run['run_id']}",
                 "record_version": run["version"], "session_id": run["session_id"], "profile_id": run["profile_id"],
                 "goal": run["goal"], "status": run["status"], "outcome": run.get("outcome"), "version": run["version"],
@@ -2553,6 +2575,28 @@ class HarnessRuntime:
                 "input_token_limit": run["policy"]["settings"].get("max_run_input_tokens", 300000),
                 "completed_count": sum(t["status"] == "completed" for t in run["tasks"].values() if t["kind"] != "main"), "task_count": sum(t["kind"] != "main" for t in run["tasks"].values()),
                 "waiting_count": sum(q["status"] in {"pending", "queued"} for q in run["inputs"].values())}
+        if include_internal_ids:
+            return result
+        id_map = {node["id"]: f"node_{index + 1}" for index, node in enumerate(nodes)}
+        result["nodes"] = [
+            {
+                **node,
+                "id": id_map[node["id"]],
+                "parent_id": id_map.get(node.get("parent_id")),
+                "waiting_on": [id_map.get(item, item) for item in node.get("waiting_on") or []],
+            }
+            for node in nodes
+        ]
+        dispatch = deepcopy(result.get("dispatch") or {})
+        for expert in dispatch.get("experts") or []:
+            if isinstance(expert, dict):
+                expert["node_id"] = id_map.get(expert.get("node_id"))
+                expert["depends_on_node_ids"] = [id_map.get(item, item) for item in expert.get("depends_on_node_ids") or []]
+        result["dispatch"] = dispatch
+        result.pop("run_id", None)
+        result.pop("client_run_id", None)
+        result.pop("root_task_id", None)
+        return result
 
     def _recommend_cards(self, run, reply):
         """Fill jump_cards from the frozen recommend catalog when the main reply is done.
