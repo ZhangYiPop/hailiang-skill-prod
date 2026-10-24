@@ -218,8 +218,6 @@ setEvidenceBySession({});
     try { unread = JSON.parse(sessionStorage.getItem(unreadKey) || "[]"); } catch { unread = []; }
     setUnreadSessions(new Set(Array.isArray(unread) ? unread : []));
     setExecutionDiagnosticsByRun({});
-    setEvidenceSaved(false);
-    setConclusion("");
   }, [persistenceKey, knownKey, unreadKey]);
 
   useEffect(() => {
