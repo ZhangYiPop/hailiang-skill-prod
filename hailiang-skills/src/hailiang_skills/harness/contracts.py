@@ -33,14 +33,17 @@ def _normalize_option(option: Any) -> Any:
     if not isinstance(option, dict):
         return option
     normalized = dict(option)
+    if "key" in normalized and "value" not in normalized:
+        normalized["value"] = normalized.pop("key")
+        if "label" not in normalized:
+            normalized["label"] = normalized["value"]
+        return normalized
     # 处理 {key: text} 格式（如 {"A": "跑出去找朋友玩"}）
     if "label" not in normalized and "value" not in normalized:
         for k, v in normalized.items():
             if k not in ("label", "value") and isinstance(v, str):
                 return {"label": str(k), "value": str(v)}
-    if "value" not in normalized and "key" in normalized:
-        normalized["value"] = normalized.pop("key")
-    elif "key" in normalized and normalized.get("key") == normalized.get("value"):
+    if "key" in normalized and normalized.get("key") == normalized.get("value"):
         normalized.pop("key", None)
     return normalized
 
@@ -91,6 +94,11 @@ def _normalize_option_dict(o: dict) -> dict[str, str]:
     # 已经是标准格式
     if "label" in o and "value" in o:
         return {"label": str(o["label"]), "value": str(o["value"])}
+    # key is a model-generated value alias, not the visible option text.
+    if "key" in o:
+        value = str(o.get("value") or o.get("key") or "")
+        label = str(o.get("label") or value)
+        return {"label": label, "value": value}
     # {key: text} 格式：取第一个非 label/value 的键值对
     for k, v in o.items():
         if k not in ("label", "value") and isinstance(v, str):

@@ -621,6 +621,23 @@ def test_harness_input_budget_and_output_limit_are_enforced(tmp_path):
     blocked.close()
 
 
+@pytest.mark.parametrize(('option', 'expected'), [
+    ({'key': 'undergrad', 'label': '本科'}, {'label': '本科', 'value': 'undergrad'}),
+    ({'label': '本科', 'key': 'undergrad'}, {'label': '本科', 'value': 'undergrad'}),
+    ({'label': '本科', 'value': 'undergrad'}, {'label': '本科', 'value': 'undergrad'}),
+    ({'key': 'undergrad'}, {'label': 'undergrad', 'value': 'undergrad'}),
+    ({'value': '本科'}, {'label': '本科', 'value': '本科'}),
+    ({'label': '本科'}, {'label': '本科', 'value': '本科'}),
+    ({'A': '本科'}, {'label': 'A', 'value': '本科'}),
+])
+def test_select_option_normalization_preserves_label_and_value(option, expected):
+    from hailiang_skills.harness.contracts import InputArguments, normalize_input_arguments
+    arguments = {'title': '补充信息', 'fields': [{'key': 'stage', 'label': '阶段',
+                 'input_type': 'single_select', 'options': [option]}]}
+    normalized = normalize_input_arguments(arguments)
+    assert InputArguments.model_validate(normalized).fields[0].options == [expected]
+
+
 def test_select_question_map_is_normalized_and_invalid_call_has_field_feedback(tmp_path):
     options = {'是本人': 'self', '帮别人问': 'other'}
     question = {'title': '确认对象', 'fields': [{'key': 'who', 'label': '是谁的成绩', 'input_type': 'single_select', 'options': options}]}

@@ -261,6 +261,36 @@ def test_v3_snapshot_projects_grouped_input_queue(tmp_path):
     runtime.close()
 
 
+def test_expert_select_options_survive_v3_projection_and_answer(tmp_path):
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import _project_product_state
+    from hailiang_skills.harness.contracts import AnswerSubmission
+    from test_harness import policy
+
+    question = {'title': '留学规划', 'fields': [{'key': 'stage', 'label': '留学阶段',
+                'input_type': 'single_select', 'options': [
+                    {'key': 'undergrad', 'label': '本科'}, {'key': 'high_school', 'label': '高中'}]}]}
+    def respond(_messages, _specs, purpose):
+        if purpose == 'harness_main':
+            return call('delegate_tasks', {'tasks': [{'key': 'a', 'expert_id': 'a', 'goal': '留学分析'}]})
+        return call('request_user_input', question)
+
+    runtime = make_runtime(tmp_path, respond)
+    rid = runtime.create('s', 'u', 'p', '分析', policy(), wire_protocol='hailiang.sse.v3')
+    advance(runtime, rid, 8)
+    run = runtime.store.get(rid)
+    request = next(iter(run['inputs'].values()))
+    assert run['tasks'][request['owner_task_id']]['kind'] == 'expert'
+    snapshot = runtime.store.public_snapshot('s', 'u', 'p')
+    state = _project_product_state(snapshot, run)
+    options = state['inputs'][0]['fields'][0]['options']
+    assert options == [{'label': '本科', 'value': 'undergrad'}, {'label': '高中', 'value': 'high_school'}]
+    runtime.answer(request['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='answer',
+                   expected_version=request['version'], answers={'stage': 'undergrad'}))
+    answered = runtime.store.get(rid)['inputs'][request['id']]
+    assert answered['answer']['answers']['stage'] == 'undergrad'
+    runtime.close()
+
+
 def test_idempotent_start_and_conflicting_submission(tmp_path):
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
     sub = {'key': 'idempotent', 'fingerprint': 'one'}
