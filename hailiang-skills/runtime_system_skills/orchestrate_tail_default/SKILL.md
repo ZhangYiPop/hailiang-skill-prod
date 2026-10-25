@@ -3,7 +3,7 @@ skill_type: system
 purpose: orchestrate_tail
 skill_id: orchestrate_tail_default
 name: 编排尾规则
-version: "1.2"
+version: "1.3"
 ---
 
 ## 1. 职责
