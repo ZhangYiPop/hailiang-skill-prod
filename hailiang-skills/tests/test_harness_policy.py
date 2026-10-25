@@ -140,6 +140,24 @@ def test_debug_team_session_keeps_text_identity_gate(monkeypatch):
     assert frozen['identity_gate'] == 'text'
 
 
+def test_public_v3_team_uses_candidate_compatible_strategy(monkeypatch):
+    context = _formal_context(expert_id='a', expert_selection_source='input_team', harness_v3_minimal=True)
+    policy.configure_candidate_compatible_strategy(context, {'object_type': 'expert_team', 'object_key': 'team'})
+    frozen = policy.capture_policy(_team_orchestrator(monkeypatch), context)
+    assert frozen['orchestrated'] is True
+    assert frozen['identity_gate'] == 'text'
+    assert frozen['snapshot']['orchestration_rules']['head_rules'] == '编排首规则'
+
+
+def test_candidate_compatible_strategy_does_not_inject_missing_published_rules(monkeypatch):
+    context = _formal_context(harness_v3_minimal=True)
+    context.session_meta['configuration_snapshot']['orchestration_rules'] = {}
+    policy.configure_candidate_compatible_strategy(context, {'object_type': 'expert_team', 'object_key': 'team'})
+    frozen = policy.capture_policy(_team_orchestrator(monkeypatch), context)
+    assert frozen['orchestrated'] is False
+    assert frozen['snapshot']['orchestration_rules'] == {}
+
+
 def test_debug_single_expert_session_is_not_orchestrated(monkeypatch):
     context = _formal_context(workbench_debug_session_id='debug')
     context.session_meta['configuration_snapshot']['root'] = {'object_type': 'expert', 'object_key': 'a'}

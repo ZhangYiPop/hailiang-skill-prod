@@ -1,7 +1,8 @@
 import { useCallback, useRef } from "react";
 
 import { useChatStore } from "@/store/useChatStore";
-import { cancelHarness, harnessV3Enabled, refreshHarness, sendHarnessIfEnabled, useHarnessState } from "@/hooks/useHarnessConversation";
+import { cancelHarness, useHarnessState } from "@/hooks/useHarnessConversation";
+import { sendHarnessV3Chat, stopHarnessV3, useHarnessV3State } from "@/hooks/useHarnessV3Conversation";
 import {
   clearUserFactsBySource,
   createProfile,
@@ -580,7 +581,6 @@ export function useChatActions() {
       store.setSkillStates(sessionResult.skill_states);
       store.setEvents(eventsResult.events);
       store.setLastResponse(null);
-      await refreshHarness();
     },
     [store],
   );
@@ -1068,18 +1068,18 @@ export function useChatActions() {
       if (!trimmed) {
         return;
       }
-      if (useHarnessState.getState().activeRunId && !harnessV3Enabled) {
-        store.setErrorMessage("任务进行中，请回答卡片或停止任务。");
+      if (options.transition || options.teamHandoff || options.teamMemberSwitch || options.reuseAssistantMessageId) {
+        store.setErrorMessage("当前对话测试台仅支持 SSE V3 专家团编排，不支持 V2 的专家、Skill 或转交操作。");
         return;
       }
-      if (!options.transition && !options.teamHandoff && !options.teamMemberSwitch && !options.reuseAssistantMessageId) {
-        try {
-          if (await sendHarnessIfEnabled(trimmed)) return;
-        } catch (error) {
-          store.setErrorMessage(error instanceof Error ? error.message : "任务启动失败");
-          return;
-        }
+      // The formal conversation test bench is a V3-only consumer; ordinary
+      // composer messages never fall through to a V2 chat or Harness route.
+      try {
+        await sendHarnessV3Chat(trimmed);
+      } catch (error) {
+        store.setErrorMessage(error instanceof Error ? error.message : "V3 任务启动失败");
       }
+      return;
       const activeTeam = useChatStore.getState().activeExpertTeam;
       const toolbarTarget = options.teamMemberSwitch
         ? activeTeam?.members.find((member) => member.expert_id === options.teamMemberSwitch?.targetExpertId)
@@ -1124,7 +1124,6 @@ export function useChatActions() {
       let assistantMessageId = options.reuseAssistantMessageId ?? "";
       const exitTransition = options.transition?.action === "exit";
       const thinkingEnabledForTurn = options.enableThinkingOverride ?? useChatStore.getState().enableThinking;
-      const selectedModelId = useChatStore.getState().selectedModelId;
       const retryRequest: ChatRetryRequest = {
         content: trimmed,
         enableThinking: thinkingEnabledForTurn,
@@ -1286,7 +1285,6 @@ export function useChatActions() {
               source_interaction_id: options.transition.sourceInteractionId,
               enable_thinking: thinkingEnabledForTurn,
               return_reasoning: thinkingEnabledForTurn,
-              model: selectedModelId,
             }
           : options.teamHandoff
             ? {
@@ -1298,7 +1296,6 @@ export function useChatActions() {
                 source: "team_handoff",
                 enable_thinking: thinkingEnabledForTurn,
                 return_reasoning: thinkingEnabledForTurn,
-                model: selectedModelId,
               }
             : options.teamMemberSwitch
               ? {
@@ -1310,7 +1307,6 @@ export function useChatActions() {
                   content: trimmed,
                   enable_thinking: thinkingEnabledForTurn,
                   return_reasoning: thinkingEnabledForTurn,
-                  model: selectedModelId,
                 }
             : {
                 action: "chat",
@@ -1321,7 +1317,6 @@ export function useChatActions() {
                 context_activation: "auto" as const,
                 enable_thinking: thinkingEnabledForTurn,
                 return_reasoning: thinkingEnabledForTurn,
-                model: selectedModelId,
               };
         const runId = makeMessageId("run");
         let latestStateSeq = -1;
@@ -2033,6 +2028,13 @@ export function useChatActions() {
 
   const handleStopGeneration = useCallback(async () => {
     const state = useChatStore.getState();
+    if (useHarnessV3State.getState().activeAssistantMessageId) {
+      state.setCancellingRun(true);
+      try { await stopHarnessV3(); }
+      catch (error) { state.setErrorMessage(error instanceof Error ? error.message : "停止失败"); }
+      finally { state.setCancellingRun(false); }
+      return;
+    }
     if (useHarnessState.getState().activeRunId) {
       state.setCancellingRun(true);
       try { await cancelHarness(); }

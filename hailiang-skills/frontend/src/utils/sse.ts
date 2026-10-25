@@ -1,23 +1,34 @@
 import type { StreamEvent } from "@/types/streamEvents";
+import type { HarnessV3Event, HarnessV3EventName } from "@/types/harnessV3";
 
-type StreamOptions = {
+type StreamOptionsBase = {
   url: string;
   body: unknown;
-  onEvent: (event: StreamEvent) => void;
   signal?: AbortSignal;
   retryCount?: number;
   retryDelayMs?: number;
   retryableStatus?: number[];
   onRetry?: (attempt: number, error: Error) => void;
-  protocol?: "hailiang.sse.v2";
 };
+
+type V2StreamOptions = StreamOptionsBase & {
+  protocol?: "hailiang.sse.v2";
+  onEvent: (event: StreamEvent) => void;
+};
+
+type V3StreamOptions = StreamOptionsBase & {
+  protocol: "hailiang.sse.v3";
+  onEvent: (event: HarnessV3Event) => void;
+};
+
+type StreamOptions = V2StreamOptions | V3StreamOptions;
 
 const DEFAULT_STREAM_RETRY_COUNT = 3;
 const DEFAULT_STREAM_RETRY_DELAY_MS = 600;
 const DEFAULT_STREAM_RETRYABLE_STATUS = [408, 429, 500, 502, 503, 504];
 
-function parseChunk(rawEvent: string): StreamEvent[] {
-  const lines = rawEvent.split("\n");
+function parseChunk(rawEvent: string): Array<StreamEvent | HarnessV3Event> {
+  const lines = rawEvent.replace(/\r\n/g, "\n").split("\n");
   let eventName = "message";
   const dataLines: string[] = [];
   for (const line of lines) {
@@ -36,10 +47,21 @@ function parseChunk(rawEvent: string): StreamEvent[] {
   try {
     const data = JSON.parse(rawData) as Record<string, unknown>;
     if (eventName === "state") {
-      if (data.protocol !== "hailiang.sse.v2") {
-        return [];
+      if (data.protocol === "hailiang.sse.v2") {
+        return [{ event: "state", data: data as StreamEvent["data"] }];
       }
-      return [{ event: "state", data: data as StreamEvent["data"] }];
+      if (data.protocol === "hailiang.sse.v3") {
+        return [{ event: "state", data: data as HarnessV3Event["data"] }];
+      }
+      return [];
+    }
+    if (
+      ["done_suspended", "done_timeout", "done"].includes(eventName)
+      && data.protocol === "hailiang.sse.v3"
+      && typeof data.assistant_message_id === "string"
+      && typeof data.record_version === "number"
+    ) {
+      return [{ event: eventName as HarnessV3EventName, data: data as HarnessV3Event["data"] }];
     }
     if (
       eventName === "done"
@@ -74,6 +96,8 @@ function wrapRetryError(error: Error, retryCount: number): Error {
   return new Error(`流式请求异常，已自动重试 ${retryCount} 次：${error.message}`);
 }
 
+export function postSseStream(options: V2StreamOptions): Promise<void>;
+export function postSseStream(options: V3StreamOptions): Promise<void>;
 export async function postSseStream({
   url,
   body,
@@ -123,13 +147,17 @@ export async function postSseStream({
         while (true) {
           const { done, value } = await reader.read();
           buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+          // SSE permits CRLF or LF line endings. Normalize before framing so
+          // a proxy using CRLF cannot turn a complete V3 snapshot into a
+          // never-flushed buffer.
+          buffer = buffer.replace(/\r\n/g, "\n");
           const parts = buffer.split("\n\n");
           buffer = parts.pop() ?? "";
           for (const part of parts) {
             const events = parseChunk(part.trim());
             for (const event of events) {
               receivedAnyEvent = true;
-              onEvent(event);
+              onEvent(event as never);
             }
           }
           if (done) {
@@ -141,7 +169,7 @@ export async function postSseStream({
           const events = parseChunk(buffer.trim());
           for (const event of events) {
             receivedAnyEvent = true;
-            onEvent(event);
+            onEvent(event as never);
           }
         }
 

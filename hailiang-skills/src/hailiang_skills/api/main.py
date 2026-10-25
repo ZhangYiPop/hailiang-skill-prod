@@ -691,7 +691,7 @@ def create_app() -> FastAPI:
     app.include_router(build_workbench_router(workbench_service), prefix="/workbench/v1")
     app.include_router(build_deployment_router(workbench_service), prefix="/deployment/v1")
     app.include_router(build_token_usage_router(storage.engine), prefix="/deployment/v1")
-    app.include_router(build_diagnostics_router(repository, storage.engine), prefix="/api/v1")
+    app.include_router(build_diagnostics_router(repository, storage.engine, harness), prefix="/api/v1")
     app.include_router(
         build_security_quarantine_router(quarantine_store),
         prefix="/api/v1",

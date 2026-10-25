@@ -7,6 +7,10 @@ from typing import Any, Literal
 RiskLevel = Literal["none", "low", "medium", "high"]
 ModerationMode = Literal["cloud", "local_fallback"]
 
+# This is deliberately shared by every public streaming adapter.  A blocked
+# model response must never leave a caller with an empty assistant bubble.
+OUTPUT_MODERATION_FALLBACK = "该内容被内容安全策略拦截，请调整后重新输入。"
+
 
 @dataclass(slots=True)
 class ModerationResult:
@@ -28,13 +32,10 @@ class ModerationResult:
         return self.matched or self.risk_level in {"low", "medium", "high"}
 
     def to_public_dict(self) -> dict[str, Any]:
-        data = self.raw.get("Data", self.raw.get("data", {})) if isinstance(self.raw, dict) else {}
-        data = data if isinstance(data, dict) else {}
-        advice = data.get("advice", data.get("Advice", [])) or []
-        advice = [item for item in advice if isinstance(item, dict)]
+        advice = self._advice_items()
         categories = sorted({str(item.get("hitLabel", item.get("label", ""))) for item in advice if item.get("hitLabel", item.get("label"))})
         categories = sorted(set(categories).union(self.labels))
-        safe_answers = [str(item.get("answer", "")) for item in advice if item.get("answer")]
+        safe_answers = self.advice_answers()
         return {
             "matched": self.matched,
             "risk_level": self.risk_level,
@@ -50,6 +51,38 @@ class ModerationResult:
             "categories": categories,
             "advice": safe_answers,
         }
+
+    def _advice_items(self) -> list[dict[str, Any]]:
+        """Return Aliyun advice in response order, including chunked checks."""
+        if not isinstance(self.raw, dict):
+            return []
+        payloads = list(self.raw.get("windows") or [])
+        if not payloads:
+            payloads = [self.raw]
+        items: list[dict[str, Any]] = []
+        for payload in payloads:
+            if not isinstance(payload, dict):
+                continue
+            data = payload.get("Data", payload.get("data", {})) or {}
+            if not isinstance(data, dict):
+                continue
+            advice = data.get("Advice", data.get("advice", [])) or []
+            if isinstance(advice, list):
+                items.extend(item for item in advice if isinstance(item, dict))
+        return items
+
+    def advice_answers(self) -> list[str]:
+        answers: list[str] = []
+        for item in self._advice_items():
+            value = item.get("Answer", item.get("answer", ""))
+            if isinstance(value, str) and value.strip():
+                answers.append(value.strip())
+        return answers
+
+    def replacement_answer(self) -> str | None:
+        """The first safe provider replacement, if the provider supplied one."""
+        answers = self.advice_answers()
+        return answers[0] if answers else None
 
 
 class ModerationBlockedError(RuntimeError):

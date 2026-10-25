@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 from hailiang_skills.core.deployment import deployment_environment
 from hailiang_skills.harness.contracts import AnswerSubmission, HarnessError
-from hailiang_skills.harness.policy import capture_policy, snapshot_root
+from hailiang_skills.harness.policy import capture_policy, configure_candidate_compatible_strategy, snapshot_root
 from hailiang_skills.llm.config import UnknownTesterModelError
 from hailiang_skills.security.models import ModerationBlockedError
 from hailiang_skills.skills.common import extract_grade
@@ -172,6 +172,13 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                     context.session_meta["expert_team_id"] = root["object_key"]
             if request.debug_session_id:
                 context.session_meta["workbench_debug_session_id"] = request.debug_session_id
+        if request.debug_session_id:
+            # The candidate revision test is the canonical orchestration
+            # profile.  Public V3 chat uses this same profile with a published
+            # snapshot instead of this immutable candidate snapshot.  Apply it
+            # to resumed debug sessions too, so a session created before this
+            # migration cannot retain the former policy split.
+            configure_candidate_compatible_strategy(context, snapshot_root(context.session_meta.get("configuration_snapshot")))
         if request.clear_experts:
             context.session_meta.update(harness_experts_disabled=True, expert_team_id=None, expert_id=None)
         elif request.expert_team_id or request.expert_id:

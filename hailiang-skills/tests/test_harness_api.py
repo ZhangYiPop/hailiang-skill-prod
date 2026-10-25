@@ -10,6 +10,7 @@ from hailiang_skills.core.context import SessionContext
 from hailiang_skills.llm.config import load_llm_config
 from hailiang_skills.schemas.facts import KnownFacts
 from hailiang_skills.harness.contracts import AnswerSubmission
+from hailiang_skills.api.routes.harness_chat_stream_v3 import _profile_name, _public_context
 from test_harness import make_runtime, policy, advance, call, QUESTION, postgres_test_backend
 from hailiang_skills.skill_runtime.models import AssistantTurnResult
 
@@ -33,6 +34,14 @@ class Facts:
         pass
     def validate_configured_update(self, *args):
         return None
+
+
+def test_v3_child_name_prefers_profile_data_and_falls_back_to_student_name():
+    assert _profile_name({'name': '小明'}, 'p1', '小红') == '小明'
+    assert _profile_name({'name': '  '}, 'p1', '小红') == '小红'
+    context = SessionContext(profile_id='p1', profile_name='旧名称')
+    assert _public_context(context, {'name': '小明'}, '小红')['profile_name'] == '小明'
+    assert _public_context(context, {}, '小红')['profile_name'] == '小红'
 
 
 def test_run_api_ownership_idempotence_modes_and_private_trace(tmp_path, monkeypatch):
@@ -272,6 +281,7 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
     frozen['team_id'] = 'team-a'
     monkeypatch.setattr(v3, 'capture_policy', lambda *_: deepcopy(frozen))
     monkeypatch.setenv('HAILIANG_HARNESS_SSE_WAIT_SECONDS', '1')
+    monkeypatch.setenv('HAILIANG_HARNESS_SSE_PING_SECONDS', '0.05')
     expert = SimpleNamespace(name='团队协调专家')
     team = SimpleNamespace(team_id='team-a', coordinator_expert_id='expert-a', member_expert_ids=('expert-a',))
     orchestrator = SimpleNamespace(
@@ -290,6 +300,7 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         response = client.post('/api/v3/sessions/chat/stream', json=body)
         assert response.status_code == 200
         assert 'event: state' in response.text and '"protocol": "hailiang.sse.v3"' in response.text
+        assert 'event: ping\ndata: {}\n\n' in response.text
         assert '"state"' in response.text and '"input_groups"' in response.text
         assert '"snapshot"' not in response.text
         assert '"client_run_id"' not in response.text
@@ -331,6 +342,8 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         assert f'"assistant_message_id": "{assistant_message_id}"' in resumed.text
         answer = {
             'session_id': 's', 'run_id': 'answer-1',
+            # Legacy V3 callers omit card version and submission ID.  The
+            # adapter derives both without relaxing strict answer semantics.
             'input': json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高二', 'expert_team_id': 'team-a'}, ensure_ascii=False),
             'context_data': {'user_id': 'u', 'profile_id': 'p'},
         }
@@ -338,16 +351,16 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         assert accepted.status_code == 200
         stored = runtime.store.get(run['run_id'])['inputs'][request['id']]
         assert stored['status'] == 'answered'
-        # A different later submission is an explicit correction, without a
-        # client submission ID or card version.
+        # Candidate-test semantics are strict: a resolved card cannot be
+        # corrected by sending a later public V3 request.
         correction = deepcopy(answer)
         correction['run_id'] = 'answer-2'
-        correction['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-a'}, ensure_ascii=False)
-        assert client.post('/api/v3/sessions/chat/stream', json=correction).status_code == 200
-        assert runtime.store.scoped_facts('u', 'profile', 'p')['grade']['value'] == '高三'
+        correction['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'submission_id': 'answer-2', 'expected_version': request['version'] + 1, 'text': '高三', 'expert_team_id': 'team-a'}, ensure_ascii=False)
+        assert client.post('/api/v3/sessions/chat/stream', json=correction).status_code == 409
+        assert runtime.store.scoped_facts('u', 'profile', 'p')['grade']['value'] == '高二'
         mismatch = deepcopy(answer)
         mismatch['run_id'] = 'answer-mismatch'
-        mismatch['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'text': '高三', 'expert_team_id': 'team-b'}, ensure_ascii=False)
+        mismatch['input'] = json.dumps({'action': 'answer_input_request', 'assistant_message_id': assistant_message_id, 'request_id': request['id'], 'submission_id': 'answer-mismatch', 'expected_version': request['version'] + 1, 'text': '高三', 'expert_team_id': 'team-b'}, ensure_ascii=False)
         assert client.post('/api/v3/sessions/chat/stream', json=mismatch).status_code == 409
         missing_team = deepcopy(body)
         missing_team['run_id'] = 'client-missing-team'

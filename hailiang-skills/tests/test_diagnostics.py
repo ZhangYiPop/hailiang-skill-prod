@@ -5,8 +5,11 @@ from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 from hailiang_skills.api.routes import diagnostics
+from hailiang_skills.storage.database import Base, WorkbenchDebugSessionRow
 
 
 class _Repository:
@@ -72,6 +75,104 @@ def test_session_diagnostics_redacts_content_by_default(monkeypatch, tmp_path) -
         "error": None,
         "upstream_detail": None,
     }]
+
+
+def test_session_diagnostics_includes_test_only_v3_harness_runtime_trace(monkeypatch) -> None:
+    run = {
+        "run_id": "harness_001", "session_id": "sess_001", "profile_id": "profile_001",
+        "status": "running", "created_at": "2026-10-25T10:00:00+08:00", "updated_at": "2026-10-25T10:00:01+08:00",
+        "wire_protocol": "hailiang.sse.v3", "root_task_id": "task_001", "inputs": {},
+        "tasks": {"task_001": {"id": "task_001", "kind": "main", "status": "running", "goal": "敏感问题", "trace": [], "depends_on": [], "created_at": "2026-10-25T10:00:00+08:00", "started_at": None, "ended_at": None}},
+        "tools": {"tool_001": {"id": "tool_001", "task_id": "task_001", "name": "delegate_tasks", "status": "completed", "arguments": {"tasks": []}, "created_at": "2026-10-25T10:00:00+08:00", "started_at": None, "ended_at": None}},
+        "policy": {"team_id": "team_001", "orchestrated": True, "identity_gate": "text", "direct_expert_id": "", "settings": {"max_parallel": 3},
+                   "orchestrator": {"members": [{"expert_id": "expert_001"}], "consultation_policy": {"mode": "consult"}},
+                   "snapshot": {"deployment_id": "deploy_001", "package_hash": "hash_001", "root": {"object_type": "expert_team", "object_key": "team_001"},
+                                "orchestration_rules": {"orchestration_revision_id": "orch_001", "revision_no": 3, "content_hash": "rules_hash", "rule_versions": {"orchestrate_head": {"version": "v1.1", "state": "current"}}},
+                                "entries": [{"object_type": "expert_team", "object_key": "team_001", "release_id": "release_001", "version": "v1"}]}},
+    }
+    harness = SimpleNamespace(store=SimpleNamespace(runs=lambda session_id: [run]))
+    monkeypatch.setattr(diagnostics, "deployment_environment", lambda: "test-smoke")
+    redacted = diagnostics._harness_runtime_trace(harness, "sess_001", run_id=None, limit=10, include_content=False)
+    assert redacted[0]["configuration"]["expert_team"] == {"team_id": "team_001", "release_id": "release_001", "version": "v1"}
+    assert redacted[0]["configuration"]["orchestration_rules"]["rule_versions"]["orchestrate_head"]["version"] == "v1.1"
+    assert redacted[0]["orchestration"]["enabled"] is True
+    assessment = redacted[0]["execution_assessment"]
+    assert assessment["parallelism"]["configured_max_parallel"] == 3
+    assert assessment["final_reply"]["streaming_enabled"] is True
+    assert assessment["findings"][0]["code"] == "HISTORICAL_WAIT_TRACE_UNAVAILABLE"
+    assert "goal" not in redacted[0]["tasks"][0]
+    detailed = diagnostics._harness_runtime_trace(harness, "sess_001", run_id="harness_001", limit=10, include_content=True)
+    assert detailed[0]["tasks"][0]["goal"] == "敏感问题"
+
+
+def test_harness_execution_assessment_separates_synthesis_from_capacity_wait() -> None:
+    run = {
+        "root_task_id": "root", "wire_protocol": "hailiang.sse.v3",
+        "tasks": {
+            "root": {"id": "root", "kind": "main", "status": "waiting_for_dependency"},
+            "expert_a": {"id": "expert_a", "kind": "expert", "expert_id": "a", "status": "running", "depends_on": []},
+            "expert_b": {"id": "expert_b", "kind": "expert", "expert_id": "b", "status": "queued", "depends_on": []},
+        },
+    }
+    execution = {
+        "max_parallel": 1, "running_task_count": 1, "worker_wait_ms": 8,
+        "phases": [{"id": "expert_b", "queue_reason": "run_parallelism_limit"}],
+        "model_phases": [], "first_output_at": None, "first_output_ms": None,
+    }
+    assessment = diagnostics._harness_execution_assessment(run, execution)
+    codes = {item["code"] for item in assessment["findings"]}
+    assert codes == {"RUN_PARALLELISM_LIMIT_REACHED", "SYNTHESIS_BARRIER"}
+    assert assessment["parallelism"]["independent_expert_task_count"] == 2
+
+
+def test_revision_test_diagnostics_exposes_frozen_candidate_trace_with_content_opt_in(monkeypatch, tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'diagnostics.sqlite3'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(WorkbenchDebugSessionRow(
+            debug_session_id="dbg_candidate_001",
+            revision_id="rev_candidate_001",
+            snapshot={
+                "root": {"object_type": "expert_team", "object_key": "team_candidate"},
+                "orchestration_rules": {
+                    "orchestration_revision_id": "orch_candidate", "revision_no": 2,
+                    "content_hash": "rules_hash", "rule_versions": {"orchestrate_head": {"version": "1.1"}},
+                },
+                "entries": [{"object_type": "expert_team", "object_key": "team_candidate",
+                             "revision_id": "rev_team", "release_id": None, "version": "candidate"}],
+            },
+            runtime_context={"session_meta": {"active_expert_id": "expert_candidate", "_candidate_branch_version": 3}},
+            transcript=[{"role": "user", "content": "测试问题"}],
+            trace=[{"turn": 1, "events": [{"event_type": "candidate_turn_started", "payload": {"content": "测试问题"}}],
+                    "debug": {"expert": {"object_key": "expert_candidate"}}}],
+        ))
+        db.commit()
+
+    monkeypatch.setenv("HAILIANG_SECURITY_ADMIN_TOKEN", "diagnostic-token")
+    app = FastAPI()
+    app.include_router(diagnostics.build_diagnostics_router(_Repository(), engine), prefix="/api/v1")
+    client = TestClient(app)
+
+    denied = client.post("/api/v1/operations/diagnostics/revision-tests/query", json={"debug_session_id": "dbg_candidate_001"})
+    assert denied.status_code == 403
+    redacted = client.post(
+        "/api/v1/operations/diagnostics/revision-tests/query",
+        json={"debug_session_id": "dbg_candidate_001"},
+        headers={"X-Security-Admin-Token": "diagnostic-token"},
+    )
+    assert redacted.status_code == 200
+    trace = redacted.json()["candidate_revision_test_trace"]
+    assert trace["execution_runtime"] == "workbench_candidate"
+    assert trace["configuration"]["expert_team"]["team_id"] == "team_candidate"
+    assert trace["configuration"]["orchestration_rules"]["rule_versions"]["orchestrate_head"]["version"] == "1.1"
+    assert "transcript" not in trace
+
+    detailed = client.post(
+        "/api/v1/operations/diagnostics/revision-tests/query",
+        json={"debug_session_id": "dbg_candidate_001", "include_content": True},
+        headers={"X-Security-Admin-Token": "diagnostic-token"},
+    )
+    assert detailed.json()["candidate_revision_test_trace"]["transcript"][0]["content"] == "测试问题"
 
 
 def test_session_diagnostics_projects_confirmed_output_truncation(monkeypatch, tmp_path) -> None:

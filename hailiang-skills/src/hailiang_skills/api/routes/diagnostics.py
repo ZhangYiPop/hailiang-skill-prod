@@ -25,6 +25,7 @@ from hailiang_skills.core.session_logging import (
 )
 from hailiang_skills.storage.database import ChatRunRow, WorkbenchDebugSessionRow
 from hailiang_skills.storage.event_store import read_events
+from hailiang_skills.core.deployment import deployment_environment
 
 
 _CONTENT_KEYS = {
@@ -61,6 +62,14 @@ class RunDiagnosticsInput(BaseModel):
 class RequestDiagnosticsInput(BaseModel):
     request_id: str = Field(min_length=1, max_length=160)
     limit: int = Field(default=100, ge=1, le=1000)
+    include_content: bool = False
+
+
+class RevisionTestDiagnosticsInput(BaseModel):
+    """Operator lookup for one immutable Workbench candidate-test session."""
+
+    debug_session_id: str = Field(min_length=1, max_length=160)
+    limit: int = Field(default=200, ge=1, le=1000)
     include_content: bool = False
 
 
@@ -193,6 +202,87 @@ def _candidate_trace(engine, session_id: str, *, limit: int, include_content: bo
             if isinstance(event, dict):
                 events.append(event)
     return _redact(trace, include_content=include_content), _redact(events[-limit:], include_content=include_content)
+
+
+def _candidate_revision_test_trace(engine, debug_session_id: str, *, limit: int,
+                                   include_content: bool) -> dict[str, Any] | None:
+    """Return the durable candidate-test evidence in a V3-comparable shape.
+
+    Candidate manual tests intentionally run against an unpublished immutable
+    snapshot, so their evidence lives in ``workbench_debug_sessions`` rather
+    than the formal session store.  Do not make operators reconstruct a turn
+    from the Workbench UI or infer its frozen configuration from current data.
+    """
+    if engine is None:
+        return None
+    from sqlalchemy.orm import Session
+
+    try:
+        with Session(engine) as db:
+            row = db.get(WorkbenchDebugSessionRow, debug_session_id)
+            if row is None:
+                return None
+            snapshot = dict(row.snapshot or {})
+            runtime_context = dict(row.runtime_context or {})
+            trace = list(row.trace or [])[-limit:]
+            transcript = list(row.transcript or [])[-(limit * 2):]
+    except Exception:
+        return None
+
+    entries = [item for item in snapshot.get("entries", []) if isinstance(item, dict)]
+    root = snapshot.get("root") if isinstance(snapshot.get("root"), dict) else {}
+    root_entry = next((item for item in entries
+                       if item.get("object_type") == root.get("object_type")
+                       and item.get("object_key") == root.get("object_key")), {})
+    meta = runtime_context.get("session_meta") if isinstance(runtime_context.get("session_meta"), dict) else {}
+    team_id = str(meta.get("expert_team_id") or (root.get("object_key") if root.get("object_type") == "expert_team" else ""))
+    team_entry = next((item for item in entries
+                       if item.get("object_type") == "expert_team" and item.get("object_key") == team_id), {})
+    rules = snapshot.get("orchestration_rules") if isinstance(snapshot.get("orchestration_rules"), dict) else {}
+    events = [event for turn in trace if isinstance(turn, dict)
+              for event in (turn.get("events") or []) if isinstance(event, dict)][-limit:]
+    turns = []
+    for turn in trace:
+        if not isinstance(turn, dict):
+            continue
+        turns.append({
+            "turn": turn.get("turn"),
+            "events": turn.get("events") or [],
+            "debug": turn.get("debug") or {},
+            "error": turn.get("error") or None,
+        })
+    return _redact({
+        "debug_session_id": row.debug_session_id,
+        "status": row.status,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        "revision_id": row.revision_id,
+        "baseline_release_id": row.baseline_release_id,
+        "execution_runtime": "workbench_candidate",
+        "configuration": {
+            "snapshot_hash": snapshot.get("snapshot_hash"),
+            "snapshot_source": "candidate_revision",
+            "root": {"object_type": root.get("object_type"), "object_key": root.get("object_key"),
+                     "revision_id": root_entry.get("revision_id"), "release_id": root_entry.get("release_id")},
+            "expert_team": {"team_id": team_id or None, "revision_id": team_entry.get("revision_id"),
+                            "release_id": team_entry.get("release_id"), "version": team_entry.get("version")},
+            "orchestration_rules": {
+                "revision_id": rules.get("orchestration_revision_id"),
+                "revision_no": rules.get("revision_no"), "content_hash": rules.get("content_hash"),
+                "rule_versions": rules.get("rule_versions") or {},
+            },
+        },
+        "runtime_state": {
+            "active_expert_id": meta.get("active_expert_id") or meta.get("expert_id"),
+            "expert_selection_source": meta.get("expert_selection_source"),
+            "branch_version": meta.get("_candidate_branch_version"),
+            "interaction_state": runtime_context.get("interaction_state") or {},
+        },
+        "turns": turns,
+        "events": events,
+        **({"transcript": transcript, "runtime_context": runtime_context,
+            "conclusion": row.conclusion} if include_content else {}),
+    }, include_content=include_content)
 
 
 def _sse_records(session_id: str, run_id: str | None, *, limit: int, include_content: bool) -> list[dict[str, Any]]:
@@ -351,7 +441,212 @@ def _output_diagnostics(*, events: list[dict[str, Any]], limit: int) -> list[dic
     return records[-limit:]
 
 
+def _test_environment() -> bool:
+    environment = deployment_environment().strip().lower()
+    return environment == "test" or environment.startswith("test-")
+
+
+def _harness_execution_assessment(run: dict[str, Any], execution: dict[str, Any]) -> dict[str, Any]:
+    """Classify a Harness wait without confusing orchestration with latency.
+
+    Raw nodes remain in the trace, but incident review repeatedly needs the
+    higher-level answer: did the plan serialize work, did capacity delay it,
+    was the user input gate active, or was the coordinator simply waiting for
+    otherwise independent experts before synthesis?
+    """
+    tasks = run.get("tasks") if isinstance(run.get("tasks"), dict) else {}
+    root_id = str(run.get("root_task_id") or "")
+    experts = [task for task in tasks.values() if isinstance(task, dict) and task.get("kind") == "expert"]
+    dependency_edges = [
+        {"task_id": task.get("id"), "expert_id": task.get("expert_id"), "depends_on": task.get("depends_on") or []}
+        for task in experts if task.get("depends_on")
+    ]
+    phases = execution.get("phases") if isinstance(execution.get("phases"), list) else []
+    queue_reasons: dict[str, list[str]] = {}
+    for phase in phases:
+        if not isinstance(phase, dict) or not phase.get("queue_reason"):
+            continue
+        queue_reasons.setdefault(str(phase["queue_reason"]), []).append(str(phase.get("id") or ""))
+    wait_intervals = execution.get("wait_intervals") if isinstance(execution.get("wait_intervals"), list) else []
+    historical_reasons: dict[str, list[dict[str, Any]]] = {}
+    for interval in wait_intervals:
+        if not isinstance(interval, dict) or not interval.get("reason"):
+            continue
+        historical_reasons.setdefault(str(interval["reason"]), []).append(interval)
+
+    def waited_task_ids(reason: str) -> list[str]:
+        return list(dict.fromkeys(
+            queue_reasons.get(reason, []) + [str(item.get("task_id") or "") for item in historical_reasons.get(reason, [])]
+        ))
+
+    model_phases = [
+        {key: phase.get(key) for key in ("task_id", "purpose", "started_at", "completed_at", "duration_ms")}
+        for phase in (execution.get("model_phases") or []) if isinstance(phase, dict)
+    ]
+    findings: list[dict[str, Any]] = []
+    if dependency_edges or historical_reasons.get("waiting_for_dependency"):
+        findings.append({
+            "category": "orchestration", "code": "SERIAL_DEPENDENCY_CONFIGURED",
+            "severity": "info", "task_ids": list(dict.fromkeys([item["task_id"] for item in dependency_edges] + waited_task_ids("waiting_for_dependency"))),
+            "message": "编排头为部分专家任务配置了 depends_on；这些任务按策略串行，不是性能排队。",
+        })
+    if waited_task_ids("run_parallelism_limit"):
+        findings.append({
+            "category": "performance", "code": "RUN_PARALLELISM_LIMIT_REACHED",
+            "severity": "warning", "task_ids": waited_task_ids("run_parallelism_limit"),
+            "message": "可运行任务达到本轮 max_parallel 上限，后续任务等待本轮并行槽位。",
+        })
+    if waited_task_ids("awaiting_worker_claim"):
+        findings.append({
+            "category": "performance", "code": "WORKER_CLAIM_DELAY",
+            "severity": "info", "task_ids": waited_task_ids("awaiting_worker_claim"),
+            "message": "任务已具备执行条件但尚未被 worker 领取；需结合 worker_wait_ms 判断是否为容量或调度延迟。",
+        })
+    if waited_task_ids("global_worker_pool_saturated"):
+        findings.append({
+            "category": "performance", "code": "GLOBAL_WORKER_POOL_SATURATED",
+            "severity": "warning", "task_ids": waited_task_ids("global_worker_pool_saturated"),
+            "message": "任务可运行但 Harness 共享 worker 池已满；请结合 worker_pool.inflight_tasks 定位占用槽位的运行、任务与持续时间。",
+        })
+    if waited_task_ids("waiting_for_user_input"):
+        findings.append({
+            "category": "input", "code": "WAITING_FOR_USER_INPUT",
+            "severity": "info", "task_ids": waited_task_ids("waiting_for_user_input"),
+            "message": "任务正在等待表单或补充信息，不属于编排或模型性能问题。",
+        })
+    root = tasks.get(root_id) if root_id else {}
+    if (isinstance(root, dict) and root.get("status") == "waiting_for_dependency" and not dependency_edges) or historical_reasons.get("synthesis_barrier"):
+        findings.append({
+            "category": "orchestration", "code": "SYNTHESIS_BARRIER", "severity": "info",
+            "task_ids": waited_task_ids("synthesis_barrier") or [root_id],
+            "message": "主编排器正在等待已独立派发的专家结果后统一汇总；这是多专家会诊的正常收口屏障。",
+        })
+    if historical_reasons.get("child_task_completion"):
+        findings.append({
+            "category": "orchestration", "code": "EXPERT_SUBTASK_BARRIER", "severity": "info",
+            "task_ids": waited_task_ids("child_task_completion"),
+            "message": "专家正在等待自己派发的 Skill 子任务完成；Skill 内部的模型和工具轮次按数据依赖顺序执行。",
+        })
+    tail_phase = next((item for item in model_phases if item.get("purpose") == "orchestrate_tail"), None)
+    return {
+        "parallelism": {
+            "configured_max_parallel": execution.get("max_parallel"),
+            "running_task_count": execution.get("running_task_count"),
+            "expert_task_count": len(experts),
+            "independent_expert_task_count": len(experts) - len(dependency_edges),
+            "dependency_edges": dependency_edges,
+        },
+        "scheduler": {
+            "worker_wait_ms": execution.get("worker_wait_ms"),
+            "queue_reasons": queue_reasons,
+            "historical_wait_trace_available": execution.get("historical_wait_trace_available", False),
+            "wait_totals_ms": execution.get("wait_totals_ms") or {},
+            "longest_waits": execution.get("longest_waits") or [],
+            "worker_pool": execution.get("worker_pool"),
+        },
+        "final_reply": {
+            "first_output_at": execution.get("first_output_at"),
+            "first_output_ms": execution.get("first_output_ms"),
+            "tail_phase": tail_phase,
+            "streaming_enabled": run.get("wire_protocol") == "hailiang.sse.v3",
+        },
+        "model_phases": model_phases,
+        "findings": findings or ([{
+            "category": "observation", "code": "HISTORICAL_WAIT_TRACE_UNAVAILABLE",
+            "severity": "info", "task_ids": [],
+            "message": "该运行创建于等待区间追踪上线前，完成后的历史等待原因无法可靠还原。",
+        }] if not execution.get("historical_wait_trace_available") else [{
+            "category": "observation", "code": "NO_ACTIVE_WAIT_BOTTLENECK",
+            "severity": "info", "task_ids": [],
+            "message": "当前轨迹未发现编排依赖、并行上限、worker 等待或表单等待证据。",
+        }]),
+    }
+
+
+def _harness_runtime_trace(harness, session_id: str, *, run_id: str | None, limit: int,
+                           include_content: bool) -> list[dict[str, Any]]:
+    """Project durable V3 Harness state into an operator-only runtime trace."""
+    if harness is None or not _test_environment():
+        return []
+    try:
+        runs = harness.store.runs(session_id)
+    except Exception:
+        return []
+    from hailiang_skills.harness.runtime import debug_step_io, execution_diagnostics
+
+    traces: list[dict[str, Any]] = []
+    for run in runs:
+        if run_id and run.get("run_id") != run_id:
+            continue
+        policy = run.get("policy") if isinstance(run.get("policy"), dict) else {}
+        snapshot = policy.get("snapshot") if isinstance(policy.get("snapshot"), dict) else {}
+        rules = snapshot.get("orchestration_rules") if isinstance(snapshot.get("orchestration_rules"), dict) else {}
+        root = snapshot.get("root") if isinstance(snapshot.get("root"), dict) else {}
+        team_id = str(policy.get("team_id") or "")
+        entries = snapshot.get("entries") if isinstance(snapshot.get("entries"), list) else []
+        team_entry = next((item for item in entries if isinstance(item, dict)
+                           and item.get("object_type") == "expert_team" and item.get("object_key") == team_id), {})
+        task_nodes = []
+        for task in run.get("tasks", {}).values():
+            task_nodes.append({
+                "id": task.get("id"), "parent_id": task.get("parent_id"), "kind": task.get("kind"),
+                "expert_id": task.get("expert_id"), "skill_id": task.get("skill_id"),
+                "status": task.get("status"), "attempt": task.get("attempt"),
+                "depends_on": task.get("depends_on") or [], "created_at": task.get("created_at"),
+                "started_at": task.get("started_at"), "ended_at": task.get("ended_at"),
+                **({"goal": task.get("goal")} if include_content else {}),
+            })
+        tool_nodes = []
+        for tool in run.get("tools", {}).values():
+            tool_nodes.append({
+                "id": tool.get("id"), "task_id": tool.get("task_id"), "parent_id": tool.get("parent_id"),
+                "name": tool.get("name"), "status": tool.get("status"), "attempts": tool.get("attempts"),
+                "created_at": tool.get("created_at"), "started_at": tool.get("started_at"), "ended_at": tool.get("ended_at"),
+                "error": tool.get("error"),
+            })
+        input_requests = []
+        for item in run.get("inputs", {}).values():
+            input_requests.append({
+                "id": item.get("id"), "status": item.get("status"), "version": item.get("version"),
+                "round": item.get("round"), "owner_task_id": item.get("owner_task_id"),
+                "bindings": item.get("bindings") or [],
+                "fields": item.get("fields") if include_content else [field.get("key") for field in item.get("fields") or []],
+                **({"answer": item.get("answer")} if include_content else {}),
+            })
+        orchestrator = policy.get("orchestrator") if isinstance(policy.get("orchestrator"), dict) else {}
+        scheduler_snapshot = harness.scheduler_snapshot() if callable(getattr(harness, "scheduler_snapshot", None)) else None
+        execution = execution_diagnostics(run, scheduler_snapshot=scheduler_snapshot)
+        traces.append({
+            "run_id": run.get("run_id"), "session_id": run.get("session_id"), "profile_id": run.get("profile_id"),
+            "status": run.get("status"), "created_at": run.get("created_at"), "updated_at": run.get("updated_at"),
+            "wire_protocol": run.get("wire_protocol"), "execution_runtime": run.get("execution_runtime") or "harness",
+            "configuration": {
+                "deployment_id": snapshot.get("deployment_id"), "package_hash": snapshot.get("package_hash"),
+                "snapshot_hash": snapshot.get("snapshot_hash"), "snapshot_source": snapshot.get("source"),
+                "root": {"object_type": root.get("object_type"), "object_key": root.get("object_key")},
+                "expert_team": {"team_id": team_id, "release_id": team_entry.get("release_id"),
+                                "version": team_entry.get("version")},
+                "orchestration_rules": {
+                    "revision_id": rules.get("orchestration_revision_id"),
+                    "revision_no": rules.get("revision_no"), "content_hash": rules.get("content_hash"),
+                    "rule_versions": rules.get("rule_versions") or {},
+                },
+            },
+            "orchestration": {
+                "enabled": bool(policy.get("orchestrated")), "identity_gate": policy.get("identity_gate"),
+                "direct_expert_id": policy.get("direct_expert_id"),
+                "members": orchestrator.get("members") or [], "consultation_policy": orchestrator.get("consultation_policy") or {},
+            },
+            "dispatch": run.get("dispatch") or {}, "tasks": task_nodes, "tools": tool_nodes,
+            "input_requests": input_requests, "execution_diagnostics": execution,
+            "execution_assessment": _harness_execution_assessment(run, execution),
+            "steps": _redact(debug_step_io(run), include_content=include_content),
+        })
+    return traces[-limit:]
+
+
 def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, limit: int, include_content: bool,
+                    harness=None,
                     event_types: list[str] | None = None) -> dict[str, Any]:
     try:
         context = repository.get(session_id)
@@ -391,6 +686,7 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
             runs.append(database_run)
     runs.sort(key=lambda item: str(item.get("started_at") or item.get("created_at") or item["run_id"]))
     sse_records = _sse_records(session_id, run_id, limit=limit, include_content=include_content)
+    harness_trace = _harness_runtime_trace(harness, session_id, run_id=run_id, limit=limit, include_content=include_content)
     sandbox_events = [
         item for item in events
         if str(item.get("event_type") or item.get("event") or "").startswith("sandbox_")
@@ -411,7 +707,7 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
             break
     return {
         "session_id": session_id,
-        "found": context is not None or bool(events) or bool(http_records) or bool(runs) or bool(candidate_trace),
+        "found": context is not None or bool(events) or bool(http_records) or bool(runs) or bool(candidate_trace) or bool(harness_trace),
         "session": _redact({
             "user_id": getattr(context, "user_id", "") if context else "",
             "active_profile_id": getattr(context, "profile_id", None) if context else None,
@@ -441,10 +737,12 @@ def _lookup_session(repository, engine, session_id: str, *, run_id: str | None, 
         "output_diagnostics": _output_diagnostics(events=events, limit=limit),
         "candidate_execution_trace": candidate_trace,
         "execution_trace": candidate_trace,
+        "harness_runtime_trace": harness_trace,
+        "harness_runtime_trace_available": _test_environment(),
     }
 
 
-def build_diagnostics_router(repository, engine) -> APIRouter:
+def build_diagnostics_router(repository, engine, harness=None) -> APIRouter:
     router = APIRouter(prefix="/operations/diagnostics", tags=["operations"])
 
     @router.post("/sessions/query")
@@ -457,7 +755,30 @@ def build_diagnostics_router(repository, engine) -> APIRouter:
         session_id = _safe_id(body.session_id, label="session_id")
         run_id = _safe_id(body.run_id, label="run_id") if body.run_id else None
         return _lookup_session(repository, engine, session_id, run_id=run_id, limit=body.limit,
-                                include_content=body.include_content, event_types=body.event_types)
+                                include_content=body.include_content, harness=harness, event_types=body.event_types)
+
+    @router.post("/revision-tests/query")
+    def get_revision_test_diagnostics(
+        body: RevisionTestDiagnosticsInput,
+        x_security_admin_token: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Read one candidate manual-test trail without relying on the UI.
+
+        This deliberately sits beside the formal-session diagnostics endpoint:
+        both are privileged, read-only incident-analysis APIs, but their
+        durable stores are different.
+        """
+        _authorize(x_security_admin_token, authorization)
+        debug_session_id = _safe_id(body.debug_session_id, label="debug_session_id")
+        trace = _candidate_revision_test_trace(
+            engine, debug_session_id, limit=body.limit, include_content=body.include_content,
+        )
+        return {
+            "debug_session_id": debug_session_id,
+            "found": trace is not None,
+            "candidate_revision_test_trace": trace,
+        }
 
     @router.post("/runs/query")
     def get_run_diagnostics(
@@ -472,7 +793,8 @@ def build_diagnostics_router(repository, engine) -> APIRouter:
             records = _http_records(field="run_id", value=run_id, limit=body.limit, include_content=body.include_content)
             return {"run_id": run_id, "found": bool(records), "run": None, "http_requests": records,
                     "hint": "No persisted run was found; use request_id for validation, authentication, or pre-session failures."}
-        result = _lookup_session(repository, engine, str(run["session_id"]), run_id=run_id, limit=body.limit, include_content=body.include_content)
+        result = _lookup_session(repository, engine, str(run["session_id"]), run_id=run_id, limit=body.limit,
+                                 include_content=body.include_content, harness=harness)
         result["run"] = run
         return result
 

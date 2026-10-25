@@ -85,6 +85,24 @@ def test_version_is_frozen_and_old_runs_keep_legacy(tmp_path):
     runtime.close()
 
 
+def test_large_asset_projection_keeps_preview_before_evidence_read(tmp_path):
+    runtime, run, task = setup_run(tmp_path)
+    tool = {
+        'id': 'tool_large', 'name': 'read_skill_asset', 'status': 'completed',
+        'arguments': {'skill_id': 'internal', 'source': 'schools.json'},
+        'result': {'source': 'schools.json', 'records': [
+            {'record_index': 0, 'record': {'school': '示例中学', 'city': '杭州', 'level': '省重点', 'notes': 'x' * 9000}}
+        ]},
+    }
+    content, metadata = cp.tool_projection(run, task, tool)
+    projected = json.loads(content)
+    assert projected['evidence_ref'].startswith('ev_')
+    assert '示例中学' in projected['preview']
+    assert '仅当预览不足' in projected['action']
+    assert metadata['original_chars'] > run['policy']['settings'].get('max_tool_evidence_chars', 8000)
+    runtime.close()
+
+
 def test_structured_submission_resumes_parent_without_extra_expert_call(tmp_path):
     seen = []
     def respond(messages, specs, purpose):

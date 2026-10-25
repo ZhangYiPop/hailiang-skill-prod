@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from hailiang_skills.api.session_lifecycle import ContextData, open_or_resume_session
 from hailiang_skills.harness.contracts import InternalAnswerSubmission, HarnessError, TERMINAL, identifier
 from hailiang_skills.harness.formal_v3 import FormalV3TurnExecutor
-from hailiang_skills.harness.policy import capture_policy
+from hailiang_skills.harness.policy import capture_policy, configure_candidate_compatible_strategy
 
 
 SSE_V3_PROTOCOL = "hailiang.sse.v3"
@@ -29,6 +29,19 @@ SSE_V3_PROTOCOL = "hailiang.sse.v3"
 def format_sse_event(event: str, data: dict) -> str:
     """Keep the public adapter independent from the legacy streaming runtime."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _idle_ping_seconds() -> float | None:
+    """Return the idle SSE heartbeat interval; zero explicitly disables it."""
+    raw = os.getenv("HAILIANG_HARNESS_SSE_PING_SECONDS", "15")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 15.0
+    if value <= 0:
+        return None
+    # Avoid an accidental busy loop while still allowing fast test/dev probes.
+    return max(0.05, value)
 
 
 class StrictInput(BaseModel):
@@ -55,6 +68,10 @@ class AnswerInput(TeamBoundInput):
     request_id: str = Field(min_length=1, max_length=80)
     # Stable task/bubble ID. A new request run_id is valid for every answer.
     assistant_message_id: str = Field(min_length=1, max_length=80)
+    # Older product BFFs did not send these two fields.  The adapter fills
+    # them from the current card below while preserving strict answer rules.
+    submission_id: str | None = Field(default=None, min_length=1, max_length=100)
+    expected_version: int | None = Field(default=None, ge=1)
     answers: dict[str, Any] = Field(default_factory=dict)
     text: str | None = Field(default=None, max_length=120000)
     skipped: bool = False
@@ -135,18 +152,29 @@ def _request_hash(input_data, profile_data, team_ids: list[str]):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _profile_name(profile_data: dict | None, profile_id: str) -> str:
+def _requested_profile_name(profile_data: dict | None, student_name: str | None = None) -> str:
+    """Resolve the V3 child name without letting a legacy field win."""
     value = (profile_data or {}).get("name")
-    return value.strip() if isinstance(value, str) and value.strip() else f"未命名孩子-{profile_id}"
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return student_name.strip() if isinstance(student_name, str) and student_name.strip() else ""
 
 
-def _public_context(context, profile_data: dict | None = None) -> dict[str, Any]:
+def _profile_name(profile_data: dict | None, profile_id: str, student_name: str | None = None) -> str:
+    return _requested_profile_name(profile_data, student_name) or f"未命名孩子-{profile_id}"
+
+
+def _public_context(context, profile_data: dict | None = None, student_name: str | None = None) -> dict[str, Any]:
     """Persist V2-compatible profile context in the V3 run, never in prompts."""
     profile_id = getattr(context, "profile_id", None) if context is not None else None
     scope = "profile" if profile_id else "unbound"
-    name = str(getattr(context, "profile_name", "") or "").strip() if context is not None else ""
+    # V3 payload data is the request's source of truth.  Only when both V3
+    # name forms are blank do we retain a previously stored profile name.
+    name = _requested_profile_name(profile_data, student_name)
+    if not name:
+        name = str(getattr(context, "profile_name", "") or "").strip() if context is not None else ""
     if not name and profile_id:
-        name = _profile_name(profile_data, str(profile_id))
+        name = _profile_name(profile_data, str(profile_id), student_name)
     return {
         "profile_id": profile_id,
         "profile_name": name or None,
@@ -160,17 +188,18 @@ def _public_context(context, profile_data: dict | None = None) -> dict[str, Any]
     }
 
 
-def _ensure_profile(fact_service, user_id: str, profile_id: str | None, profile_data: dict | None):
+def _ensure_profile(fact_service, user_id: str, profile_id: str | None, profile_data: dict | None, student_name: str | None = None):
     if not profile_id:
         return
     repo = fact_service.profile_repo
     listing = getattr(repo, "list_profiles", None)
     owned = {str(item.get("profile_id")) for item in listing(user_id)} if listing else set()
     if profile_id in owned:
-        if isinstance((profile_data or {}).get("name"), str):
+        requested_name = _requested_profile_name(profile_data, student_name)
+        if requested_name:
             updater = getattr(repo, "update_profile", None)
             if updater:
-                updater(user_id, profile_id, name=_profile_name(profile_data, profile_id))
+                updater(user_id, profile_id, name=requested_name)
         return
     lookup = getattr(repo, "get_profile_by_id", None)
     if lookup:
@@ -183,7 +212,7 @@ def _ensure_profile(fact_service, user_id: str, profile_id: str | None, profile_
     creator = getattr(repo, "create_profile", None)
     if creator is None:
         raise HTTPException(409, "PROFILE_NOT_READY")
-    creator(user_id, profile_id=profile_id, name=_profile_name(profile_data, profile_id), shared_facts_initialized=False)
+    creator(user_id, profile_id=profile_id, name=_profile_name(profile_data, profile_id, student_name), shared_facts_initialized=False)
 
 
 def _team_for_context(context, orchestrator, team_id: str):
@@ -336,6 +365,18 @@ def _project_product_state(snapshot: dict[str, Any], run: dict[str, Any]) -> dic
         "completed_count", "task_count", "input_tokens_estimated", "input_tokens_actual", "input_token_limit",
     )
     state = {key: deepcopy(source_run.get(key)) for key in allowed if key in source_run}
+    # While the orchestration tail is streaming, the durable run result is
+    # intentionally still empty.  The final-message entity is authoritative
+    # for the progressively accumulated text and lets existing state-only V3
+    # clients render it without learning a new SSE event type.
+    final_message_id = str(run.get("assistant_message_id") or f"{internal_run_id}:final")
+    final_message = next(
+        (item for item in snapshot.get("messages", [])
+         if item.get("id") == final_message_id and item.get("kind") == "final"),
+        {},
+    )
+    if not state.get("result") and final_message.get("content"):
+        state["result"] = deepcopy(final_message["content"])
     state.update({"dispatch": dispatch, "nodes": [projected_node(item) for item in source_nodes],
                   "inputs": inputs, "input_groups": groups})
     return state
@@ -378,13 +419,22 @@ def _suspended(run):
 
 
 def formal_v3_enabled() -> bool:
-    """Feature gate for the formal-runtime V3 executor.
+    """Keep public V3 on the candidate-test Harness execution runtime.
 
-    The rollout is opt-in until form/resume parity is enabled.  Crucially the
-    gate never changes the public V3 wire format, only the implementation that
-    produces its durable state.
+    Workbench's candidate-revision test panel creates V3 Harness runs from an
+    immutable candidate snapshot. The conversation test console must use the
+    same planner, expert-team delegation and Skill execution semantics; the
+    formal adapter has different user-confirmed handoff behaviour and must
+    not be selected here.
     """
-    return os.getenv("HAILIANG_V3_FORMAL_RUNTIME", "false").strip().lower() in {"1", "true", "on", "yes"}
+    return False
+
+
+def _align_streaming_result(frame: dict[str, Any], emitted_text: str) -> dict[str, Any]:
+    """Keep active state snapshots aligned with deltas already sent on this connection."""
+    if emitted_text:
+        frame["state"]["result"] = emitted_text
+    return frame
 
 
 def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, runtime, snapshot_resolver=None):
@@ -403,39 +453,94 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         # V3 remains finite for a BFF, but background execution never depends
         # on this connection remaining open.
         timeout_seconds = max(1, int(os.getenv("HAILIANG_HARNESS_SSE_WAIT_SECONDS", "600")))
+        ping_seconds = _idle_ping_seconds()
         started = time.monotonic()
+        last_emitted_at = started
         run = await asyncio.to_thread(runtime.store.get, harness_run_id)
         initial = await asyncio.to_thread(runtime.store.public_snapshot, run["session_id"], run["user_id"], run["profile_id"])
         cursor = initial["cursor"]
+        streamed_content = ""
+        initial_message_id = str(run.get("assistant_message_id") or f"{harness_run_id}:final")
+        initial_message = next((item for item in initial.get("messages", [])
+                                if item.get("id") == initial_message_id and item.get("kind") == "final"), {})
+        if isinstance(initial_message.get("content"), str):
+            streamed_content = initial_message["content"]
+
+        def delta_state(current_run, text: str, event_cursor: int):
+            """Translate an internal delta into a legacy-compatible state frame."""
+            frame = _payload(runtime, current_run, request_run_id=request_run_id,
+                             event="state", reason="final_text_delta", cursor=event_cursor)
+            frame["state"]["result"] = text
+            return frame
+
+        async def forward_pending(current_run):
+            """Replay persisted text deltas before terminal state, if any."""
+            nonlocal cursor, streamed_content
+            events = await asyncio.to_thread(
+                runtime.store.public_events, current_run["session_id"], current_run["user_id"], current_run["profile_id"], cursor,
+            )
+            if not events:
+                return [], []
+            cursor = max(event["seq"] for event in events)
+            frames = []
+            for item in events:
+                if item.get("run_id") != harness_run_id or item.get("type") != "message.delta":
+                    continue
+                data = item.get("data") if isinstance(item.get("data"), dict) else {}
+                text = data.get("text")
+                if isinstance(text, str) and text:
+                    streamed_content += text
+                    frames.append(delta_state(current_run, streamed_content, item["seq"]))
+            return frames, events
+
         # A terminal resume must replay only its durable final frame. It may
         # never make the BFF briefly render an active task again.
         if run["status"] in TERMINAL:
             yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
             return
         yield format_sse_event("state", _payload(runtime, run, request_run_id=request_run_id, event="state", reason="stream_started", cursor=cursor))
+        last_emitted_at = time.monotonic()
         while not await http_request.is_disconnected():
             run = await asyncio.to_thread(runtime.store.get, harness_run_id)
+            delta_frames, events = await forward_pending(run)
+            for frame in delta_frames:
+                yield format_sse_event("state", frame)
+            if delta_frames:
+                last_emitted_at = time.monotonic()
             if run["status"] in TERMINAL:
                 yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
                 return
             if _suspended(run):
                 yield format_sse_event("done_suspended", _payload(runtime, run, request_run_id=request_run_id, event="done_suspended", reason="waiting_for_user", cursor=cursor))
                 return
-            events = await asyncio.to_thread(runtime.store.public_events, run["session_id"], run["user_id"], run["profile_id"], cursor)
             relevant = [event for event in events if event.get("run_id") == harness_run_id and event.get("type") in {"state", "done"}]
             if relevant:
-                cursor = max(event["seq"] for event in events)
                 latest = relevant[-1]
                 run = await asyncio.to_thread(runtime.store.get, harness_run_id)
                 event_name = "done" if latest.get("type") == "done" else "state"
-                yield format_sse_event(event_name, _payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor))
+                frame = _payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor)
+                # The snapshot may already contain newer text than the events
+                # read above. Do not jump ahead and then replay older deltas.
+                if event_name == "state":
+                    frame = _align_streaming_result(frame, streamed_content)
+                yield format_sse_event(event_name, frame)
+                last_emitted_at = time.monotonic()
                 if event_name == "done":
                     return
                 continue
             if time.monotonic() - started >= timeout_seconds:
                 yield format_sse_event("done_timeout", _payload(runtime, run, request_run_id=request_run_id, event="done_timeout", reason="stream_timeout", cursor=cursor))
                 return
-            await asyncio.sleep(0.2)
+            if ping_seconds is not None and time.monotonic() - last_emitted_at >= ping_seconds:
+                # Transport-only heartbeat: it never advances the durable
+                # cursor and product clients can safely ignore it.
+                yield format_sse_event("ping", {})
+                last_emitted_at = time.monotonic()
+                continue
+            # Tail text is already durably buffered; a short poll interval
+            # keeps first-token latency perceptible without changing the
+            # existing state-frame wire contract.
+            await asyncio.sleep(0.05)
 
     def authorised_message_run(request: V3ChatStreamRequest, assistant_message_id: str) -> str:
         return operation(lambda: runtime.store.message_run(
@@ -448,7 +553,8 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
             request.run_id, harness_run_id, fingerprint,
         ))
 
-    def bind_public_ids(harness_run_id: str, *, team_ids: list[str], context, profile_data, superseded: str | None = None):
+    def bind_public_ids(harness_run_id: str, *, team_ids: list[str], context, profile_data,
+                        student_name: str | None = None, superseded: str | None = None):
         def apply(run, changes, _db):
             changed = False
             if not run.get("assistant_message_id"):
@@ -460,7 +566,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
             if not run.get("team_orchestration_version"):
                 run["team_orchestration_version"] = "single_team_v1"
                 changed = True
-            public_context = _public_context(context, profile_data) if context is not None else deepcopy(run.get("public_context") or {})
+            public_context = _public_context(context, profile_data, student_name) if context is not None else deepcopy(run.get("public_context") or {})
             if run.get("public_context") != public_context:
                 run["public_context"] = public_context
                 changed = True
@@ -493,7 +599,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     context = repository.get(request.session_id)
                 except KeyError:
                     context = None
-                bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data)
+                bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data, student_name=data.student_name)
             else:
                 active = runtime.store.active(request.session_id)
                 superseded = None
@@ -502,18 +608,19 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                         raise HTTPException(409, "ACTIVE_HARNESS_RUN_OWNED_BY_OTHER")
                     superseded = active.get("assistant_message_id")
                     runtime.cancel(active["run_id"])
-                _ensure_profile(fact_service, data.user_id, data.profile_id, profile_data)
+                _ensure_profile(fact_service, data.user_id, data.profile_id, profile_data, data.student_name)
                 context, created = open_or_resume_session(
                     repository, fact_service, session_id=request.session_id, data=data,
                     context_scope="profile" if data.profile_id else "unbound", allow_context_seed=False,
                 )
                 context.session_meta["runtime_mode"] = "harness_v1"
-                context.session_meta["harness_v3_minimal"] = True
                 if created and snapshot_resolver:
                     snapshot = snapshot_resolver()
                     if snapshot:
                         context.session_meta["configuration_snapshot"] = snapshot
                 _bind_input_team(context, orchestrator, team_id)
+                configure_candidate_compatible_strategy(context, {"object_type": "expert_team", "object_key": team_id})
+                context.session_meta["context_contract_version"] = 3
                 repository.save(context)
                 if profile_data and data.profile_id:
                     aliases = {"grade": "grade", "province": "student_province", "recent_exam.total_score": "exam_score"}
@@ -572,7 +679,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     wire_protocol=SSE_V3_PROTOCOL,
                     execution_runtime="formal" if formal_v3_enabled() else None,
                 ))
-                bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data, superseded=superseded)
+                bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data, student_name=data.student_name, superseded=superseded)
                 bind_request(request, input_data, harness_run_id, fingerprint)
                 if formal_v3_enabled():
                     formal_executor.start(harness_run_id, message=input_data.content)
@@ -604,11 +711,20 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                         ):
                             raise HTTPException(409, "INPUT_REQUEST_NOT_ACTIVE")
                     else:
+                        request_state = run.get("inputs", {}).get(input_data.request_id)
+                        if not isinstance(request_state, dict):
+                            raise HTTPException(409, "INPUT_REQUEST_NOT_ACTIVE")
+                        expected_version = input_data.expected_version or request_state["version"]
+                        # A deterministic server-side key preserves retry
+                        # idempotency for legacy callers that omit it; the
+                        # runtime still rejects a changed answer using it.
+                        submission_id = input_data.submission_id or f"v3:{input_data.request_id}:{expected_version}"
                         submission = InternalAnswerSubmission(
-                            user_id=data.user_id, profile_id=data.profile_id, answers=input_data.answers,
-                            text=input_data.text, skipped=input_data.skipped,
+                            user_id=data.user_id, profile_id=data.profile_id,
+                            submission_id=submission_id, expected_version=expected_version,
+                            answers=input_data.answers, text=input_data.text, skipped=input_data.skipped,
                         )
-                        operation(lambda: runtime.answer(input_data.request_id, submission, allow_partial=True, allow_correction=True))
+                        operation(lambda: runtime.answer(input_data.request_id, submission))
                 elif run.get("execution_runtime") == "formal" and run.get("status") not in TERMINAL:
                     formal_executor.resume(harness_run_id, message="请继续完成当前专家团分析。")
                 bind_request(request, input_data, harness_run_id, fingerprint)

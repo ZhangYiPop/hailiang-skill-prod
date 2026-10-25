@@ -45,6 +45,9 @@ class ModerationService:
                     provider="aliyun",
                     mode="cloud",
                     request_id=next((item.request_id for item in cloud_results if item.request_id), None),
+                    # Preserve each provider payload in text order.  Besides
+                    # diagnostics this keeps Data.Advice[].Answer available
+                    # when a long model response is checked in chunks.
                     raw={"windows": [item.raw for item in cloud_results]},
                 )
             else:

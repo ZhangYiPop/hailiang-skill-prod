@@ -1,8 +1,10 @@
 import json
 import pytest
-from test_harness import make_runtime, advance, call, postgres_test_backend
+from test_harness import make_runtime, advance, call, postgres_test_backend, orchestrated_policy, identity_seed
 from test_harness_context_v2 import v2_policy
 from hailiang_skills.harness.contracts import HarnessError
+from hailiang_skills.harness.runtime import HarnessRuntime
+from hailiang_skills.harness.store import HarnessStore
 from hailiang_skills.skill_runtime.models import AssistantTurnResult
 
 
@@ -55,6 +57,41 @@ def test_execution_diagnostics_classifies_worker_parallel_dependency_and_input_w
     assert reasons['依赖分析'] == 'waiting_for_dependency'
     assert reasons['并行分析'] == 'run_parallelism_limit'
     assert reasons['等待补充'] == 'waiting_for_user_input'
+    runtime.close()
+
+
+def test_execution_diagnostics_keeps_wait_history_after_run_completion(tmp_path):
+    from hailiang_skills.harness.runtime import execution_diagnostics, task_node
+
+    runtime = make_runtime(tmp_path, lambda *_: call('finalize_response', {}))
+    test_policy = v2_policy()
+    test_policy['settings']['max_parallel'] = 1
+    rid = runtime.create('s', 'u', 'p', '分析', test_policy, wire_protocol='hailiang.sse.v3')
+
+    def attach(run, changes, _db):
+        root = run['tasks'][run['root_task_id']]
+        root.update(status='waiting_for_dependency', lease_token='', lease_until='')
+        independent = task_node('expert', '并行专家', root['id'], expert_id='career_plan_expert')
+        dependent = task_node('expert', '依赖专家', root['id'], expert_id='career_plan_expert', depends_on=[independent['id']])
+        dependent['status'] = 'waiting_for_dependency'
+        skill = task_node('skill', '专项分析', independent['id'], expert_id='career_plan_expert', skill_id='internal')
+        independent['status'] = 'waiting_for_dependency'
+        run['tasks'].update({independent['id']: independent, dependent['id']: dependent, skill['id']: skill})
+        changes.append({'event': 'diagnostic_fixture', 'node_id': root['id']})
+
+    runtime.store.mutate(rid, attach)
+
+    def finish(run, changes, _db):
+        for task in run['tasks'].values():
+            task.update(status='completed', ended_at=run['updated_at'], lease_token='', lease_until='')
+        run['status'] = 'completed'
+        changes.append({'event': 'diagnostic_fixture_completed', 'node_id': run['root_task_id']})
+
+    runtime.store.mutate(rid, finish)
+    diagnostics = execution_diagnostics(runtime.store.get(rid))
+    reasons = {item['reason'] for item in diagnostics['wait_intervals']}
+    assert diagnostics['historical_wait_trace_available'] is True
+    assert {'synthesis_barrier', 'waiting_for_dependency', 'child_task_completion'} <= reasons
     runtime.close()
 
 
@@ -164,6 +201,37 @@ def test_v3_snapshot_projects_direct_main_agent_dispatch(tmp_path):
     runtime.close()
 
 
+def test_v3_snapshot_names_the_expert_or_skill_being_waited_for(tmp_path):
+    from hailiang_skills.harness.runtime import task_node
+
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    policy = v2_policy()
+    policy['experts']['career_plan_expert'] = {'name': '升学规划专家', 'brief': '', 'skills': []}
+    policy['experts']['study_expert'] = {'name': '学习指导师', 'brief': '', 'skills': []}
+    run_id = runtime.create('s', 'u', 'p', '分析', policy, wire_protocol='hailiang.sse.v3')
+
+    def attach(run, changes, _db):
+        root = run['tasks'][run['root_task_id']]
+        root.update(status='waiting_for_dependency', head_done=True)
+        expert = task_node('expert', '制定升学路径', root['id'], expert_id='career_plan_expert')
+        expert['status'] = 'waiting_for_dependency'
+        skill = task_node('skill', '核对方案资料', expert['id'], expert_id='career_plan_expert', skill_id='internal')
+        skill['status'] = 'running'
+        run['tasks'].update({expert['id']: expert, skill['id']: skill})
+        run['action'] = '正在并行执行 1 个专家任务'
+        changes.append({'event': 'expert_wait_fixture', 'node_id': root['id']})
+
+    runtime.store.mutate(run_id, attach)
+    snapshot = runtime.store.public_snapshot('s', 'u', 'p')
+    entity = next(item for item in snapshot['runs'] if item['id'] == run_id)
+    root = next(item for item in snapshot['nodes'] if item['id'] == runtime.store.get(run_id)['root_task_id'])
+    expert_node = next(item for item in snapshot['nodes'] if item['kind'] == 'expert')
+    assert entity['action'] == '正在等待升学规划专家完成专项分析'
+    assert root['action'] == entity['action']
+    assert expert_node['action'].startswith('正在等待「')
+    runtime.close()
+
+
 def test_v3_snapshot_projects_grouped_input_queue(tmp_path):
     from hailiang_skills.harness.contracts import AnswerSubmission
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
@@ -190,6 +258,36 @@ def test_v3_snapshot_projects_grouped_input_queue(tmp_path):
     entity = next(item for item in snapshot['runs'] if item['id'] == rid)
     assert entity['input_queue']['active_group_total'] == 1
     assert len([item for item in snapshot['input_requests'] if item['status'] == 'pending']) == 1
+    runtime.close()
+
+
+def test_expert_select_options_survive_v3_projection_and_answer(tmp_path):
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import _project_product_state
+    from hailiang_skills.harness.contracts import AnswerSubmission
+    from test_harness import policy
+
+    question = {'title': '留学规划', 'fields': [{'key': 'stage', 'label': '留学阶段',
+                'input_type': 'single_select', 'options': [
+                    {'key': 'undergrad', 'label': '本科'}, {'key': 'high_school', 'label': '高中'}]}]}
+    def respond(_messages, _specs, purpose):
+        if purpose == 'harness_main':
+            return call('delegate_tasks', {'tasks': [{'key': 'a', 'expert_id': 'a', 'goal': '留学分析'}]})
+        return call('request_user_input', question)
+
+    runtime = make_runtime(tmp_path, respond)
+    rid = runtime.create('s', 'u', 'p', '分析', policy(), wire_protocol='hailiang.sse.v3')
+    advance(runtime, rid, 8)
+    run = runtime.store.get(rid)
+    request = next(iter(run['inputs'].values()))
+    assert run['tasks'][request['owner_task_id']]['kind'] == 'expert'
+    snapshot = runtime.store.public_snapshot('s', 'u', 'p')
+    state = _project_product_state(snapshot, run)
+    options = state['inputs'][0]['fields'][0]['options']
+    assert options == [{'label': '本科', 'value': 'undergrad'}, {'label': '高中', 'value': 'high_school'}]
+    runtime.answer(request['id'], AnswerSubmission(user_id='u', profile_id='p', submission_id='answer',
+                   expected_version=request['version'], answers={'stage': 'undergrad'}))
+    answered = runtime.store.get(rid)['inputs'][request['id']]
+    assert answered['answer']['answers']['stage'] == 'undergrad'
     runtime.close()
 
 
@@ -234,6 +332,42 @@ def test_real_stream_interface_unicode_and_cancel(tmp_path):
     assert run['input_tokens_actual'] == 40
     root = run['tasks'][run['root_task_id']]
     assert not runtime.store.stream_text(rid, root['id'], root['lease_token'], '迟到')
+    runtime.close()
+
+
+def test_v3_team_tail_streams_final_summary_into_the_public_message(tmp_path):
+    from types import SimpleNamespace
+    from hailiang_skills.harness.runtime import execution_diagnostics
+
+    head = json.dumps({
+        "action": "consult",
+        "subtasks": [{"subtask_id": "st_1", "question": "分析", "target_expert_id": "b", "priority": 1}],
+        "reason": "测试并行编排尾流式输出",
+    })
+
+    class Client:
+        def complete(self, _messages, request_purpose="", **_kwargs):
+            return head if request_purpose == "orchestrator_head" else "不应走非流式编排尾"
+
+        def complete_with_tools(self, _messages, _specs, **_kwargs):
+            return AssistantTurnResult(final_text="专家结论")
+
+        def stream_complete(self, _messages, **_kwargs):
+            yield SimpleNamespace(content_delta="汇总首段")
+            yield SimpleNamespace(content_delta="，汇总末段")
+
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / "harness.sqlite3"), lambda _run: Client())
+    run_id = runtime.create("s", "u", "p", "分析", orchestrated_policy(), identity_seed(), wire_protocol="hailiang.sse.v3")
+    advance(runtime, run_id, 12)
+    run = runtime.store.get(run_id)
+    assert run["status"] == "completed", run.get("error")
+    assert run["result"] == "汇总首段，汇总末段"
+    deltas = [event for event in runtime.store.public_events("s", "u", "p", 0) if event["type"] == "message.delta"]
+    assert len(deltas) == 2
+    assert "".join(event["data"]["text"] for event in deltas) == run["result"]
+    tail = next(item for item in execution_diagnostics(run)["model_phases"] if item["purpose"] == "orchestrate_tail")
+    assert tail["completed_at"] is not None
+    assert tail["duration_ms"] is not None
     runtime.close()
 
 
@@ -391,6 +525,66 @@ def test_final_moderation_retracts_published_text(tmp_path):
     message = runtime.store.public_snapshot('s','u','p')['messages'][0]
     assert message['status']=='blocked' and message['content']==''
     assert run['input_tokens_actual']==20
+    runtime.close()
+
+
+def test_tail_batches_moderation_and_records_first_output(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from hailiang_skills.harness.runtime import execution_diagnostics
+    monkeypatch.setenv('HAILIANG_HARNESS_STREAM_BATCH_SECONDS', '2')
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    rid = runtime.create('s', 'u', 'p', '分析', v2_policy(), wire_protocol='hailiang.sse.v3')
+    task_id, token = runtime.claim(rid)
+    run = runtime.store.get(rid)
+    class Client:
+        def stream_complete(self, *_args, **_kwargs):
+            for text in ('第一', '第二', '第三'):
+                yield SimpleNamespace(content_delta=text)
+    class Moderation:
+        def __init__(self): self.checked = []
+        def check(self, text, **_kwargs): self.checked.append(text)
+    moderation = Moderation()
+    runtime.moderation = moderation
+    assert runtime._stream_orchestration_tail(Client(), run, run['tasks'][task_id], token, []) == '第一第二第三'
+    assert moderation.checked == ['第一', '第一第二第三']
+    saved = runtime.store.get(rid)
+    details = execution_diagnostics(saved)
+    assert details['first_output_at'] is not None
+    assert details['stream_diagnostics']['publish_count'] == 2
+    assert details['stream_diagnostics']['moderation_calls'] == 2
+    assert runtime.store.public_snapshot('s', 'u', 'p')['messages'][0]['content'] == '第一第二第三'
+    runtime.close()
+
+
+def test_active_state_does_not_jump_ahead_of_sent_text():
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import _align_streaming_result
+    frame = {'state': {'result': '已经写入数据库的更长正文', 'phase': 'synthesizing'}}
+    assert _align_streaming_result(frame, '已经写入')['state'] == {
+        'result': '已经写入', 'phase': 'synthesizing'}
+    frame = {'state': {'result': '非流式结果'}}
+    assert _align_streaming_result(frame, '')['state']['result'] == '非流式结果'
+
+
+def test_tail_never_publishes_batch_rejected_by_moderation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from hailiang_skills.security.models import ModerationBlockedError
+    monkeypatch.setenv('HAILIANG_HARNESS_STREAM_BATCH_SECONDS', '2')
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    rid = runtime.create('s', 'u', 'p', '分析', v2_policy(), wire_protocol='hailiang.sse.v3')
+    task_id, token = runtime.claim(rid)
+    run = runtime.store.get(rid)
+    class Client:
+        def stream_complete(self, *_args, **_kwargs):
+            for text in ('安全', '敏感'):
+                yield SimpleNamespace(content_delta=text)
+    class Moderation:
+        def check(self, text, **_kwargs):
+            if '敏感' in text:
+                raise ModerationBlockedError(SimpleNamespace(risk_level='blocked'), stage='output')
+    runtime.moderation = Moderation()
+    with pytest.raises(ModerationBlockedError):
+        runtime._stream_orchestration_tail(Client(), run, run['tasks'][task_id], token, [])
+    assert runtime.store.public_snapshot('s', 'u', 'p')['messages'][0]['content'] == '安全'
     runtime.close()
 
 

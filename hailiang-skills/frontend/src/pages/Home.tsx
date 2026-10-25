@@ -26,8 +26,6 @@ import { testerModelName, TESTER_MODEL_OPTIONS, useChatStore, type TesterModelId
 import { useHarnessConversation, useHarnessState } from "@/hooks/useHarnessConversation";
 
 export default function Home() {
-  useHarnessConversation();
-  const harnessActive = useHarnessState((s) => Boolean(s.activeRunId));
   const hasBootstrappedRef = useRef(false);
   const conversationScrollRef = useRef<HTMLDivElement | null>(null);
   const autoScrollEnabledRef = useRef(true);
@@ -41,7 +39,6 @@ export default function Home() {
     viewMode,
     themeMode,
     enableThinking,
-    selectedModelId,
     profiles,
     selectedProfileId,
     activeProfileId,
@@ -80,7 +77,6 @@ export default function Home() {
     setViewMode,
     setThemeMode,
     setEnableThinking,
-    setSelectedModelId,
   } = useChatStore();
   const {
     applyDebugIdentity,
@@ -257,10 +253,6 @@ export default function Home() {
           tone={enableThinking ? "info" : "default"}
         />
         <StatusPill
-          label={`模型 ${testerModelName(selectedModelId)}`}
-          tone={selectedModelId === "pro" ? "info" : "default"}
-        />
-        <StatusPill
           label={errorMessage ? "请求异常" : "接口正常待测"}
           tone={errorMessage ? "warning" : "success"}
         />
@@ -281,7 +273,7 @@ export default function Home() {
             className="h-5 w-5 accent-cyan-300"
           />
         </label>
-        <label className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3">
+<label className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3">
           <span>
             <span className="block text-sm font-medium text-slate-100">问答模型</span>
             <span className="mt-1 block text-xs leading-5 text-slate-500">
@@ -344,9 +336,9 @@ export default function Home() {
         </div>
         <Composer
           disabled={!sessionId}
-          selectionDisabled={harnessActive}
           showQuickPrompts={showQuickPrompts}
           onSubmit={handleSendMessage}
+          v3Only
           expertCatalog={expertCatalog}
           expertTeamCatalog={expertTeamCatalog}
           activeExpertId={activeExpertId}
@@ -378,7 +370,7 @@ export default function Home() {
     <ProfileSwitcher
       profiles={profiles}
       activeProfileId={selectedProfileId || activeProfileId}
-      loading={isLoadingProfiles || harnessActive}
+      loading={isLoadingProfiles}
       onSelect={(profileId) => {
         void selectProfile(profileId);
       }}

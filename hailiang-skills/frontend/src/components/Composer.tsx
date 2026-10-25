@@ -5,7 +5,8 @@ import type { ExpertCatalogItem, ExpertTeamCatalogItem, SelectedExpertTeam } fro
 
 type ComposerProps = {
   disabled?: boolean;
-  selectionDisabled?: boolean;
+  /** Formal test console consumes only the public V3 team entry. */
+  v3Only?: boolean;
   showQuickPrompts?: boolean;
   onSubmit: (value: string, options?: { teamMemberSwitch?: { targetExpertId: string } }) => Promise<void>;
   expertCatalog?: ExpertCatalogItem[];
@@ -30,7 +31,7 @@ const quickPrompts = [
   "强基计划详细讲讲，我现在适合吗",
 ];
 
-export function Composer({ disabled, selectionDisabled = false, showQuickPrompts = false, onSubmit, expertCatalog = [], expertTeamCatalog = [], activeExpertId = "", pendingExpertId = "", pendingExpertTeamId = "", pendingExpertClear = false, activeExpertTeam = null, onSelectExpert, onExitExpert, onSelectExpertTeam, onExitExpertTeam, isGenerating = false, isCancelling = false, onStopGeneration }: ComposerProps) {
+export function Composer({ disabled, v3Only = false, showQuickPrompts = false, onSubmit, expertCatalog = [], expertTeamCatalog = [], activeExpertId = "", pendingExpertId = "", pendingExpertTeamId = "", pendingExpertClear = false, activeExpertTeam = null, onSelectExpert, onExitExpert, onSelectExpertTeam, onExitExpertTeam, isGenerating = false, isCancelling = false, onStopGeneration }: ComposerProps) {
   const { composerValue, setComposerValue } = useChatStore();
   const [toolbarTargetExpertId, setToolbarTargetExpertId] = useState("");
   const toolbarTarget = activeExpertTeam?.members.find((member) => member.expert_id === toolbarTargetExpertId);
@@ -49,7 +50,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
     }
     await onSubmit(
       trimmed,
-      toolbarTargetExpertId ? { teamMemberSwitch: { targetExpertId: toolbarTargetExpertId } } : undefined,
+      !v3Only && toolbarTargetExpertId ? { teamMemberSwitch: { targetExpertId: toolbarTargetExpertId } } : undefined,
     );
     setToolbarTargetExpertId("");
   };
@@ -67,7 +68,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
               setComposerValue("");
               await onSubmit(
                 prompt,
-                toolbarTargetExpertId ? { teamMemberSwitch: { targetExpertId: toolbarTargetExpertId } } : undefined,
+                !v3Only && toolbarTargetExpertId ? { teamMemberSwitch: { targetExpertId: toolbarTargetExpertId } } : undefined,
               );
               setToolbarTargetExpertId("");
             }}
@@ -79,14 +80,29 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
       </div>
       ) : null}
 
-      {activeExpertTeam ? (
+      {v3Only ? (
+        <div className="space-y-2">
+          <p className="px-1 text-xs text-slate-500">选择专家团</p>
+          {expertTeamCatalog.length ? <div className="flex flex-wrap gap-2">
+            {expertTeamCatalog.map((team) => {
+              const selected = (pendingExpertTeamId || activeExpertTeam?.team_id) === team.team_id;
+              return <button key={team.team_id} type="button" disabled={disabled || selected || !onSelectExpertTeam} title={team.brief || team.description}
+                onClick={() => void onSelectExpertTeam?.(team.team_id)}
+                className={["rounded-full border px-3 py-2 text-xs transition disabled:cursor-not-allowed disabled:opacity-40", selected ? "border-violet-200/60 bg-violet-200/15 text-violet-100" : "border-violet-300/25 bg-violet-300/10 text-violet-100 hover:bg-violet-300/20"].join(" ")}>
+                专家团：{team.name}{selected ? "（本轮使用）" : ""}
+              </button>;
+            })}
+          </div> : <p className="px-1 text-xs text-amber-200">没有可用的已发布专家团。</p>}
+          <p className="px-1 text-[11px] leading-5 text-slate-500">未手动选择时，测试台会使用唯一可用的已发布专家团。V3 由编排器自行分派专家和 Skill。</p>
+        </div>
+      ) : activeExpertTeam ? (
         <div className="space-y-2">
           <p className="px-1 text-xs text-violet-200">已进入专家团：{activeExpertTeam.name}</p>
           <div className="flex flex-wrap gap-2">
             {onExitExpertTeam ? (
               <button
                 type="button"
-                disabled={disabled || selectionDisabled}
+                disabled={disabled}
                 onClick={() => void onExitExpertTeam()}
                 className="rounded-full border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-xs text-amber-100 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -99,7 +115,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
                 <button
                   key={member.expert_id}
                   type="button"
-                  disabled={disabled || selectionDisabled || selected}
+                  disabled={disabled || selected}
                   title={member.routing_brief}
                   onClick={() => setToolbarTargetExpertId(member.expert_id)}
                   className={[
@@ -127,7 +143,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
             {activeExpertId && onExitExpert ? (
               <button
                 type="button"
-                disabled={disabled || selectionDisabled}
+                disabled={disabled}
                 onClick={() => void onExitExpert()}
                 className="rounded-full border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-xs text-amber-100 transition hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -140,7 +156,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
                 <button
                   key={team.team_id}
                   type="button"
-                  disabled={disabled || selectionDisabled || selected || !onSelectExpertTeam}
+                  disabled={disabled || selected || !onSelectExpertTeam}
                   title={team.brief || team.description}
                   onClick={() => void onSelectExpertTeam?.(team.team_id)}
                   className={[
@@ -160,7 +176,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
                 <button
                   key={`pending-${member.expert_id}`}
                   type="button"
-                  disabled={disabled || selectionDisabled || selected || !onSelectExpert}
+                  disabled={disabled || selected || !onSelectExpert}
                   title={member.routing_brief}
                   onClick={() => void onSelectExpert?.(member.expert_id)}
                   className={[
@@ -181,7 +197,7 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
                 <button
                   key={expert.expert_id}
                   type="button"
-                  disabled={disabled || selectionDisabled || selected || !onSelectExpert}
+                  disabled={disabled || selected || !onSelectExpert}
                   title={`${expert.brief || expert.description}\n已锁定 Skill：${skillLabels || expert.skill_ids.join("、")}`}
                   onClick={() => {
                     if (onSelectExpert) {
@@ -225,26 +241,25 @@ export function Composer({ disabled, selectionDisabled = false, showQuickPrompts
         />
         <div className="flex items-center justify-between gap-3 border-t border-white/10 px-3 pt-3">
           <p className="text-xs text-slate-500">Enter 发送，Shift + Enter 换行</p>
-          <div className="flex items-center gap-2">
-            {isGenerating && onStopGeneration ? (
-              <button
-                type="button"
-                disabled={isCancelling}
-                onClick={() => void onStopGeneration()}
-                className="rounded-full border border-rose-300/40 bg-rose-300/15 px-5 py-2 text-sm font-medium text-rose-50 transition hover:bg-rose-300/25 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {isCancelling ? "正在停止…" : "停止生成"}
-              </button>
-            ) : null}
+          {isGenerating && onStopGeneration ? (
+            <button
+              type="button"
+              disabled={isCancelling}
+              onClick={() => void onStopGeneration()}
+              className="rounded-full border border-rose-300/40 bg-rose-300/15 px-5 py-2 text-sm font-medium text-rose-50 transition hover:bg-rose-300/25 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {isCancelling ? "正在停止…" : "停止生成"}
+            </button>
+          ) : (
             <button
               type="button"
               disabled={disabled}
               onClick={submit}
               className="rounded-full border border-cyan-300/40 bg-cyan-300/15 px-5 py-2 text-sm font-medium text-cyan-50 transition hover:bg-cyan-300/25 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {isGenerating ? "发送并切换到新问题" : "发送消息"}
+              发送消息
             </button>
-          </div>
+          )}
         </div>
       </div>
     </div>

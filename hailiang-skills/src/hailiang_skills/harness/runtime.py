@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
 import inspect
 import hashlib
 import logging
+import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +25,7 @@ from .reply import reply_violations, repair_instruction
 from .evidence import project_evidence
 from . import context_policy as cp
 from hailiang_skills.core.context_composer import estimate_tokens
+from hailiang_skills.security.models import ModerationBlockedError, OUTPUT_MODERATION_FALLBACK
 
 log = logging.getLogger(__name__)
 
@@ -250,9 +252,58 @@ def public_dispatch(run):
         "parallel_task_count": independent,
         "ready_task_count": sum(item["execution_status"] in {"assigned", "running"} for item in experts),
         "blocked_task_count": sum(bool(item["depends_on"]) and item["execution_status"] == "assigned" for item in experts),
-        "max_parallelism": int((run.get("policy", {}).get("settings") or {}).get("max_parallel_experts", 3)),
+        # This must reflect the scheduler's actual setting.  Older snapshots
+        # may only contain the historical display field, so retain it as a
+        # fallback rather than showing a different cap from the one enforced.
+        "max_parallelism": int((run.get("policy", {}).get("settings") or {}).get(
+            "max_parallel", (run.get("policy", {}).get("settings") or {}).get("max_parallel_experts", 3)
+        ) or 1),
         "experts": experts,
     }
+
+
+def _public_summary(value, *, limit=28):
+    """Keep public progress specific without dumping an entire task prompt."""
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _public_task_label(run, task):
+    if task.get("kind") == "skill":
+        return _public_summary((run.get("policy", {}).get("skills", {}).get(task.get("skill_id"), {}) or {}).get("name") or "专项分析")
+    if task.get("kind") == "expert":
+        expert = (run.get("policy", {}).get("experts", {}) or {}).get(task.get("expert_id"), {}) or {}
+        return _public_summary(expert.get("name") or task.get("expert_id") or task.get("goal") or "专家任务")
+    return _public_summary(task.get("goal") or "当前任务")
+
+
+def _public_waiting_action(run, task):
+    tasks = run.get("tasks", {})
+    children = [item for item in tasks.values()
+                if item.get("parent_id") == task.get("id") and item.get("status") not in TERMINAL]
+    if children:
+        labels = list(dict.fromkeys(_public_task_label(run, item) for item in children))
+        summary = "、".join(labels[:2]) + ("等" if len(labels) > 2 else "")
+        if task.get("kind") == "main":
+            return f"正在等待{summary}完成专项分析"
+        return f"正在等待「{summary}」完成"
+    dependencies = [tasks.get(task_id) for task_id in task.get("depends_on") or []]
+    pending = [item for item in dependencies if isinstance(item, dict) and item.get("status") not in TERMINAL]
+    if pending:
+        summary = "、".join(_public_task_label(run, item) for item in pending[:2])
+        return f"正在等待「{summary}」完成"
+    if task.get("status") == "queued":
+        tools = [run.get("tools", {}).get(tool_id) for tool_id in task.get("pending_calls") or []]
+        tool = next((item for item in tools if isinstance(item, dict) and item.get("status") == "queued"), None)
+        if tool:
+            tool_label = {
+                "read_facts": "读取相关信息", "read_evidence": "读取参考资料",
+                "read_skill_asset": "读取专项资料", "search_skill_assets": "检索专项资料",
+                "execute_skill": "专项分析", "subject_requirements": "查询选科要求",
+            }.get(tool.get("name"), "专项工具")
+            return f"正在排队执行「{tool_label}」"
+        return f"正在排队处理「{_public_task_label(run, task)}」"
+    return "正在等待后续处理"
 
 
 def _public_phase(run, task):
@@ -261,6 +312,10 @@ def _public_phase(run, task):
     if task.get("kind") == "main":
         if task.get("tail_done"):
             return ("completed", "已完成最终回复")
+        if task.get("status") in {"waiting_for_dependency", "queued"} and (
+            task.get("status") == "waiting_for_dependency" or task.get("head_done") or task.get("pending_calls")
+        ):
+            return ("waiting_for_dependency", _public_waiting_action(run, task))
         if task.get("head_done") and not task.get("pending_calls"):
             return ("synthesizing", "编排器正在汇总专家结论")
         if not task.get("head_done"):
@@ -269,12 +324,14 @@ def _public_phase(run, task):
         if task.get("structured_result"):
             status = task["structured_result"].get("status") or "completed"
             return (status, "已提交专家结论")
+        if task.get("status") in {"waiting_for_dependency", "queued"}:
+            return ("waiting_for_dependency", _public_waiting_action(run, task))
         if task.get("pending_calls"):
             return ("using_skill", "正在执行 Skill 或工具")
-        if task.get("status") == "waiting_for_dependency":
-            return ("waiting_for_dependency", "等待前置任务结果")
         return ("analyzing", "正在分析任务")
     if task.get("kind") == "skill":
+        if task.get("status") in {"waiting_for_dependency", "queued"}:
+            return ("waiting_for_dependency", _public_waiting_action(run, task))
         return ("using_skill", "正在执行专项 Skill")
     return (phase or "running", "正在执行")
 
@@ -423,7 +480,7 @@ def _diagnostic_duration(start, end, *, current=None):
     return max(0, int((end_at - start_at).total_seconds() * 1000))
 
 
-def execution_diagnostics(run):
+def execution_diagnostics(run, *, scheduler_snapshot=None):
     """Project scheduler timing for workbench-only Harness diagnostics.
 
     This deliberately consumes the durable run payload rather than public SSE
@@ -454,6 +511,10 @@ def execution_diagnostics(run):
                 })
     model_entries.sort(key=lambda item: (item["started_at"], str(item["task_id"])))
 
+    scheduler_snapshot = scheduler_snapshot if isinstance(scheduler_snapshot, dict) else {}
+    pool_capacity = int(scheduler_snapshot.get("worker_pool_capacity") or 0)
+    pool_inflight = int(scheduler_snapshot.get("inflight_count") or 0)
+
     def waiting_reason(task):
         status = task.get("status")
         if status == "waiting_for_dependency":
@@ -473,6 +534,8 @@ def execution_diagnostics(run):
             return "waiting_for_user_input"
         if running_count >= max_parallel:
             return "run_parallelism_limit"
+        if pool_capacity and pool_inflight >= pool_capacity:
+            return "global_worker_pool_saturated"
         return "awaiting_worker_claim"
 
     nodes = []
@@ -484,6 +547,7 @@ def execution_diagnostics(run):
             "started_at": task.get("started_at"), "ended_at": task.get("ended_at"),
             "duration_ms": _diagnostic_duration(task.get("started_at"), task_end, current=generated_at),
             "queue_reason": waiting_reason(task),
+            "scheduler_claim": task.get("scheduler_claim"),
         })
     for tool in tools.values():
         parent = tasks.get(tool.get("task_id"), {})
@@ -496,6 +560,31 @@ def execution_diagnostics(run):
             "queue_reason": "waiting_for_parent_task" if tool.get("status") == "queued" and parent.get("status") != "running" else None,
         })
     nodes.sort(key=lambda item: (item.get("created_at") or item.get("started_at") or "", str(item["id"])))
+    wait_intervals = []
+    historical_wait_trace_available = False
+    wait_statuses = {"queued", "waiting_for_dependency", "waiting_for_user"}
+    for task in tasks.values():
+        history = task.get("state_history") if isinstance(task.get("state_history"), list) else []
+        if history:
+            historical_wait_trace_available = True
+        for interval in history:
+            if not isinstance(interval, dict) or interval.get("status") not in wait_statuses:
+                continue
+            started_at = interval.get("started_at")
+            if not started_at:
+                continue
+            ended_at = interval.get("ended_at")
+            wait_intervals.append({
+                "task_id": task.get("id"), "kind": task.get("kind"), "expert_id": task.get("expert_id"),
+                "status": interval.get("status"), "reason": interval.get("reason") or "unknown",
+                "started_at": started_at, "ended_at": ended_at,
+                "duration_ms": _diagnostic_duration(started_at, ended_at, current=generated_at),
+            })
+    wait_intervals.sort(key=lambda item: (item.get("started_at") or "", str(item["task_id"])))
+    wait_totals: dict[str, int] = {}
+    for interval in wait_intervals:
+        if interval["duration_ms"] is not None:
+            wait_totals[interval["reason"]] = wait_totals.get(interval["reason"], 0) + interval["duration_ms"]
     return {
         "generated_at": generated_at,
         "total_elapsed_ms": _diagnostic_duration(
@@ -504,19 +593,31 @@ def execution_diagnostics(run):
         "worker_claimed_at": worker_claimed_at,
         "worker_wait_ms": _diagnostic_duration(run.get("created_at"), worker_claimed_at, current=generated_at),
         "first_model_phase": model_entries[0] if model_entries else None,
+        "model_phases": model_entries,
         "first_output_at": run.get("first_output_at"),
-        "first_output_ms": _diagnostic_duration(run.get("created_at"), run.get("first_output_at"), current=generated_at),
+        # No first output must remain unknown, never become the elapsed time
+        # until this diagnostic query was made.
+        "first_output_ms": _diagnostic_duration(run.get("created_at"), run.get("first_output_at")) if run.get("first_output_at") else None,
+        "stream_diagnostics": deepcopy(run.get("stream_diagnostics")),
         "max_parallel": max_parallel,
         "running_task_count": running_count,
+        "worker_pool": scheduler_snapshot or None,
         "phases": nodes,
+        "historical_wait_trace_available": historical_wait_trace_available,
+        "wait_intervals": wait_intervals,
+        "wait_totals_ms": wait_totals,
+        "longest_waits": sorted(wait_intervals, key=lambda item: item.get("duration_ms") or 0, reverse=True)[:20],
     }
 
 
 def task_node(kind, goal, parent_id=None, expert_id=None, skill_id=None, completion="完成指定任务", depends_on=()):
+    created_at = now()
     return {"id": identifier("task"), "parent_id": parent_id, "kind": kind, "expert_id": expert_id, "skill_id": skill_id,
             "goal": goal, "completion": completion, "depends_on": list(depends_on), "status": "queued", "messages": [{"role": "user", "content": goal}],
             "pending_calls": [], "model_calls": 0, "tool_calls": 0, "skill_calls": 0, "attempt": 0, "trace": [],
-            "summary": "", "fact_versions": {}, "created_at": now(), "started_at": None, "ended_at": None, "lease_token": "", "lease_until": ""}
+            "summary": "", "fact_versions": {}, "created_at": created_at, "started_at": None, "ended_at": None,
+            "state_history": [{"status": "queued", "started_at": created_at, "reason": "created"}],
+            "lease_token": "", "lease_until": ""}
 
 
 def _debug_pre_flight_fields(
@@ -625,15 +726,68 @@ def _debug_pre_flight_fields(
 
 
 class HarnessRuntime:
-    def __init__(self, store, client_factory, tool_executor=None, moderation=None, *, lease_seconds=90):
+    def __init__(self, store, client_factory, tool_executor=None, moderation=None, *, lease_seconds=90,
+                 worker_count=None):
         self.store, self.client_factory, self.tool_executor = store, client_factory, tool_executor
         self.moderation = moderation
         self.lease_seconds = max(1, lease_seconds)
+        self.worker_count = self._worker_count(worker_count)
         self._stop = threading.Event()
-        self._pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="harness")
+        self._pool = ThreadPoolExecutor(max_workers=self.worker_count, thread_name_prefix="harness")
         self._thread = None
         self.wakeup = Wakeup()
         self.store.wakeup = self.wakeup
+        self._inflight_lock = threading.Lock()
+        self._inflight: dict[object, dict] = {}
+        self._last_claimed_run_id = None
+        self._pool_saturated_since = None
+
+    @staticmethod
+    def _worker_count(value):
+        """Read an explicit pool capacity without allowing accidental exhaustion.
+
+        The old fixed value of six hid a production throughput control behind
+        code.  The environment remains the deployment-level default while the
+        constructor argument keeps deterministic tests and dedicated workers
+        easy to configure.
+        """
+        raw = value if value is not None else os.getenv("HAILIANG_HARNESS_WORKERS", "6")
+        try:
+            return min(128, max(1, int(raw)))
+        except (TypeError, ValueError):
+            log.warning("invalid HAILIANG_HARNESS_WORKERS=%r; falling back to 6", raw)
+            return 6
+
+    def scheduler_snapshot(self):
+        """Return a test/operations-only view of this process's worker pool."""
+        with self._inflight_lock:
+            entries = list(self._inflight.values())
+            return {
+                "worker_pool_capacity": self.worker_count,
+                "inflight_count": len(entries),
+                "idle_worker_count": max(0, self.worker_count - len(entries)),
+                "pool_saturated_since": self._pool_saturated_since,
+                "inflight_tasks": [dict(item) for item in entries],
+            }
+
+    def _reap_futures(self):
+        with self._inflight_lock:
+            completed = [future for future in self._inflight if future.done()]
+            for future in completed:
+                self._inflight.pop(future, None)
+
+    def _rotated_runnable_runs(self, run_ids):
+        """Give each active run one fair chance before returning to the first.
+
+        A task may still be constrained by its own max_parallel policy, but a
+        busy run that continuously produces tool/model follow-up turns no
+        longer always wins simply because its database row appears first.
+        """
+        run_ids = list(dict.fromkeys(run_ids))
+        if not run_ids or self._last_claimed_run_id not in run_ids:
+            return run_ids
+        index = run_ids.index(self._last_claimed_run_id)
+        return run_ids[index + 1:] + run_ids[:index + 1]
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -869,25 +1023,47 @@ class HarnessRuntime:
         return result
 
     def _loop(self):
-        futures = set()
         while not self._stop.is_set():
             self.wakeup.wait()
             if self._stop.is_set():
                 break
-            futures = {f for f in futures if not f.done()}
-            if len(futures) >= 6:
+            self._reap_futures()
+            snapshot = self.scheduler_snapshot()
+            if snapshot["inflight_count"] >= self.worker_count:
+                if self._pool_saturated_since is None:
+                    self._pool_saturated_since = now()
                 continue
             try:
-                for run_id in self.store.runnable_runs():
-                    if len(futures) >= 6:
+                run_ids = self._rotated_runnable_runs(self.store.runnable_runs())
+                for run_id in run_ids:
+                    snapshot = self.scheduler_snapshot()
+                    if snapshot["inflight_count"] >= self.worker_count:
+                        if self._pool_saturated_since is None:
+                            self._pool_saturated_since = now()
                         break
-                    lease = self.claim(run_id)
+                    context = {
+                        **snapshot,
+                        "runnable_run_count": len(run_ids),
+                        "pool_was_saturated_since_last_claim": self._pool_saturated_since,
+                    }
+                    lease = self.claim(run_id, scheduler_context=context)
                     if lease:
-                        futures.add(self._pool.submit(self.execute, run_id, *lease))
+                        task_id, token = lease
+                        future = self._pool.submit(self.execute, run_id, *lease)
+                        with self._inflight_lock:
+                            self._inflight[future] = {
+                                "run_id": run_id, "task_id": task_id, "execution_id": token,
+                                "submitted_at": now(),
+                            }
+                        self._last_claimed_run_id = run_id
+                        # This claim consumes a newly available worker.  The
+                        # next claim keeps the preceding saturation evidence in
+                        # its durable task trace, then starts a fresh window.
+                        self._pool_saturated_since = None
             except Exception:
                 log.exception("harness scheduler iteration failed")
 
-    def claim(self, run_id):
+    def claim(self, run_id, *, scheduler_context=None):
         def apply(run, changes, db):
             # Product SSE v3 can retain the durable Harness record/projection
             # while delegating the business turn to MainPlannerOrchestrator.
@@ -921,9 +1097,17 @@ class HarnessRuntime:
                 if task["status"] != "queued":
                     continue
                 token = identifier("execution")
+                context = dict(scheduler_context or {})
+                if context:
+                    context["wait_reason"] = (
+                        "global_worker_pool_saturated"
+                        if context.get("pool_was_saturated_since_last_claim")
+                        else "awaiting_worker_claim"
+                    )
                 task.update(status="running", lease_token=token, lease_until=(datetime.now(timezone.utc) + timedelta(seconds=self.lease_seconds)).isoformat(),
-                            started_at=task["started_at"] or now(), attempt=task["attempt"] + 1)
-                task.setdefault("execution_attempts", []).append({"execution_id": token, "status": "running", "parent_id": task["id"], "started_at": now(), "lease_until": task["lease_until"]})
+                            started_at=task["started_at"] or now(), attempt=task["attempt"] + 1,
+                            scheduler_claim=context or None)
+                task.setdefault("execution_attempts", []).append({"execution_id": token, "status": "running", "parent_id": task["id"], "started_at": now(), "lease_until": task["lease_until"], "scheduler_claim": context or None})
                 changes.append({"event": "task_started", "node_id": task["id"]})
                 return task["id"], token
             return None
@@ -1014,6 +1198,75 @@ class HarnessRuntime:
         publish()
         return AssistantTurnResult(final_text=content)
 
+    def _stream_orchestration_tail(self, client, run, task, token, messages):
+        """Stream the team tail into the durable final-message projection.
+
+        Expert tasks deliberately retain their complete internal answers.  The
+        only user-visible composition is the orchestration tail, so making
+        this call streaming is what improves first-token latency for both
+        one-expert and multi-expert team conversations.
+        """
+        stream_complete = getattr(client, "stream_complete", None)
+        if not callable(stream_complete):
+            # Lightweight test/deterministic clients only implement complete.
+            return str(client.complete(messages, request_purpose="orchestrator_tail") or "").strip()
+        from time import monotonic
+
+        run_id, task_id = run["run_id"], task["id"]
+        if not self.store.stream_text(run_id, task_id, token, reset=True):
+            raise HarnessError("EXECUTION_EXPIRED")
+        content, buffer, flushed, first_published = "", "", monotonic(), False
+        try:
+            batch_seconds = min(2.0, max(0.1, float(os.getenv("HAILIANG_HARNESS_STREAM_BATCH_SECONDS", "0.5"))))
+        except ValueError:
+            batch_seconds = 0.5
+        diagnostics = {"publish_count": 0, "moderation_calls": 0, "moderation_total_ms": 0,
+                       "moderation_max_ms": 0, "max_upstream_wait_ms": 0,
+                       "max_previous_write_ms": 0, "batch_seconds": batch_seconds}
+        previous_write_ms = 0
+
+        def cancelled():
+            return not self._valid(self.store.get(run_id), task_id, token)
+
+        def publish():
+            nonlocal buffer, flushed, first_published, previous_write_ms
+            if not buffer:
+                return
+            if self.moderation:
+                started = monotonic()
+                self.moderation.check(content, stage="output", session_id=run["session_id"], turn_id=task_id)
+                elapsed_ms = round((monotonic() - started) * 1000)
+                diagnostics["moderation_calls"] += 1
+                diagnostics["moderation_total_ms"] += elapsed_ms
+                diagnostics["moderation_max_ms"] = max(diagnostics["moderation_max_ms"], elapsed_ms)
+            diagnostics["publish_count"] += 1
+            diagnostics["max_previous_write_ms"] = max(diagnostics["max_previous_write_ms"], previous_write_ms)
+            started = monotonic()
+            if not self.store.stream_text(run_id, task_id, token, buffer, diagnostics=diagnostics):
+                raise HarnessError("EXECUTION_EXPIRED")
+            previous_write_ms = round((monotonic() - started) * 1000)
+            buffer, flushed, first_published = "", monotonic(), True
+
+        upstream_wait_started = monotonic()
+        for chunk in stream_complete(
+            messages,
+            cancel_check=cancelled,
+            request_purpose="orchestrator_tail",
+            max_tokens=run["policy"]["settings"].get("max_output_tokens", 8192),
+        ):
+            diagnostics["max_upstream_wait_ms"] = max(diagnostics["max_upstream_wait_ms"],
+                                                       round((monotonic() - upstream_wait_started) * 1000))
+            if chunk.content_delta:
+                content += chunk.content_delta
+                buffer += chunk.content_delta
+                # First token is intentionally published immediately; later
+                # chunks are lightly batched to avoid a write per token.
+                if not first_published or monotonic() - flushed >= batch_seconds:
+                    publish()
+            upstream_wait_started = monotonic()
+        publish()
+        return content.strip()
+
     def execute(self, run_id, task_id, token):
         finished = threading.Event()
         heartbeat = threading.Thread(target=self._heartbeat, args=(run_id, task_id, token, finished), daemon=True)
@@ -1075,9 +1328,21 @@ class HarnessRuntime:
             metrics = client.last_request_metrics() if callable(getattr(client, "last_request_metrics", None)) else {}
             if not response.tool_calls and not response.final_text.strip():
                 raise HarnessError("EMPTY_MODEL_REPLY")
+            output_replacement: tuple[str, str] | None = None
             if self.moderation:
                 if response.final_text.strip():
-                    self.moderation.check(response.final_text, stage="output", session_id=run["session_id"], turn_id=task_id)
+                    try:
+                        self.moderation.check(response.final_text, stage="output", session_id=run["session_id"], turn_id=task_id)
+                    except ModerationBlockedError as exc:
+                        # A provider-supplied safe answer (or our stable fallback)
+                        # is a partial completion, not a failed Harness run.
+                        replacement_method = getattr(exc.result, "replacement_answer", None)
+                        if not callable(replacement_method):
+                            raise
+                        provider_replacement = replacement_method()
+                        replacement = provider_replacement or OUTPUT_MODERATION_FALLBACK
+                        output_replacement = (replacement, "aliyun_advice" if provider_replacement else "project_fallback")
+                        response = replace(response, final_text=replacement, tool_calls=())
                 for call in response.tool_calls:
                     if call.name == "request_user_input":
                         self.moderation.check(json.dumps(call.arguments, ensure_ascii=False), stage="output", session_id=run["session_id"], turn_id=task_id)
@@ -1086,7 +1351,14 @@ class HarnessRuntime:
                     return
                 live = current["tasks"][task_id]
                 live["trace"][-1]["output"] = asdict(response)
+                live["trace"][-1]["completed_at"] = now()
                 self._record_model_usage(current, live["trace"][-1], metrics)
+                if output_replacement:
+                    current["outcome"] = "partial"
+                    current["safety"] = {
+                        "replacement_applied": True,
+                        "replacement_source": output_replacement[1],
+                    }
                 if str(metrics.get("finish_reason") or "").lower() in _TRUNCATED_FINISH:
                     # Commit usage before deciding whether to retry.
                     live["incomplete_output"] = True
@@ -1333,6 +1605,7 @@ class HarnessRuntime:
                                 return
                             live = current["tasks"][task_id]
                             live["trace"][-1]["output"] = {"final_text": json.dumps(plan_json, ensure_ascii=False)}
+                            live["trace"][-1]["completed_at"] = now()
                             live["head_done"] = True
                             # Only mark asked when all facts have been shown;
                             # deferred facts (subject_group) will fire a second round.
@@ -1366,6 +1639,7 @@ class HarnessRuntime:
                     return
                 live = current["tasks"][task_id]
                 live["trace"][-1]["output"] = {"final_text": json.dumps(plan_json, ensure_ascii=False)}
+                live["trace"][-1]["completed_at"] = now()
                 live["head_done"] = True
                 current["orchestration"] = {"action": plan.action, "reason": plan.reason, "subtasks": plan_json["subtasks"]}
                 if plan.action == "consult":
@@ -1456,15 +1730,19 @@ class HarnessRuntime:
             if not stamp_call(prompt, "orchestrate_tail"):
                 return
             client = self.client_factory(run)
-            final = select_final_reply(rows, client=client, tail_rules=view.get("tail_rules", ""), user_question=goal,
-                                       collaboration_rules=view.get("collaboration_rules", ""))
-            text = str(final.get("text") or "").strip()
+            if run.get("wire_protocol") == "hailiang.sse.v3":
+                text = self._stream_orchestration_tail(client, run, task, token, prompt)
+            else:
+                final = select_final_reply(rows, client=client, tail_rules=view.get("tail_rules", ""), user_question=goal,
+                                           collaboration_rules=view.get("collaboration_rules", ""))
+                text = str(final.get("text") or "").strip()
         else:
             text = "本次分析尚未完成，暂时无法提供有充分依据的完整结论。"
             if not stamp_call([ChatMessage(role="system", content="编排尾：没有专家成功作答。")], "orchestrate_tail"):
                 return
         if not text:
             raise HarnessError("EMPTY_MODEL_REPLY")
+        tail_completed_at = now()
         # Recommend after any successful expert reply: team single/multi (post-tail) and
         # workbench direct_expert_id. Skipped when catalog is missing or empty.
         recommend_io = None
@@ -1502,6 +1780,7 @@ class HarnessRuntime:
             live = current["tasks"][task_id]
             if stamped:
                 live["trace"][-1]["output"] = {"final_text": text}
+                live["trace"][-1]["completed_at"] = tail_completed_at
                 self._record_node(current, live, "orchestrate_tail", {"experts": [r["expert_id"] for r in rows]},
                                   {"mode": "direct" if sum(r["status"] == "completed" for r in rows) == 1 else "merge", "experts": rows}, changes)
             if recommend_io:
@@ -1732,6 +2011,57 @@ class HarnessRuntime:
         args = tool.get("arguments", {})
         return f"{tool['name']}:{json.dumps(args, sort_keys=True, default=str)}"
 
+    @staticmethod
+    def _reusable_read_result(run: dict, task_id: str, tool: dict):
+        """Return a completed immutable read with identical arguments, if any.
+
+        Local asset and evidence reads are snapshot-bound, side-effect-free
+        operations. Replaying them only spends a model/tool round and is a
+        common cause of Skill loops; mutation and external tools are never
+        eligible for this shortcut.
+        """
+        if tool.get("name") not in {"read_skill_asset", "read_evidence", SKILL_ASSET_SEARCH_TOOL, LEGACY_RAG_SEARCH_TOOL}:
+            return None
+        for previous in run.get("tools", {}).values():
+            if previous.get("id") == tool.get("id") or previous.get("task_id") != task_id:
+                continue
+            if previous.get("status") == "completed" and previous.get("name") == tool.get("name") and previous.get("arguments") == tool.get("arguments"):
+                return previous
+        return None
+
+    @staticmethod
+    def _read_budget_error(run: dict, task_id: str, tool: dict):
+        """Bound exploration by unique source/ref, while allowing useful paging."""
+        settings = run.get("policy", {}).get("settings", {}) or {}
+        name, args = tool.get("name"), tool.get("arguments") or {}
+        read_names = {"read_skill_asset", "read_evidence", SKILL_ASSET_SEARCH_TOOL, LEGACY_RAG_SEARCH_TOOL}
+        if name in read_names:
+            completed = sorted(
+                (item for item in run.get("tools", {}).values()
+                 if item.get("task_id") == task_id and item.get("status") == "completed"),
+                key=lambda item: item.get("ended_at") or item.get("created_at") or "",
+            )
+            consecutive = 0
+            for item in reversed(completed):
+                if item.get("name") not in read_names:
+                    break
+                consecutive += 1
+            if consecutive >= max(1, int(settings.get("max_consecutive_research_turns", 2))):
+                return "RESEARCH_TURN_LIMIT_REACHED"
+        if name == "read_skill_asset" and isinstance(args.get("source"), str):
+            used = sum(1 for item in run.get("tools", {}).values()
+                       if item.get("task_id") == task_id and item.get("name") == name
+                       and item.get("status") == "completed" and item.get("arguments", {}).get("source") == args["source"])
+            if used >= max(1, int(settings.get("max_asset_reads_per_source", 3))):
+                return "ASSET_READ_BUDGET_EXCEEDED"
+        if name == "read_evidence" and isinstance(args.get("evidence_id"), str):
+            used = sum(1 for item in run.get("tools", {}).values()
+                       if item.get("task_id") == task_id and item.get("name") == name
+                       and item.get("status") == "completed" and item.get("arguments", {}).get("evidence_id") == args["evidence_id"])
+            if used >= max(1, int(settings.get("max_evidence_reads_per_ref", 2))):
+                return "EVIDENCE_READ_BUDGET_EXCEEDED"
+        return None
+
     def _execute_tools(self, run_id, task_id, token):
         initial = self.store.get(run_id)
         for node_id in initial["tasks"][task_id]["pending_calls"]:
@@ -1759,6 +2089,15 @@ class HarnessRuntime:
                                            if t["name"] in SEARCH_TOOL_NAMES and t["task_id"] == task_id and t.get("attempts", 0))
                         if search_calls >= run["policy"]["settings"].get("max_search_calls_per_task", 10):
                             raise HarnessError("SEARCH_BUDGET_EXCEEDED")
+                    reusable = self._reusable_read_result(run, task_id, tool)
+                    if reusable is not None:
+                        self._tool_result(tool, deepcopy(reusable.get("result")))
+                        tool["reused_from_tool_id"] = reusable["id"]
+                        changes.append({"event": "tool_reused", "node_id": node_id})
+                        return
+                    read_budget_error = self._read_budget_error(run, task_id, tool)
+                    if read_budget_error:
+                        raise HarnessError(read_budget_error)
                     # 通用工具调用熔断器：同一 signature（工具名+参数）在同一 task 内连续失败≥3次
                     # 直接报错拒绝调用，附带切换策略的指引，防止模型烧光预算。
                     sig = self._tool_signature(tool)
@@ -1808,6 +2147,12 @@ class HarnessRuntime:
                         result["field"] = ".".join(str(part) for part in exc.errors()[0]["loc"]) or "$"
                     if result["error"] == "ASSET_SOURCE_INCOMPATIBLE":
                         result["next_action"] = "当前 source 文件的数据格式与结构化读取不兼容。改用 search_skill_assets 语义搜索，或调用 read_skill_asset 省略 source 先列目录寻其他文件；不要重复尝试同一 source。"
+                    if result["error"] == "ASSET_READ_BUDGET_EXCEEDED":
+                        result["next_action"] = "同一资料源的有效读取已达到上限。请整合已有资料、预览和证据给出结论；仅在明确存在未覆盖区间时才选择其他 source。"
+                    if result["error"] == "EVIDENCE_READ_BUDGET_EXCEEDED":
+                        result["next_action"] = "同一证据引用的有效读取已达到上限。请依据已读取片段、工具预览和已有事实完成分析，不要重复读取该 evidence_id。"
+                    if result["error"] == "RESEARCH_TURN_LIMIT_REACHED":
+                        result["next_action"] = "连续资料探索已达到上限。请停止读取并基于已有资料调用 submit_findings，给出可交付结论和明确限制。"
                     if result["error"] == "TOOL_CIRCUIT_OPEN":
                         result["next_action"] = "此工具调用已连续失败3次，请换用其他工具或调整参数后重试。"
                     if result["error"] == "TOOL_EMPTY_RESULT_LOOP":
@@ -2708,7 +3053,7 @@ class HarnessRuntime:
         self.store.mutate(run_id, apply)
 
     @staticmethod
-    def public(run):
+    def public(run, *, include_internal_ids=True):
         labels = {
             "delegate_tasks": "分派专家任务",
             "platform_gate": "身份学段检查",
@@ -2733,9 +3078,12 @@ class HarnessRuntime:
             phase, action = _public_phase(run, task)
             children = [child for child in run["tasks"].values() if child.get("parent_id") == task["id"]]
             structured = task.get("structured_result") if isinstance(task.get("structured_result"), dict) else None
+            if not include_internal_ids and structured is None and task["kind"] == "expert" and task.get("status") == "completed" and task.get("result"):
+                structured = {"status": "completed", "conclusion": task["result"], "findings": [], "limitations": [], "unresolved": []}
             nodes.append({
                 "id": task["id"], "parent_id": task["parent_id"], "kind": task["kind"], "title": title, "actor": actor,
                 "expert_id": expert_id,
+                "agent_brief": run["policy"]["experts"].get(task.get("expert_id"), {}).get("brief") if task["kind"] == "expert" else None,
                 "status": task["status"], "created_at": task.get("created_at"), "started_at": task["started_at"],
                 "ended_at": task["ended_at"], "error": task.get("error"), "stale": task.get("stale", False),
                 "brief": deepcopy(task.get("brief") or {"objective": task.get("goal", ""), "completion": task.get("completion", "")}),
@@ -2775,14 +3123,21 @@ class HarnessRuntime:
         # persisted histories accurate while new runs use the run-level value.
         tail_done = bool(run.get("tail_done") or root_task.get("tail_done"))
         fallback_phase, fallback_action = _public_phase(run, root_task) if root_task else ("running", "正在执行")
-        return {"run_id": run["run_id"], "client_run_id": run.get("client_run_id"),
+        root_is_waiting = root_task.get("status") in {"waiting_for_dependency", "queued"} and (
+            root_task.get("status") == "waiting_for_dependency" or root_task.get("head_done") or root_task.get("pending_calls")
+        )
+        result = {"run_id": run["run_id"], "client_run_id": run.get("client_run_id"),
                 "assistant_message_id": run.get("assistant_message_id") or f"msg_harness_{run['run_id']}",
                 "record_version": run["version"], "session_id": run["session_id"], "profile_id": run["profile_id"],
                 "goal": run["goal"], "status": run["status"], "outcome": run.get("outcome"), "version": run["version"],
                 "root_task_id": run["root_task_id"], "nodes": nodes, "inputs": requests,
                 "input_groups": groups,
                 "created_at": run["created_at"], "updated_at": run["updated_at"],
-                "phase": run.get("phase") or fallback_phase, "action": run.get("action") or fallback_action,
+                # A persisted dispatch action is useful during startup, but it
+                # becomes stale once the root is specifically waiting on a
+                # named expert or task. Prefer the live, concrete explanation.
+                "phase": fallback_phase if root_is_waiting else run.get("phase") or fallback_phase,
+                "action": fallback_action if root_is_waiting else run.get("action") or fallback_action,
                 "dispatch": public_dispatch(run),
                 "synthesis_status": "completed" if tail_done else ("running" if run.get("phase") in {"synthesizing", "recommending"} else "pending"),
                 "recommendations_status": run.get("recommendations_status") or ("completed" if run.get("jump_cards") else ("not_started" if not run.get("tail_done") else "not_available")),
@@ -2793,6 +3148,28 @@ class HarnessRuntime:
                 "input_token_limit": run["policy"]["settings"].get("max_run_input_tokens", 300000),
                 "completed_count": sum(t["status"] == "completed" for t in run["tasks"].values() if t["kind"] != "main"), "task_count": sum(t["kind"] != "main" for t in run["tasks"].values()),
                 "waiting_count": sum(q["status"] in {"pending", "queued"} for q in run["inputs"].values())}
+        if include_internal_ids:
+            return result
+        id_map = {node["id"]: f"node_{index + 1}" for index, node in enumerate(nodes)}
+        result["nodes"] = [
+            {
+                **node,
+                "id": id_map[node["id"]],
+                "parent_id": id_map.get(node.get("parent_id")),
+                "waiting_on": [id_map.get(item, item) for item in node.get("waiting_on") or []],
+            }
+            for node in nodes
+        ]
+        dispatch = deepcopy(result.get("dispatch") or {})
+        for expert in dispatch.get("experts") or []:
+            if isinstance(expert, dict):
+                expert["node_id"] = id_map.get(expert.get("node_id"))
+                expert["depends_on_node_ids"] = [id_map.get(item, item) for item in expert.get("depends_on_node_ids") or []]
+        result["dispatch"] = dispatch
+        result.pop("run_id", None)
+        result.pop("client_run_id", None)
+        result.pop("root_task_id", None)
+        return result
 
     def _recommend_cards(self, run, reply):
         """Fill jump_cards from the frozen recommend catalog when the main reply is done.

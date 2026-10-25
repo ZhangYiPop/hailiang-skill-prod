@@ -9,6 +9,7 @@ from hailiang_skills.harness.policy import validate_skill_boundary
 from hailiang_skills.harness.runtime import HarnessRuntime
 from hailiang_skills.harness.store import HarnessStore
 from hailiang_skills.skill_runtime.models import AssistantTurnResult, ToolCallRequest
+from hailiang_skills.security.models import ModerationBlockedError, ModerationResult, OUTPUT_MODERATION_FALLBACK
 
 
 def policy():
@@ -39,6 +40,56 @@ def make_runtime(tmp_path, responder):
     return HarnessRuntime(HarnessStore.local(tmp_path / 'harness.sqlite3'), lambda _run: Client())
 
 
+def test_worker_pool_capacity_is_configurable_and_run_claims_rotate_fairly(monkeypatch, tmp_path):
+    monkeypatch.setenv("HAILIANG_HARNESS_WORKERS", "9")
+    runtime = make_runtime(tmp_path, lambda *_: call('finalize_response', {}))
+    assert runtime.worker_count == 9
+    runtime._last_claimed_run_id = "run_b"
+    assert runtime._rotated_runnable_runs(["run_a", "run_b", "run_c"]) == ["run_c", "run_a", "run_b"]
+    runtime.close()
+
+
+def test_saturated_worker_claim_is_preserved_in_wait_history(tmp_path):
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text="完成"))
+    run_id = runtime.create('s', 'u', 'p', '分析', policy())
+    lease = runtime.claim(run_id, scheduler_context={
+        "worker_pool_capacity": 6, "inflight_count": 5, "runnable_run_count": 4,
+        "pool_was_saturated_since_last_claim": "2026-10-25T00:00:00+00:00",
+    })
+    assert lease
+    run = runtime.store.get(run_id)
+    root = run['tasks'][run['root_task_id']]
+    assert root['scheduler_claim']['wait_reason'] == 'global_worker_pool_saturated'
+    assert root['state_history'][0]['reason'] == 'global_worker_pool_saturated'
+    assert root['execution_attempts'][0]['scheduler_claim']['inflight_count'] == 5
+    runtime.close()
+
+
+def test_read_tools_reuse_exact_result_and_enforce_exploration_limits(tmp_path):
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text="完成"))
+    run_id = runtime.create('s', 'u', 'p', '分析', policy())
+    run = runtime.store.get(run_id)
+    task_id = run['root_task_id']
+    run['tools'] = {
+        'old_read': {'id': 'old_read', 'task_id': task_id, 'name': 'read_skill_asset',
+                     'arguments': {'skill_id': 'internal', 'source': 'guide.json', 'offset': 0},
+                     'status': 'completed', 'result': {'records': [{'name': '已读'}]}, 'ended_at': '2026-10-25T00:00:00+00:00'},
+        'old_non_read': {'id': 'old_non_read', 'task_id': task_id, 'name': 'submit_findings',
+                         'arguments': {}, 'status': 'completed', 'result': {}, 'ended_at': '2026-10-25T00:00:01+00:00'},
+    }
+    same = {'id': 'new_read', 'task_id': task_id, 'name': 'read_skill_asset',
+            'arguments': {'skill_id': 'internal', 'source': 'guide.json', 'offset': 0}}
+    assert runtime._reusable_read_result(run, task_id, same)['id'] == 'old_read'
+    assert runtime._reusable_read_result(run, task_id, {**same, 'name': 'request_user_input'}) is None
+    run['policy']['settings'].update(max_asset_reads_per_source=1, max_consecutive_research_turns=4)
+    different_page = {**same, 'arguments': {'skill_id': 'internal', 'source': 'guide.json', 'offset': 20}}
+    assert runtime._read_budget_error(run, task_id, different_page) == 'ASSET_READ_BUDGET_EXCEEDED'
+    run['policy']['settings'].update(max_asset_reads_per_source=4, max_consecutive_research_turns=1)
+    run['tools'].pop('old_non_read')
+    assert runtime._read_budget_error(run, task_id, different_page) == 'RESEARCH_TURN_LIMIT_REACHED'
+    runtime.close()
+
+
 def test_expert_parallel_wait_and_multi_round_resume(tmp_path):
     rounds = {'a': 0}
     def respond(messages, specs, purpose):
@@ -61,6 +112,15 @@ def test_expert_parallel_wait_and_multi_round_resume(tmp_path):
     tasks = [t for t in run['tasks'].values() if t['kind'] == 'expert']
     assert {t['status'] for t in tasks} == {'waiting_for_user', 'completed'}
     assert 'B 内部结论' not in json.dumps(runtime.public(run), ensure_ascii=False)
+    product_tree = runtime.public(run, include_internal_ids=False)
+    assert product_tree['dispatch']['status'] == 'completed'
+    assert product_tree['dispatch']['planned_expert_count'] == 2
+    expert_nodes = [node for node in product_tree['nodes'] if node['kind'] == 'expert']
+    completed_expert = next(node for node in expert_nodes if node['status'] == 'completed')
+    assert completed_expert['agent_brief'] == '分析 B'
+    assert completed_expert['result']['conclusion'] == 'B 内部结论'
+    assert completed_expert['id'].startswith('node_')
+    assert completed_expert['parent_id'] == 'node_1'
     request = next(iter(run['inputs'].values()))
     submission = AnswerSubmission(user_id='u', profile_id='p', submission_id='answer1', expected_version=1, text='高二')
     runtime.answer(request['id'], submission)
@@ -372,6 +432,44 @@ def test_main_cannot_bypass_expert(tmp_path):
     runtime.close()
 
 
+@pytest.mark.parametrize(
+    ("advice", "expected", "source"),
+    [
+        ("阿里云代答", "阿里云代答", "aliyun_advice"),
+        (None, OUTPUT_MODERATION_FALLBACK, "project_fallback"),
+    ],
+)
+def test_blocked_final_main_reply_uses_safe_replacement(tmp_path, advice, expected, source):
+    class BlockingModeration:
+        def check(self, _content, *, stage, **_kwargs):
+            if stage == "output":
+                result = ModerationResult(
+                    matched=True,
+                    risk_level="high",
+                    labels=["violence"],
+                    provider="aliyun",
+                    mode="cloud",
+                    raw={"Data": {"Advice": [{"Answer": advice}]}} if advice else {},
+                )
+                raise ModerationBlockedError(result, stage="output")
+
+    class Client:
+        def complete_with_tools(self, *_args, **_kwargs):
+            return AssistantTurnResult(final_text="不应公开的原始模型回复")
+
+    runtime = HarnessRuntime(HarnessStore.local(tmp_path / "harness.sqlite3"), lambda _run: Client(), moderation=BlockingModeration())
+    run_id = runtime.create("s", "u", "p", "规划", policy())
+    advance(runtime, run_id, 2)
+    run = runtime.store.get(run_id)
+
+    assert run["status"] == "completed"
+    assert run["result"] == expected
+    assert run["outcome"] == "partial"
+    assert run["safety"] == {"replacement_applied": True, "replacement_source": source}
+    assert runtime.public(run)["result"] == expected
+    runtime.close()
+
+
 def test_two_expert_cards_resume_only_the_answered_node(tmp_path):
     def respond(messages, specs, purpose):
         if purpose == 'harness_main':
@@ -521,6 +619,23 @@ def test_harness_input_budget_and_output_limit_are_enforced(tmp_path):
     assert failed['error'] == 'RUN_INPUT_BUDGET_EXCEEDED'
     assert requests == [8192]
     blocked.close()
+
+
+@pytest.mark.parametrize(('option', 'expected'), [
+    ({'key': 'undergrad', 'label': '本科'}, {'label': '本科', 'value': 'undergrad'}),
+    ({'label': '本科', 'key': 'undergrad'}, {'label': '本科', 'value': 'undergrad'}),
+    ({'label': '本科', 'value': 'undergrad'}, {'label': '本科', 'value': 'undergrad'}),
+    ({'key': 'undergrad'}, {'label': 'undergrad', 'value': 'undergrad'}),
+    ({'value': '本科'}, {'label': '本科', 'value': '本科'}),
+    ({'label': '本科'}, {'label': '本科', 'value': '本科'}),
+    ({'A': '本科'}, {'label': 'A', 'value': '本科'}),
+])
+def test_select_option_normalization_preserves_label_and_value(option, expected):
+    from hailiang_skills.harness.contracts import InputArguments, normalize_input_arguments
+    arguments = {'title': '补充信息', 'fields': [{'key': 'stage', 'label': '阶段',
+                 'input_type': 'single_select', 'options': [option]}]}
+    normalized = normalize_input_arguments(arguments)
+    assert InputArguments.model_validate(normalized).fields[0].options == [expected]
 
 
 def test_select_question_map_is_normalized_and_invalid_call_has_field_feedback(tmp_path):
