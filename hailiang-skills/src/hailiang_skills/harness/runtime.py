@@ -934,11 +934,6 @@ class HarnessRuntime:
                       "updates": {"type": "array", "minItems": 1, "maxItems": 12, "items": object_schema({
                           "key": {"type": "string"}, "value": {}, "scope": {"enum": ["task", "session", "profile", "user"]},
                           "status": {"enum": ["user_statement", "candidate", "assumption", "derived"]}, "evidence": {"type": "string"}}, ["key", "value", "scope", "status", "evidence"])}}, ["updates"]))]
-        if task["kind"] != "main":
-            result.append(spec("submit_findings", "记录本轮分析的结构化发现，内容不直接显示给用户。完成分析后先调用此工具，再输出自然文本回复。", object_schema({
-                "findings": {"type": "array", "items": {"type": "string"}, "description": "每条可独立验证的分析发现"},
-                "limitations": {"type": "array", "items": {"type": "string"}, "description": "信息不足或结论受限的地方"},
-                "unresolved": {"type": "array", "items": {"type": "string"}, "description": "未解决、可能需要后续关注的问题"}})))
         if task["kind"] == "main" and run["policy"]["experts"]:
             result.append(spec("delegate_tasks", "拆解为授权专家任务。使用批内唯一 key 和 depends_on，专家自主选择 Skill。", object_schema({
                 "tasks": {"type": "array", "minItems": 1, "maxItems": 12, "items": object_schema({
@@ -2152,7 +2147,7 @@ class HarnessRuntime:
                     if result["error"] == "EVIDENCE_READ_BUDGET_EXCEEDED":
                         result["next_action"] = "同一证据引用的有效读取已达到上限。请依据已读取片段、工具预览和已有事实完成分析，不要重复读取该 evidence_id。"
                     if result["error"] == "RESEARCH_TURN_LIMIT_REACHED":
-                        result["next_action"] = "连续资料探索已达到上限。请停止读取并基于已有资料调用 submit_findings，给出可交付结论和明确限制。"
+                        result["next_action"] = "连续资料探索已达到上限。请停止读取并基于已有资料直接给出可交付结论和明确限制。"
                     if result["error"] == "TOOL_CIRCUIT_OPEN":
                         result["next_action"] = "此工具调用已连续失败3次，请换用其他工具或调整参数后重试。"
                     if result["error"] == "TOOL_EMPTY_RESULT_LOOP":
@@ -2395,24 +2390,6 @@ class HarnessRuntime:
             task['finalizing'] = True
             self._tool_result(tool, {'accepted': True, 'failed_subtasks': task.get('failed_subtasks')})
             changes.append({'event': 'finalizing', 'node_id': task['id']})
-        elif name == "submit_findings" and cp.enabled(run):
-            if task["kind"] == "main":
-                raise HarnessError("MAIN_AGENT_CANNOT_SUBMIT_FINDINGS")
-            existing = task.get("structured_result") or {}
-            for field in ("findings", "limitations", "unresolved"):
-                existing[field] = list(dict.fromkeys(existing.get(field, []) + (args.get(field) or [])))
-            task["structured_result"] = existing
-            # 写入 findings 到事实层，供跨轮 read_facts 读取
-            for finding in (args.get("findings") or []):
-                finding_hash = hashlib.sha256(finding.encode()).hexdigest()[:16]
-                identity = self.store.fact_identity(run, task, "session", f"finding:{task.get('expert_id', 'unknown')}:{finding_hash}")
-                self.store.write_fact(db, identity, {
-                    "key": f"finding:{task.get('expert_id', 'unknown')}",
-                    "value": finding, "scope": "session", "status": "confirmed",
-                    "source": {"run_id": run["run_id"], "task_id": task["id"], "tool_call_id": tool["call_id"]},
-                })
-            self._tool_result(tool, {"recorded": {f: len(existing[f]) for f in ("findings", "limitations", "unresolved")}})
-            changes.append({"event": "findings_submitted", "node_id": task["id"]})
         elif name == "propose_fact_updates":
             results = []
             sources = [run["goal"]] + [json.dumps(q.get("answer", {}).get("answers", {}), ensure_ascii=False) for q in run["inputs"].values() if q["status"] == "answered"]
@@ -2521,7 +2498,7 @@ class HarnessRuntime:
         scope = field["scope"]
         subject, applicable_time = field.get("subject", ""), field.get("applicable_time", "")
         if scope == "task" and not (subject or applicable_time):
-            owner = task["id"]
+            owner = run["session_id"]
         else:
             owner = {"session": run["session_id"], "profile": run["profile_id"], "user": run["user_id"]}.get(scope)
             # Qualified task facts describe an external subject, not the task that
@@ -2726,6 +2703,14 @@ class HarnessRuntime:
                 continue
             skipped_keys = previous.get("answer", {}).get("skipped_fields", [f["key"] for f in previous["fields"]] if previous["status"] == "skipped" else [])
             skipped_identities.update(identity for field, identity in zip(previous["fields"], previous["identities"]) if field["key"] in skipped_keys)
+        # Also dedup fields that have _skipped markers in the facts table
+        # regardless of the request's overall status
+        skipped_fact_keys = self._skipped_fact_keys(run, task)
+        if skipped_fact_keys:
+            for f, ident in zip(fields, identities):
+                fk = f.get("fact_key") or f["key"]
+                if fk in skipped_fact_keys:
+                    skipped_identities.add(ident)
         skipped_fields = [f["key"] for f, identity in zip(fields, identities) if identity in skipped_identities]
         if skipped_fields:
             tool["existing_skipped_fields"] = skipped_fields

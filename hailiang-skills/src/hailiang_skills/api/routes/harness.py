@@ -229,37 +229,25 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                     history.append({"role": "assistant", "content": run["result"]})
         # 注入前几轮 Run 的结构化摘要，让新 Run 的编排器和专家知道对话历史
         if previous and history:
-            # 收集所有已完成 Run 的 key findings 和问题
+            # 收集所有已完成 Run 的问题和专家信息
             max_summary_rounds = policy.get("settings", {}).get("max_summary_rounds", 10)
             eligible = sorted([r for r in previous if r["status"] == "completed" and r["profile_id"] == data.profile_id],
                             key=lambda r: r["created_at"])[-max_summary_rounds:]
             if eligible:
                 performed_questions = [r["goal"] for r in eligible]
-                key_findings = []
-                for r in eligible:
-                    for task in r.get("tasks", {}).values():
-                        if task.get("kind") == "expert":
-                            sr = task.get("structured_result") or {}
-                            for finding in (sr.get("findings") or []):
-                                if finding not in key_findings:
-                                    key_findings.append(finding)
                 expert_summaries = []
                 last = eligible[-1]
                 for task in last.get("tasks", {}).values():
                     if task.get("kind") == "expert":
-                        sr = task.get("structured_result") or {}
                         expert_summaries.append({
                             "expert_id": task.get("expert_id"),
                             "expert_name": (last.get("policy", {}).get("experts", {}).get(task.get("expert_id"), {}).get("name") or task.get("expert_id")),
                             "status": task.get("status"),
-                            "findings": (sr.get("findings") or [])[:5],
-                            "limitations": (sr.get("limitations") or [])[:3],
                         })
                 history.append({
                     "role": "system",
                     "content": "对话历史摘要：" + json.dumps({
                         "performed_questions": performed_questions[-10:],
-                        "key_findings": key_findings[-30:],
                         "last_round_goal": last.get("goal", ""),
                         "last_round_result_summary": (last.get("result") or "")[:300],
                         "orchestration": last.get("orchestration") or {},

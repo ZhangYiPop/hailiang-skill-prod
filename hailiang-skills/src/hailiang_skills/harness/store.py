@@ -445,7 +445,9 @@ class HarnessStore:
 
     @staticmethod
     def fact_identity(run, task, scope, key):
-        owner = {"task": task["id"], "session": run["session_id"], "profile": run["profile_id"], "user": run["user_id"]}[scope]
+        if scope == "task":
+            scope = "session"
+        owner = {"task": run["session_id"], "session": run["session_id"], "profile": run["profile_id"], "user": run["user_id"]}[scope]
         if not owner:
             raise HarnessError("FACT_SCOPE_UNAVAILABLE")
         import json

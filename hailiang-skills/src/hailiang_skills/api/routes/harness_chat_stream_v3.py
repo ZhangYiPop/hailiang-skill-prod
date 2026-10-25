@@ -642,31 +642,19 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     )[-max_summary_rounds:]
                     if eligible:
                         performed_questions = [r["goal"] for r in eligible]
-                        key_findings = []
-                        for r in eligible:
-                            for task in r.get("tasks", {}).values():
-                                if task.get("kind") == "expert":
-                                    sr = task.get("structured_result") or {}
-                                    for finding in (sr.get("findings") or []):
-                                        if finding not in key_findings:
-                                            key_findings.append(finding)
                         expert_summaries = []
                         last = eligible[-1]
                         for task in last.get("tasks", {}).values():
                             if task.get("kind") == "expert":
-                                sr = task.get("structured_result") or {}
                                 expert_summaries.append({
                                     "expert_id": task.get("expert_id"),
                                     "expert_name": (last.get("policy", {}).get("experts", {}).get(task.get("expert_id"), {}).get("name") or task.get("expert_id")),
                                     "status": task.get("status"),
-                                    "findings": (sr.get("findings") or [])[:5],
-                                    "limitations": (sr.get("limitations") or [])[:3],
                                 })
                         history.append({
                             "role": "system",
                             "content": "对话历史摘要：" + json.dumps({
                                 "performed_questions": performed_questions[-10:],
-                                "key_findings": key_findings[-30:],
                                 "last_round_goal": last.get("goal", ""),
                                 "last_round_result_summary": (last.get("result") or "")[:300],
                                 "orchestration": last.get("orchestration") or {},
