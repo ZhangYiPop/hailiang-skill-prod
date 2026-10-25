@@ -215,6 +215,19 @@ facts:
     scenario: "admission_simulation"
     scenario_group: ["admission_simulation", "multi_path_planning"]
     enabled: true
+  countries:
+    label: "意向留学国家"
+    value_type: "json"
+    extractor: "reserved"
+    input_type: "multi_select"
+    placeholder: "请选择意向留学国家或地区（可多选）"
+    example: "例如：美国、英国"
+    submit_mode: "manual"
+    allowed_values: ["美国", "英国", "加拿大", "澳大利亚", "新加坡", "中国香港", "日本", "韩国", "德国", "法国", "荷兰", "其他"]
+    scope_policy: "profile"
+    scenario: "study_abroad"
+    scenario_group: ["study_abroad"]
+    enabled: true
   family_type:
     label: "家庭类型"
     value_type: "string"

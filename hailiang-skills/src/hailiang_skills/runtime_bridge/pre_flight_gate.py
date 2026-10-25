@@ -36,6 +36,7 @@ _FACT_KEY_ALIASES: dict[str, str] = {
     "estimated_score": "score_total",
     "education_budget": "budget_level",
     "foreign_lang": "foreign_language",
+    "major": "target_major",
 }
 
 
