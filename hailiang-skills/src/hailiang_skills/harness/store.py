@@ -95,10 +95,8 @@ class HarnessStore:
                                     assistant_message_id=run.get("assistant_message_id"), payload={}, version=0)
                 db.add(row)
                 for identity, record in run.get("seed_facts", {}).items():
-                    from sqlalchemy.dialects.postgresql import insert as pg_insert
-                    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-                    insert = pg_insert if self.engine.dialect.name == "postgresql" else sqlite_insert
-                    db.execute(insert(HarnessFactRow).values(identity=identity, version=1, payload=deepcopy(record)).on_conflict_do_nothing(index_elements=["identity"]))
+                    if db.get(HarnessFactRow, identity) is None:
+                        db.add(HarnessFactRow(identity=identity, version=1, payload=deepcopy(record)))
                 self._save(db, row, run, [{"event": "run_started", "node_id": run["root_task_id"]}])
         except IntegrityError as exc:
             raise HarnessError("ACTIVE_HARNESS_RUN_EXISTS", 409) from exc

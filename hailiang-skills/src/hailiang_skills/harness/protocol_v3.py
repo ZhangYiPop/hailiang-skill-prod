@@ -5,10 +5,11 @@ import hashlib
 import json
 import re
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import String, Integer
 from hailiang_skills.storage.database import Base, _json_type
-from .contracts import now, TERMINAL
+from .contracts import HarnessError, now, TERMINAL
 
 PROTOCOL = 'hailiang.sse.v3'
 
@@ -36,13 +37,15 @@ def scope_key(session_id, user_id, profile_id):
 
 def lock_scope(db, session_id, user_id, profile_id):
     key = scope_key(session_id, user_id, profile_id)
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-    insert = pg_insert if db.bind.dialect.name == 'postgresql' else sqlite_insert
-    db.execute(insert(PublicScope).values(scope_id=key, cursor=0, payload={
-        'protocol': PROTOCOL, 'session_id': session_id, 'profile_id': profile_id,
-        'runtime_mode': 'harness_v1', 'runs': {}, 'nodes': {}, 'input_requests': {}, 'input_groups': {}, 'messages': {}, '_records': {}}
-    ).on_conflict_do_nothing(index_elements=['scope_id']))
+    if db.get(PublicScope, key) is None:
+        db.add(PublicScope(scope_id=key, cursor=0, payload={
+            'protocol': PROTOCOL, 'session_id': session_id, 'profile_id': profile_id,
+            'runtime_mode': 'harness_v1', 'runs': {}, 'nodes': {}, 'input_requests': {}, 'input_groups': {}, 'messages': {}, '_records': {}}))
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            raise HarnessError("ACTIVE_HARNESS_RUN_EXISTS", 409)
     scope = db.scalar(select(PublicScope).where(PublicScope.scope_id == key).with_for_update())
     if '_records' not in scope.payload:
         payload = deepcopy(scope.payload)
