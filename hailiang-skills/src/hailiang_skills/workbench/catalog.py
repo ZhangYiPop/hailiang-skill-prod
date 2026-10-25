@@ -117,7 +117,7 @@ def build_runtime_registries(entries: list[dict[str, Any]], *, enabled_by_id: di
             ExpertTeamMember(
                 expert_id=str(lock.get("object_key") or ""),
                 mention_name=str((by_key.get(str(lock.get("object_key") or "")) or {}).get("mention_name") or lock.get("object_key") or ""),
-                routing_brief=str((by_key.get(str(lock.get("object_key") or "")) or {}).get("routing_brief") or ""),
+                routing_brief=str((by_key.get(str(lock.get("object_key") or "")) or {}).get("routing_brief") or getattr(experts.definitions.get(str(lock.get("object_key") or ""), None), "brief", "") or ""),
                 applicable_stages=stages.get(str(lock.get("object_key") or ""), ()),
             )
             for lock in locks

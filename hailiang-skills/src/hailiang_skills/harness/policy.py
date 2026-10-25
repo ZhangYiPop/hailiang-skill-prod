@@ -287,6 +287,7 @@ def capture_policy(orchestrator, context):
         team,
         policy_snapshot,
         enabled=bool(context.session_meta.get("orchestrator_v2")),
+        expert_registry=experts,
     )
     # An expert team runs the whole formal flow: identity gate, orchestrator
     # head, experts, tail and recommendations. Single experts and Skills keep

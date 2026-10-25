@@ -379,7 +379,7 @@ def preserve_orchestrator_binding(previous: dict[str, Any], nxt: dict[str, Any])
     return updated
 
 
-def orchestrator_snapshot_view(team, snapshot: dict[str, Any] | None, *, enabled: bool) -> dict[str, Any]:
+def orchestrator_snapshot_view(team, snapshot: dict[str, Any] | None, *, enabled: bool, expert_registry=None) -> dict[str, Any]:
     """The slice ``capture_policy`` freezes for one run."""
     rules = {}
     if isinstance(snapshot, dict) and isinstance(snapshot.get("orchestration_rules"), dict):
@@ -388,10 +388,19 @@ def orchestrator_snapshot_view(team, snapshot: dict[str, Any] | None, *, enabled
     members = []
     if team is not None:
         for member in team.members:
+            # Expert's own brief from agent.yaml is the authoritative description
+            # of what this expert handles.  Team-level routing_brief is an optional
+            # override kept for backward compatibility.
+            expert_brief = ""
+            if expert_registry is not None:
+                expert = expert_registry.get(member.expert_id)
+                if expert is not None:
+                    expert_brief = str(getattr(expert, "brief", "") or "").strip()
+            routing_brief = str(member.routing_brief or "").strip() or expert_brief
             members.append({
                 "expert_id": member.expert_id,
                 "mention_name": member.mention_name,
-                "routing_brief": member.routing_brief,
+                "routing_brief": routing_brief,
                 "applicable_stages": list(getattr(member, "applicable_stages", ()) or ()),
             })
     system_skills = rules.get("system_skills") if isinstance(rules.get("system_skills"), dict) else {}

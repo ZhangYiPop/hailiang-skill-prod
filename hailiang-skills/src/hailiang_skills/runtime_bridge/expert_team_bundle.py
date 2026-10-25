@@ -179,7 +179,7 @@ def load_expert_team_bundle(
         members.append(ExpertTeamMember(
             expert_id=expert_id,
             mention_name=mention_name,
-            routing_brief=str(item.get("routing_brief") or "").strip(),
+            routing_brief=str(item.get("routing_brief") or getattr(expert, "brief", "") or "").strip(),
             applicable_stages=stages,
         ))
     if coordinator_expert_id and coordinator_expert_id not in member_ids:
