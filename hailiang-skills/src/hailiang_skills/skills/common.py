@@ -154,6 +154,40 @@ def extract_grade(text: str) -> str | None:
     return None
 
 
+_COUNTRY_ALIASES: tuple[tuple[str, str], ...] = (
+    ("中国香港", "中国香港"), ("香港", "中国香港"),
+    ("澳大利亚", "澳大利亚"), ("澳洲", "澳大利亚"),
+    ("新加坡", "新加坡"), ("加拿大", "加拿大"),
+    ("美国", "美国"), ("英国", "英国"),
+    ("日本", "日本"), ("韩国", "韩国"),
+    ("德国", "德国"), ("法国", "法国"), ("荷兰", "荷兰"),
+)
+
+
+def extract_countries(text: str) -> list[str] | None:
+    """从用户原话中提取明确的意向留学国家（有界列表，按出现顺序去重）。
+
+    否定表述（"不去英国"）不计入。
+    """
+    normalized = text.strip()
+    if not normalized:
+        return None
+    hits: list[tuple[int, str]] = []
+    for keyword, country in _COUNTRY_ALIASES:
+        start = normalized.find(keyword)
+        while start != -1:
+            prefix = normalized[max(0, start - 2):start]
+            if not any(negation in prefix for negation in ("不", "别", "无需", "没有")):
+                hits.append((start, country))
+                break
+            start = normalized.find(keyword, start + 1)
+    ordered: list[str] = []
+    for _, country in sorted(hits, key=lambda item: item[0]):
+        if country not in ordered:
+            ordered.append(country)
+    return ordered or None
+
+
 def normalize_province(value: str) -> str:
     return (
         value.replace("壮族自治区", "")

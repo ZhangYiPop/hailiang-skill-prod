@@ -650,6 +650,34 @@ class HarnessRuntime:
             self._thread.join(timeout=2)
         self._pool.shutdown(wait=False, cancel_futures=True)
 
+    def _extract_goal_facts(self, session_id, user_id, profile_id, goal, seed_facts):
+        """把用户原话里明确给出的有界事实并入 seed_facts。
+
+        没有提取器时，用户在聊天里直接说出的信息（如"英国"）不会进入事实层，
+        pre-flight 门会在下一轮重复追问同一个字段。schema 里 scope 为 profile
+        的事实在没有 profile 时降级为 session，与 request_user_input 的降级一致。
+        """
+        from hailiang_skills.core.facts_config import get_fact_scope_policy
+        from hailiang_skills.skills.common import extract_countries
+
+        seed = dict(seed_facts or {})
+        extracted = {}
+        countries = extract_countries(str(goal or ""))
+        if countries:
+            extracted["countries"] = countries
+        dummy_run = {"session_id": session_id, "user_id": user_id, "profile_id": profile_id}
+        dummy_task = {"id": "seed"}
+        for key, value in extracted.items():
+            scope = get_fact_scope_policy(key, "profile")
+            if scope == "profile" and not profile_id:
+                scope = "session"
+            identity = self.store.fact_identity(dummy_run, dummy_task, scope, key)
+            seed.setdefault(identity, {
+                "key": key, "value": value, "scope": scope, "status": "confirmed", "version": 1,
+                "source": {"source_type": "user_input", "source_id": f"{session_id}:goal", "evidence": str(goal or "")},
+            })
+        return seed
+
     def create(self, session_id, user_id, profile_id, goal, policy, seed_facts=None, history=None, wire_protocol=None, submission=None,
                supersede_active=False, debug_skill_id=None, execution_runtime=None):
         if not session_id or len(session_id) > 80 or not user_id or len(user_id) > 160 or profile_id and len(profile_id) > 80:
@@ -657,6 +685,7 @@ class HarnessRuntime:
         root = task_node("main", goal)
         root["messages"] = list(history or []) + root["messages"]
         root["inherited_history_count"] = len(history or [])
+        seed_facts = self._extract_goal_facts(session_id, user_id, profile_id, goal, seed_facts)
         run = {"run_id": identifier("run"), "session_id": session_id, "user_id": user_id, "profile_id": profile_id,
                "goal": goal, "status": "running", "root_task_id": root["id"], "tasks": {root["id"]: root},
                "tools": {}, "inputs": {}, "policy": policy, "seed_facts": seed_facts or {},
@@ -1286,7 +1315,9 @@ class HarnessRuntime:
                 skill_ids = resolve_skill_ids(target_expert_ids, policy)
                 if skill_ids:
                     required = collect_required_facts(skill_ids)
-                    missing = missing_pre_flight_facts(required, facts)
+                    # 用户此前主动跳过的字段不再重复追问（跨轮记忆，见 _skipped_fact_keys）。
+                    already_skipped = self._skipped_fact_keys(run, task)
+                    missing = [k for k in missing_pre_flight_facts(required, facts) if k not in already_skipped]
                     if missing:
                         # If province is also missing, defer subject_group to
                         # the next round so province-based filtering applies.
@@ -2497,9 +2528,15 @@ class HarnessRuntime:
         """Keep cj-10's canonical question identities for cross-expert reuse."""
         written_facts = {}
         for index, field in sorted(enumerate(request["fields"]), key=lambda item: request["identities"][item[0]]):
-            if field["key"] not in answer["answers"]:
-                continue
             key = cp.question_key(field) if cp.enabled(run) else field.get("fact_key") or field["key"]
+            if field["key"] not in answer["answers"]:
+                # 记下用户已跳过该字段，pre-flight 门在后续轮次不再重复追问同一字段。
+                owner = run["tasks"].get(request.get("owner_task_id")) or run["tasks"][run["root_task_id"]]
+                marker = f"_skipped:{key}"
+                marker_identity = self.store.fact_identity(run, owner, field["scope"], marker)
+                self.store.write_fact(db, marker_identity, {"key": marker, "value": None, "scope": field["scope"],
+                    "status": "skipped", "source": {"input_request_id": request["id"], "submission_id": submission_id}})
+                continue
             identity = request["identities"][index]
             record = self.store.write_fact(db, identity, {"key": key, "scope": field["scope"],
                 "value": answer["answers"][field["key"]], "status": "confirmed",
@@ -2508,6 +2545,15 @@ class HarnessRuntime:
             run["seed_facts"].pop(identity, None)
             self._invalidate_fact_version(run, identity, record["version"], changes)
         return written_facts
+
+    def _skipped_fact_keys(self, run, task):
+        """用户此前跳过过的 fact key 集合（跳过标记以 _skipped: 前缀存放在事实表）。"""
+        skipped = set()
+        for record in self.store.fact_records(run, task).values():
+            key = str(record.get("key") or "")
+            if record.get("status") == "skipped" and key.startswith("_skipped:"):
+                skipped.add(key[len("_skipped:"):])
+        return skipped
 
     def _invalidate_fact_version(self, run, identity, version, changes):
         if cp.enabled(run):
