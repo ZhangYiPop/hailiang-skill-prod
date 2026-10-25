@@ -77,6 +77,8 @@ export default function Home() {
     setViewMode,
     setThemeMode,
     setEnableThinking,
+    selectedModelId,
+    setSelectedModelId,
   } = useChatStore();
   const {
     applyDebugIdentity,

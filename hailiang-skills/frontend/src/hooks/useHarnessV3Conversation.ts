@@ -112,14 +112,14 @@ function upsertFrame(frame: HarnessV3Frame, event: HarnessV3Event["event"]) {
   if (frame.expert_team_id) {
     const team = store.expertTeamCatalog.find((item) => item.team_id === frame.expert_team_id);
     if (team) {
+      const fallbackId = team.fallback_expert_id ?? team.coordinator_expert_id ?? "";
+      const fallbackMember = team.members.find((m) => m.expert_id === fallbackId);
       store.setActiveExpertTeam({
         team_id: team.team_id,
         name: team.name,
         brief: team.brief,
-        coordinator_expert_id: team.coordinator_expert_id,
-        coordinator_mention_name: team.members.find((member) => member.is_coordinator)?.mention_name ?? team.coordinator_name,
-        active_expert_id: team.coordinator_expert_id,
-        active_mention_name: team.members.find((member) => member.is_coordinator)?.mention_name ?? team.coordinator_name,
+        active_expert_id: fallbackId,
+        active_mention_name: fallbackMember?.mention_name ?? team.coordinator_name ?? "",
         members: team.members,
       });
     }
