@@ -148,6 +148,11 @@ def build_orchestrator_head_prompt(
     system = "\n\n".join(part for part in system_parts if part)
     prompt = [ChatMessage(role="system", content=system)]
     for message in _as_chat_messages(messages):
+        if message.role == "system":
+            # 跳过平台规则（Head 自有 system prompt 已包含），
+            # 但保留注入的结构化上下文（如上一轮编排摘要）
+            if "上一轮执行上下文" not in message.content:
+                continue
         prompt.append(message)
     if not any(item.role == "user" for item in prompt):
         prompt.append(ChatMessage(role="user", content="请根据以上上下文产出 ConsultationPlan。"))
