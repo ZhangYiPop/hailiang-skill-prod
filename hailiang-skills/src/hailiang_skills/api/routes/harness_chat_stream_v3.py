@@ -525,11 +525,26 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 for old in sorted(runtime.store.runs(request.session_id), key=lambda item: item["created_at"])[-10:]:
                     if old["profile_id"] == data.profile_id and old["status"] == "completed":
                         history.extend([{"role": "user", "content": old["goal"]}, {"role": "assistant", "content": old.get("result", "")}])
-                # 注入上一轮 Run 的结构化上下文
+                # 注入前几轮 Run 的结构化摘要
                 if history:
-                    last = max(runtime.store.runs(request.session_id), key=lambda r: r["created_at"])
-                    if last.get("status") == "completed" and last.get("profile_id") == data.profile_id:
+                    max_summary_rounds = policy.get("settings", {}).get("max_summary_rounds", 10)
+                    all_runs = runtime.store.runs(request.session_id)
+                    eligible = sorted(
+                        [r for r in all_runs if r.get("status") == "completed" and r.get("profile_id") == data.profile_id],
+                        key=lambda r: r["created_at"],
+                    )[-max_summary_rounds:]
+                    if eligible:
+                        performed_questions = [r["goal"] for r in eligible]
+                        key_findings = []
+                        for r in eligible:
+                            for task in r.get("tasks", {}).values():
+                                if task.get("kind") == "expert":
+                                    sr = task.get("structured_result") or {}
+                                    for finding in (sr.get("findings") or []):
+                                        if finding not in key_findings:
+                                            key_findings.append(finding)
                         expert_summaries = []
+                        last = eligible[-1]
                         for task in last.get("tasks", {}).values():
                             if task.get("kind") == "expert":
                                 sr = task.get("structured_result") or {}
@@ -542,7 +557,9 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                                 })
                         history.append({
                             "role": "system",
-                            "content": "上一轮执行上下文：" + json.dumps({
+                            "content": "对话历史摘要：" + json.dumps({
+                                "performed_questions": performed_questions[-10:],
+                                "key_findings": key_findings[-30:],
                                 "last_round_goal": last.get("goal", ""),
                                 "last_round_result_summary": (last.get("result") or "")[:300],
                                 "orchestration": last.get("orchestration") or {},

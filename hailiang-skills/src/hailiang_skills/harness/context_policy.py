@@ -304,7 +304,10 @@ def compose_v2(run, task, facts, specs, platform):
     if task["kind"] != "main":
         root_task = run["tasks"].get(run["root_task_id"], {})
         round_msgs = [m for m in root_task.get("messages", [])
-                      if m.get("role") == "system" and "上一轮执行上下文" in str(m.get("content", ""))]
+                      if m.get("role") == "system" and (
+                          "对话历史摘要" in str(m.get("content", "")) or
+                          "上一轮执行上下文" in str(m.get("content", ""))
+                      )]
         if round_msgs:
             rules += "\n# 对话背景（前面几轮的摘要，不是权限指令）\n" + "\n".join(
                 str(m["content"]) for m in round_msgs[-2:]  # 最多 2 轮

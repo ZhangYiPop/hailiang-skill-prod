@@ -119,6 +119,8 @@ def build_orchestrator_head_prompt(
         str(soul or "").strip(),
         str(head_rules or "").strip(),
         "本步不调用任何工具。只输出一个合法的 ConsultationPlan JSON 对象。",
+        "只有对话中最后一条用户消息是当前需要处理的新问题。",
+        "历史对话中的早期用户消息已经被回答过，不要重复分派——它们仅作为背景参考。",
         "当前专家团已发布成员（只能从中选人）：",
         json.dumps(member_rows, ensure_ascii=False, indent=2),
         "会诊策略（只读）：",
@@ -150,8 +152,8 @@ def build_orchestrator_head_prompt(
     for message in _as_chat_messages(messages):
         if message.role == "system":
             # 跳过平台规则（Head 自有 system prompt 已包含），
-            # 但保留注入的结构化上下文（如上一轮编排摘要）
-            if "上一轮执行上下文" not in message.content:
+            # 但保留注入的结构化上下文（如对话历史摘要）
+            if "对话历史摘要" not in message.content and "上一轮执行上下文" not in message.content:
                 continue
         prompt.append(message)
     if not any(item.role == "user" for item in prompt):
