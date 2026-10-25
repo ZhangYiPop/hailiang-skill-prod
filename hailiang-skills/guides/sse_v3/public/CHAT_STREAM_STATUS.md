@@ -222,3 +222,332 @@ expertCard.action = expertNode.action;
 - 断线重连时使用服务端约定的 `cursor`/重放机制，不要从 `state.action` 推断专家是否完成。
 
 最重要的规则是：**顶部看 `state`，专家看对应 `nodes[kind=expert]`，Skill 看对应 `nodes[kind=skill]`；任何子节点都不能回退使用主任务的 `action`。**
+
+## 9. 为什么会出现“专家卡片显示错文案”
+
+一次多专家运行至少有两个同时存在的状态：
+
+1. 主任务状态：负责分派专家、等待专家结果、汇总和最终回复。
+2. 专家状态：负责该专家自己的分析、Skill、工具和追问。
+
+例如：
+
+```text
+主任务：等待学习指导师和家庭教育专家顾问完成
+├── 学习指导师：等待自己的“学习习惯分析” Skill
+└── 家庭教育专家顾问：已经完成
+```
+
+此时三个节点可能分别是：
+
+```json
+[
+  {
+    "id": "node_1",
+    "parent_id": null,
+    "kind": "main",
+    "status": "waiting_for_dependency",
+    "phase": "waiting_for_dependency",
+    "action": "正在等待学习指导师完成专项分析"
+  },
+  {
+    "id": "node_4",
+    "parent_id": "node_1",
+    "kind": "expert",
+    "expert_id": "academic_coach",
+    "status": "waiting_for_dependency",
+    "phase": "waiting_for_dependency",
+    "action": "正在等待「学习习惯分析」完成"
+  },
+  {
+    "id": "node_5",
+    "parent_id": "node_1",
+    "kind": "expert",
+    "expert_id": "family_edu_specialist",
+    "status": "completed",
+    "phase": "completed",
+    "action": "已提交专家结论"
+  }
+]
+```
+
+如果前端在渲染每一张专家卡片时写成：
+
+```ts
+card.action = state.action;
+```
+
+就会把主任务的等待文案错误显示在学习指导师卡片中。正确写法是：
+
+```ts
+card.action = expertNode.action;
+```
+
+如果要展示专家正在执行的子任务，则使用该专家节点的直接子节点：
+
+```ts
+card.action = activeChild?.action ?? expertNode.action;
+```
+
+## 10. 字段读取优先级
+
+前端或 AI 生成的 UI 逻辑应遵守下面的优先级：
+
+### 顶部总进度
+
+```text
+state.action
+  ↓ 没有文案时
+state.phase
+  ↓ 仍没有文案时
+根据 state.status 显示通用兜底
+```
+
+### 专家卡片
+
+```text
+对应 expertNode.action
+  ↓ 没有文案时
+对应 expertNode.phase
+  ↓ 仍没有文案时
+根据 expertNode.status 显示通用兜底
+```
+
+### Skill 卡片
+
+```text
+对应 skillNode.action
+  ↓ 没有文案时
+对应 skillNode.phase
+  ↓ 仍没有文案时
+根据 skillNode.status 显示通用兜底
+```
+
+不能采用下面的回退链：
+
+```text
+expertNode.action → mainNode.action → state.action
+```
+
+主任务文案不能作为子专家的状态兜底，否则会再次发生层级串用。
+
+## 11. 一个完整的多专家状态快照
+
+前端可以按下面的结构理解一次快照：
+
+```json
+{
+  "protocol": "hailiang.sse.v3",
+  "session_id": "session-001",
+  "run_id": "request-run-001",
+  "assistant_message_id": "assistant-message-001",
+  "cursor": 18,
+  "reason": "updated",
+  "stream_status": "running",
+  "state": {
+    "status": "running",
+    "phase": "waiting_for_dependency",
+    "action": "正在等待学习指导师完成专项分析",
+    "synthesis_status": "pending",
+    "round_experts": {
+      "assigned_expert_ids": ["academic_coach", "family_edu_specialist"],
+      "running_expert_ids": ["academic_coach"],
+      "waiting_expert_ids": [],
+      "completed_expert_ids": ["family_edu_specialist"],
+      "failed_expert_ids": [],
+      "status": "running"
+    },
+    "nodes": [
+      {
+        "id": "node_1",
+        "parent_id": null,
+        "kind": "main",
+        "title": "本轮回答",
+        "status": "waiting_for_dependency",
+        "phase": "waiting_for_dependency",
+        "action": "正在等待学习指导师完成专项分析",
+        "result": null
+      },
+      {
+        "id": "node_4",
+        "parent_id": "node_1",
+        "kind": "expert",
+        "expert_id": "academic_coach",
+        "title": "学习指导师",
+        "status": "running",
+        "phase": "using_skill",
+        "action": "正在执行学习习惯分析",
+        "result": null
+      },
+      {
+        "id": "node_5",
+        "parent_id": "node_1",
+        "kind": "expert",
+        "expert_id": "family_edu_specialist",
+        "title": "家庭教育专家顾问",
+        "status": "completed",
+        "phase": "completed",
+        "action": "已提交专家结论",
+        "result": {
+          "status": "completed",
+          "conclusion": "已完成家庭沟通和边界方案"
+        }
+      },
+      {
+        "id": "node_6",
+        "parent_id": "node_4",
+        "kind": "skill",
+        "expert_id": "academic_coach",
+        "title": "学习习惯分析",
+        "status": "running",
+        "phase": "using_skill",
+        "action": "正在执行专项 Skill",
+        "result": null
+      }
+    ]
+  }
+}
+```
+
+这份快照在 UI 中应渲染为：
+
+```text
+顶部：正在等待学习指导师完成专项分析
+
+学习指导师：正在执行学习习惯分析
+家庭教育专家顾问：已提交专家结论
+```
+
+## 12. 节点筛选与稳定身份
+
+推荐使用 `expert_id` 作为专家业务身份，使用 `id` 和 `parent_id` 建立当前快照内的父子关系：
+
+```ts
+const terminal = new Set(["completed", "failed", "cancelled"]);
+const nodes = state.nodes ?? [];
+const main = nodes.find(node => node.kind === "main");
+
+const expertNodes = nodes
+  .filter(node => node.kind === "expert" && node.parent_id === main?.id)
+  .sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
+
+const latestByExpert = new Map<string, Node>();
+for (const node of expertNodes) {
+  if (node.expert_id) latestByExpert.set(node.expert_id, node);
+}
+
+for (const expert of latestByExpert.values()) {
+  const children = nodes.filter(node => node.parent_id === expert.id);
+  const activeChild = children.find(node => !terminal.has(node.status));
+  renderExpertCard({
+    key: expert.expert_id,
+    title: expert.title,
+    status: expert.status,
+    phase: activeChild?.phase ?? expert.phase,
+    action: activeChild?.action ?? expert.action,
+    result: expert.result,
+    error: expert.error,
+  });
+}
+```
+
+说明：
+
+- `nodes` 数组顺序不是专家身份，不要使用 `nodes[0]`、`nodes[1]` 绑定头像。
+- 同一个专家因重试可能出现多个节点，取该 `expert_id` 最新创建的节点。
+- `node.id` 只保证当前公开快照中的父子引用有效；跨快照保存业务身份时使用 `expert_id`。
+- `dispatch.experts[].node_id` 可以帮助初始化映射，但实时渲染仍以 `nodes` 为准。
+
+## 13. 状态转换与 UI 行为
+
+| 节点状态 | UI 建议 | 是否显示结果 |
+| --- | --- | --- |
+| `queued` | 显示“等待执行”或直接显示节点 `action` | 否 |
+| `running` | 显示节点 `action`，允许动画 | 否 |
+| `waiting_for_dependency` | 显示节点 `action`，必要时展开 `waiting_on`/子节点 | 否 |
+| `waiting_for_user` | 显示“等待补充信息”，从 `inputs` 找对应表单 | 否 |
+| `completed` | 显示“已完成”或节点 `action` | 是 |
+| `failed` | 显示失败状态和安全错误 | 可显示部分结果 |
+| `cancelled` | 显示已取消 | 否 |
+
+专家节点进入 `waiting_for_dependency` 时，不要直接显示“等待其他专家”。应按以下顺序判断：
+
+1. 该专家是否存在未结束的 `skill` 子节点？
+2. 该专家是否存在未结束的 `tool` 子节点？
+3. `waiting_on` 是否指向明确的依赖节点？
+4. 如果以上都没有，再显示后端提供的 `expertNode.action`，不能自行改写为主任务文案。
+
+## 14. 表单/追问状态不要从专家状态猜测
+
+当专家或 Skill 需要用户补充信息时：
+
+- 节点状态读取 `expertNode.status === "waiting_for_user"` 或 `skillNode.status === "waiting_for_user"`。
+- 表单内容读取 `state.inputs[]`。
+- 表单所属节点使用 `inputs[].owner_node_id`。
+- 队列摘要读取 `state.input_queue`。
+
+不要因为主任务 `state.waiting_count > 0` 就把所有专家都显示为等待用户输入。`waiting_count` 是运行级汇总，具体归属必须通过 `owner_node_id` 判断。
+
+## 15. SSE 客户端消费伪代码
+
+```ts
+let currentState: V3State | null = null;
+let lastCursor = 0;
+
+function onSseFrame(event: string, payload: V3Frame | Record<string, never>) {
+  if (event === "ping") {
+    // 只保活，不改变 state
+    return;
+  }
+
+  if (event !== "state" && event !== "done") return;
+
+  const frame = payload as V3Frame;
+  if (typeof frame.cursor === "number" && frame.cursor < lastCursor) return;
+  if (typeof frame.cursor === "number") lastCursor = frame.cursor;
+
+  if (frame.state) {
+    // 使用完整快照替换，避免旧专家 action 残留
+    currentState = frame.state;
+    renderTopProgress(frame.state);
+    renderExpertCards(frame.state.nodes ?? []);
+  }
+
+  if (event === "done") {
+    finishStream(frame.outcome, frame.state);
+  }
+}
+```
+
+如果当前版本将最终正文增量包装为 `event: state` 且 `reason: "final_text_delta"`，仍然按普通 `state` 帧处理；正文读取 `state.result`，不能因为 `reason` 是增量就跳过节点状态更新。
+
+## 16. 前端接入验收清单
+
+- [ ] 顶部总进度使用 `state.action`，专家卡片不使用它。
+- [ ] 专家卡片通过 `kind === "expert"` 和 `parent_id === main.id` 筛选。
+- [ ] 专家卡片的文案来自对应 `expertNode.action`。
+- [ ] Skill 状态来自 `kind === "skill"` 的子节点。
+- [ ] 工具状态来自 `kind === "tool"` 的子节点。
+- [ ] 专家身份使用 `expert_id`，不使用数组下标。
+- [ ] 同一专家重试时取最新节点，不把旧节点继续显示为当前状态。
+- [ ] `round_experts` 只用于汇总统计，不用于具体动作文案。
+- [ ] `dispatch` 只用于分派计划，不替代实时节点状态。
+- [ ] `waiting_for_user` 时通过 `owner_node_id` 找对应表单。
+- [ ] 收到 `state` 后替换完整快照，避免旧 action 残留。
+- [ ] `ping` 不触发业务状态更新。
+- [ ] `done` 先消费最终状态，再结束流。
+
+验收用例：当家庭教育专家已完成、学习指导师仍在执行 Skill 时，页面必须同时显示：
+
+```text
+家庭教育专家顾问：已提交专家结论
+学习指导师：正在执行学习习惯分析 / 正在等待「学习习惯分析」完成
+```
+
+不得显示为：
+
+```text
+学习指导师：正在等待其他专家完成
+```
+
+除非该文案确实来自学习指导师自己的 `expertNode.action`，并且它的 `waiting_on` 或子节点明确指向其他专家节点。
