@@ -521,6 +521,8 @@ function onSseFrame(event: string, payload: V3Frame | Record<string, never>) {
 
 如果当前版本将最终正文增量包装为 `event: state` 且 `reason: "final_text_delta"`，仍然按普通 `state` 帧处理；正文读取 `state.result`，不能因为 `reason` 是增量就跳过节点状态更新。
 
+`state.result` 是截至当前的**累计正文快照**，不是本帧新增文本：应替换同一个 `assistant_message_id` 对应的正文，不要逐帧拼接。专家的 `state.nodes[].result.conclusion` 属于专家详情；单专家场景下它可能与最终正文完全相同，不要再把它追加到最终正文。最终 `done` 的 `state.result` 仍然是最终权威快照。重连或状态修订时也应替换，不应假设文本一定只增不减。
+
 ## 16. 前端接入验收清单
 
 - [ ] 顶部总进度使用 `state.action`，专家卡片不使用它。

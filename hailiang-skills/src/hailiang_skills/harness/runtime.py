@@ -598,6 +598,7 @@ def execution_diagnostics(run, *, scheduler_snapshot=None):
         # No first output must remain unknown, never become the elapsed time
         # until this diagnostic query was made.
         "first_output_ms": _diagnostic_duration(run.get("created_at"), run.get("first_output_at")) if run.get("first_output_at") else None,
+        "stream_diagnostics": deepcopy(run.get("stream_diagnostics")),
         "max_parallel": max_parallel,
         "running_task_count": running_count,
         "worker_pool": scheduler_snapshot or None,
@@ -1040,33 +1041,54 @@ class HarnessRuntime:
         if not self.store.stream_text(run_id, task_id, token, reset=True):
             raise HarnessError("EXECUTION_EXPIRED")
         content, buffer, flushed, first_published = "", "", monotonic(), False
+        try:
+            batch_seconds = min(2.0, max(0.1, float(os.getenv("HAILIANG_HARNESS_STREAM_BATCH_SECONDS", "0.5"))))
+        except ValueError:
+            batch_seconds = 0.5
+        diagnostics = {"publish_count": 0, "moderation_calls": 0, "moderation_total_ms": 0,
+                       "moderation_max_ms": 0, "max_upstream_wait_ms": 0,
+                       "max_previous_write_ms": 0, "batch_seconds": batch_seconds}
+        previous_write_ms = 0
 
         def cancelled():
             return not self._valid(self.store.get(run_id), task_id, token)
 
         def publish():
-            nonlocal buffer, flushed, first_published
+            nonlocal buffer, flushed, first_published, previous_write_ms
             if not buffer:
                 return
             if self.moderation:
+                started = monotonic()
                 self.moderation.check(content, stage="output", session_id=run["session_id"], turn_id=task_id)
-            if not self.store.stream_text(run_id, task_id, token, buffer):
+                elapsed_ms = round((monotonic() - started) * 1000)
+                diagnostics["moderation_calls"] += 1
+                diagnostics["moderation_total_ms"] += elapsed_ms
+                diagnostics["moderation_max_ms"] = max(diagnostics["moderation_max_ms"], elapsed_ms)
+            diagnostics["publish_count"] += 1
+            diagnostics["max_previous_write_ms"] = max(diagnostics["max_previous_write_ms"], previous_write_ms)
+            started = monotonic()
+            if not self.store.stream_text(run_id, task_id, token, buffer, diagnostics=diagnostics):
                 raise HarnessError("EXECUTION_EXPIRED")
+            previous_write_ms = round((monotonic() - started) * 1000)
             buffer, flushed, first_published = "", monotonic(), True
 
+        upstream_wait_started = monotonic()
         for chunk in stream_complete(
             messages,
             cancel_check=cancelled,
             request_purpose="orchestrator_tail",
             max_tokens=run["policy"]["settings"].get("max_output_tokens", 8192),
         ):
+            diagnostics["max_upstream_wait_ms"] = max(diagnostics["max_upstream_wait_ms"],
+                                                       round((monotonic() - upstream_wait_started) * 1000))
             if chunk.content_delta:
                 content += chunk.content_delta
                 buffer += chunk.content_delta
                 # First token is intentionally published immediately; later
                 # chunks are lightly batched to avoid a write per token.
-                if not first_published or monotonic() - flushed >= 0.1:
+                if not first_published or monotonic() - flushed >= batch_seconds:
                     publish()
+            upstream_wait_started = monotonic()
         publish()
         return content.strip()
 
@@ -1525,6 +1547,7 @@ class HarnessRuntime:
                 return
         if not text:
             raise HarnessError("EMPTY_MODEL_REPLY")
+        tail_completed_at = now()
         # Recommend after any successful expert reply: team single/multi (post-tail) and
         # workbench direct_expert_id. Skipped when catalog is missing or empty.
         recommend_io = None
@@ -1562,7 +1585,7 @@ class HarnessRuntime:
             live = current["tasks"][task_id]
             if stamped:
                 live["trace"][-1]["output"] = {"final_text": text}
-                live["trace"][-1]["completed_at"] = now()
+                live["trace"][-1]["completed_at"] = tail_completed_at
                 self._record_node(current, live, "orchestrate_tail", {"experts": [r["expert_id"] for r in rows]},
                                   {"mode": "direct" if sum(r["status"] == "completed" for r in rows) == 1 else "merge", "experts": rows}, changes)
             if recommend_io:

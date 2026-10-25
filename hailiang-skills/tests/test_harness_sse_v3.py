@@ -528,6 +528,66 @@ def test_final_moderation_retracts_published_text(tmp_path):
     runtime.close()
 
 
+def test_tail_batches_moderation_and_records_first_output(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from hailiang_skills.harness.runtime import execution_diagnostics
+    monkeypatch.setenv('HAILIANG_HARNESS_STREAM_BATCH_SECONDS', '2')
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    rid = runtime.create('s', 'u', 'p', '分析', v2_policy(), wire_protocol='hailiang.sse.v3')
+    task_id, token = runtime.claim(rid)
+    run = runtime.store.get(rid)
+    class Client:
+        def stream_complete(self, *_args, **_kwargs):
+            for text in ('第一', '第二', '第三'):
+                yield SimpleNamespace(content_delta=text)
+    class Moderation:
+        def __init__(self): self.checked = []
+        def check(self, text, **_kwargs): self.checked.append(text)
+    moderation = Moderation()
+    runtime.moderation = moderation
+    assert runtime._stream_orchestration_tail(Client(), run, run['tasks'][task_id], token, []) == '第一第二第三'
+    assert moderation.checked == ['第一', '第一第二第三']
+    saved = runtime.store.get(rid)
+    details = execution_diagnostics(saved)
+    assert details['first_output_at'] is not None
+    assert details['stream_diagnostics']['publish_count'] == 2
+    assert details['stream_diagnostics']['moderation_calls'] == 2
+    assert runtime.store.public_snapshot('s', 'u', 'p')['messages'][0]['content'] == '第一第二第三'
+    runtime.close()
+
+
+def test_active_state_does_not_jump_ahead_of_sent_text():
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import _align_streaming_result
+    frame = {'state': {'result': '已经写入数据库的更长正文', 'phase': 'synthesizing'}}
+    assert _align_streaming_result(frame, '已经写入')['state'] == {
+        'result': '已经写入', 'phase': 'synthesizing'}
+    frame = {'state': {'result': '非流式结果'}}
+    assert _align_streaming_result(frame, '')['state']['result'] == '非流式结果'
+
+
+def test_tail_never_publishes_batch_rejected_by_moderation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from hailiang_skills.security.models import ModerationBlockedError
+    monkeypatch.setenv('HAILIANG_HARNESS_STREAM_BATCH_SECONDS', '2')
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='unused'))
+    rid = runtime.create('s', 'u', 'p', '分析', v2_policy(), wire_protocol='hailiang.sse.v3')
+    task_id, token = runtime.claim(rid)
+    run = runtime.store.get(rid)
+    class Client:
+        def stream_complete(self, *_args, **_kwargs):
+            for text in ('安全', '敏感'):
+                yield SimpleNamespace(content_delta=text)
+    class Moderation:
+        def check(self, text, **_kwargs):
+            if '敏感' in text:
+                raise ModerationBlockedError(SimpleNamespace(risk_level='blocked'), stage='output')
+    runtime.moderation = Moderation()
+    with pytest.raises(ModerationBlockedError):
+        runtime._stream_orchestration_tail(Client(), run, run['tasks'][task_id], token, [])
+    assert runtime.store.public_snapshot('s', 'u', 'p')['messages'][0]['content'] == '安全'
+    runtime.close()
+
+
 def test_old_run_bootstrap_snapshot_then_future_updates(tmp_path):
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='旧运行结果'))
     rid = runtime.create('s', 'u', 'p', '旧任务', v2_policy())

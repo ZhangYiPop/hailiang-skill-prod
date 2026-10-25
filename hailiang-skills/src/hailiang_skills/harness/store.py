@@ -276,11 +276,12 @@ class HarnessStore:
                 raise HarnessError('SUBMISSION_ID_REUSED', 409)
             return record.payload['run_id']
 
-    def stream_text(self, run_id, task_id, token, text='', reset=False):
+    def stream_text(self, run_id, task_id, token, text='', reset=False, diagnostics=None):
         from .protocol_v3 import lock_scope, upsert, emit
         with self.transaction() as db:
             row = self._locked(db, run_id)
-            run = row.payload
+            # SQLAlchemy JSON columns do not detect in-place nested mutations.
+            run = deepcopy(row.payload)
             task = run['tasks'][task_id]
             if run['status'] in TERMINAL or task['lease_token'] != token or task['status'] != 'running' or task['lease_until'] <= now():
                 return False
@@ -296,7 +297,9 @@ class HarnessStore:
             elif text:
                 if not run.get('first_output_at'):
                     run['first_output_at'] = now()
-                    row.payload = run
+                if diagnostics is not None:
+                    run['stream_diagnostics'] = deepcopy(diagnostics)
+                row.payload = run
                 entity = {**previous, 'content': previous.get('content', '') + text, 'version': previous.get('version', 0) + 1}
                 payload = deepcopy(scope.payload)
                 payload['messages'][mid] = entity

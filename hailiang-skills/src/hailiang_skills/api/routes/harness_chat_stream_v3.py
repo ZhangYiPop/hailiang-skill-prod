@@ -429,6 +429,13 @@ def formal_v3_enabled() -> bool:
     return False
 
 
+def _align_streaming_result(frame: dict[str, Any], emitted_text: str) -> dict[str, Any]:
+    """Keep active state snapshots aligned with deltas already sent on this connection."""
+    if emitted_text:
+        frame["state"]["result"] = emitted_text
+    return frame
+
+
 def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, runtime, snapshot_resolver=None):
     router = APIRouter()
     formal_executor = FormalV3TurnExecutor(
@@ -510,7 +517,12 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 latest = relevant[-1]
                 run = await asyncio.to_thread(runtime.store.get, harness_run_id)
                 event_name = "done" if latest.get("type") == "done" else "state"
-                yield format_sse_event(event_name, _payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor))
+                frame = _payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor)
+                # The snapshot may already contain newer text than the events
+                # read above. Do not jump ahead and then replay older deltas.
+                if event_name == "state":
+                    frame = _align_streaming_result(frame, streamed_content)
+                yield format_sse_event(event_name, frame)
                 last_emitted_at = time.monotonic()
                 if event_name == "done":
                     return
