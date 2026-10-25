@@ -551,7 +551,7 @@ if [ "$WITH_FRONTEND" = "1" ]; then
     cd "$FRONTEND_DIR"
     npm config set registry "$NPM_REGISTRY"
     npm ci
-    npm run build
+    VITE_HAILIANG_SSE_V3=true npm run build
   )
 
   "$VENV_DIR/bin/python" - <<'PY' > "$FRONTEND_DIR/dist/runtime-config.js"

@@ -3,11 +3,25 @@ export type Entity = { id: string; version: number; run_id?: string; [key: strin
 export type V3Snapshot = { protocol: 'hailiang.sse.v3'; session_id: string; profile_id: string | null; cursor: number; runtime_mode: string; runs: Entity[]; nodes: Entity[]; input_requests: Entity[]; input_groups?: Entity[]; messages: Entity[] };
 /** Public V3 wire frame. Like V2 state, `snapshot` replaces all local state. */
 export type V3Event = { protocol: string; seq: number; session_id: string; profile_id: string | null; run_id: string | null; status: string; outcome?: string | null; reason: string; snapshot: V3Snapshot };
+export type V3DeltaEvent = { protocol: string; seq: number; session_id: string; profile_id: string | null; run_id: string | null; type: string; entity_id: string; entity_version: number; data: { id: string; version: number; revision: number; offset: number; text: string } };
 export function reduceV3(state: V3Snapshot, event: V3Event): V3Snapshot {
   if (event.protocol !== 'hailiang.sse.v3' || event.session_id !== state.session_id || event.profile_id !== state.profile_id) throw new Error('V3_SCOPE_MISMATCH');
   if (event.seq <= state.cursor) return state;
   if (event.reason === 'resync_required') throw new Error('V3_RESYNC_REQUIRED');
   return event.snapshot;
+}
+export function applyMessageDelta(state: V3Snapshot, event: V3DeltaEvent): V3Snapshot {
+  if (event.seq <= state.cursor) return state;
+  const messages = [...state.messages.map(m => ({...m}))];
+  const idx = messages.findIndex(m => m.id === event.entity_id);
+  if (idx >= 0) {
+    const prev = messages[idx];
+    const before = String(prev.content || '').substring(0, event.data.offset);
+    messages[idx] = {...prev, content: before + event.data.text, version: event.data.version, status: 'streaming'};
+  } else {
+    messages.push({id: event.entity_id, run_id: event.run_id, kind: 'final', content: event.data.text, version: event.data.version, status: 'streaming'});
+  }
+  return {...state, cursor: event.seq, messages};
 }
 export function legacyView(snapshot: V3Snapshot): HarnessSnapshot {
   return {runtime_mode: snapshot.runtime_mode, cursor: snapshot.cursor, runs: snapshot.runs.map(entity => {
@@ -26,7 +40,7 @@ export function subscribeV3(load: () => Promise<V3Snapshot>, url: string,
   let stopped = false, syncing = false;
   let current: V3Snapshot | undefined, source: EventSource | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const types = ['state', 'done_suspended', 'done_timeout', 'done'];
+  const types = ['state', 'done_suspended', 'done_timeout', 'done', 'message.delta'];
   const synchronize = async () => {
     if (stopped || syncing) return;
     syncing = true; source?.close();
@@ -39,8 +53,15 @@ export function subscribeV3(load: () => Promise<V3Snapshot>, url: string,
       source = new EventSource(target.toString());
       const receive = (raw: Event) => {
         if (stopped || !current) return;
-        try { current = reduceV3(current, JSON.parse((raw as MessageEvent).data)); onState(current); }
-        catch { void synchronize(); }
+        try {
+          const event = JSON.parse((raw as MessageEvent).data);
+          if (event.type === 'message.delta' && event.data) {
+            current = applyMessageDelta(current, event as V3DeltaEvent);
+          } else {
+            current = reduceV3(current, event as V3Event);
+          }
+          onState(current);
+        } catch { void synchronize(); }
       };
       for (const type of types) source.addEventListener(type, receive);
       source.onopen = () => { if (!stopped) onConnection('connected'); };
