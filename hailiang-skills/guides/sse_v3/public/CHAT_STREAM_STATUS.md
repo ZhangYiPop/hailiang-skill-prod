@@ -523,6 +523,56 @@ function onSseFrame(event: string, payload: V3Frame | Record<string, never>) {
 
 `state.result` 是截至当前的**累计正文快照**，不是本帧新增文本：应替换同一个 `assistant_message_id` 对应的正文，不要逐帧拼接。专家的 `state.nodes[].result.conclusion` 属于专家详情；单专家场景下它可能与最终正文完全相同，不要再把它追加到最终正文。最终 `done` 的 `state.result` 仍然是最终权威快照。重连或状态修订时也应替换，不应假设文本一定只增不减。
 
+### 15.1 单专家：专家结论与最终正文如何展示
+
+当编排器本轮只分派一位专家时，专家完成后会先形成专家节点结论；专家团模式下，编排尾随后仍可能进行出站处理并形成最终正文。单专家策略通常直接采用专家原文，因此两份内容可能一样或高度相似，但不要依靠文本相等或专家数量来判断哪份是最终结果：编排尾仍可能处理内容，实际流程也可能因失败或中断而不同。
+
+| 界面位置 | 读取字段 | 展示规则 |
+| --- | --- | --- |
+| 专家卡片状态 | 对应专家节点的 `status`、`phase`、`action` | 展示该专家自己的进度；`completed` 不代表最终正文已完成 |
+| 专家详情（可选） | 对应专家节点的 `result.conclusion` | 作为专家详情或折叠区，不追加到最终正文 |
+| 对话最终正文 | `state.result` | 以 `assistant_message_id` 定位同一气泡，按帧**整体替换**；不存在或为空时按当前阶段展示进度，不用专家结论填充正文 |
+| 本次流完成 | `event: done` 中的 `state.result` | 先按最终快照更新气泡，再根据 `outcome`、`stream_status` 处理完成、失败或其他终态 |
+
+例如，以下是同一助手消息的三个**简化状态片段**，省略了其余字段；实际帧还包含协议、游标等公共字段。专家节点的 `result` 是对象，正文 `state.result` 是字符串。
+
+```jsonc
+// ① 专家已经完成，编排尾尚未产出正文
+{
+  "assistant_message_id": "msg_1",
+  "state": {
+    "nodes": [{"kind": "expert", "expert_id": "academic_coach", "status": "completed",
+               "result": {"conclusion": "建议先建立固定的学习时间。"}}],
+    "result": ""
+  }
+}
+
+// ② 编排尾流式输出中：这是当前累计正文，不是要追加的新片段
+{
+  "assistant_message_id": "msg_1",
+  "reason": "final_text_delta",
+  "state": {
+    "nodes": [{"kind": "expert", "expert_id": "academic_coach", "status": "completed",
+               "result": {"conclusion": "建议先建立固定的学习时间。"}}],
+    "result": "建议先建立固定"
+  }
+}
+
+// ③ event: done：使用最终正文替换同一气泡
+{
+  "assistant_message_id": "msg_1",
+  "state": {
+    "nodes": [{"kind": "expert", "expert_id": "academic_coach", "status": "completed",
+               "result": {"conclusion": "建议先建立固定的学习时间。"}}],
+    "result": "建议先建立固定的学习时间。"
+  }
+}
+```
+
+示例中的最终正文只显示一次。专家详情如果展开，也可以显示该专家结论，但应与正文保持独立区域，避免看起来像同一个回答连续输出两遍。`nodes` 是每帧的节点集合，真实数据还可能包含主任务、工具等节点；不要假定专家总在固定数组下标。
+
+推荐的处理逻辑是：先依据 `kind`、`parent_id` 定位专家，用专家节点更新卡片；再用帧中的 `state.result` 替换 `assistant_message_id` 对应的正文。收到 `done` 时仍先应用其状态；若终态为失败、取消或没有正文，应按协议显示相应状态，不把专家结论假装成最终成功结果。不要因为内容相同而忽略最终帧，也不要通过删除重复字符串来修补错误的追加逻辑。
+
 ## 16. 前端接入验收清单
 
 - [ ] 顶部总进度使用 `state.action`，专家卡片不使用它。
@@ -538,6 +588,8 @@ function onSseFrame(event: string, payload: V3Frame | Record<string, never>) {
 - [ ] 收到 `state` 后替换完整快照，避免旧 action 残留。
 - [ ] `ping` 不触发业务状态更新。
 - [ ] `done` 先消费最终状态，再结束流。
+- [ ] 单专家的专家结论只在专家详情中展示，不追加到 `state.result` 对应的最终正文。
+- [ ] 不把 `state.result` 的累计快照逐帧拼接；`done` 使用最终快照替换同一消息。
 
 验收用例：当家庭教育专家已完成、学习指导师仍在执行 Skill 时，页面必须同时显示：
 
