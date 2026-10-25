@@ -332,7 +332,11 @@ export function BatchEvalPanel({ baseUrl, actorId }: { baseUrl: string; actorId:
             </label>
             <label className="text-sm text-slate-400">
               问答模型
-              <select aria-label="问答模型" title={testerModelName(modelId)} value={modelId} disabled={running} onChange={(event) => setModelId(event.target.value === "pro" ? "pro" : "flash")} className={`mt-1.5 ${fieldClass}`}>
+              <select aria-label="问答模型" title={testerModelName(modelId)} value={modelId} disabled={running} onChange={(event) => {
+                const v = event.target.value;
+                const valid = TESTER_MODEL_OPTIONS.some((item) => item.id === v);
+                setModelId((valid ? v : "flash") as TesterModelId);
+              }} className={`mt-1.5 ${fieldClass}`}>
                 {TESTER_MODEL_OPTIONS.map((item) => (
                   <option key={item.id} value={item.id}>{item.model}</option>
                 ))}

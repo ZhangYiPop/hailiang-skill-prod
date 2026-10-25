@@ -26,11 +26,13 @@ const DEBUG_IDENTITY_STORAGE_KEY = "hailiang.debug_identity";
 const THEME_STORAGE_KEY = "hailiang.theme_mode";
 const TESTER_MODEL_STORAGE_KEY = "hailiang.tester_model";
 
-export type TesterModelId = "flash" | "pro";
+export type TesterModelId = "flash" | "pro" | "flash41" | "flash41_1017";
 
 export const TESTER_MODEL_OPTIONS: Array<{ id: TesterModelId; model: string }> = [
   { id: "flash", model: "deepseek-v4-flash-0731" },
   { id: "pro", model: "deepseek-v4-pro" },
+  { id: "flash41", model: "deepseek-v4.1-flash" },
+  { id: "flash41_1017", model: "deepseek-v4.1-flash-1017" },
 ];
 
 export function testerModelName(id: string): string {
@@ -482,7 +484,8 @@ export const useChatStore = create<ChatStore>((set) => ({
     }));
   },
   setSelectedModelId: (value) => {
-    const selectedModelId = value === "pro" ? "pro" : "flash";
+    const valid = TESTER_MODEL_OPTIONS.some((item) => item.id === value);
+    const selectedModelId = valid ? (value as TesterModelId) : "flash";
     persistTesterModel(selectedModelId);
     set({ selectedModelId });
   },

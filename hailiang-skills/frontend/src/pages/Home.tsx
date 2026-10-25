@@ -22,7 +22,7 @@ import { SessionSidebar } from "@/components/SessionSidebar";
 import { StatusPill } from "@/components/StatusPill";
 import { SummaryPanel } from "@/components/SummaryPanel";
 import { useChatActions } from "@/hooks/useChatActions";
-import { testerModelName, TESTER_MODEL_OPTIONS, useChatStore } from "@/store/useChatStore";
+import { testerModelName, TESTER_MODEL_OPTIONS, useChatStore, type TesterModelId } from "@/store/useChatStore";
 import { useHarnessConversation, useHarnessState } from "@/hooks/useHarnessConversation";
 
 export default function Home() {
@@ -291,7 +291,7 @@ export default function Home() {
           <select
             aria-label="问答模型"
             value={selectedModelId}
-            onChange={(event) => setSelectedModelId(event.target.value === "pro" ? "pro" : "flash")}
+            onChange={(event) => setSelectedModelId(event.target.value as TesterModelId)}
             className="rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100"
           >
             {TESTER_MODEL_OPTIONS.map((item) => (

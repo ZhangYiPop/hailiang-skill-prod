@@ -32,9 +32,13 @@ def test_default_config_lists_flash_and_pro_on_the_same_key() -> None:
     assert [(item.id, item.model) for item in config.selectable_models] == [
         ("flash", "deepseek-v4-flash-0731"),
         ("pro", "deepseek-v4-pro"),
+        ("flash41", "deepseek-v4.1-flash"),
+        ("flash41_1017", "deepseek-v4.1-flash-1017"),
     ]
     assert config.resolve_tester_model("pro", environment="test") == "deepseek-v4-pro"
     assert config.resolve_tester_model("flash", environment="test") == config.model
+    assert config.resolve_tester_model("flash41", environment="test") == "deepseek-v4.1-flash"
+    assert config.resolve_tester_model("flash41_1017", environment="test") == "deepseek-v4.1-flash-1017"
     assert config.resolve_tester_model("pro", environment="prod") == ""
     assert config.resolve_tester_model("", environment="test") == ""
     with pytest.raises(UnknownTesterModelError):

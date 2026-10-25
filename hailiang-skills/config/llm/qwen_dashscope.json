@@ -3,8 +3,10 @@
   "base_url": "https://ws-cf2bl5wfrmj77y71.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
   "model": "deepseek-v4-flash-0731",
   "selectable_models": [
-    {"id": "flash", "label": "DeepSeek Flash", "model": "deepseek-v4-flash-0731"},
-    {"id": "pro", "label": "DeepSeek Pro", "model": "deepseek-v4-pro"}
+    {"id": "flash", "label": "DeepSeek V4 Flash", "model": "deepseek-v4-flash-0731"},
+    {"id": "pro", "label": "DeepSeek V4 Pro", "model": "deepseek-v4-pro"},
+    {"id": "flash41", "label": "DeepSeek V4.1 Flash", "model": "deepseek-v4.1-flash"},
+    {"id": "flash41_1017", "label": "DeepSeek V4.1 Flash (1017)", "model": "deepseek-v4.1-flash-1017"}
   ],
   "api_key_env": "DASHSCOPE_API_KEY",
   "timeout_s": 120,

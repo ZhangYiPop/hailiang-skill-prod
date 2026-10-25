@@ -1,4 +1,4 @@
-import { testerModelName, TESTER_MODEL_OPTIONS, useChatStore } from "@/store/useChatStore";
+import { testerModelName, TESTER_MODEL_OPTIONS, useChatStore, type TesterModelId } from "@/store/useChatStore";
 import { legacyView, subscribeV3, type V3Snapshot } from "@/utils/harnessV3";
 import { createUuid } from "@/utils/uuid";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -465,7 +465,7 @@ setEvidenceBySession({});
             aria-label="问答模型"
             title={testerModelName(selectedModelId)}
             value={selectedModelId}
-            onChange={(event) => setSelectedModelId(event.target.value === "pro" ? "pro" : "flash")}
+            onChange={(event) => setSelectedModelId(event.target.value as TesterModelId)}
             className="h-7 rounded-md border border-white/10 bg-slate-950 px-2 text-xs text-slate-100 outline-none"
           >
             {TESTER_MODEL_OPTIONS.map((item) => (
