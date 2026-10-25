@@ -362,15 +362,16 @@ setEvidenceBySession({});
     if (currentActive || busy || !goal.trim()) return;
     setBusy(true); setError(""); setTrace("");
     try {
-      // Always create a new debug session when the current one has completed runs
-      // or has an active run in another session — never silently reuse.
-      const hasCurrentRuns = (runsBySession[debugId] || []).length > 0;
       const hasAnyActive = Object.values(runsBySession).some((sessionRuns) =>
         sessionRuns.some((r) => !isHarnessTerminal(r.status))
       );
-      const id = (hasCurrentRuns || hasAnyActive)
+      // Follow-up questions reuse the current debug session (multi-turn).
+      // Only create a new session when another session is active,
+      // the current one is saved as evidence, or there's no debugId.
+      const needsNewSession = hasAnyActive || evidenceSaved || !debugId;
+      const id = needsNewSession
         ? (await request<{ debug_session_id: string }>("/workbench/v1/revision-tests", { revision_id: revisionId, actor_id: actorId, soul_revision_id: soulRevisionId || null })).debug_session_id
-        : ((!evidenceSaved && debugId) || (await request<{ debug_session_id: string }>("/workbench/v1/revision-tests", { revision_id: revisionId, actor_id: actorId, soul_revision_id: soulRevisionId || null })).debug_session_id);
+        : debugId;
       const presetFacts = objectType === "skill" ? {} : {
         ...(userRole ? { user_role: userRole } : {}),
         ...(schoolStage ? { school_stage: schoolStage } : {}),
