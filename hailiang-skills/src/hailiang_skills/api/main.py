@@ -615,7 +615,12 @@ def create_app() -> FastAPI:
     from hailiang_skills.api.routes.harness import build_harness_router
     from hailiang_skills.api.routes.harness_chat_stream_v3 import build_harness_chat_stream_v3_router
 
-    harness_store = HarnessStore(storage.engine) if storage.engine is not None else HarnessStore.local(state_root() / "harness.sqlite3")
+    if os.getenv("HAILIANG_HARNESS_STORE_BACKEND", "").lower() == "sqlite":
+        harness_store = HarnessStore.local(state_root() / "harness.sqlite3")
+    elif storage.engine is not None:
+        harness_store = HarnessStore(storage.engine)
+    else:
+        harness_store = HarnessStore.local(state_root() / "harness.sqlite3")
     fact_service.harness_store = harness_store
     harness_integration = HarnessIntegration(orchestrator, harness_store)
     harness = HarnessRuntime(harness_store, harness_integration.client, harness_integration.tool, moderation_service)
