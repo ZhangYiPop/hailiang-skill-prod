@@ -110,7 +110,8 @@ def missing_pre_flight_facts(
 
 
 def build_pre_flight_fields(
-    missing_keys: list[str], required_labels: dict[str, str]
+    missing_keys: list[str], required_labels: dict[str, str],
+    known_facts: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build ``request_user_input`` field definitions for missing pre-flight
     facts.
@@ -145,7 +146,22 @@ def build_pre_flight_fields(
 
         allowed = meta.get("allowed_values")
         if allowed:
-            field["options"] = [{"label": v, "value": v} for v in allowed]
+            values = list(allowed)
+            # ── Province-aware subject_group filtering ─────────────────
+            if key == "subject_group" and known_facts:
+                province = str(known_facts.get("student_province") or "").strip()
+                if province:
+                    from hailiang_skills.runtime_bridge.pre_flight_gate import _filter_subject_group
+                    values = _filter_subject_group(values, province)
+            # ── End province-aware filtering ────────────────────────────
+            # ── School-stage-aware grade filtering ─────────────────────
+            if key == "grade" and known_facts:
+                stage = str(known_facts.get("school_stage") or "").strip()
+                if stage:
+                    from hailiang_skills.runtime_bridge.pre_flight_gate import _filter_grade_by_stage
+                    values = _filter_grade_by_stage(values, stage)
+            # ── End school-stage-aware filtering ────────────────────────
+            field["options"] = [{"label": v, "value": v} for v in values]
 
         fields.append(field)
 
@@ -165,3 +181,56 @@ def resolve_skill_ids(
         skills = expert.get("skills") or []
         skill_ids.extend(str(s) for s in skills)
     return list(set(skill_ids))
+
+
+# ── Province-scheme subject_group filtering ──────────────────────────────
+
+# 高考改革方案：3+3 / 3+1+2 / traditional
+_PROVINCE_SCHEME: dict[str, str] = {
+    "北京": "three_three", "天津": "three_three", "上海": "three_three",
+    "浙江": "three_three", "山东": "three_three", "海南": "three_three",
+}
+
+# 3+3 省份专属：可以不选物理也不选历史的组合
+_THREE_THREE_ONLY = frozenset({
+    "化学+生物+政治", "化学+生物+历史", "化学+生物+地理",
+    "化学+政治+历史", "化学+政治+地理", "化学+历史+地理",
+    "生物+政治+历史", "生物+政治+地理", "生物+历史+地理",
+    "政治+历史+地理", "物理+历史+地理", "物理+历史+政治",
+    "物理+历史+生物", "物理+历史+化学",
+})
+
+
+def _filter_subject_group(all_values: list[str], province: str) -> list[str]:
+    """Filter subject_group options based on province's gaokao reform scheme.
+
+    3+3 provinces see all 20 combinations.
+    3+1+2 provinces only see combinations that include exactly one of 物理/历史.
+    """
+    scheme = _PROVINCE_SCHEME.get(province, "three_one_two")
+    if scheme == "three_three":
+        return list(all_values)
+    # 3+1+2: must include exactly one of 物理 or 历史
+    return [v for v in all_values if v not in _THREE_THREE_ONLY]
+
+
+# ── School-stage-aware grade filtering ────────────────────────────────────
+
+# 年级按学段分组：预置信息已知学段时，只展示对应学段的年级选项。
+_STAGE_GRADE_MAP: dict[str, list[str]] = {
+    "小学": ["一年级", "二年级", "三年级", "四年级", "五年级", "六年级"],
+    "初中": ["初一", "初二", "初三"],
+    "高中": ["高一", "高二", "高三"],
+}
+
+
+def _filter_grade_by_stage(all_values: list[str], stage: str) -> list[str]:
+    """Filter grade options to only those belonging to *stage*.
+
+    When school_stage is known (e.g. "高中"), only show grades for that stage.
+    Unknown stages return the full list unchanged.
+    """
+    filtered = _STAGE_GRADE_MAP.get(stage)
+    if filtered is None:
+        return list(all_values)
+    return [v for v in all_values if v in filtered]

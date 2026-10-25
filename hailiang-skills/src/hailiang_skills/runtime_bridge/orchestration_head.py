@@ -148,8 +148,6 @@ def build_orchestrator_head_prompt(
     system = "\n\n".join(part for part in system_parts if part)
     prompt = [ChatMessage(role="system", content=system)]
     for message in _as_chat_messages(messages):
-        if message.role == "system":
-            continue
         prompt.append(message)
     if not any(item.role == "user" for item in prompt):
         prompt.append(ChatMessage(role="user", content="请根据以上上下文产出 ConsultationPlan。"))

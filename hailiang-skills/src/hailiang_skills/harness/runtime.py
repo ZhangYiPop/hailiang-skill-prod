@@ -573,14 +573,25 @@ def _debug_pre_flight_fields(
     if not required:
         return []
 
+    # seed_facts uses identity-based keys (JSON-encoded [user_id, scope, owner, key]).
+    # Extract a {canonical_key: value} dict so the missing-fact check can use
+    # canonical keys consistently.
+    known_values: dict[str, Any] = {}
+    for record in seed_facts.values():
+        if isinstance(record, dict):
+            k = record.get("key")
+            if k:
+                known_values[k] = record.get("value")
+
     # Check which are missing from seed_facts.
-    missing = [k for k in required if k not in seed_facts or seed_facts.get(k) is None]
+    missing = [k for k in required if k not in known_values or known_values.get(k) is None]
     if not missing:
         return []
 
     # Build field definitions with labels from facts_config.
     try:
         from hailiang_skills.core.facts_config import get_fact_label, get_fact_schema, get_fact_scope_policy
+        from hailiang_skills.runtime_bridge.pre_flight_gate import _filter_grade_by_stage
         schema = get_fact_schema()
     except Exception:
         schema = {}
@@ -600,7 +611,14 @@ def _debug_pre_flight_fields(
             field["placeholder"] = meta["placeholder"]
         allowed = meta.get("allowed_values")
         if allowed:
-            field["options"] = [{"label": v, "value": v} for v in allowed]
+            values = list(allowed)
+            # ── School-stage-aware grade filtering ─────────────────────
+            if key == "grade" and known_values:
+                stage = str(known_values.get("school_stage") or "").strip()
+                if stage:
+                    values = _filter_grade_by_stage(values, stage)
+            # ── End school-stage-aware filtering ────────────────────────
+            field["options"] = [{"label": v, "value": v} for v in values]
         fields.append(field)
 
     return fields
@@ -1159,6 +1177,13 @@ class HarnessRuntime:
             return ""
         if not task.get("head_done"):
             return "direct" if policy.get("direct_expert_id") else "head"
+        # After head_done, ensure experts are dispatched before tail.
+        # Pre-flight gate sets head_done before the form answer comes back;
+        # if the user skips the form we must still dispatch experts.
+        if not any(t.get("kind") == "expert" for t in run["tasks"].values()):
+            plan = run.get("orchestration") or {}
+            if plan.get("action") == "consult":
+                return "dispatch"
         return "" if task["pending_calls"] else "tail"
 
     @staticmethod
@@ -1181,7 +1206,7 @@ class HarnessRuntime:
         from hailiang_skills.runtime_bridge.orchestration_head import build_orchestrator_head_prompt, run_orchestrator_head
         from hailiang_skills.runtime_bridge.orchestration_tail import build_tail_prompt
         from hailiang_skills.runtime_bridge.consultation_outcome import select_final_reply
-        from hailiang_skills.runtime_bridge.platform_gate import missing_identity_fields
+        from hailiang_skills.runtime_bridge.orchestration_head import build_orchestrator_head_prompt, run_orchestrator_head
         from hailiang_skills.runtime_bridge.recommendation_extractor import extract_jump_cards
 
         policy = run["policy"]
@@ -1234,36 +1259,6 @@ class HarnessRuntime:
             return
 
         if phase == "head":
-            missing = missing_identity_fields(facts)
-            if missing:
-                text = "请先补充身份与学段信息，再继续咨询。"
-                # Formal sessions ask once through a form card. If the card was
-                # skipped (or the answer is still missing) end with the text
-                # prompt instead of asking forever.
-                ask_form = policy.get("identity_gate") == "form" and not task.get("identity_asked")
-                def gate(current, changes, db):
-                    if not self._valid(current, task_id, token):
-                        return
-                    live = current["tasks"][task_id]
-                    self._record_node(current, live, "platform_gate", {"missing": missing}, {"missing": missing}, changes)
-                    if not ask_form:
-                        live["head_done"] = True
-                        finish_run(current, live, changes, text)
-                        self._settle(current, changes, db)
-                        return
-                    arguments = {"title": "补充身份信息", "fields": identity_form_fields(missing, bool(current["profile_id"]))}
-                    call_id, node_id = identifier("call"), identifier("tool")
-                    current["tools"][node_id] = {"id": node_id, "call_id": call_id, "task_id": task_id, "parent_id": task_id,
-                                                 "name": "request_user_input", "arguments": arguments, "status": "queued", "attempts": 0,
-                                                 "created_at": now(), "started_at": None, "ended_at": None}
-                    live["identity_asked"] = True
-                    live["pending_calls"].append(node_id)
-                    live["messages"].append(serialize_message(ChatMessage(role="assistant", content="", tool_calls=(ToolCallRequest(call_id, "request_user_input", arguments),))))
-                    live["status"] = "queued"
-                    changes.append({"event": "tool_created", "node_id": node_id})
-                    self._settle(current, changes, db)
-                self.store.mutate(run_id, gate)
-                return
             prompt = build_orchestrator_head_prompt(policy.get("soul", ""), view.get("head_rules", ""), members,
                                                     consult_policy, {"facts": facts, **facts}, history)
             if not stamp_call(prompt, "orchestrate_head"):
@@ -1293,8 +1288,14 @@ class HarnessRuntime:
                     required = collect_required_facts(skill_ids)
                     missing = missing_pre_flight_facts(required, facts)
                     if missing:
+                        # If province is also missing, defer subject_group to
+                        # the next round so province-based filtering applies.
+                        deferred: list[str] = []
+                        if "student_province" in missing and "subject_group" in missing:
+                            missing.remove("subject_group")
+                            deferred.append("subject_group")
                         labels = {k: get_fact_label(k) for k in required}
-                        fields = build_pre_flight_fields(missing, labels)
+                        fields = build_pre_flight_fields(missing, labels, known_facts=facts)
 
                         def pre_flight_gate(current, changes, _db):
                             if not self._valid(current, task_id, token):
@@ -1302,7 +1303,9 @@ class HarnessRuntime:
                             live = current["tasks"][task_id]
                             live["trace"][-1]["output"] = {"final_text": json.dumps(plan_json, ensure_ascii=False)}
                             live["head_done"] = True
-                            live["pre_flight_asked"] = True
+                            # Only mark asked when all facts have been shown;
+                            # deferred facts (subject_group) will fire a second round.
+                            live["pre_flight_asked"] = not bool(deferred)
                             current["orchestration"] = {"action": plan.action, "reason": plan.reason,
                                                         "subtasks": plan_json["subtasks"]}
                             self._record_node(current, live, "pre_flight_gate",
@@ -1357,6 +1360,39 @@ class HarnessRuntime:
                     changes.append({"event": "tool_created", "node_id": node_id})
                 self._settle(current, changes, db)
             self.store.mutate(run_id, apply_head)
+            return
+
+        if phase == "dispatch":
+            # Pre-flight form was answered/skipped; dispatch experts from
+            # the stored orchestration plan.
+            plan = (run.get("orchestration") or {})
+            subtasks = plan.get("subtasks") or []
+            def dispatch_experts(current, changes, db):
+                if not self._valid(current, task_id, token):
+                    return
+                live = current["tasks"][task_id]
+                current["phase"] = "dispatching_completed"
+                current["action"] = f"已完成任务拆分，正在启动 {len(subtasks)} 位专家"
+                current["dispatch"] = public_dispatch(current)
+                arguments = {"tasks": [{"key": s.get("subtask_id") or s.get("key") or f"st_{i+1}",
+                                        "expert_id": s["target_expert_id"],
+                                        "goal": s.get("question") or s.get("goal", ""),
+                                        "depends_on": list(s.get("depends_on") or [])}
+                                       for i, s in enumerate(subtasks)]}
+                call_id, node_id = identifier("call"), identifier("tool")
+                current["tools"][node_id] = {"id": node_id, "call_id": call_id, "task_id": task_id,
+                                             "parent_id": task_id, "name": "delegate_tasks",
+                                             "arguments": arguments, "status": "queued", "attempts": 0,
+                                             "created_at": now(), "started_at": None, "ended_at": None}
+                live["pending_calls"].append(node_id)
+                live["messages"].append(serialize_message(ChatMessage(
+                    role="assistant", content="",
+                    tool_calls=(ToolCallRequest(call_id, "delegate_tasks", arguments),),
+                )))
+                live["status"] = "queued"
+                changes.append({"event": "tool_created", "node_id": node_id})
+                self._settle(current, changes, db)
+            self.store.mutate(run_id, dispatch_experts)
             return
 
         if phase == "tail":
