@@ -25,7 +25,7 @@ _CONTRACTS_DIR = Path(
 )
 
 # Fallback: legacy runtime_skills directory relative to this module.
-_LEGACY_SKILLS_DIR = Path(__file__).resolve().parents[2] / "runtime_skills"
+_LEGACY_SKILLS_DIR = Path(__file__).resolve().parents[3] / "runtime_skills"
 
 # Map from contract-local fact keys to facts_schema canonical keys.
 # Contracts use varying naming conventions; this normalizes them so the

@@ -646,7 +646,7 @@ def _debug_pre_flight_fields(
     _here = _Path(__file__).resolve()
     search_dirs: list[_Path] = [
         _Path("/Users/letty/code/工作/hailiang/测试/1020/新规范"),
-        _here.parents[2] / "runtime_skills",
+        _here.parents[3] / "runtime_skills",
     ]
     for base in search_dirs:
         direct = base / skill_id / "runtime_contract.json"
