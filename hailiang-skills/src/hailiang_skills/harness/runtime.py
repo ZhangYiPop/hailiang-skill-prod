@@ -2026,6 +2026,15 @@ class HarnessRuntime:
             for field in ("findings", "limitations", "unresolved"):
                 existing[field] = list(dict.fromkeys(existing.get(field, []) + (args.get(field) or [])))
             task["structured_result"] = existing
+            # 写入 findings 到事实层，供跨轮 read_facts 读取
+            for finding in (args.get("findings") or []):
+                finding_hash = hashlib.sha256(finding.encode()).hexdigest()[:16]
+                identity = self.store.fact_identity(run, task, "session", f"finding:{task.get('expert_id', 'unknown')}:{finding_hash}")
+                self.store.write_fact(db, identity, {
+                    "key": f"finding:{task.get('expert_id', 'unknown')}",
+                    "value": finding, "scope": "session", "status": "confirmed",
+                    "source": {"run_id": run["run_id"], "task_id": task["id"], "tool_call_id": tool["call_id"]},
+                })
             self._tool_result(tool, {"recorded": {f: len(existing[f]) for f in ("findings", "limitations", "unresolved")}})
             changes.append({"event": "findings_submitted", "node_id": task["id"]})
         elif name == "propose_fact_updates":
