@@ -512,9 +512,10 @@ def build_harness_router(repository, fact_service, orchestrator, runtime, snapsh
                         return
                     for item in batch:
                         cursor = item['seq']
-                        # Internal entity events are not part of the V3 public
-                        # compatibility contract. Every exposed frame is a full state.
-                        if item['type'] not in {'state', 'done'}:
+                        # Full-state frames carry a snapshot; message.delta frames
+                        # carry incremental text for streaming tail without a full
+                        # replace.  Both are valid V3 public frames.
+                        if item['type'] not in {'state', 'done', 'message.delta'}:
                             continue
                         yield f"id: {cursor}\nevent: {item['type']}\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
                     if not batch:
