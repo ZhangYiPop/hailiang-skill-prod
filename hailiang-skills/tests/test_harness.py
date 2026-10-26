@@ -49,6 +49,48 @@ def test_worker_pool_capacity_is_configurable_and_run_claims_rotate_fairly(monke
     runtime.close()
 
 
+def test_scheduler_candidates_include_queued_and_expired_not_user_wait(tmp_path):
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='完成'))
+    queued = runtime.create('queued', 'u', 'p', '分析', policy())
+    waiting = runtime.create('waiting', 'u', 'p', '分析', policy())
+    expired = runtime.create('expired', 'u', 'p', '分析', policy())
+    def set_waiting(run, changes, _db):
+        task = run['tasks'][run['root_task_id']]
+        task['status'] = 'waiting_for_user'
+        changes.append({'event': 'test_waiting', 'node_id': task['id']})
+    runtime.store.mutate(waiting, set_waiting)
+    task_id, _ = runtime.claim(expired)
+    def expire(run, changes, _db):
+        run['tasks'][task_id]['lease_until'] = '2000-01-01T00:00:00+00:00'
+        changes.append({'event': 'test_expired', 'node_id': task_id})
+    runtime.store.mutate(expired, expire)
+    assert set(runtime.store.likely_runnable_runs()) == {queued, expired}
+    assert waiting in runtime.store.runnable_runs()  # remains visible to the full audit
+    assert runtime.claim(expired) is not None
+    runtime.close()
+
+
+def test_scheduler_full_audit_recovers_missing_job_hint(tmp_path):
+    import time
+    from sqlalchemy import delete
+    from hailiang_skills.harness.models import HarnessJobRow
+    runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text='完成'))
+    rid = runtime.create('s', 'u', 'p', '分析', policy())
+    with runtime.store.engine.begin() as db:
+        db.execute(delete(HarnessJobRow).where(HarnessJobRow.run_id == rid))
+    assert runtime.store.likely_runnable_runs() == []
+    runtime.start()
+    try:
+        deadline = time.monotonic() + 7
+        while time.monotonic() < deadline:
+            if runtime.store.get(rid)['tasks'][runtime.store.get(rid)['root_task_id']]['attempt']:
+                break
+            time.sleep(.05)
+        assert runtime.store.get(rid)['tasks'][runtime.store.get(rid)['root_task_id']]['attempt'] > 0
+    finally:
+        runtime.close()
+
+
 def test_saturated_worker_claim_is_preserved_in_wait_history(tmp_path):
     runtime = make_runtime(tmp_path, lambda *_: AssistantTurnResult(final_text="完成"))
     run_id = runtime.create('s', 'u', 'p', '分析', policy())

@@ -336,6 +336,22 @@ class HarnessStore:
         with Session(self.engine) as db:
             return list(db.scalars(select(HarnessRunRow.run_id).where(HarnessRunRow.active_session.is_not(None))))
 
+    def likely_runnable_runs(self):
+        """Fast candidates; the scheduler also periodically audits all active runs.
+
+        Queued jobs and expired leases are only hints: claim still validates
+        dependencies, limits and the lease under the normal transaction lock.
+        """
+        from sqlalchemy import and_, or_
+        candidate = select(HarnessJobRow.task_id).where(
+            HarnessJobRow.run_id == HarnessRunRow.run_id,
+            or_(HarnessJobRow.status == 'queued',
+                and_(HarnessJobRow.status == 'running', HarnessJobRow.lease_until <= now())),
+        ).exists()
+        with Session(self.engine) as db:
+            return list(db.scalars(select(HarnessRunRow.run_id).where(
+                HarnessRunRow.active_session.is_not(None), candidate)))
+
     def request_run(self, request_id):
         with Session(self.engine) as db:
             row = db.get(HarnessInputRow, request_id)
@@ -448,6 +464,9 @@ class HarnessStore:
         if scope == "task":
             scope = "session"
         owner = {"task": run["session_id"], "session": run["session_id"], "profile": run["profile_id"], "user": run["user_id"]}[scope]
+        if scope == "session" and run.get("wire_protocol") == "hailiang.sse.v3":
+            import json
+            owner = json.dumps([run["session_id"], run.get("profile_id")], ensure_ascii=False, separators=(",", ":"))
         if not owner:
             raise HarnessError("FACT_SCOPE_UNAVAILABLE")
         import json
@@ -489,6 +508,8 @@ class HarnessStore:
             for row in session.scalars(select(HarnessFactRow).where(HarnessFactRow.identity.startswith(prefix, autoescape=True))):
                 user, scope, owner, key = json.loads(row.identity)
                 expected = {"task": task["id"], "session": run["session_id"], "profile": run["profile_id"], "user": run["user_id"]}.get(scope)
+                if scope == "session" and run.get("wire_protocol") == "hailiang.sse.v3":
+                    expected = json.dumps([run["session_id"], run.get("profile_id")], ensure_ascii=False, separators=(",", ":"))
                 ancestors = {task["id"]}
                 parent = task.get("parent_id")
                 while parent:
@@ -496,7 +517,11 @@ class HarnessStore:
                     parent = run["tasks"][parent].get("parent_id")
                 matches = owner in ancestors if scope == "task" else expected and owner == expected
                 record = deepcopy(row.payload)
-                source_run_id = record.get("source", {}).get("run_id")
+                source = record.get("source") or {}
+                if (run.get("wire_protocol") == "hailiang.sse.v3" and run.get("profile_id")
+                        and scope == "user" and key != "user_role" and source.get("input_request_id")):
+                    continue
+                source_run_id = source.get("run_id")
                 if source_run_id and source_run_id != run["run_id"] and record.get("status") in {"candidate", "assumption", "derived"}:
                     source = session.get(HarnessRunRow, source_run_id)
                     if source is not None and source.payload.get("status") != "completed":

@@ -1018,6 +1018,10 @@ class HarnessRuntime:
         return result
 
     def _loop(self):
+        from time import monotonic
+        # A periodic full audit preserves recovery and fact invalidation for
+        # runs whose persisted job state does not indicate an immediate claim.
+        last_full_audit = monotonic()
         while not self._stop.is_set():
             self.wakeup.wait()
             if self._stop.is_set():
@@ -1029,7 +1033,11 @@ class HarnessRuntime:
                     self._pool_saturated_since = now()
                 continue
             try:
-                run_ids = self._rotated_runnable_runs(self.store.runnable_runs())
+                run_ids = self._rotated_runnable_runs(self.store.likely_runnable_runs())
+                if monotonic() - last_full_audit >= 2.0:
+                    candidates = set(run_ids)
+                    run_ids.extend(run_id for run_id in self.store.runnable_runs() if run_id not in candidates)
+                    last_full_audit = monotonic()
                 for run_id in run_ids:
                     snapshot = self.scheduler_snapshot()
                     if snapshot["inflight_count"] >= self.worker_count:
@@ -2631,6 +2639,10 @@ class HarnessRuntime:
         # 调试会话或未绑定 profile 时，自动将 profile/user 作用域降级为 session，
         # 避免 fact_identity 因 owner 为空抛出 FACT_SCOPE_UNAVAILABLE。
         for f in fields:
+            # V3 child form answers must never become shared user facts.
+            if (run.get("wire_protocol") == "hailiang.sse.v3" and run.get("profile_id")
+                    and f.get("scope") == "user" and (f.get("fact_key") or f["key"]) != "user_role"):
+                f["scope"] = "profile"
             if f.get("scope") == "profile" and not run.get("profile_id"):
                 f["scope"] = "session"
             elif f.get("scope") == "user" and not run.get("user_id"):

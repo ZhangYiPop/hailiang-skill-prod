@@ -152,6 +152,21 @@ def _request_hash(input_data, profile_data, team_ids: list[str]):
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _normalized_profile_data(data):
+    """Adapt legacy BFF fields to the V3 portrait; explicit portrait wins."""
+    legacy = {key: value for key, value in {
+        "name": data.student_name, "grade": data.grade,
+        "segment": getattr(data, "segment", None), "school_year": data.school_year,
+    }.items() if value is not None}
+    legacy.update(data.profile_data or {})
+    return legacy or None
+
+
+def _should_show_profile_notice(profile_id, previous_runs):
+    previous = max(previous_runs, key=lambda item: item["created_at"], default=None)
+    return bool(profile_id and (previous is None or previous.get("profile_id") != profile_id))
+
+
 def _requested_profile_name(profile_data: dict | None, student_name: str | None = None) -> str:
     """Resolve the V3 child name without letting a legacy field win."""
     value = (profile_data or {}).get("name")
@@ -264,7 +279,7 @@ def _assert_run_team(run: dict, team_id: str):
 def _seed_facts(context, runtime, session_id, user_id, profile_id):
     from hailiang_skills.harness.store import HarnessStore
     seed = {}
-    dummy = {"session_id": session_id, "user_id": user_id, "profile_id": profile_id}
+    dummy = {"session_id": session_id, "user_id": user_id, "profile_id": profile_id, "wire_protocol": SSE_V3_PROTOCOL}
     for scope, facts in [("user", context.shared_facts), ("profile", context.profile_facts), ("session", context.session_facts)]:
         for key, record in facts.facts.items():
             identity = HarnessStore.fact_identity(dummy, {"id": "seed"}, scope, key)
@@ -449,7 +464,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         except HarnessError as exc:
             raise HTTPException(exc.status, {"code": exc.code, "message": exc.code}) from exc
 
-    async def stream(http_request: Request, harness_run_id: str, request_run_id: str):
+    async def stream(http_request: Request, harness_run_id: str, request_run_id: str, show_notice: bool = False):
         # V3 remains finite for a BFF, but background execution never depends
         # on this connection remaining open.
         timeout_seconds = max(1, int(os.getenv("HAILIANG_HARNESS_SSE_WAIT_SECONDS", "600")))
@@ -466,9 +481,19 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         if isinstance(initial_message.get("content"), str):
             streamed_content = initial_message["content"]
 
+        notice_pending = show_notice
+
+        def frame_payload(*args, **kwargs):
+            nonlocal notice_pending
+            frame = _payload(*args, **kwargs)
+            if not notice_pending:
+                frame["context_notice"] = {}
+            notice_pending = False
+            return frame
+
         def delta_state(current_run, text: str, event_cursor: int):
             """Translate an internal delta into a legacy-compatible state frame."""
-            frame = _payload(runtime, current_run, request_run_id=request_run_id,
+            frame = frame_payload(runtime, current_run, request_run_id=request_run_id,
                              event="state", reason="final_text_delta", cursor=event_cursor)
             frame["state"]["result"] = text
             return frame
@@ -496,9 +521,9 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
         # A terminal resume must replay only its durable final frame. It may
         # never make the BFF briefly render an active task again.
         if run["status"] in TERMINAL:
-            yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
+            yield format_sse_event("done", frame_payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
             return
-        yield format_sse_event("state", _payload(runtime, run, request_run_id=request_run_id, event="state", reason="stream_started", cursor=cursor))
+        yield format_sse_event("state", frame_payload(runtime, run, request_run_id=request_run_id, event="state", reason="stream_started", cursor=cursor))
         last_emitted_at = time.monotonic()
         while not await http_request.is_disconnected():
             run = await asyncio.to_thread(runtime.store.get, harness_run_id)
@@ -508,17 +533,17 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
             if delta_frames:
                 last_emitted_at = time.monotonic()
             if run["status"] in TERMINAL:
-                yield format_sse_event("done", _payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
+                yield format_sse_event("done", frame_payload(runtime, run, request_run_id=request_run_id, event="done", reason="terminal", cursor=cursor))
                 return
             if _suspended(run):
-                yield format_sse_event("done_suspended", _payload(runtime, run, request_run_id=request_run_id, event="done_suspended", reason="waiting_for_user", cursor=cursor))
+                yield format_sse_event("done_suspended", frame_payload(runtime, run, request_run_id=request_run_id, event="done_suspended", reason="waiting_for_user", cursor=cursor))
                 return
             relevant = [event for event in events if event.get("run_id") == harness_run_id and event.get("type") in {"state", "done"}]
             if relevant:
                 latest = relevant[-1]
                 run = await asyncio.to_thread(runtime.store.get, harness_run_id)
                 event_name = "done" if latest.get("type") == "done" else "state"
-                frame = _payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor)
+                frame = frame_payload(runtime, run, request_run_id=request_run_id, event=event_name, reason=latest.get("reason", "updated"), cursor=cursor)
                 # The snapshot may already contain newer text than the events
                 # read above. Do not jump ahead and then replay older deltas.
                 if event_name == "state":
@@ -529,7 +554,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     return
                 continue
             if time.monotonic() - started >= timeout_seconds:
-                yield format_sse_event("done_timeout", _payload(runtime, run, request_run_id=request_run_id, event="done_timeout", reason="stream_timeout", cursor=cursor))
+                yield format_sse_event("done_timeout", frame_payload(runtime, run, request_run_id=request_run_id, event="done_timeout", reason="stream_timeout", cursor=cursor))
                 return
             if ping_seconds is not None and time.monotonic() - last_emitted_at >= ping_seconds:
                 # Transport-only heartbeat: it never advances the durable
@@ -581,7 +606,8 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
     async def post_chat_stream(request: V3ChatStreamRequest, http_request: Request):
         input_data = _parse_input(request.input)
         data = request.context_data
-        profile_data = data.profile_data
+        profile_data = _normalized_profile_data(data)
+        show_notice = False
         if profile_data is not None and not isinstance(profile_data, dict):
             raise HTTPException(422, "INVALID_PROFILE_DATA")
 
@@ -601,6 +627,8 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     context = None
                 bind_public_ids(harness_run_id, team_ids=team_ids, context=context, profile_data=profile_data, student_name=data.student_name)
             else:
+                previous_runs = runtime.store.runs(request.session_id)
+                show_notice = _should_show_profile_notice(data.profile_id, previous_runs)
                 active = runtime.store.active(request.session_id)
                 superseded = None
                 if active:
@@ -623,7 +651,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                 context.session_meta["context_contract_version"] = 3
                 repository.save(context)
                 if profile_data and data.profile_id:
-                    aliases = {"grade": "grade", "province": "student_province", "recent_exam.total_score": "exam_score"}
+                    aliases = {"grade": "grade", "segment": "school_stage", "province": "student_province", "recent_exam.total_score": "exam_score"}
                     operation(lambda: runtime.store.upsert_portrait(data.user_id, data.profile_id, profile_data, aliases=aliases))
                 if runtime.moderation:
                     runtime.moderation.check(input_data.content, stage="input", session_id=request.session_id)
@@ -690,7 +718,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     if operation(lambda: runtime.store.request_run(input_data.request_id)) != harness_run_id:
                         raise HTTPException(409, "INPUT_REQUEST_MESSAGE_MISMATCH")
                     if profile_data and data.profile_id:
-                        aliases = {"grade": "grade", "province": "student_province", "recent_exam.total_score": "exam_score"}
+                        aliases = {"grade": "grade", "segment": "school_stage", "province": "student_province", "recent_exam.total_score": "exam_score"}
                         operation(lambda: runtime.store.upsert_portrait(data.user_id, data.profile_id, profile_data, aliases=aliases))
                     if run.get("execution_runtime") == "formal":
                         if not formal_executor.answer(
@@ -734,7 +762,7 @@ def build_harness_chat_stream_v3_router(repository, fact_service, orchestrator, 
                     raise HTTPException(403, "HARNESS_ACCESS_DENIED")
                 harness_run_id = active["run_id"]
             runtime.cancel(harness_run_id)
-        return StreamingResponse(stream(http_request, harness_run_id, request.run_id), media_type="text/event-stream", headers={
+        return StreamingResponse(stream(http_request, harness_run_id, request.run_id, show_notice), media_type="text/event-stream", headers={
             "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no", "X-SSE-Protocol": SSE_V3_PROTOCOL,
         })
 

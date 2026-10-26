@@ -119,7 +119,7 @@ def compact_fact(identity, record):
 
 def project_facts(run, task, facts):
     facts = applicable_facts(run, facts)
-    keys = {"user_role", "school_stage", "grade"} | declared_keys(run, task)
+    keys = {"user_role", "school_stage", "grade", "profile.name", "profile.school_year"} | declared_keys(run, task)
     keys.update(task.get("brief", {}).get("fact_keys", []))
     keys.update(task.get("read_fact_keys", []))
     text = task["goal"] + "\n" + run["goal"]

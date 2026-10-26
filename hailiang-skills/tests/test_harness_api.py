@@ -44,6 +44,22 @@ def test_v3_child_name_prefers_profile_data_and_falls_back_to_student_name():
     assert _public_context(context, {}, '小红')['profile_name'] == '小红'
 
 
+def test_v3_legacy_portrait_and_profile_notice_switching():
+    from hailiang_skills.api.session_lifecycle import ContextData
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import _normalized_profile_data, _should_show_profile_notice
+    data = ContextData(user_id="u", profile_id="p", student_name="旧名", grade="高二", segment="高中",
+                       school_year="2026", profile_data={"name": "新名", "province": "浙江"})
+    assert _normalized_profile_data(data) == {"name": "新名", "grade": "高二", "segment": "高中",
+                                             "school_year": "2026", "province": "浙江"}
+    assert _should_show_profile_notice("p", [])
+    runs = [{"profile_id": "p", "created_at": "2026-01-01"}]
+    assert not _should_show_profile_notice("p", runs)
+    assert _should_show_profile_notice("p2", runs)
+    assert not _should_show_profile_notice(None, runs)
+    runs.append({"profile_id": "p2", "created_at": "2026-01-02"})
+    assert _should_show_profile_notice("p", runs)
+
+
 def test_run_api_ownership_idempotence_modes_and_private_trace(tmp_path, monkeypatch):
     import hailiang_skills.api.routes.harness as api
     monkeypatch.setattr(api, 'capture_policy', lambda *_: policy())
@@ -294,7 +310,7 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
     body = {
         'session_id': 's', 'run_id': 'client-1',
         'input': json.dumps({'action': 'chat', 'content': '请规划', 'expert_team_id': 'team-a'}, ensure_ascii=False),
-        'context_data': {'user_id': 'u', 'profile_id': 'p', 'profile_data': {'name': '小明', 'province': '浙江', 'recent_exam': {'total_score': 620}}},
+        'context_data': {'user_id': 'u', 'profile_id': 'p', 'student_name': '旧姓名', 'grade': '高二', 'segment': '高中', 'school_year': '2026', 'profile_data': {'name': '小明', 'province': '浙江', 'recent_exam': {'total_score': 620}}},
     }
     with TestClient(app) as client:
         response = client.post('/api/v3/sessions/chat/stream', json=body)
@@ -317,6 +333,11 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         run = runtime.store.active('s')
         assert run
         facts = runtime.store.scoped_facts('u', 'profile', 'p')
+        assert facts['grade']['value'] == '高二'
+        assert facts['school_stage']['value'] == '高中'
+        assert facts['profile.school_year']['value'] == '2026'
+        assert facts['profile.name']['value'] == '小明'
+        assert response.text.count('本轮回答将结合') == 1
         assert facts['profile.province']['value'] == '浙江'
         assert facts['exam_score']['value'] == 620
         assert frame['expert_team_id'] == 'team-a'
@@ -327,6 +348,7 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         # Same client run is an idempotent retry, not a second dispatch.
         replay = client.post('/api/v3/sessions/chat/stream', json=body)
         assert replay.status_code == 200
+        assert '本轮回答将结合' not in replay.text
         assert len(runtime.store.runs('s')) == 1
         advance(runtime, run['run_id'], 4)
         request = next(iter(runtime.store.get(run['run_id'])['inputs'].values()))
@@ -389,4 +411,182 @@ def test_v3_minimal_chat_entry_persists_portrait_and_answers_without_client_vers
         multi_response = client.post('/api/v3/sessions/chat/stream', json=multi_selector)
         assert multi_response.status_code == 422
         assert multi_response.json()['detail'] == 'MULTI_EXPERT_TEAMS_NOT_ENABLED'
+    runtime.close()
+
+
+def test_v3_legacy_sse_task_simulation(tmp_path, monkeypatch):
+    import json
+    import hailiang_skills.api.routes.harness_chat_stream_v3 as v3
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import build_harness_chat_stream_v3_router
+    from hailiang_skills.schemas.facts import KnownFacts
+    class Profiles:
+        def __init__(self):
+            self.items = {}
+            self.facts = {}
+        def list_profiles(self, user_id):
+            return [deepcopy(value) for value in self.items.values() if value['user_id'] == user_id]
+        def get_profile_by_id(self, profile_id):
+            if profile_id not in self.items:
+                raise KeyError(profile_id)
+            return deepcopy(self.items[profile_id])
+        def create_profile(self, user_id, *, profile_id, name, shared_facts_initialized=False, **_):
+            item = {'profile_id': profile_id, 'name': name, 'user_id': user_id}
+            self.items[profile_id] = item
+            return deepcopy(item)
+        def update_profile(self, user_id, profile_id, *, name=None, **_):
+            item = self.items[profile_id]
+            assert item['user_id'] == user_id
+            if name:
+                item['name'] = name
+            return deepcopy(item)
+        def get_profile_facts(self, user_id, profile_id):
+            return self.facts.setdefault((user_id, profile_id), KnownFacts())
+        def save_profile_facts(self, user_id, profile_id, facts):
+            self.facts[(user_id, profile_id)] = facts
+            return facts
+
+    class V3Facts(Facts):
+        profile_repo = Profiles()
+        def get_profile_facts(self, user_id, profile_id):
+            return self.profile_repo.get_profile_facts(user_id, profile_id)
+
+    frozen = policy()
+    frozen['team_id'] = 'team-a'
+    monkeypatch.setattr(v3, 'capture_policy', lambda *_: deepcopy(frozen))
+    monkeypatch.setenv('HAILIANG_HARNESS_SSE_WAIT_SECONDS', '1')
+    monkeypatch.setenv('HAILIANG_HARNESS_SSE_PING_SECONDS', '0.05')
+    expert = SimpleNamespace(name='团队协调专家')
+    team = SimpleNamespace(team_id='team-a', coordinator_expert_id='expert-a', member_expert_ids=('expert-a',))
+    orchestrator = SimpleNamespace(
+        expert_registry=SimpleNamespace(get=lambda key: expert if key == 'expert-a' else None),
+        expert_team_registry=SimpleNamespace(get=lambda key: team if key == 'team-a' else None),
+    )
+    runtime = make_runtime(tmp_path, lambda messages, *_: AssistantTurnResult(final_text='完成') if any(m.role == 'tool' for m in messages) else call('request_user_input', QUESTION))
+    app = FastAPI()
+    app.include_router(build_harness_chat_stream_v3_router(Repository(), V3Facts(), orchestrator, runtime), prefix='/api/v3')
+    body = {
+        'session_id': 'simulation', 'run_id': 'client-1',
+        'input': json.dumps({'action': 'chat', 'content': '请规划', 'expert_team_id': 'team-a'}, ensure_ascii=False),
+        'context_data': {'user_id': 'u', 'profile_id': 'p', 'student_name': '旧姓名', 'grade': '高二', 'segment': '高中', 'school_year': '2026', 'profile_data': {'name': '小明', 'province': '浙江', 'recent_exam': {'total_score': 620}}},
+    }
+    body['context_data'] = {'user_id': '99272', 'profile_id': '336650', 'student_name': '浙江人1', 'grade': '高二', 'segment': '高中', 'school_year': '2026'}
+    def task(client, number, profile, name):
+        body['run_id'] = f'client-{number}'
+        body['context_data']['profile_id'] = profile
+        body['context_data']['student_name'] = name
+        response = client.post('/api/v3/sessions/chat/stream', json=body)
+        assert response.status_code == 200, response.text
+        frames = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ') and line != 'data: {}']
+        notices = [frame['context_notice'] for frame in frames if frame.get('context_notice')]
+        active = runtime.store.active('simulation')
+        assert active
+        runtime.cancel(active['run_id'])
+        return notices
+    with TestClient(app) as client:
+        first = task(client, 1, '336650', '浙江人1')
+        followup = task(client, 2, '336650', '浙江人1')
+        switch = task(client, 3, 'other', '另一个孩子')
+        followup2 = task(client, 4, 'other', '另一个孩子')
+        assert len(first) == 1 and '浙江人1' in first[0]['text']
+        assert followup == []
+        assert len(switch) == 1 and '另一个孩子' in switch[0]['text']
+        assert followup2 == []
+        facts = runtime.store.scoped_facts('99272', 'profile', '336650')
+        assert {key: facts[key]['value'] for key in ('profile.name', 'grade', 'school_stage', 'profile.school_year')} == {'profile.name': '浙江人1', 'grade': '高二', 'school_stage': '高中', 'profile.school_year': '2026'}
+        from hailiang_skills.harness.context_policy import project_facts
+        selected, _ = project_facts({'goal': '请规划', 'policy': frozen}, {'goal': '请规划', 'skill_id': None, 'expert_id': 'a'}, facts)
+        assert {item['key'] for item in selected.values()} >= {'profile.name', 'grade', 'school_stage', 'profile.school_year'}
+    runtime.close()
+
+
+def test_v3_form_answers_are_isolated_between_children(tmp_path, monkeypatch):
+    import json
+    import hailiang_skills.api.routes.harness_chat_stream_v3 as v3
+    from hailiang_skills.api.routes.harness_chat_stream_v3 import build_harness_chat_stream_v3_router
+    from hailiang_skills.schemas.facts import KnownFacts
+    class Profiles:
+        def __init__(self):
+            self.items = {}
+            self.facts = {}
+        def list_profiles(self, user_id):
+            return [deepcopy(value) for value in self.items.values() if value['user_id'] == user_id]
+        def get_profile_by_id(self, profile_id):
+            if profile_id not in self.items:
+                raise KeyError(profile_id)
+            return deepcopy(self.items[profile_id])
+        def create_profile(self, user_id, *, profile_id, name, shared_facts_initialized=False, **_):
+            item = {'profile_id': profile_id, 'name': name, 'user_id': user_id}
+            self.items[profile_id] = item
+            return deepcopy(item)
+        def update_profile(self, user_id, profile_id, *, name=None, **_):
+            item = self.items[profile_id]
+            assert item['user_id'] == user_id
+            if name:
+                item['name'] = name
+            return deepcopy(item)
+        def get_profile_facts(self, user_id, profile_id):
+            return self.facts.setdefault((user_id, profile_id), KnownFacts())
+        def save_profile_facts(self, user_id, profile_id, facts):
+            self.facts[(user_id, profile_id)] = facts
+            return facts
+
+    class V3Facts(Facts):
+        profile_repo = Profiles()
+        def get_profile_facts(self, user_id, profile_id):
+            return self.profile_repo.get_profile_facts(user_id, profile_id)
+
+    frozen = policy()
+    frozen['team_id'] = 'team-a'
+    monkeypatch.setattr(v3, 'capture_policy', lambda *_: deepcopy(frozen))
+    monkeypatch.setenv('HAILIANG_HARNESS_SSE_WAIT_SECONDS', '1')
+    monkeypatch.setenv('HAILIANG_HARNESS_SSE_PING_SECONDS', '0.05')
+    expert = SimpleNamespace(name='团队协调专家')
+    team = SimpleNamespace(team_id='team-a', coordinator_expert_id='expert-a', member_expert_ids=('expert-a',))
+    orchestrator = SimpleNamespace(
+        expert_registry=SimpleNamespace(get=lambda key: expert if key == 'expert-a' else None),
+        expert_team_registry=SimpleNamespace(get=lambda key: team if key == 'team-a' else None),
+    )
+    runtime = make_runtime(tmp_path, lambda messages, *_: AssistantTurnResult(final_text='完成') if any(m.role == 'tool' for m in messages) else call('request_user_input', QUESTION))
+    app = FastAPI()
+    app.include_router(build_harness_chat_stream_v3_router(Repository(), V3Facts(), orchestrator, runtime), prefix='/api/v3')
+    body = {
+        'session_id': 's', 'run_id': 'client-1',
+        'input': json.dumps({'action': 'chat', 'content': '请规划', 'expert_team_id': 'team-a'}, ensure_ascii=False),
+        'context_data': {'user_id': 'u', 'profile_id': 'p', 'student_name': '旧姓名', 'grade': '高二', 'segment': '高中', 'school_year': '2026', 'profile_data': {'name': '小明', 'province': '浙江', 'recent_exam': {'total_score': 620}}},
+    }
+    body['context_data'] = {'user_id': 'u', 'profile_id': 'p', 'student_name': '孩子甲'}
+    with TestClient(app) as client:
+        first = client.post('/api/v3/sessions/chat/stream', json=body)
+        assert first.status_code == 200
+        run = runtime.store.active('s')
+        message_id = run['assistant_message_id']
+        def add_question(run, changes, db):
+            root = run['tasks'][run['root_task_id']]
+            tool = {'id': 'form-tool', 'name': 'request_user_input', 'arguments': {'title': '补充', 'fields': [{'key': 'score', 'label': '成绩', 'scope': 'session'}]}, 'task_id': root['id'], 'call_id': 'form-call', 'status': 'running', 'attempts': 1, 'created_at': None, 'started_at': None, 'ended_at': None}
+            run['tools'][tool['id']] = tool
+            runtime._request(run, root, tool, changes, db)
+        runtime.store.mutate(run['run_id'], add_question)
+        question = next(iter(runtime.store.get(run['run_id'])['inputs'].values()))
+        answer = {'session_id': 's', 'run_id': 'answer-a', 'input': json.dumps({'action': 'answer_input_request', 'assistant_message_id': message_id, 'request_id': question['id'], 'text': '甲的成绩87', 'expert_team_id': 'team-a'}, ensure_ascii=False), 'context_data': body['context_data']}
+        result = client.post('/api/v3/sessions/chat/stream', json=answer)
+        assert result.status_code == 200, result.text
+        a_run = runtime.store.get(run['run_id'])
+        a_facts = runtime.facts(a_run, a_run['tasks'][a_run['root_task_id']])
+        assert any(x.get('value') == '甲的成绩87' for x in a_facts.values())
+        runtime.cancel(run['run_id'])
+        body['run_id'] = 'child-b'
+        body['context_data'] = {'user_id': 'u', 'profile_id': 'p2', 'student_name': '孩子乙'}
+        response = client.post('/api/v3/sessions/chat/stream', json=body)
+        assert response.status_code == 200, response.text
+        b = runtime.store.active('s')
+        b_facts = runtime.facts(b, b['tasks'][b['root_task_id']])
+        assert all(x.get('value') != '甲的成绩87' for x in b_facts.values())
+        runtime.cancel(b['run_id'])
+        body['run_id'] = 'return-a'
+        body['context_data'] = {'user_id': 'u', 'profile_id': 'p', 'student_name': '孩子甲'}
+        response = client.post('/api/v3/sessions/chat/stream', json=body)
+        assert response.status_code == 200, response.text
+        again = runtime.store.active('s')
+        again_facts = runtime.facts(again, again['tasks'][again['root_task_id']])
+        assert any(x.get('value') == '甲的成绩87' for x in again_facts.values())
     runtime.close()

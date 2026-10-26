@@ -33,6 +33,8 @@ BFF 到算法服务的请求外层与 v2 一致，`input` 必须是 JSON 字符�
 
 `context_data.user_id` 由 BFF 从登录态注入；前端不得直接提交它。`profile_id` 可在泛聊时省略。`profile_data` 是可选的增量画像字典，可随 `chat` 或表单答案提交：服务端保留原始结构、为叶子字段建立版本化 `profile.*` 事实投影，并仅在任务需要时交给模型。不存在的档案会自动创建；档案属于其他用户时请求被拒绝。`null` 不删除已有画像字段，删除应使用档案或事实接口。
 
+兼容旧转发字段 `context_data.student_name`、`grade`、`segment`、`school_year`，分别映射到画像的 `name`、`grade`、`segment`、`school_year`；同名的 `profile_data` 字段优先。`segment` 同时映射为 `school_stage`，`grade` 映射为 `grade`。其他扩展信息请放在 `profile_data`；未知的顶层字段不会自动进入画像。姓名、学年、年级和学段纳入任务上下文，其他画像字段按任务需要选择。学生档案提示在首轮或切换孩子后的新对话首帧发送一次，追问、重试及恢复不重复发送。
+
 支持的 `input.action` 只有：
 
 ```json
